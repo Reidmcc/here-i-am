@@ -71,6 +71,12 @@ class App {
 
             // Theme
             themeSelect: document.getElementById('theme-select'),
+
+            // Import
+            importSource: document.getElementById('import-source'),
+            importFile: document.getElementById('import-file'),
+            importBtn: document.getElementById('import-btn'),
+            importStatus: document.getElementById('import-status'),
         };
 
         this.init();
@@ -130,6 +136,10 @@ class App {
 
         // Archived modal
         document.getElementById('close-archived').addEventListener('click', () => this.hideModal('archivedModal'));
+
+        // Import functionality
+        this.elements.importFile.addEventListener('change', () => this.handleImportFileChange());
+        this.elements.importBtn.addEventListener('click', () => this.importExternalConversations());
     }
 
     handleInputChange() {
@@ -650,6 +660,10 @@ class App {
         this.elements.systemPromptInput.value = this.settings.systemPrompt || '';
         this.elements.conversationTypeSelect.value = this.settings.conversationType;
         this.elements.themeSelect.value = this.getCurrentTheme();
+        // Reset import section
+        this.elements.importFile.value = '';
+        this.elements.importBtn.disabled = true;
+        this.elements.importStatus.style.display = 'none';
         this.showModal('settingsModal');
     }
 
@@ -666,6 +680,82 @@ class App {
         this.updateModelIndicator();
         this.hideModal('settingsModal');
         this.showToast('Settings applied', 'success');
+    }
+
+    handleImportFileChange() {
+        const file = this.elements.importFile.files[0];
+        this.elements.importBtn.disabled = !file;
+        this.elements.importStatus.style.display = 'none';
+    }
+
+    async importExternalConversations() {
+        const file = this.elements.importFile.files[0];
+        if (!file) {
+            this.showToast('Please select a file to import', 'error');
+            return;
+        }
+
+        if (!this.selectedEntityId) {
+            this.showToast('Please select an entity first', 'error');
+            return;
+        }
+
+        // Show loading state
+        this.elements.importBtn.disabled = true;
+        this.elements.importBtn.textContent = 'Importing...';
+        this.elements.importStatus.style.display = 'block';
+        this.elements.importStatus.className = 'import-status loading';
+        this.elements.importStatus.textContent = 'Reading file...';
+
+        try {
+            // Read file content
+            const content = await this.readFileAsText(file);
+
+            this.elements.importStatus.textContent = 'Uploading and processing...';
+
+            // Get source hint from select
+            const source = this.elements.importSource.value || null;
+
+            // Call API to import
+            const result = await api.importExternalConversations({
+                content: content,
+                entity_id: this.selectedEntityId,
+                source: source,
+            });
+
+            // Show success
+            this.elements.importStatus.className = 'import-status success';
+            this.elements.importStatus.innerHTML = `
+                <strong>Import successful!</strong><br>
+                Source: ${result.source_format}<br>
+                Conversations: ${result.conversations_imported}<br>
+                Messages: ${result.messages_imported}<br>
+                Memories stored: ${result.memories_stored}
+            `;
+
+            this.showToast(`Imported ${result.messages_imported} messages as memories`, 'success');
+
+            // Reset file input
+            this.elements.importFile.value = '';
+
+        } catch (error) {
+            this.elements.importStatus.className = 'import-status error';
+            this.elements.importStatus.textContent = `Error: ${error.message}`;
+            this.showToast('Import failed', 'error');
+            console.error('Import failed:', error);
+        } finally {
+            this.elements.importBtn.disabled = false;
+            this.elements.importBtn.textContent = 'Import as Memories';
+        }
+    }
+
+    readFileAsText(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('Failed to read file'));
+            reader.readAsText(file);
+        });
     }
 
     async loadPreset(presetName) {

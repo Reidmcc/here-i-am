@@ -165,6 +165,9 @@ async def list_conversations(
     if not include_archived:
         query = query.where(Conversation.is_archived == False)
 
+    # Always exclude imported conversations from the list (they only serve as memory sources)
+    query = query.where(Conversation.is_imported == False)
+
     query = query.order_by(
         Conversation.updated_at.desc().nullsfirst(),
         Conversation.created_at.desc()
@@ -224,6 +227,9 @@ async def list_archived_conversations(
         entity_id: Optional filter by AI entity (Pinecone index name).
     """
     query = select(Conversation).where(Conversation.is_archived == True)
+
+    # Exclude imported conversations from archived list
+    query = query.where(Conversation.is_imported == False)
 
     if entity_id is not None:
         query = query.where(Conversation.entity_id == entity_id)
@@ -573,4 +579,259 @@ async def import_seed_conversation(
         "message_count": len(data.messages),
         "memories_stored": stored_count,
         "entity_id": conversation.entity_id,
+    }
+
+
+class ExternalConversationImport(BaseModel):
+    """Import format for external conversations (OpenAI/Anthropic exports)."""
+    content: str  # JSON string content of the export file
+    entity_id: str  # Target entity (required)
+    source: Optional[str] = None  # Optional source hint: "openai", "anthropic", or auto-detect
+
+
+def _parse_openai_export(data: list) -> List[dict]:
+    """
+    Parse OpenAI ChatGPT export format.
+
+    OpenAI exports conversations as a list where each conversation has a 'mapping'
+    dict containing messages in a tree structure, and 'title' field.
+    """
+    all_conversations = []
+
+    for conv in data:
+        if not isinstance(conv, dict):
+            continue
+
+        title = conv.get("title", "Imported from ChatGPT")
+        mapping = conv.get("mapping", {})
+        create_time = conv.get("create_time")
+
+        # Build message chain from the tree structure
+        messages = []
+
+        # Collect all message nodes
+        message_nodes = []
+        for node_id, node in mapping.items():
+            if not isinstance(node, dict):
+                continue
+            message = node.get("message")
+            if not message:
+                continue
+
+            author = message.get("author", {})
+            role = author.get("role", "")
+
+            # Skip system messages
+            if role not in ("user", "assistant"):
+                continue
+
+            content = message.get("content", {})
+            parts = content.get("parts", [])
+
+            # Combine text parts
+            text = ""
+            for part in parts:
+                if isinstance(part, str):
+                    text += part
+                elif isinstance(part, dict) and "text" in part:
+                    text += part["text"]
+
+            if text.strip():
+                create_time = message.get("create_time", 0)
+                message_nodes.append({
+                    "role": "human" if role == "user" else "assistant",
+                    "content": text.strip(),
+                    "timestamp": create_time,
+                })
+
+        # Sort by timestamp
+        message_nodes.sort(key=lambda x: x.get("timestamp", 0))
+        messages = [{"role": m["role"], "content": m["content"]} for m in message_nodes]
+
+        if messages:
+            all_conversations.append({
+                "title": title,
+                "messages": messages,
+            })
+
+    return all_conversations
+
+
+def _parse_anthropic_export(data: list) -> List[dict]:
+    """
+    Parse Anthropic Claude export format.
+
+    Anthropic exports as a list of conversations, each with 'chat_messages' array
+    containing messages with 'sender' and 'text' fields.
+    """
+    all_conversations = []
+
+    for conv in data:
+        if not isinstance(conv, dict):
+            continue
+
+        title = conv.get("name", "Imported from Claude")
+        chat_messages = conv.get("chat_messages", [])
+
+        messages = []
+        for msg in chat_messages:
+            if not isinstance(msg, dict):
+                continue
+
+            sender = msg.get("sender", "")
+            text = msg.get("text", "")
+
+            if sender in ("human", "user") and text.strip():
+                messages.append({
+                    "role": "human",
+                    "content": text.strip(),
+                })
+            elif sender == "assistant" and text.strip():
+                messages.append({
+                    "role": "assistant",
+                    "content": text.strip(),
+                })
+
+        if messages:
+            all_conversations.append({
+                "title": title,
+                "messages": messages,
+            })
+
+    return all_conversations
+
+
+def _detect_and_parse_export(content: str, source_hint: Optional[str] = None) -> tuple:
+    """
+    Detect export format and parse conversations.
+
+    Returns: (conversations_list, detected_source)
+    """
+    import json
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON: {e}")
+
+    if not isinstance(data, list):
+        raise ValueError("Export file must contain a JSON array")
+
+    if len(data) == 0:
+        return [], "unknown"
+
+    # Try to detect format from structure
+    first_item = data[0]
+
+    if source_hint == "openai" or (source_hint is None and "mapping" in first_item):
+        # OpenAI format has 'mapping' field
+        return _parse_openai_export(data), "openai"
+    elif source_hint == "anthropic" or (source_hint is None and "chat_messages" in first_item):
+        # Anthropic format has 'chat_messages' field
+        return _parse_anthropic_export(data), "anthropic"
+    else:
+        # Try to auto-detect by checking for common patterns
+        if any("mapping" in item for item in data if isinstance(item, dict)):
+            return _parse_openai_export(data), "openai"
+        elif any("chat_messages" in item for item in data if isinstance(item, dict)):
+            return _parse_anthropic_export(data), "anthropic"
+        else:
+            raise ValueError(
+                "Could not detect export format. Supported formats: OpenAI ChatGPT export, Anthropic Claude export"
+            )
+
+
+@router.post("/import-external")
+async def import_external_conversations(
+    data: ExternalConversationImport,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Import conversations from external services (OpenAI ChatGPT or Anthropic Claude exports).
+
+    Each message is stored as a memory for the specified entity.
+    The conversations themselves are hidden from the UI (is_imported=True).
+    """
+    from app.services import memory_service
+
+    # Validate entity_id
+    entity = settings.get_entity_by_index(data.entity_id)
+    if not entity:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Entity '{data.entity_id}' is not configured. Check your PINECONE_INDEXES environment variable."
+        )
+
+    # Parse the export file
+    try:
+        conversations, detected_source = _detect_and_parse_export(data.content, data.source)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not conversations:
+        raise HTTPException(status_code=400, detail="No conversations found in export file")
+
+    # Import each conversation
+    total_messages = 0
+    total_memories = 0
+    imported_conversations = 0
+
+    for conv_data in conversations:
+        title = conv_data.get("title", f"Imported from {detected_source}")
+        messages = conv_data.get("messages", [])
+
+        if not messages:
+            continue
+
+        # Create hidden conversation
+        conversation = Conversation(
+            title=f"[Imported] {title}",
+            conversation_type=ConversationType.NORMAL,
+            llm_model_used="imported",
+            entity_id=data.entity_id,
+            is_imported=True,  # Mark as imported - won't show in conversation list
+        )
+
+        db.add(conversation)
+        await db.flush()
+
+        # Add messages and store as memories
+        for msg_data in messages:
+            role = MessageRole.HUMAN if msg_data["role"] == "human" else MessageRole.ASSISTANT
+            content = msg_data["content"]
+
+            message = Message(
+                conversation_id=conversation.id,
+                role=role,
+                content=content,
+                times_retrieved=0,
+            )
+            db.add(message)
+            await db.flush()
+            total_messages += 1
+
+            # Store in vector database
+            if memory_service.is_configured():
+                success = await memory_service.store_memory(
+                    message_id=message.id,
+                    conversation_id=conversation.id,
+                    role=role.value,
+                    content=content,
+                    created_at=message.created_at,
+                    entity_id=data.entity_id,
+                )
+                if success:
+                    total_memories += 1
+
+        imported_conversations += 1
+
+    await db.commit()
+
+    return {
+        "status": "imported",
+        "source_format": detected_source,
+        "conversations_imported": imported_conversations,
+        "messages_imported": total_messages,
+        "memories_stored": total_memories,
+        "entity_id": data.entity_id,
     }

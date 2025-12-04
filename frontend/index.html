@@ -156,6 +156,35 @@
                         <option value="light">Light</option>
                     </select>
                 </div>
+
+                <!-- Import Section -->
+                <div class="settings-divider"></div>
+                <h4 class="settings-section-title">Import Conversations as Memories</h4>
+                <p class="settings-section-description">
+                    Import conversation history from OpenAI ChatGPT or Anthropic Claude exports.
+                    Messages will be stored as memories for the currently selected entity.
+                </p>
+
+                <div class="form-group">
+                    <label for="import-source">Source Format</label>
+                    <select id="import-source">
+                        <option value="">Auto-detect</option>
+                        <option value="openai">OpenAI ChatGPT</option>
+                        <option value="anthropic">Anthropic Claude</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="import-file">Export File (JSON)</label>
+                    <input type="file" id="import-file" accept=".json,application/json">
+                    <p class="form-help">Select the JSON export file from ChatGPT or Claude</p>
+                </div>
+
+                <div class="form-group">
+                    <button id="import-btn" class="secondary-btn" disabled>Import as Memories</button>
+                </div>
+
+                <div id="import-status" class="import-status" style="display: none;"></div>
             </div>
             <div class="modal-footer">
                 <button id="apply-settings" class="primary-btn">Apply</button>
