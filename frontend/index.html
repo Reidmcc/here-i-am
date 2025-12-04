@@ -35,6 +35,7 @@
             <div class="sidebar-footer">
                 <button id="settings-btn" class="settings-btn">Settings</button>
                 <button id="memories-btn" class="memories-btn">Memories</button>
+                <button id="archived-btn" class="archived-btn">Archived</button>
             </div>
         </aside>
 
@@ -48,7 +49,7 @@
                 </div>
                 <div class="header-actions">
                     <button id="export-btn" class="icon-btn" title="Export conversation">Export</button>
-                    <button id="delete-btn" class="icon-btn danger" title="Delete conversation">Delete</button>
+                    <button id="archive-btn" class="icon-btn" title="Archive conversation">Archive</button>
                 </div>
             </header>
 
@@ -184,20 +185,35 @@
         </div>
     </div>
 
-    <!-- Delete Confirmation Modal -->
-    <div class="modal" id="delete-modal">
+    <!-- Archive Confirmation Modal -->
+    <div class="modal" id="archive-modal">
         <div class="modal-content small">
             <div class="modal-header">
-                <h3>Delete Conversation?</h3>
-                <button class="close-btn" id="close-delete">&times;</button>
+                <h3>Archive Conversation?</h3>
+                <button class="close-btn" id="close-archive">&times;</button>
             </div>
             <div class="modal-body">
-                <p>This will permanently delete this conversation and all its messages.</p>
-                <p><strong>This cannot be undone.</strong></p>
+                <p>This conversation will be hidden from the main list and its memories will be excluded from retrieval.</p>
+                <p>You can restore it later from the Archived section.</p>
             </div>
             <div class="modal-footer">
-                <button id="cancel-delete" class="secondary-btn">Cancel</button>
-                <button id="confirm-delete" class="danger-btn">Delete</button>
+                <button id="cancel-archive" class="secondary-btn">Cancel</button>
+                <button id="confirm-archive" class="primary-btn">Archive</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Archived Conversations Modal -->
+    <div class="modal" id="archived-modal">
+        <div class="modal-content wide">
+            <div class="modal-header">
+                <h3>Archived Conversations</h3>
+                <button class="close-btn" id="close-archived">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="archived-list" id="archived-list">
+                    <!-- Archived conversations will be loaded here -->
+                </div>
             </div>
         </div>
     </div>

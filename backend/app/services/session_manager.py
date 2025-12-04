@@ -194,7 +194,7 @@ class SessionManager:
         Process a user message through the full pipeline.
 
         1. Retrieve relevant memories
-        2. Filter and deduplicate
+        2. Filter and deduplicate (including excluding archived conversations)
         3. Update retrieval tracking
         4. Build API request with memories
         5. Call Claude API
@@ -207,6 +207,11 @@ class SessionManager:
 
         # Step 1-2: Retrieve and deduplicate memories
         if memory_service.is_configured():
+            # Get archived conversation IDs to exclude from retrieval
+            archived_ids = await memory_service.get_archived_conversation_ids(
+                db, entity_id=session.entity_id
+            )
+
             candidates = await memory_service.search_memories(
                 query=user_message,
                 exclude_conversation_id=session.conversation_id,
@@ -215,6 +220,9 @@ class SessionManager:
             )
 
             for candidate in candidates:
+                # Skip memories from archived conversations
+                if candidate.get("conversation_id") in archived_ids:
+                    continue
                 # Get full content from database
                 mem_data = await memory_service.get_full_memory_content(candidate["id"], db)
                 if mem_data:
@@ -302,6 +310,11 @@ class SessionManager:
 
         # Step 1-2: Retrieve and deduplicate memories
         if memory_service.is_configured():
+            # Get archived conversation IDs to exclude from retrieval
+            archived_ids = await memory_service.get_archived_conversation_ids(
+                db, entity_id=session.entity_id
+            )
+
             candidates = await memory_service.search_memories(
                 query=user_message,
                 exclude_conversation_id=session.conversation_id,
@@ -310,6 +323,9 @@ class SessionManager:
             )
 
             for candidate in candidates:
+                # Skip memories from archived conversations
+                if candidate.get("conversation_id") in archived_ids:
+                    continue
                 mem_data = await memory_service.get_full_memory_content(candidate["id"], db)
                 if mem_data:
                     memory = MemoryEntry(

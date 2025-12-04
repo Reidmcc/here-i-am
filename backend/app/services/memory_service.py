@@ -1,11 +1,11 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 from pinecone import Pinecone
 from anthropic import AsyncAnthropic
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from app.config import settings
-from app.models import Message, ConversationMemoryLink
+from app.models import Message, ConversationMemoryLink, Conversation
 import numpy as np
 
 
@@ -339,6 +339,29 @@ class MemoryService:
             select(ConversationMemoryLink.message_id)
             .where(ConversationMemoryLink.conversation_id == conversation_id)
         )
+        return set(row[0] for row in result.fetchall())
+
+    async def get_archived_conversation_ids(
+        self,
+        db: AsyncSession,
+        entity_id: Optional[str] = None,
+    ) -> Set[str]:
+        """
+        Get IDs of all archived conversations.
+
+        Used to filter out memories from archived conversations during retrieval.
+
+        Args:
+            db: Database session
+            entity_id: Optional entity filter. If provided, only returns archived
+                       conversations for that entity.
+        """
+        query = select(Conversation.id).where(Conversation.is_archived == True)
+
+        if entity_id is not None:
+            query = query.where(Conversation.entity_id == entity_id)
+
+        result = await db.execute(query)
         return set(row[0] for row in result.fetchall())
 
     async def delete_memory(self, message_id: str, entity_id: Optional[str] = None) -> bool:

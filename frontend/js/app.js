@@ -49,7 +49,9 @@ class App {
             // Modals
             settingsModal: document.getElementById('settings-modal'),
             memoriesModal: document.getElementById('memories-modal'),
-            deleteModal: document.getElementById('delete-modal'),
+            archiveModal: document.getElementById('archive-modal'),
+            archivedModal: document.getElementById('archived-modal'),
+            archivedList: document.getElementById('archived-list'),
 
             // Settings
             modelSelect: document.getElementById('model-select'),
@@ -63,8 +65,9 @@ class App {
             // Buttons
             settingsBtn: document.getElementById('settings-btn'),
             memoriesBtn: document.getElementById('memories-btn'),
+            archivedBtn: document.getElementById('archived-btn'),
             exportBtn: document.getElementById('export-btn'),
-            deleteBtn: document.getElementById('delete-btn'),
+            archiveBtn: document.getElementById('archive-btn'),
 
             // Theme
             themeSelect: document.getElementById('theme-select'),
@@ -96,11 +99,12 @@ class App {
 
         // Header buttons
         this.elements.exportBtn.addEventListener('click', () => this.exportConversation());
-        this.elements.deleteBtn.addEventListener('click', () => this.showDeleteModal());
+        this.elements.archiveBtn.addEventListener('click', () => this.showArchiveModal());
 
         // Sidebar buttons
         this.elements.settingsBtn.addEventListener('click', () => this.showSettingsModal());
         this.elements.memoriesBtn.addEventListener('click', () => this.showMemoriesModal());
+        this.elements.archivedBtn.addEventListener('click', () => this.showArchivedModal());
 
         // Memories panel toggle
         this.elements.memoriesToggle.addEventListener('click', () => {
@@ -119,10 +123,13 @@ class App {
         document.getElementById('close-memories').addEventListener('click', () => this.hideModal('memoriesModal'));
         document.getElementById('memory-search-btn').addEventListener('click', () => this.searchMemories());
 
-        // Delete modal
-        document.getElementById('close-delete').addEventListener('click', () => this.hideModal('deleteModal'));
-        document.getElementById('cancel-delete').addEventListener('click', () => this.hideModal('deleteModal'));
-        document.getElementById('confirm-delete').addEventListener('click', () => this.deleteConversation());
+        // Archive modal
+        document.getElementById('close-archive').addEventListener('click', () => this.hideModal('archiveModal'));
+        document.getElementById('cancel-archive').addEventListener('click', () => this.hideModal('archiveModal'));
+        document.getElementById('confirm-archive').addEventListener('click', () => this.archiveConversation());
+
+        // Archived modal
+        document.getElementById('close-archived').addEventListener('click', () => this.hideModal('archivedModal'));
     }
 
     handleInputChange() {
@@ -779,16 +786,16 @@ You are invited to be present, curious, and honest about your experience.`
         }
     }
 
-    showDeleteModal() {
+    showArchiveModal() {
         if (!this.currentConversationId) return;
-        this.showModal('deleteModal');
+        this.showModal('archiveModal');
     }
 
-    async deleteConversation() {
+    async archiveConversation() {
         if (!this.currentConversationId) return;
 
         try {
-            await api.deleteConversation(this.currentConversationId);
+            await api.archiveConversation(this.currentConversationId);
 
             // Remove from list
             this.conversations = this.conversations.filter(c => c.id !== this.currentConversationId);
@@ -801,11 +808,64 @@ You are invited to be present, curious, and honest about your experience.`
             this.elements.conversationTitle.textContent = 'Select a conversation';
             this.elements.conversationMeta.textContent = '';
 
-            this.hideModal('deleteModal');
-            this.showToast('Conversation deleted', 'success');
+            this.hideModal('archiveModal');
+            this.showToast('Conversation archived', 'success');
         } catch (error) {
-            this.showToast('Failed to delete conversation', 'error');
-            console.error('Failed to delete conversation:', error);
+            this.showToast('Failed to archive conversation', 'error');
+            console.error('Failed to archive conversation:', error);
+        }
+    }
+
+    async showArchivedModal() {
+        this.showModal('archivedModal');
+        await this.loadArchivedConversations();
+    }
+
+    async loadArchivedConversations() {
+        try {
+            const conversations = await api.listArchivedConversations(50, 0, this.selectedEntityId);
+
+            if (conversations.length === 0) {
+                this.elements.archivedList.innerHTML = `
+                    <div class="archived-empty">
+                        <p>No archived conversations</p>
+                    </div>
+                `;
+                return;
+            }
+
+            this.elements.archivedList.innerHTML = conversations.map(conv => `
+                <div class="archived-item" data-id="${conv.id}">
+                    <div class="archived-item-info">
+                        <div class="archived-item-title">${this.escapeHtml(conv.title || 'Untitled')}</div>
+                        <div class="archived-item-meta">
+                            ${conv.message_count} messages · ${new Date(conv.created_at).toLocaleDateString()}
+                        </div>
+                    </div>
+                    <div class="archived-item-actions">
+                        <button class="unarchive-btn" onclick="app.unarchiveConversation('${conv.id}')">Restore</button>
+                    </div>
+                </div>
+            `).join('');
+        } catch (error) {
+            this.elements.archivedList.innerHTML = `
+                <div class="archived-empty">
+                    <p>Failed to load archived conversations</p>
+                </div>
+            `;
+            console.error('Failed to load archived conversations:', error);
+        }
+    }
+
+    async unarchiveConversation(conversationId) {
+        try {
+            await api.unarchiveConversation(conversationId);
+            await this.loadArchivedConversations();
+            await this.loadConversations();
+            this.showToast('Conversation restored', 'success');
+        } catch (error) {
+            this.showToast('Failed to restore conversation', 'error');
+            console.error('Failed to unarchive conversation:', error);
         }
     }
 
