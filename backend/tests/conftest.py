@@ -75,7 +75,7 @@ def test_settings():
         debug=False,
         retrieval_top_k=5,
         similarity_threshold=0.7,
-        default_model="claude-sonnet-4-5-latest",
+        default_model="claude-sonnet-4-5-20250929",
         default_openai_model="gpt-4o",
         default_temperature=1.0,
         default_max_tokens=4096,
@@ -124,7 +124,7 @@ async def sample_conversation(db_session, sample_conversation_id) -> Conversatio
         id=sample_conversation_id,
         title="Test Conversation",
         conversation_type=ConversationType.NORMAL,
-        model_used="claude-sonnet-4-5-latest",
+        model_used="claude-sonnet-4-5-20250929",
         entity_id="test-memories",
     )
     db_session.add(conversation)
@@ -168,7 +168,7 @@ def mock_anthropic_client():
     # Mock messages.create response
     mock_response = MagicMock()
     mock_response.content = [MagicMock(text="This is a test response from Claude.")]
-    mock_response.model = "claude-sonnet-4-5-latest"
+    mock_response.model = "claude-sonnet-4-5-20250929"
     mock_response.usage.input_tokens = 100
     mock_response.usage.output_tokens = 50
     mock_response.stop_reason = "end_turn"

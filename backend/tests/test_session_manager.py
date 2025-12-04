@@ -53,7 +53,7 @@ class TestConversationSession:
         """Test creating a ConversationSession."""
         session = ConversationSession(
             conversation_id="conv-123",
-            model="claude-sonnet-4-5-latest",
+            model="claude-sonnet-4-5-20250929",
             temperature=0.8,
             max_tokens=2000,
             system_prompt="You are helpful.",
@@ -61,7 +61,7 @@ class TestConversationSession:
         )
 
         assert session.conversation_id == "conv-123"
-        assert session.model == "claude-sonnet-4-5-latest"
+        assert session.model == "claude-sonnet-4-5-20250929"
         assert session.temperature == 0.8
         assert session.max_tokens == 2000
         assert session.system_prompt == "You are helpful."
@@ -175,7 +175,7 @@ class TestSessionManager:
         manager = SessionManager()
 
         with patch("app.services.session_manager.settings") as mock_settings:
-            mock_settings.default_model = "claude-sonnet-4-5-latest"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 4096
 
@@ -189,20 +189,20 @@ class TestSessionManager:
         manager = SessionManager()
 
         with patch("app.services.session_manager.settings") as mock_settings:
-            mock_settings.default_model = "claude-sonnet-4-5-latest"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 4096
 
             session = manager.create_session(
                 conversation_id="conv-123",
-                model="claude-opus-4-latest",
+                model="claude-opus-4-20250514",
                 temperature=0.5,
                 max_tokens=2000,
                 system_prompt="Be helpful",
                 entity_id="custom-entity",
             )
 
-        assert session.model == "claude-opus-4-latest"
+        assert session.model == "claude-opus-4-20250514"
         assert session.temperature == 0.5
         assert session.max_tokens == 2000
         assert session.system_prompt == "Be helpful"
@@ -218,7 +218,7 @@ class TestSessionManager:
             mock_entity.model_provider = "openai"
             mock_settings.get_entity_by_index.return_value = mock_entity
             mock_settings.get_default_model_for_provider.return_value = "gpt-4o"
-            mock_settings.default_model = "claude-sonnet-4-5-latest"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 4096
 
@@ -234,7 +234,7 @@ class TestSessionManager:
         manager = SessionManager()
 
         with patch("app.services.session_manager.settings") as mock_settings:
-            mock_settings.default_model = "claude-sonnet-4-5-latest"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 4096
 
@@ -256,7 +256,7 @@ class TestSessionManager:
         manager = SessionManager()
 
         with patch("app.services.session_manager.settings") as mock_settings:
-            mock_settings.default_model = "claude-sonnet-4-5-latest"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 4096
 
@@ -281,7 +281,7 @@ class TestSessionManager:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
-            mock_settings.default_model = "claude-sonnet-4-5-latest"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 4096
             mock_settings.get_entity_by_index.return_value = None
@@ -327,7 +327,7 @@ class TestSessionManager:
                 "created_at": "2024-01-01T12:00:00",
                 "times_retrieved": 3,
             })
-            mock_settings.default_model = "claude-sonnet-4-5-latest"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 4096
             mock_settings.get_entity_by_index.return_value = None
@@ -354,11 +354,11 @@ class TestSessionManager:
             ]
             mock_llm.send_message = AsyncMock(return_value={
                 "content": "Hi there!",
-                "model": "claude-sonnet-4-5-latest",
+                "model": "claude-sonnet-4-5-20250929",
                 "usage": {"input_tokens": 10, "output_tokens": 5},
                 "stop_reason": "end_turn",
             })
-            mock_settings.default_model = "claude-sonnet-4-5-latest"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 4096
 
@@ -404,12 +404,12 @@ class TestSessionManager:
             ]
             mock_llm.send_message = AsyncMock(return_value={
                 "content": "Response with memory",
-                "model": "claude-sonnet-4-5-latest",
+                "model": "claude-sonnet-4-5-20250929",
                 "usage": {"input_tokens": 50, "output_tokens": 20},
                 "stop_reason": "end_turn",
             })
 
-            mock_settings.default_model = "claude-sonnet-4-5-latest"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 4096
 
@@ -452,12 +452,12 @@ class TestSessionManager:
             mock_llm.build_messages_with_memories.return_value = []
             mock_llm.send_message = AsyncMock(return_value={
                 "content": "Response",
-                "model": "claude-sonnet-4-5-latest",
+                "model": "claude-sonnet-4-5-20250929",
                 "usage": {"input_tokens": 10, "output_tokens": 5},
                 "stop_reason": "end_turn",
             })
 
-            mock_settings.default_model = "claude-sonnet-4-5-latest"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 4096
 

@@ -13,11 +13,11 @@ class TestModelProviderMapping:
     def test_claude_models_map_to_anthropic(self):
         """Test that Claude models map to Anthropic provider."""
         claude_models = [
-            "claude-sonnet-4-5-latest",
-            "claude-opus-4-5-latest",
-            "claude-haiku-4-5-latest",
-            "claude-sonnet-4-latest",
-            "claude-opus-4-latest",
+            "claude-sonnet-4-5-20250929",
+            "claude-opus-4-5-20251101",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-20250514",
+            "claude-opus-4-20250514",
         ]
 
         for model in claude_models:
@@ -45,7 +45,7 @@ class TestLLMService:
         """Test get_provider_for_model with known models."""
         service = LLMService()
 
-        assert service.get_provider_for_model("claude-sonnet-4-5-latest") == ModelProvider.ANTHROPIC
+        assert service.get_provider_for_model("claude-sonnet-4-5-20250929") == ModelProvider.ANTHROPIC
         assert service.get_provider_for_model("gpt-4o") == ModelProvider.OPENAI
 
     def test_get_provider_for_unknown_model(self):
@@ -83,7 +83,7 @@ class TestLLMService:
         with patch("app.services.llm_service.settings") as mock_settings, \
              patch("app.services.llm_service.openai_service") as mock_openai:
             mock_settings.anthropic_api_key = "test-key"
-            mock_settings.default_model = "claude-sonnet-4-5-latest"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_openai_model = "gpt-4o"
             mock_openai.is_configured.return_value = True
 
@@ -105,7 +105,7 @@ class TestLLMService:
         with patch("app.services.llm_service.settings") as mock_settings, \
              patch("app.services.llm_service.openai_service") as mock_openai:
             mock_settings.anthropic_api_key = "test-key"
-            mock_settings.default_model = "claude-sonnet-4-5-latest"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_openai.is_configured.return_value = False
 
             providers = service.get_available_providers()
@@ -120,7 +120,7 @@ class TestLLMService:
         with patch("app.services.llm_service.settings") as mock_settings, \
              patch("app.services.llm_service.openai_service") as mock_openai:
             mock_settings.anthropic_api_key = "test-key"
-            mock_settings.default_model = "claude-sonnet-4-5-latest"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_openai_model = "gpt-4o"
             mock_openai.is_configured.return_value = True
 
@@ -158,13 +158,13 @@ class TestLLMService:
             mock_settings.anthropic_api_key = "test-key"
             mock_anthropic.send_message = AsyncMock(return_value={
                 "content": "Response",
-                "model": "claude-sonnet-4-5-latest",
+                "model": "claude-sonnet-4-5-20250929",
                 "usage": {"input_tokens": 10, "output_tokens": 20},
                 "stop_reason": "end_turn",
             })
 
             messages = [{"role": "user", "content": "Hello"}]
-            result = await service.send_message(messages, model="claude-sonnet-4-5-latest")
+            result = await service.send_message(messages, model="claude-sonnet-4-5-20250929")
 
             mock_anthropic.send_message.assert_called_once()
             assert result["content"] == "Response"
@@ -250,7 +250,7 @@ class TestLLMService:
             messages = [{"role": "user", "content": "Hello"}]
 
             with pytest.raises(ValueError, match="not configured"):
-                await service.send_message(messages, model="claude-sonnet-4-5-latest")
+                await service.send_message(messages, model="claude-sonnet-4-5-20250929")
 
     def test_build_messages_with_memories(self, sample_memories, sample_conversation_context):
         """Test build_messages_with_memories delegates to anthropic_service."""
@@ -284,7 +284,7 @@ class TestAvailableModels:
         assert len(models) > 0
 
         model_ids = [m["id"] for m in models]
-        assert "claude-sonnet-4-5-latest" in model_ids
+        assert "claude-sonnet-4-5-20250929" in model_ids
 
     def test_openai_models_defined(self):
         """Test that OpenAI models are defined."""

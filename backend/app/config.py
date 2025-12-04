@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     pinecone_index_name: str = "memories"  # Default/fallback index
 
     # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, model_provider, default_model)
-    # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "model_provider": "anthropic", "default_model": "claude-sonnet-4-5-latest"}]'
+    # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "model_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'
     pinecone_indexes: str = ""
 
     # Database
@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     reflection_exclude_recent_conversations: int = 0
 
     # API defaults
-    default_model: str = "claude-sonnet-4-5-latest"  # Default Anthropic model
+    default_model: str = "claude-sonnet-4-5-20250929"  # Default Anthropic model
     default_openai_model: str = "gpt-4o"  # Default OpenAI model
     default_temperature: float = 1.0
     default_max_tokens: int = 4096
