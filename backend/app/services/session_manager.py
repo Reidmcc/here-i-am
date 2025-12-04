@@ -1,4 +1,4 @@
-from typing import Dict, List, Set, Optional, Any
+from typing import Dict, List, Set, Optional, Any, AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -279,6 +279,98 @@ class SessionManager:
             ],
             "total_memories_in_context": len(session.session_memories),
         }
+
+    async def process_message_stream(
+        self,
+        session: ConversationSession,
+        user_message: str,
+        db: AsyncSession,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Process a user message through the full pipeline with streaming response.
+
+        This performs memory retrieval first, then streams the LLM response.
+
+        Yields events:
+        - {"type": "memories", "new_memories": [...], "total_in_context": int}
+        - {"type": "start", "model": str}
+        - {"type": "token", "content": str}
+        - {"type": "done", "content": str, "model": str, "usage": dict, "stop_reason": str}
+        - {"type": "error", "error": str}
+        """
+        new_memories = []
+
+        # Step 1-2: Retrieve and deduplicate memories
+        if memory_service.is_configured():
+            candidates = await memory_service.search_memories(
+                query=user_message,
+                exclude_conversation_id=session.conversation_id,
+                exclude_ids=session.retrieved_ids,
+                entity_id=session.entity_id,
+            )
+
+            for candidate in candidates:
+                mem_data = await memory_service.get_full_memory_content(candidate["id"], db)
+                if mem_data:
+                    memory = MemoryEntry(
+                        id=mem_data["id"],
+                        conversation_id=mem_data["conversation_id"],
+                        role=mem_data["role"],
+                        content=mem_data["content"],
+                        created_at=mem_data["created_at"],
+                        times_retrieved=mem_data["times_retrieved"],
+                        score=candidate["score"],
+                    )
+
+                    if session.add_memory(memory):
+                        new_memories.append(memory)
+                        await memory_service.update_retrieval_count(
+                            memory.id,
+                            session.conversation_id,
+                            db,
+                            entity_id=session.entity_id,
+                        )
+
+        # Yield memory info event before starting stream
+        yield {
+            "type": "memories",
+            "new_memories": [
+                {
+                    "id": m.id,
+                    "content_preview": m.content[:200] if len(m.content) > 200 else m.content,
+                    "created_at": m.created_at,
+                    "times_retrieved": m.times_retrieved + 1,
+                    "score": m.score,
+                }
+                for m in new_memories
+            ],
+            "total_in_context": len(session.session_memories),
+        }
+
+        # Step 3: Build API messages
+        memories_for_injection = session.get_memories_for_injection()
+        messages = llm_service.build_messages_with_memories(
+            memories=memories_for_injection,
+            conversation_context=session.conversation_context,
+            current_message=user_message,
+            model=session.model,
+        )
+
+        # Step 4: Stream LLM response
+        full_content = ""
+        async for event in llm_service.send_message_stream(
+            messages=messages,
+            model=session.model,
+            system_prompt=session.system_prompt,
+            temperature=session.temperature,
+            max_tokens=session.max_tokens,
+        ):
+            if event["type"] == "token":
+                full_content += event["content"]
+            elif event["type"] == "done":
+                # Update conversation context with the full exchange
+                session.add_exchange(user_message, full_content)
+            yield event
 
     def close_session(self, conversation_id: str):
         """Remove a session from active sessions."""

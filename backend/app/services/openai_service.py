@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, AsyncIterator
 from openai import AsyncOpenAI
 from app.config import settings
 import tiktoken
@@ -92,6 +92,86 @@ class OpenAIService:
             },
             "stop_reason": response.choices[0].finish_reason,
         }
+
+    async def send_message_stream(
+        self,
+        messages: List[Dict[str, str]],
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Send a message to OpenAI API with streaming response.
+
+        Yields events with type and data:
+        - {"type": "start", "model": str}
+        - {"type": "token", "content": str}
+        - {"type": "done", "content": str, "model": str, "usage": dict, "stop_reason": str}
+        - {"type": "error", "error": str}
+        """
+        client = self._ensure_client()
+
+        model = model or settings.default_openai_model
+        temperature = temperature if temperature is not None else settings.default_temperature
+        max_tokens = max_tokens or settings.default_max_tokens
+
+        # Build messages list with optional system prompt
+        api_messages = []
+        if system_prompt:
+            api_messages.append({"role": "system", "content": system_prompt})
+
+        for msg in messages:
+            api_messages.append({"role": msg["role"], "content": msg["content"]})
+
+        try:
+            # Yield start event
+            yield {"type": "start", "model": model}
+
+            full_content = ""
+            stop_reason = None
+
+            # Request stream with usage info
+            stream = await client.chat.completions.create(
+                model=model,
+                messages=api_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+
+            input_tokens = 0
+            output_tokens = 0
+
+            async for chunk in stream:
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        full_content += delta.content
+                        yield {"type": "token", "content": delta.content}
+                    if chunk.choices[0].finish_reason:
+                        stop_reason = chunk.choices[0].finish_reason
+
+                # Usage info comes in the final chunk
+                if chunk.usage:
+                    input_tokens = chunk.usage.prompt_tokens
+                    output_tokens = chunk.usage.completion_tokens
+
+            # Yield final done event
+            yield {
+                "type": "done",
+                "content": full_content,
+                "model": model,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                },
+                "stop_reason": stop_reason,
+            }
+
+        except Exception as e:
+            yield {"type": "error", "error": str(e)}
 
     def build_messages_with_memories(
         self,

@@ -1,6 +1,8 @@
 from typing import Optional, List
 from datetime import datetime
+import json
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -153,6 +155,147 @@ async def send_message(
         ],
         total_memories_in_context=response["total_memories_in_context"],
         message_id=assistant_msg.id,
+    )
+
+
+@router.post("/stream")
+async def stream_message(
+    data: ChatRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Send a message with streaming response via Server-Sent Events.
+
+    Returns SSE stream with events:
+    - event: memories - Memory retrieval info
+    - event: start - Stream starting with model info
+    - event: token - Individual token
+    - event: done - Complete response with usage stats
+    - event: stored - Message IDs after storage
+    - event: error - Error occurred
+    """
+    # Get or create session
+    session = session_manager.get_session(data.conversation_id)
+
+    if not session:
+        session = await session_manager.load_session_from_db(data.conversation_id, db)
+        if not session:
+            async def error_stream():
+                yield f"event: error\ndata: {json.dumps({'error': 'Conversation not found'})}\n\n"
+            return StreamingResponse(
+                error_stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                }
+            )
+
+    # Apply any overrides
+    if data.model:
+        session.model = data.model
+    if data.temperature is not None:
+        session.temperature = data.temperature
+    if data.max_tokens:
+        session.max_tokens = data.max_tokens
+    if data.system_prompt is not None:
+        session.system_prompt = data.system_prompt
+
+    async def generate_stream():
+        """Generate SSE stream from session processing."""
+        full_content = ""
+        model_used = session.model
+        usage_data = {}
+        stop_reason = None
+
+        try:
+            async for event in session_manager.process_message_stream(
+                session=session,
+                user_message=data.message,
+                db=db,
+            ):
+                event_type = event.get("type")
+
+                if event_type == "memories":
+                    yield f"event: memories\ndata: {json.dumps(event)}\n\n"
+                elif event_type == "start":
+                    model_used = event.get("model", model_used)
+                    yield f"event: start\ndata: {json.dumps(event)}\n\n"
+                elif event_type == "token":
+                    full_content += event.get("content", "")
+                    yield f"event: token\ndata: {json.dumps(event)}\n\n"
+                elif event_type == "done":
+                    full_content = event.get("content", full_content)
+                    model_used = event.get("model", model_used)
+                    usage_data = event.get("usage", {})
+                    stop_reason = event.get("stop_reason")
+                    yield f"event: done\ndata: {json.dumps(event)}\n\n"
+                elif event_type == "error":
+                    yield f"event: error\ndata: {json.dumps(event)}\n\n"
+                    return
+
+            # Store messages in database after streaming completes
+            human_msg = Message(
+                conversation_id=data.conversation_id,
+                role=MessageRole.HUMAN,
+                content=data.message,
+                token_count=llm_service.count_tokens(data.message),
+            )
+            db.add(human_msg)
+
+            assistant_msg = Message(
+                conversation_id=data.conversation_id,
+                role=MessageRole.ASSISTANT,
+                content=full_content,
+                token_count=llm_service.count_tokens(full_content),
+            )
+            db.add(assistant_msg)
+
+            # Update conversation timestamp
+            result = await db.execute(
+                select(Conversation).where(Conversation.id == data.conversation_id)
+            )
+            conversation = result.scalar_one()
+            conversation.updated_at = datetime.utcnow()
+
+            await db.commit()
+            await db.refresh(human_msg)
+            await db.refresh(assistant_msg)
+
+            # Store messages as memories in vector database
+            if memory_service.is_configured():
+                await memory_service.store_memory(
+                    message_id=human_msg.id,
+                    conversation_id=data.conversation_id,
+                    role="human",
+                    content=data.message,
+                    created_at=human_msg.created_at,
+                    entity_id=session.entity_id,
+                )
+                await memory_service.store_memory(
+                    message_id=assistant_msg.id,
+                    conversation_id=data.conversation_id,
+                    role="assistant",
+                    content=full_content,
+                    created_at=assistant_msg.created_at,
+                    entity_id=session.entity_id,
+                )
+
+            # Send stored event with message IDs
+            yield f"event: stored\ndata: {json.dumps({'human_message_id': str(human_msg.id), 'assistant_message_id': str(assistant_msg.id)})}\n\n"
+
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
     )
 
 

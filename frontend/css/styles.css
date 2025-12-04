@@ -510,6 +510,28 @@ html, body {
     40% { transform: translateY(-6px); }
 }
 
+/* Streaming Message */
+.message-bubble.streaming {
+    position: relative;
+}
+
+.message-bubble.streaming .message-content {
+    display: inline;
+}
+
+.streaming-cursor {
+    display: inline;
+    color: var(--accent);
+    animation: blink 0.8s infinite;
+    font-weight: normal;
+    margin-left: 1px;
+}
+
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}
+
 /* Input Area */
 .input-area {
     padding: 16px 24px;
