@@ -7,9 +7,7 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.models import Conversation, Message, MessageRole
-from app.services.session_manager import session_manager
-from app.services.memory_service import memory_service
-from app.services.llm_service import llm_service
+from app.services import session_manager, memory_service, llm_service
 from app.config import settings
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])

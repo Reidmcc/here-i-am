@@ -9,8 +9,7 @@ configuration.
 from typing import Optional, List, Dict, Any
 from enum import Enum
 
-from app.services.anthropic_service import anthropic_service
-from app.services.openai_service import openai_service
+from app.services import anthropic_service, openai_service
 from app.config import settings
 
 

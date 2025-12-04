@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.models import Message, MessageRole, Conversation
-from app.services.memory_service import memory_service
+from app.services import memory_service
 from app.config import settings
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
