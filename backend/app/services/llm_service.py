@@ -28,13 +28,6 @@ MODEL_PROVIDER_MAP = {
     # Anthropic Claude 4 models
     "claude-sonnet-4-latest": ModelProvider.ANTHROPIC,
     "claude-opus-4-latest": ModelProvider.ANTHROPIC,
-    # Anthropic Claude 3.5 models
-    "claude-3-5-sonnet-latest": ModelProvider.ANTHROPIC,
-    "claude-3-5-haiku-latest": ModelProvider.ANTHROPIC,
-    # Anthropic Claude 3 models
-    "claude-3-opus-latest": ModelProvider.ANTHROPIC,
-    "claude-3-sonnet-20240229": ModelProvider.ANTHROPIC,
-    "claude-3-haiku-20240307": ModelProvider.ANTHROPIC,
     # OpenAI GPT models
     "gpt-4o": ModelProvider.OPENAI,
     "gpt-4o-mini": ModelProvider.OPENAI,
@@ -55,8 +48,6 @@ AVAILABLE_MODELS = {
         {"id": "claude-haiku-4-5-latest", "name": "Claude Haiku 4.5"},
         {"id": "claude-sonnet-4-latest", "name": "Claude Sonnet 4"},
         {"id": "claude-opus-4-latest", "name": "Claude Opus 4"},
-        {"id": "claude-3-5-sonnet-latest", "name": "Claude 3.5 Sonnet"},
-        {"id": "claude-3-5-haiku-latest", "name": "Claude 3.5 Haiku"},
     ],
     ModelProvider.OPENAI: [
         {"id": "gpt-4o", "name": "GPT-4o"},

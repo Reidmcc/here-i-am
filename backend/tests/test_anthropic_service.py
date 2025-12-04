@@ -123,13 +123,13 @@ class TestAnthropicService:
         messages = [{"role": "user", "content": "Hello!"}]
         await service.send_message(
             messages,
-            model="claude-3-opus-latest",
+            model="claude-opus-4-latest",
             temperature=0.5,
             max_tokens=2000,
         )
 
         call_kwargs = mock_anthropic_client.messages.create.call_args.kwargs
-        assert call_kwargs["model"] == "claude-3-opus-latest"
+        assert call_kwargs["model"] == "claude-opus-4-latest"
         assert call_kwargs["temperature"] == 0.5
         assert call_kwargs["max_tokens"] == 2000
 

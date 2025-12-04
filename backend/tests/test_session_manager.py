@@ -195,14 +195,14 @@ class TestSessionManager:
 
             session = manager.create_session(
                 conversation_id="conv-123",
-                model="claude-3-opus-latest",
+                model="claude-opus-4-latest",
                 temperature=0.5,
                 max_tokens=2000,
                 system_prompt="Be helpful",
                 entity_id="custom-entity",
             )
 
-        assert session.model == "claude-3-opus-latest"
+        assert session.model == "claude-opus-4-latest"
         assert session.temperature == 0.5
         assert session.max_tokens == 2000
         assert session.system_prompt == "Be helpful"

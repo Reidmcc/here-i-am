@@ -166,13 +166,13 @@ class TestSettings:
         """Test get_default_model_for_provider for Anthropic."""
         settings = Settings(
             anthropic_api_key="test-key",
-            default_model="claude-3-opus-latest",
+            default_model="claude-opus-4-latest",
             _env_file=None,
         )
 
         model = settings.get_default_model_for_provider("anthropic")
 
-        assert model == "claude-3-opus-latest"
+        assert model == "claude-opus-4-latest"
 
     def test_get_default_model_for_provider_openai(self):
         """Test get_default_model_for_provider for OpenAI."""

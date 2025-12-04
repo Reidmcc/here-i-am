@@ -18,9 +18,6 @@ class TestModelProviderMapping:
             "claude-haiku-4-5-latest",
             "claude-sonnet-4-latest",
             "claude-opus-4-latest",
-            "claude-3-5-sonnet-latest",
-            "claude-3-5-haiku-latest",
-            "claude-3-opus-latest",
         ]
 
         for model in claude_models:
