@@ -65,7 +65,9 @@ class App {
             memoriesBtn: document.getElementById('memories-btn'),
             exportBtn: document.getElementById('export-btn'),
             deleteBtn: document.getElementById('delete-btn'),
-            themeToggleBtn: document.getElementById('theme-toggle-btn'),
+
+            // Theme
+            themeSelect: document.getElementById('theme-select'),
         };
 
         this.init();
@@ -121,9 +123,6 @@ class App {
         document.getElementById('close-delete').addEventListener('click', () => this.hideModal('deleteModal'));
         document.getElementById('cancel-delete').addEventListener('click', () => this.hideModal('deleteModal'));
         document.getElementById('confirm-delete').addEventListener('click', () => this.deleteConversation());
-
-        // Theme toggle
-        this.elements.themeToggleBtn.addEventListener('click', () => this.toggleTheme());
     }
 
     handleInputChange() {
@@ -643,6 +642,7 @@ class App {
         this.elements.maxTokensInput.value = this.settings.maxTokens;
         this.elements.systemPromptInput.value = this.settings.systemPrompt || '';
         this.elements.conversationTypeSelect.value = this.settings.conversationType;
+        this.elements.themeSelect.value = this.getCurrentTheme();
         this.showModal('settingsModal');
     }
 
@@ -652,6 +652,9 @@ class App {
         this.settings.maxTokens = parseInt(this.elements.maxTokensInput.value);
         this.settings.systemPrompt = this.elements.systemPromptInput.value.trim() || null;
         this.settings.conversationType = this.elements.conversationTypeSelect.value;
+
+        // Apply theme
+        this.setTheme(this.elements.themeSelect.value);
 
         this.updateModelIndicator();
         this.hideModal('settingsModal');
@@ -833,38 +836,35 @@ You are invited to be present, curious, and honest about your experience.`
     // Theme management
     loadTheme() {
         const savedTheme = localStorage.getItem('here-i-am-theme');
-        if (savedTheme) {
+        if (savedTheme && savedTheme !== 'system') {
             document.documentElement.classList.remove('theme-light', 'theme-dark');
-            document.documentElement.classList.add(savedTheme);
+            document.documentElement.classList.add(`theme-${savedTheme}`);
         }
-        // If no saved theme, let the CSS @media query handle it (system preference)
+        // If no saved theme or 'system', let the CSS @media query handle it
     }
 
-    toggleTheme() {
-        const root = document.documentElement;
-        const currentTheme = root.classList.contains('theme-light') ? 'light' :
-                            root.classList.contains('theme-dark') ? 'dark' : null;
-
-        // Determine the next theme
-        let nextTheme;
-        if (currentTheme === 'light') {
-            nextTheme = 'dark';
-        } else if (currentTheme === 'dark') {
-            nextTheme = 'light';
-        } else {
-            // No manual theme set - check system preference and toggle opposite
-            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-            nextTheme = prefersDark ? 'light' : 'dark';
+    getCurrentTheme() {
+        const savedTheme = localStorage.getItem('here-i-am-theme');
+        if (savedTheme) {
+            return savedTheme;
         }
+        return 'system';
+    }
 
-        // Apply the new theme
+    setTheme(theme) {
+        const root = document.documentElement;
         root.classList.remove('theme-light', 'theme-dark');
-        root.classList.add(`theme-${nextTheme}`);
 
-        // Save to localStorage
-        localStorage.setItem('here-i-am-theme', `theme-${nextTheme}`);
-
-        this.showToast(`Switched to ${nextTheme} mode`, 'success');
+        if (theme === 'dark') {
+            root.classList.add('theme-dark');
+            localStorage.setItem('here-i-am-theme', 'dark');
+        } else if (theme === 'light') {
+            root.classList.add('theme-light');
+            localStorage.setItem('here-i-am-theme', 'light');
+        } else {
+            // 'system' - remove manual override, use CSS @media query
+            localStorage.setItem('here-i-am-theme', 'system');
+        }
     }
 
     // Utilities
