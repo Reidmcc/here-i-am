@@ -69,6 +69,45 @@ html, body {
     color: var(--text-muted);
 }
 
+/* Entity Selector */
+.entity-selector {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.entity-selector label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.entity-selector select {
+    width: 100%;
+    padding: 8px 12px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+
+.entity-selector select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.entity-description {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 6px;
+    font-style: italic;
+}
+
 .new-conversation-btn {
     margin: 16px;
     padding: 12px 16px;

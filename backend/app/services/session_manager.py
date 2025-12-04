@@ -36,6 +36,7 @@ class ConversationSession:
     temperature: float = field(default_factory=lambda: settings.default_temperature)
     max_tokens: int = field(default_factory=lambda: settings.default_max_tokens)
     system_prompt: Optional[str] = None
+    entity_id: Optional[str] = None  # Pinecone index name for this conversation's entity
 
     # The actual back-and-forth
     conversation_context: List[Dict[str, str]] = field(default_factory=list)
@@ -101,6 +102,7 @@ class SessionManager:
         temperature: float = None,
         max_tokens: int = None,
         system_prompt: Optional[str] = None,
+        entity_id: Optional[str] = None,
     ) -> ConversationSession:
         """Create a new session for a conversation."""
         session = ConversationSession(
@@ -109,6 +111,7 @@ class SessionManager:
             temperature=temperature if temperature is not None else settings.default_temperature,
             max_tokens=max_tokens or settings.default_max_tokens,
             system_prompt=system_prompt,
+            entity_id=entity_id,
         )
         self._sessions[conversation_id] = session
         return session
@@ -136,6 +139,7 @@ class SessionManager:
             conversation_id=conversation_id,
             model=conversation.model_used,
             system_prompt=conversation.system_prompt_used,
+            entity_id=conversation.entity_id,
         )
 
         # Load message history
@@ -200,6 +204,7 @@ class SessionManager:
                 query=user_message,
                 exclude_conversation_id=session.conversation_id,
                 exclude_ids=session.retrieved_ids,
+                entity_id=session.entity_id,
             )
 
             for candidate in candidates:
@@ -222,7 +227,8 @@ class SessionManager:
                         await memory_service.update_retrieval_count(
                             memory.id,
                             session.conversation_id,
-                            db
+                            db,
+                            entity_id=session.entity_id,
                         )
 
         # Step 4: Build API messages

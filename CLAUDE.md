@@ -34,6 +34,7 @@
 3. **Session Memory Accumulator** - Memories persist and accumulate across conversations
 4. **Transparency** - All retrieved memories visible in UI
 5. **Continuity Over Utility** - Supporting AI experience/growth across sessions
+6. **Multi-Entity Support** - Multiple AI entities with separate memory spaces
 
 ### The Memory System (Core Innovation)
 
@@ -45,6 +46,30 @@ This implements a novel **Session Memory Accumulator Pattern**:
 - Memories are retrieved via semantic search (Pinecone)
 - **Significance = times_retrieved × recency_factor ÷ age_factor**
 - What matters is what keeps mattering across conversations
+
+### Multi-Entity System
+
+The application supports multiple AI entities, each with its own:
+- **Separate Pinecone Index** - Isolated memory space per entity
+- **Separate Conversation History** - Conversations are associated with entities
+- **Independent Memory Retrieval** - Each entity only retrieves from its own memories
+
+**Configuration:**
+```bash
+# Single entity (backward compatible)
+PINECONE_INDEX_NAME=memories
+
+# Multiple entities (JSON array)
+PINECONE_INDEXES='[
+  {"index_name": "claude-main", "label": "Claude", "description": "Primary conversational AI"},
+  {"index_name": "claude-research", "label": "Research Claude", "description": "For research explorations"}
+]'
+```
+
+**Use Cases:**
+- Research with multiple AI "personalities" or contexts
+- Parallel experiments with isolated memory spaces
+- Different research phases with separate continuity
 
 ---
 
@@ -63,7 +88,8 @@ here-i-am/
 │   │   ├── routes/            # FastAPI endpoint routers
 │   │   │   ├── conversations.py
 │   │   │   ├── chat.py
-│   │   │   └── memories.py
+│   │   │   ├── memories.py
+│   │   │   └── entities.py
 │   │   ├── services/          # Business logic layer
 │   │   │   ├── anthropic_service.py
 │   │   │   ├── memory_service.py
@@ -242,10 +268,22 @@ ANTHROPIC_API_KEY=sk-ant-...  # Required
 **Optional Variables:**
 ```bash
 PINECONE_API_KEY=...                    # Enables memory system
-PINECONE_INDEX_NAME=memories            # Default index name
+PINECONE_INDEX_NAME=memories            # Default/single index name
+PINECONE_INDEXES='[...]'                # Multiple entities (JSON, see below)
 HERE_I_AM_DATABASE_URL=sqlite+aiosqlite:///./here_i_am.db  # Database URL
 DEBUG=true                              # Development mode
 ```
+
+**Multi-Entity Configuration:**
+```bash
+# To use multiple AI entities with separate memory spaces:
+PINECONE_INDEXES='[
+  {"index_name": "entity-one", "label": "Entity One", "description": "First AI entity"},
+  {"index_name": "entity-two", "label": "Entity Two", "description": "Second AI entity"}
+]'
+```
+
+Note: Each `index_name` must correspond to a pre-created Pinecone index with dimension=1024.
 
 **Important:** Database URL must use the `HERE_I_AM_DATABASE_URL` variable name (aliased from `DATABASE_URL` for compatibility).
 
@@ -445,6 +483,7 @@ conversation_type: Enum (NORMAL, REFLECTION)
 system_prompt_used: Text (nullable)
 model_used: String (default: claude-sonnet-4-20250514)
 notes: Text (nullable)
+entity_id: String (nullable)  # Pinecone index name for this conversation's AI entity
 
 # Relationships
 messages: List[Message]
@@ -522,6 +561,14 @@ retrieved_at: DateTime
 | DELETE | `/api/memories/{id}` | Delete from both stores |
 | GET | `/api/memories/status/health` | Health check |
 
+### Entities
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/entities/` | List all configured entities |
+| GET | `/api/entities/{id}` | Get specific entity |
+| GET | `/api/entities/{id}/status` | Get entity Pinecone connection status |
+
 ### Configuration
 
 | Method | Endpoint | Description |
@@ -536,7 +583,7 @@ retrieved_at: DateTime
 
 **HTML:** Semantic structure with modals
 - Main chat area with message list
-- Sidebar with conversation list
+- Sidebar with entity selector and conversation list
 - Collapsible memories panel
 - Modal dialogs (settings, memories, confirmations)
 - Toast notifications
@@ -581,6 +628,8 @@ retrieved_at: DateTime
 
 **In-Memory State:**
 - `currentConversationId` - Active conversation
+- `selectedEntityId` - Currently selected AI entity
+- `entities` - List of available entities
 - `settings` - Chat configuration (model, temp, etc.)
 - `retrievedMemories` - Map of conversation_id -> memory list
 - `cachedElements` - DOM element references
@@ -589,13 +638,14 @@ retrieved_at: DateTime
 
 ### Key Features
 
-1. **Auto-resizing Textarea** - Grows with content
-2. **Auto-title Generation** - From first message if untitled
-3. **Real-time Memory Panel** - Shows memories as retrieved
-4. **Export to JSON** - Download conversations
-5. **Semantic Memory Search** - Search across all memories
-6. **Toast Notifications** - User feedback system
-7. **Loading States** - Typing indicators, overlays
+1. **Entity Selector** - Switch between AI entities with separate memory spaces
+2. **Auto-resizing Textarea** - Grows with content
+3. **Auto-title Generation** - From first message if untitled
+4. **Real-time Memory Panel** - Shows memories as retrieved
+5. **Export to JSON** - Download conversations
+6. **Semantic Memory Search** - Search within selected entity's memories
+7. **Toast Notifications** - User feedback system
+8. **Loading States** - Typing indicators, overlays
 
 ---
 
@@ -649,8 +699,10 @@ retrieved_at: DateTime
    - 1024-dimensional vectors
 
 10. **Pinecone Index Requirements**
-    - Must be pre-created with dimension=1024
-    - Index name from `PINECONE_INDEX_NAME` env var
+    - All indexes must be pre-created with dimension=1024
+    - Single index: name from `PINECONE_INDEX_NAME` env var
+    - Multiple indexes: configure via `PINECONE_INDEXES` JSON array
+    - Each entity requires its own pre-existing Pinecone index
     - Metadata includes: content, role, timestamp, conversation_id
 
 ### Common Pitfalls
@@ -710,6 +762,7 @@ retrieved_at: DateTime
 - Memory service: `backend/app/services/memory_service.py`
 - Session manager: `backend/app/services/session_manager.py`
 - Memory routes: `backend/app/routes/memories.py`
+- Entity routes: `backend/app/routes/entities.py`
 
 **Chat Pipeline:**
 - Chat routes: `backend/app/routes/chat.py`

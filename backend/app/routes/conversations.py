@@ -17,6 +17,7 @@ class ConversationCreate(BaseModel):
     conversation_type: str = "normal"
     system_prompt: Optional[str] = None
     model: str = "claude-sonnet-4-20250514"
+    entity_id: Optional[str] = None  # Pinecone index name for the AI entity
 
 
 class ConversationUpdate(BaseModel):
@@ -35,6 +36,7 @@ class ConversationResponse(BaseModel):
     system_prompt_used: Optional[str]
     model_used: str
     notes: Optional[str]
+    entity_id: Optional[str] = None  # Pinecone index name for the AI entity
     message_count: int = 0
     preview: Optional[str] = None
 
@@ -64,6 +66,7 @@ class ConversationExport(BaseModel):
     system_prompt_used: Optional[str]
     model_used: str
     notes: Optional[str]
+    entity_id: Optional[str] = None
     messages: List[dict]
 
 
@@ -75,6 +78,7 @@ class SeedConversationImport(BaseModel):
     system_prompt_used: Optional[str] = None
     model_used: str = "claude-sonnet-4-20250514"
     notes: Optional[str] = None
+    entity_id: Optional[str] = None  # Pinecone index name for the AI entity
     messages: List[dict]  # List of {role: str, content: str, times_retrieved?: int}
 
 
@@ -92,6 +96,7 @@ async def create_conversation(
         conversation_type=conv_type,
         system_prompt_used=data.system_prompt,
         model_used=data.model,
+        entity_id=data.entity_id,
     )
 
     db.add(conversation)
@@ -108,6 +113,7 @@ async def create_conversation(
         system_prompt_used=conversation.system_prompt_used,
         model_used=conversation.model_used,
         notes=conversation.notes,
+        entity_id=conversation.entity_id,
         message_count=0,
     )
 
@@ -117,14 +123,27 @@ async def list_conversations(
     db: AsyncSession = Depends(get_db),
     limit: int = 50,
     offset: int = 0,
+    entity_id: Optional[str] = None,
 ):
-    """List all conversations with message counts and previews."""
-    result = await db.execute(
-        select(Conversation)
-        .order_by(Conversation.updated_at.desc().nullsfirst(), Conversation.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-    )
+    """
+    List all conversations with message counts and previews.
+
+    Args:
+        entity_id: Optional filter by AI entity (Pinecone index name).
+                   If not provided, returns all conversations.
+    """
+    query = select(Conversation)
+
+    # Filter by entity_id if provided
+    if entity_id is not None:
+        query = query.where(Conversation.entity_id == entity_id)
+
+    query = query.order_by(
+        Conversation.updated_at.desc().nullsfirst(),
+        Conversation.created_at.desc()
+    ).limit(limit).offset(offset)
+
+    result = await db.execute(query)
     conversations = result.scalars().all()
 
     response = []
@@ -154,6 +173,7 @@ async def list_conversations(
             system_prompt_used=conv.system_prompt_used,
             model_used=conv.model_used,
             notes=conv.notes,
+            entity_id=conv.entity_id,
             message_count=message_count,
             preview=preview,
         ))
@@ -197,6 +217,7 @@ async def get_conversation(
         system_prompt_used=conversation.system_prompt_used,
         model_used=conversation.model_used,
         notes=conversation.notes,
+        entity_id=conversation.entity_id,
         message_count=len(messages),
         preview=preview,
     )
@@ -279,6 +300,7 @@ async def update_conversation(
         system_prompt_used=conversation.system_prompt_used,
         model_used=conversation.model_used,
         notes=conversation.notes,
+        entity_id=conversation.entity_id,
         message_count=message_count,
     )
 
@@ -334,6 +356,7 @@ async def export_conversation(
         system_prompt_used=conversation.system_prompt_used,
         model_used=conversation.model_used,
         notes=conversation.notes,
+        entity_id=conversation.entity_id,
         messages=[
             {
                 "id": msg.id,
@@ -369,6 +392,7 @@ async def import_seed_conversation(
         system_prompt_used=data.system_prompt_used,
         model_used=data.model_used,
         notes=data.notes,
+        entity_id=data.entity_id,
     )
 
     db.add(conversation)
@@ -388,7 +412,7 @@ async def import_seed_conversation(
         db.add(message)
         await db.flush()
 
-        # Store in vector database
+        # Store in vector database for the specified entity
         if memory_service.is_configured():
             success = await memory_service.store_memory(
                 message_id=message.id,
@@ -396,6 +420,7 @@ async def import_seed_conversation(
                 role=role.value,
                 content=message.content,
                 created_at=message.created_at,
+                entity_id=data.entity_id,
             )
             if success:
                 stored_count += 1
@@ -407,4 +432,5 @@ async def import_seed_conversation(
         "conversation_id": conversation.id,
         "message_count": len(data.messages),
         "memories_stored": stored_count,
+        "entity_id": conversation.entity_id,
     }

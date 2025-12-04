@@ -7,6 +7,8 @@ class App {
         // State
         this.currentConversationId = null;
         this.conversations = [];
+        this.entities = [];
+        this.selectedEntityId = null;
         this.settings = {
             model: 'claude-sonnet-4-20250514',
             temperature: 1.0,
@@ -37,6 +39,11 @@ class App {
             tokenCount: document.getElementById('token-count'),
             modelIndicator: document.getElementById('model-indicator'),
 
+            // Entity selector
+            entitySelector: document.getElementById('entity-selector'),
+            entitySelect: document.getElementById('entity-select'),
+            entityDescription: document.getElementById('entity-description'),
+
             // Modals
             settingsModal: document.getElementById('settings-modal'),
             memoriesModal: document.getElementById('memories-modal'),
@@ -63,12 +70,16 @@ class App {
 
     async init() {
         this.bindEvents();
+        await this.loadEntities();
         await this.loadConversations();
         await this.loadConfig();
         this.updateModelIndicator();
     }
 
     bindEvents() {
+        // Entity selector
+        this.elements.entitySelect.addEventListener('change', (e) => this.handleEntityChange(e.target.value));
+
         // Message input
         this.elements.messageInput.addEventListener('input', () => this.handleInputChange());
         this.elements.messageInput.addEventListener('keydown', (e) => this.handleKeyDown(e));
@@ -128,7 +139,8 @@ class App {
 
     async loadConversations() {
         try {
-            this.conversations = await api.listConversations();
+            // Load conversations filtered by current entity
+            this.conversations = await api.listConversations(50, 0, this.selectedEntityId);
             this.renderConversationList();
         } catch (error) {
             this.showToast('Failed to load conversations', 'error');
@@ -145,6 +157,66 @@ class App {
         } catch (error) {
             console.error('Failed to load config:', error);
         }
+    }
+
+    async loadEntities() {
+        try {
+            const response = await api.listEntities();
+            this.entities = response.entities;
+
+            // Render entity selector
+            this.elements.entitySelect.innerHTML = this.entities.map(entity => `
+                <option value="${entity.index_name}" ${entity.is_default ? 'selected' : ''}>
+                    ${this.escapeHtml(entity.label)}
+                </option>
+            `).join('');
+
+            // Set default entity
+            this.selectedEntityId = response.default_entity;
+            this.updateEntityDescription();
+
+            // Hide entity selector if only one entity
+            if (this.entities.length <= 1) {
+                this.elements.entitySelector.style.display = 'none';
+            }
+        } catch (error) {
+            console.error('Failed to load entities:', error);
+            // Hide entity selector on error
+            this.elements.entitySelector.style.display = 'none';
+        }
+    }
+
+    handleEntityChange(entityId) {
+        this.selectedEntityId = entityId;
+        this.updateEntityDescription();
+
+        // Clear current conversation when switching entities
+        this.currentConversationId = null;
+        this.retrievedMemories = [];
+        this.clearMessages();
+        this.elements.conversationTitle.textContent = 'Select a conversation';
+        this.elements.conversationMeta.textContent = '';
+        this.updateMemoriesPanel();
+
+        // Reload conversations for the new entity
+        this.loadConversations();
+
+        this.showToast(`Switched to ${this.getEntityLabel(entityId)}`, 'success');
+    }
+
+    updateEntityDescription() {
+        const entity = this.entities.find(e => e.index_name === this.selectedEntityId);
+        if (entity && entity.description) {
+            this.elements.entityDescription.textContent = entity.description;
+            this.elements.entityDescription.style.display = 'block';
+        } else {
+            this.elements.entityDescription.style.display = 'none';
+        }
+    }
+
+    getEntityLabel(entityId) {
+        const entity = this.entities.find(e => e.index_name === entityId);
+        return entity ? entity.label : entityId;
     }
 
     renderConversationList() {
@@ -184,6 +256,7 @@ class App {
                 model: this.settings.model,
                 system_prompt: this.settings.systemPrompt,
                 conversation_type: this.settings.conversationType,
+                entity_id: this.selectedEntityId,
             });
 
             this.conversations.unshift(conversation);
@@ -364,7 +437,14 @@ class App {
         this.elements.conversationTitle.textContent = conversation.title || 'Untitled Conversation';
 
         const date = new Date(conversation.created_at);
-        const meta = `${conversation.conversation_type} · ${conversation.model_used}`;
+        let meta = `${conversation.conversation_type} · ${conversation.model_used}`;
+
+        // Add entity label if multiple entities exist
+        if (this.entities.length > 1 && conversation.entity_id) {
+            const entityLabel = this.getEntityLabel(conversation.entity_id);
+            meta += ` · ${entityLabel}`;
+        }
+
         this.elements.conversationMeta.textContent = meta;
     }
 
@@ -522,7 +602,8 @@ You are invited to be present, curious, and honest about your experience.`
         if (!query) return;
 
         try {
-            const results = await api.searchMemories(query);
+            // Search within the current entity
+            const results = await api.searchMemories(query, 10, true, this.selectedEntityId);
             const listEl = document.getElementById('memory-list');
 
             if (results.length === 0) {

@@ -3,10 +3,11 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.models import Message, MessageRole
+from app.models import Message, MessageRole, Conversation
 from app.services.memory_service import memory_service
 from app.config import settings
 
@@ -32,6 +33,7 @@ class MemorySearchRequest(BaseModel):
     query: str
     top_k: int = 10
     include_content: bool = True
+    entity_id: Optional[str] = None  # Filter by entity (Pinecone index name)
 
 
 class MemoryStats(BaseModel):
@@ -86,16 +88,25 @@ async def list_memories(
     limit: int = Query(50, le=200),
     offset: int = 0,
     role: Optional[str] = None,
+    entity_id: Optional[str] = None,
     sort_by: str = Query("significance", enum=["significance", "created_at", "times_retrieved"]),
 ):
     """
     List all memories with significance calculation.
+
+    Args:
+        entity_id: Optional filter by AI entity (Pinecone index name).
     """
     query = select(Message)
 
     if role:
         role_enum = MessageRole.HUMAN if role == "human" else MessageRole.ASSISTANT
         query = query.where(Message.role == role_enum)
+
+    # Filter by entity by joining with Conversation
+    if entity_id is not None:
+        query = query.join(Conversation, Message.conversation_id == Conversation.id)
+        query = query.where(Conversation.entity_id == entity_id)
 
     result = await db.execute(query)
     messages = result.scalars().all()
@@ -141,6 +152,9 @@ async def search_memories(
 ):
     """
     Semantic search over memories.
+
+    Args:
+        data.entity_id: Optional filter by AI entity (Pinecone index name).
     """
     if not memory_service.is_configured():
         raise HTTPException(
@@ -148,10 +162,11 @@ async def search_memories(
             detail="Memory system not configured. Set PINECONE_API_KEY in environment."
         )
 
-    # Search vector database
+    # Search vector database for the specified entity
     results = await memory_service.search_memories(
         query=data.query,
         top_k=data.top_k,
+        entity_id=data.entity_id,
     )
 
     # Enrich with full content if requested
@@ -287,17 +302,22 @@ async def delete_memory(
 
     This removes the memory from both the SQL database and vector store.
     """
+    # Get message with its conversation to determine entity_id
     result = await db.execute(
-        select(Message).where(Message.id == memory_id)
+        select(Message, Conversation)
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(Message.id == memory_id)
     )
-    message = result.scalar_one_or_none()
+    row = result.first()
 
-    if not message:
+    if not row:
         raise HTTPException(status_code=404, detail="Memory not found")
 
-    # Delete from vector store
+    message, conversation = row
+
+    # Delete from vector store for the correct entity
     if memory_service.is_configured():
-        await memory_service.delete_memory(memory_id)
+        await memory_service.delete_memory(memory_id, entity_id=conversation.entity_id)
 
     # Delete from SQL
     await db.delete(message)
@@ -308,10 +328,14 @@ async def delete_memory(
 
 @router.get("/status/health")
 async def memory_health():
-    """Check memory system health."""
+    """Check memory system health including entity information."""
+    entities = settings.get_entities()
+    default_entity = settings.get_default_entity()
+
     return {
         "configured": memory_service.is_configured(),
-        "pinecone_index": settings.pinecone_index_name if memory_service.is_configured() else None,
+        "default_index": default_entity.index_name if memory_service.is_configured() else None,
+        "entities": [entity.to_dict() for entity in entities],
         "retrieval_top_k": settings.retrieval_top_k,
         "similarity_threshold": settings.similarity_threshold,
         "recency_boost_strength": settings.recency_boost_strength,
