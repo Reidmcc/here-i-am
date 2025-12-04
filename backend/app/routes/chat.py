@@ -9,7 +9,7 @@ from app.database import get_db
 from app.models import Conversation, Message, MessageRole
 from app.services.session_manager import session_manager
 from app.services.memory_service import memory_service
-from app.services.anthropic_service import anthropic_service
+from app.services.llm_service import llm_service
 from app.config import settings
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -102,7 +102,7 @@ async def send_message(
         conversation_id=data.conversation_id,
         role=MessageRole.HUMAN,
         content=data.message,
-        token_count=anthropic_service.count_tokens(data.message),
+        token_count=llm_service.count_tokens(data.message),
     )
     db.add(human_msg)
 
@@ -111,7 +111,7 @@ async def send_message(
         conversation_id=data.conversation_id,
         role=MessageRole.ASSISTANT,
         content=response["content"],
-        token_count=anthropic_service.count_tokens(response["content"]),
+        token_count=llm_service.count_tokens(response["content"]),
     )
     db.add(assistant_msg)
 
@@ -167,10 +167,13 @@ async def quick_chat(data: QuickChatRequest):
     """
     messages = [{"role": "user", "content": data.message}]
 
-    response = await anthropic_service.send_message(
+    # Use default model if not specified
+    model = data.model or settings.default_model
+
+    response = await llm_service.send_message(
         messages=messages,
+        model=model,
         system_prompt=data.system_prompt,
-        model=data.model,
         temperature=data.temperature,
         max_tokens=data.max_tokens,
     )
@@ -234,18 +237,17 @@ async def close_session(conversation_id: str):
 
 @router.get("/config")
 async def get_chat_config():
-    """Get default chat configuration including available entities."""
+    """Get default chat configuration including available entities and providers."""
     entities = settings.get_entities()
     default_entity = settings.get_default_entity()
 
     return {
         "default_model": settings.default_model,
+        "default_openai_model": settings.default_openai_model,
         "default_temperature": settings.default_temperature,
         "default_max_tokens": settings.default_max_tokens,
-        "available_models": [
-            "claude-sonnet-4-20250514",
-            "claude-opus-4-20250514",
-        ],
+        "providers": llm_service.get_available_providers(),
+        "available_models": llm_service.get_all_available_models(),
         "memory_enabled": memory_service.is_configured(),
         "retrieval_top_k": settings.retrieval_top_k,
         "similarity_threshold": settings.similarity_threshold,

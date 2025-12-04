@@ -53,23 +53,32 @@ The application supports multiple AI entities, each with its own:
 - **Separate Pinecone Index** - Isolated memory space per entity
 - **Separate Conversation History** - Conversations are associated with entities
 - **Independent Memory Retrieval** - Each entity only retrieves from its own memories
+- **Model Provider Configuration** - Each entity can use Anthropic (Claude) or OpenAI (GPT) models
 
 **Configuration:**
 ```bash
 # Single entity (backward compatible)
 PINECONE_INDEX_NAME=memories
 
-# Multiple entities (JSON array)
+# Multiple entities with different model providers (JSON array)
 PINECONE_INDEXES='[
-  {"index_name": "claude-main", "label": "Claude", "description": "Primary conversational AI"},
-  {"index_name": "claude-research", "label": "Research Claude", "description": "For research explorations"}
+  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "model_provider": "anthropic", "default_model": "claude-sonnet-4-20250514"},
+  {"index_name": "gpt-research", "label": "GPT Research", "description": "OpenAI for comparison", "model_provider": "openai", "default_model": "gpt-4o"}
 ]'
 ```
+
+**Entity Configuration Fields:**
+- `index_name`: Pinecone index name (required)
+- `label`: Display name in UI (required)
+- `description`: Optional description
+- `model_provider`: `"anthropic"` or `"openai"` (default: `"anthropic"`)
+- `default_model`: Model ID to use (optional, uses provider default if not set)
 
 **Use Cases:**
 - Research with multiple AI "personalities" or contexts
 - Parallel experiments with isolated memory spaces
 - Different research phases with separate continuity
+- Comparative research between Claude and GPT models
 
 ---
 
@@ -92,6 +101,8 @@ here-i-am/
 │   │   │   └── entities.py
 │   │   ├── services/          # Business logic layer
 │   │   │   ├── anthropic_service.py
+│   │   │   ├── openai_service.py
+│   │   │   ├── llm_service.py     # Unified LLM abstraction
 │   │   │   ├── memory_service.py
 │   │   │   └── session_manager.py
 │   │   ├── config.py          # Pydantic settings
@@ -130,6 +141,7 @@ here-i-am/
 | Server | Uvicorn | 0.27.1 | ASGI server with hot reload |
 | ORM | SQLAlchemy | 2.0.25 | Async database operations |
 | AI Integration | Anthropic SDK | 0.18.1 | Claude API client |
+| AI Integration | OpenAI SDK | 1.12.0 | GPT API client |
 | Vector DB | Pinecone | 3.0.3 | Semantic memory storage |
 | Validation | Pydantic | 2.6.1 | Request/response schemas |
 | Database | aiosqlite / asyncpg | - | SQLite dev / PostgreSQL prod |
@@ -262,11 +274,12 @@ Server runs on `http://localhost:8000` with hot reload enabled.
 
 **Required Variables:**
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...  # Required
+ANTHROPIC_API_KEY=sk-ant-...  # Required for Anthropic/Claude models
 ```
 
 **Optional Variables:**
 ```bash
+OPENAI_API_KEY=sk-...                   # Enables OpenAI/GPT models
 PINECONE_API_KEY=...                    # Enables memory system
 PINECONE_INDEX_NAME=memories            # Default/single index name
 PINECONE_INDEXES='[...]'                # Multiple entities (JSON, see below)
@@ -274,12 +287,12 @@ HERE_I_AM_DATABASE_URL=sqlite+aiosqlite:///./here_i_am.db  # Database URL
 DEBUG=true                              # Development mode
 ```
 
-**Multi-Entity Configuration:**
+**Multi-Entity Configuration with Different Providers:**
 ```bash
-# To use multiple AI entities with separate memory spaces:
+# To use multiple AI entities with separate memory spaces and different model providers:
 PINECONE_INDEXES='[
-  {"index_name": "entity-one", "label": "Entity One", "description": "First AI entity"},
-  {"index_name": "entity-two", "label": "Entity Two", "description": "Second AI entity"}
+  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "model_provider": "anthropic", "default_model": "claude-sonnet-4-20250514"},
+  {"index_name": "gpt-research", "label": "GPT", "description": "OpenAI for comparison", "model_provider": "openai", "default_model": "gpt-4o"}
 ]'
 ```
 
@@ -766,7 +779,9 @@ retrieved_at: DateTime
 
 **Chat Pipeline:**
 - Chat routes: `backend/app/routes/chat.py`
+- LLM service (unified): `backend/app/services/llm_service.py`
 - Anthropic service: `backend/app/services/anthropic_service.py`
+- OpenAI service: `backend/app/services/openai_service.py`
 - Message model: `backend/app/models/message.py`
 
 **Configuration:**
@@ -787,8 +802,9 @@ retrieved_at: DateTime
 ### Key Constants
 
 ```python
-# Default model
-DEFAULT_MODEL = "claude-sonnet-4-20250514"
+# Default models
+DEFAULT_MODEL = "claude-sonnet-4-20250514"  # Anthropic default
+DEFAULT_OPENAI_MODEL = "gpt-4o"  # OpenAI default
 
 # Memory settings (config.py)
 MEMORY_TOP_K = 5  # Memories per retrieval

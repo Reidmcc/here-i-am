@@ -6,27 +6,39 @@ import json
 
 class EntityConfig:
     """Configuration for a single AI entity (Pinecone index)."""
-    def __init__(self, index_name: str, label: str, description: str = ""):
+    def __init__(
+        self,
+        index_name: str,
+        label: str,
+        description: str = "",
+        model_provider: str = "anthropic",
+        default_model: Optional[str] = None,
+    ):
         self.index_name = index_name
         self.label = label
         self.description = description
+        self.model_provider = model_provider  # "anthropic" or "openai"
+        self.default_model = default_model  # If None, uses global default for provider
 
     def to_dict(self):
         return {
             "index_name": self.index_name,
             "label": self.label,
             "description": self.description,
+            "model_provider": self.model_provider,
+            "default_model": self.default_model,
         }
 
 
 class Settings(BaseSettings):
     # API Keys
     anthropic_api_key: str = ""
+    openai_api_key: str = ""
     pinecone_api_key: str = ""
     pinecone_index_name: str = "memories"  # Default/fallback index
 
-    # Multiple Pinecone indexes (JSON array of objects with index_name, label, description)
-    # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity"}]'
+    # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, model_provider, default_model)
+    # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "model_provider": "anthropic", "default_model": "claude-sonnet-4-20250514"}]'
     pinecone_indexes: str = ""
 
     # Database
@@ -52,7 +64,8 @@ class Settings(BaseSettings):
     reflection_exclude_recent_conversations: int = 0
 
     # API defaults
-    default_model: str = "claude-sonnet-4-20250514"
+    default_model: str = "claude-sonnet-4-20250514"  # Default Anthropic model
+    default_openai_model: str = "gpt-4o"  # Default OpenAI model
     default_temperature: float = 1.0
     default_max_tokens: int = 4096
 
@@ -75,6 +88,8 @@ class Settings(BaseSettings):
                         index_name=idx.get("index_name", "memories"),
                         label=idx.get("label", idx.get("index_name", "Default")),
                         description=idx.get("description", ""),
+                        model_provider=idx.get("model_provider", "anthropic"),
+                        default_model=idx.get("default_model"),
                     )
                     for idx in indexes_data
                 ]
@@ -87,8 +102,16 @@ class Settings(BaseSettings):
                 index_name=self.pinecone_index_name,
                 label="Default",
                 description="Default AI entity",
+                model_provider="anthropic",
+                default_model=self.default_model,
             )
         ]
+
+    def get_default_model_for_provider(self, provider: str) -> str:
+        """Get the default model for a given provider."""
+        if provider == "openai":
+            return self.default_openai_model
+        return self.default_model  # anthropic is the default
 
     def get_entity_by_index(self, index_name: str) -> Optional[EntityConfig]:
         """Get an entity configuration by its index name."""

@@ -9,6 +9,8 @@ class App {
         this.conversations = [];
         this.entities = [];
         this.selectedEntityId = null;
+        this.availableModels = [];
+        this.providers = [];
         this.settings = {
             model: 'claude-sonnet-4-20250514',
             temperature: 1.0,
@@ -154,9 +156,41 @@ class App {
             this.settings.model = config.default_model;
             this.settings.temperature = config.default_temperature;
             this.settings.maxTokens = config.default_max_tokens;
+            this.availableModels = config.available_models || [];
+            this.providers = config.providers || [];
+
+            // Update model selector with available models
+            this.updateModelSelector();
         } catch (error) {
             console.error('Failed to load config:', error);
         }
+    }
+
+    updateModelSelector() {
+        if (this.availableModels.length === 0) return;
+
+        // Group models by provider
+        const modelsByProvider = {};
+        this.availableModels.forEach(model => {
+            const provider = model.provider_name || 'Other';
+            if (!modelsByProvider[provider]) {
+                modelsByProvider[provider] = [];
+            }
+            modelsByProvider[provider].push(model);
+        });
+
+        // Build options with optgroups
+        let html = '';
+        for (const [provider, models] of Object.entries(modelsByProvider)) {
+            html += `<optgroup label="${this.escapeHtml(provider)}">`;
+            models.forEach(model => {
+                const selected = model.id === this.settings.model ? 'selected' : '';
+                html += `<option value="${model.id}" ${selected}>${this.escapeHtml(model.name)}</option>`;
+            });
+            html += '</optgroup>';
+        }
+
+        this.elements.modelSelect.innerHTML = html;
     }
 
     async loadEntities() {
@@ -190,6 +224,21 @@ class App {
         this.selectedEntityId = entityId;
         this.updateEntityDescription();
 
+        // Update model to match entity's default
+        const entity = this.entities.find(e => e.index_name === entityId);
+        if (entity) {
+            if (entity.default_model) {
+                this.settings.model = entity.default_model;
+            } else {
+                // Use provider's default model
+                const provider = this.providers.find(p => p.id === entity.model_provider);
+                if (provider) {
+                    this.settings.model = provider.default_model;
+                }
+            }
+            this.updateModelIndicator();
+        }
+
         // Clear current conversation when switching entities
         this.currentConversationId = null;
         this.retrievedMemories = [];
@@ -206,8 +255,23 @@ class App {
 
     updateEntityDescription() {
         const entity = this.entities.find(e => e.index_name === this.selectedEntityId);
-        if (entity && entity.description) {
-            this.elements.entityDescription.textContent = entity.description;
+        if (entity) {
+            // Build description with model info
+            let description = entity.description || '';
+
+            // Add model provider info
+            const providerName = entity.model_provider === 'openai' ? 'OpenAI' : 'Anthropic';
+            const modelInfo = entity.default_model
+                ? `${providerName}: ${entity.default_model}`
+                : providerName;
+
+            if (description) {
+                description += ` (${modelInfo})`;
+            } else {
+                description = modelInfo;
+            }
+
+            this.elements.entityDescription.textContent = description;
             this.elements.entityDescription.style.display = 'block';
         } else {
             this.elements.entityDescription.style.display = 'none';
