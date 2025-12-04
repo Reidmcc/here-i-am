@@ -62,8 +62,8 @@ PINECONE_INDEX_NAME=memories
 
 # Multiple entities with different model providers (JSON array)
 PINECONE_INDEXES='[
-  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "model_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"},
-  {"index_name": "gpt-research", "label": "GPT Research", "description": "OpenAI for comparison", "model_provider": "openai", "default_model": "gpt-4o"}
+  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"},
+  {"index_name": "gpt-research", "label": "GPT Research", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-4o"}
 ]'
 ```
 
@@ -71,7 +71,7 @@ PINECONE_INDEXES='[
 - `index_name`: Pinecone index name (required)
 - `label`: Display name in UI (required)
 - `description`: Optional description
-- `model_provider`: `"anthropic"` or `"openai"` (default: `"anthropic"`)
+- `llm_provider`: `"anthropic"` or `"openai"` (default: `"anthropic"`)
 - `default_model`: Model ID to use (optional, uses provider default if not set)
 
 **Use Cases:**
@@ -291,8 +291,8 @@ DEBUG=true                              # Development mode
 ```bash
 # To use multiple AI entities with separate memory spaces and different model providers:
 PINECONE_INDEXES='[
-  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "model_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"},
-  {"index_name": "gpt-research", "label": "GPT", "description": "OpenAI for comparison", "model_provider": "openai", "default_model": "gpt-4o"}
+  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"},
+  {"index_name": "gpt-research", "label": "GPT", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-4o"}
 ]'
 ```
 
@@ -494,7 +494,7 @@ title: String (nullable)
 tags: JSON
 conversation_type: Enum (NORMAL, REFLECTION)
 system_prompt_used: Text (nullable)
-model_used: String (default: claude-sonnet-4-5-20250929)
+llm_model_used: String (default: claude-sonnet-4-5-20250929)
 notes: Text (nullable)
 entity_id: String (nullable)  # Pinecone index name for this conversation's AI entity
 

@@ -11,13 +11,13 @@ class EntityConfig:
         index_name: str,
         label: str,
         description: str = "",
-        model_provider: str = "anthropic",
+        llm_provider: str = "anthropic",
         default_model: Optional[str] = None,
     ):
         self.index_name = index_name
         self.label = label
         self.description = description
-        self.model_provider = model_provider  # "anthropic" or "openai"
+        self.llm_provider = llm_provider  # "anthropic" or "openai"
         self.default_model = default_model  # If None, uses global default for provider
 
     def to_dict(self):
@@ -25,7 +25,7 @@ class EntityConfig:
             "index_name": self.index_name,
             "label": self.label,
             "description": self.description,
-            "model_provider": self.model_provider,
+            "llm_provider": self.llm_provider,
             "default_model": self.default_model,
         }
 
@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     pinecone_api_key: str = ""
     pinecone_index_name: str = "memories"  # Default/fallback index
 
-    # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, model_provider, default_model)
-    # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "model_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'
+    # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, llm_provider, default_model)
+    # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'
     pinecone_indexes: str = ""
 
     # Database
@@ -88,7 +88,7 @@ class Settings(BaseSettings):
                         index_name=idx.get("index_name", "memories"),
                         label=idx.get("label", idx.get("index_name", "Default")),
                         description=idx.get("description", ""),
-                        model_provider=idx.get("model_provider", "anthropic"),
+                        llm_provider=idx.get("llm_provider", "anthropic"),
                         default_model=idx.get("default_model"),
                     )
                     for idx in indexes_data
@@ -102,7 +102,7 @@ class Settings(BaseSettings):
                 index_name=self.pinecone_index_name,
                 label="Default",
                 description="Default AI entity",
-                model_provider="anthropic",
+                llm_provider="anthropic",
                 default_model=self.default_model,
             )
         ]

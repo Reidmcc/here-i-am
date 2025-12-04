@@ -231,7 +231,7 @@ class App {
                 this.settings.model = entity.default_model;
             } else {
                 // Use provider's default model
-                const provider = this.providers.find(p => p.id === entity.model_provider);
+                const provider = this.providers.find(p => p.id === entity.llm_provider);
                 if (provider) {
                     this.settings.model = provider.default_model;
                 }
@@ -260,7 +260,7 @@ class App {
             let description = entity.description || '';
 
             // Add model provider info
-            const providerName = entity.model_provider === 'openai' ? 'OpenAI' : 'Anthropic';
+            const providerName = entity.llm_provider === 'openai' ? 'OpenAI' : 'Anthropic';
             const modelInfo = entity.default_model
                 ? `${providerName}: ${entity.default_model}`
                 : providerName;
@@ -582,7 +582,7 @@ class App {
         this.elements.conversationTitle.textContent = conversation.title || 'Untitled Conversation';
 
         const date = new Date(conversation.created_at);
-        let meta = `${conversation.conversation_type} · ${conversation.model_used}`;
+        let meta = `${conversation.conversation_type} · ${conversation.llm_model_used}`;
 
         // Add entity label if multiple entities exist
         if (this.entities.length > 1 && conversation.entity_id) {

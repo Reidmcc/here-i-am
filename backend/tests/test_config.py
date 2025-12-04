@@ -15,14 +15,14 @@ class TestEntityConfig:
             index_name="test-index",
             label="Test Entity",
             description="A test entity",
-            model_provider="anthropic",
+            llm_provider="anthropic",
             default_model="claude-sonnet-4-5-20250929",
         )
 
         assert entity.index_name == "test-index"
         assert entity.label == "Test Entity"
         assert entity.description == "A test entity"
-        assert entity.model_provider == "anthropic"
+        assert entity.llm_provider == "anthropic"
         assert entity.default_model == "claude-sonnet-4-5-20250929"
 
     def test_entity_config_defaults(self):
@@ -33,7 +33,7 @@ class TestEntityConfig:
         )
 
         assert entity.description == ""
-        assert entity.model_provider == "anthropic"
+        assert entity.llm_provider == "anthropic"
         assert entity.default_model is None
 
     def test_entity_config_openai_provider(self):
@@ -41,11 +41,11 @@ class TestEntityConfig:
         entity = EntityConfig(
             index_name="gpt-index",
             label="GPT Entity",
-            model_provider="openai",
+            llm_provider="openai",
             default_model="gpt-4o",
         )
 
-        assert entity.model_provider == "openai"
+        assert entity.llm_provider == "openai"
         assert entity.default_model == "gpt-4o"
 
     def test_entity_config_to_dict(self):
@@ -54,7 +54,7 @@ class TestEntityConfig:
             index_name="test-index",
             label="Test Entity",
             description="A test entity",
-            model_provider="anthropic",
+            llm_provider="anthropic",
             default_model="claude-sonnet-4-5-20250929",
         )
 
@@ -64,7 +64,7 @@ class TestEntityConfig:
             "index_name": "test-index",
             "label": "Test Entity",
             "description": "A test entity",
-            "model_provider": "anthropic",
+            "llm_provider": "anthropic",
             "default_model": "claude-sonnet-4-5-20250929",
         }
 
@@ -107,7 +107,7 @@ class TestSettings:
         assert len(entities) == 1
         assert entities[0].index_name == "my-memories"
         assert entities[0].label == "Default"
-        assert entities[0].model_provider == "anthropic"
+        assert entities[0].llm_provider == "anthropic"
 
     def test_get_entities_multiple_from_json(self, test_settings_multi_entity):
         """Test get_entities with multiple entities from JSON."""
@@ -118,12 +118,12 @@ class TestSettings:
         # Check first entity (Claude)
         assert entities[0].index_name == "claude-test"
         assert entities[0].label == "Claude Test"
-        assert entities[0].model_provider == "anthropic"
+        assert entities[0].llm_provider == "anthropic"
 
         # Check second entity (GPT)
         assert entities[1].index_name == "gpt-test"
         assert entities[1].label == "GPT Test"
-        assert entities[1].model_provider == "openai"
+        assert entities[1].llm_provider == "openai"
         assert entities[1].default_model == "gpt-4o"
 
     def test_get_entities_invalid_json_fallback(self):

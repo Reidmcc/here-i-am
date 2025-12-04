@@ -12,7 +12,7 @@ class EntityResponse(BaseModel):
     index_name: str
     label: str
     description: str
-    model_provider: str = "anthropic"
+    llm_provider: str = "anthropic"
     default_model: Optional[str] = None
     is_default: bool = False
 
@@ -39,7 +39,7 @@ async def list_entities():
                 index_name=entity.index_name,
                 label=entity.label,
                 description=entity.description,
-                model_provider=entity.model_provider,
+                llm_provider=entity.llm_provider,
                 default_model=entity.default_model,
                 is_default=(entity.index_name == default_entity.index_name),
             )
@@ -63,7 +63,7 @@ async def get_entity(entity_id: str):
         index_name=entity.index_name,
         label=entity.label,
         description=entity.description,
-        model_provider=entity.model_provider,
+        llm_provider=entity.llm_provider,
         default_model=entity.default_model,
         is_default=(entity.index_name == default_entity.index_name),
     )
