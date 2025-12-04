@@ -21,14 +21,13 @@ class ModelProvider(str, Enum):
 
 # Model to provider mapping
 MODEL_PROVIDER_MAP = {
-    # Anthropic Claude models
-    "claude-sonnet-4-20250514": ModelProvider.ANTHROPIC,
-    "claude-opus-4-20250514": ModelProvider.ANTHROPIC,
-    "claude-3-5-sonnet-20241022": ModelProvider.ANTHROPIC,
-    "claude-3-5-haiku-20241022": ModelProvider.ANTHROPIC,
-    "claude-3-opus-20240229": ModelProvider.ANTHROPIC,
-    "claude-3-sonnet-20240229": ModelProvider.ANTHROPIC,
-    "claude-3-haiku-20240307": ModelProvider.ANTHROPIC,
+    # Anthropic Claude 4.5 models
+    "claude-sonnet-4-5-latest": ModelProvider.ANTHROPIC,
+    "claude-opus-4-5-latest": ModelProvider.ANTHROPIC,
+    "claude-haiku-4-5-latest": ModelProvider.ANTHROPIC,
+    # Anthropic Claude 4 models
+    "claude-sonnet-4-latest": ModelProvider.ANTHROPIC,
+    "claude-opus-4-latest": ModelProvider.ANTHROPIC,
     # OpenAI GPT models
     "gpt-4o": ModelProvider.OPENAI,
     "gpt-4o-mini": ModelProvider.OPENAI,
@@ -44,10 +43,11 @@ MODEL_PROVIDER_MAP = {
 # Available models by provider
 AVAILABLE_MODELS = {
     ModelProvider.ANTHROPIC: [
-        {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"},
-        {"id": "claude-opus-4-20250514", "name": "Claude Opus 4"},
-        {"id": "claude-3-5-sonnet-20241022", "name": "Claude 3.5 Sonnet"},
-        {"id": "claude-3-5-haiku-20241022", "name": "Claude 3.5 Haiku"},
+        {"id": "claude-sonnet-4-5-latest", "name": "Claude Sonnet 4.5"},
+        {"id": "claude-opus-4-5-latest", "name": "Claude Opus 4.5"},
+        {"id": "claude-haiku-4-5-latest", "name": "Claude Haiku 4.5"},
+        {"id": "claude-sonnet-4-latest", "name": "Claude Sonnet 4"},
+        {"id": "claude-opus-4-latest", "name": "Claude Opus 4"},
     ],
     ModelProvider.OPENAI: [
         {"id": "gpt-4o", "name": "GPT-4o"},

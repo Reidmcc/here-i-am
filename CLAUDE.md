@@ -62,7 +62,7 @@ PINECONE_INDEX_NAME=memories
 
 # Multiple entities with different model providers (JSON array)
 PINECONE_INDEXES='[
-  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "model_provider": "anthropic", "default_model": "claude-sonnet-4-20250514"},
+  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "model_provider": "anthropic", "default_model": "claude-sonnet-4-5-latest"},
   {"index_name": "gpt-research", "label": "GPT Research", "description": "OpenAI for comparison", "model_provider": "openai", "default_model": "gpt-4o"}
 ]'
 ```
@@ -291,7 +291,7 @@ DEBUG=true                              # Development mode
 ```bash
 # To use multiple AI entities with separate memory spaces and different model providers:
 PINECONE_INDEXES='[
-  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "model_provider": "anthropic", "default_model": "claude-sonnet-4-20250514"},
+  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "model_provider": "anthropic", "default_model": "claude-sonnet-4-5-latest"},
   {"index_name": "gpt-research", "label": "GPT", "description": "OpenAI for comparison", "model_provider": "openai", "default_model": "gpt-4o"}
 ]'
 ```
@@ -345,7 +345,7 @@ python run.py
    def send_message(
        self,
        messages: List[Dict[str, str]],
-       model: str = "claude-sonnet-4-20250514",
+       model: str = "claude-sonnet-4-5-latest",
        temperature: float = 1.0
    ) -> Dict[str, Any]:
    ```
@@ -494,7 +494,7 @@ title: String (nullable)
 tags: JSON
 conversation_type: Enum (NORMAL, REFLECTION)
 system_prompt_used: Text (nullable)
-model_used: String (default: claude-sonnet-4-20250514)
+model_used: String (default: claude-sonnet-4-5-latest)
 notes: Text (nullable)
 entity_id: String (nullable)  # Pinecone index name for this conversation's AI entity
 
@@ -803,7 +803,7 @@ retrieved_at: DateTime
 
 ```python
 # Default models
-DEFAULT_MODEL = "claude-sonnet-4-20250514"  # Anthropic default
+DEFAULT_MODEL = "claude-sonnet-4-5-latest"  # Anthropic default
 DEFAULT_OPENAI_MODEL = "gpt-4o"  # OpenAI default
 
 # Memory settings (config.py)

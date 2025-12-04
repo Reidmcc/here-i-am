@@ -24,7 +24,7 @@ class Conversation(Base):
         SQLEnum(ConversationType), default=ConversationType.NORMAL
     )
     system_prompt_used: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    model_used: Mapped[str] = mapped_column(String(100), default="claude-sonnet-4-20250514")
+    model_used: Mapped[str] = mapped_column(String(100), default="claude-sonnet-4-5-latest")
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Entity ID is the Pinecone index name for the AI entity this conversation belongs to
     # NULL means use the default entity (for backward compatibility)

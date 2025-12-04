@@ -26,7 +26,7 @@ class TestConversationModel:
             id=conversation_id,
             title="Test Conversation",
             conversation_type=ConversationType.NORMAL,
-            model_used="claude-sonnet-4-20250514",
+            model_used="claude-sonnet-4-5-latest",
         )
         db_session.add(conversation)
         await db_session.commit()
@@ -39,7 +39,7 @@ class TestConversationModel:
         assert saved.id == conversation_id
         assert saved.title == "Test Conversation"
         assert saved.conversation_type == ConversationType.NORMAL
-        assert saved.model_used == "claude-sonnet-4-20250514"
+        assert saved.model_used == "claude-sonnet-4-5-latest"
         assert saved.created_at is not None
 
     async def test_conversation_default_values(self, db_session):
@@ -50,7 +50,7 @@ class TestConversationModel:
 
         assert conversation.id is not None
         assert conversation.conversation_type == ConversationType.NORMAL
-        assert conversation.model_used == "claude-sonnet-4-20250514"
+        assert conversation.model_used == "claude-sonnet-4-5-latest"
         assert conversation.created_at is not None
         assert conversation.title is None
         assert conversation.system_prompt_used is None
