@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+from pydantic import Field
 from typing import Optional
 
 
@@ -9,7 +10,10 @@ class Settings(BaseSettings):
     pinecone_index_name: str = "memories"
 
     # Database
-    database_url: str = "sqlite+aiosqlite:///./here_i_am.db"
+    here_i_am_database_url: str = Field(
+        default="sqlite+aiosqlite:///./here_i_am.db",
+        alias="HERE_I_AM_DATABASE_URL"
+    )
 
     # Application
     debug: bool = True

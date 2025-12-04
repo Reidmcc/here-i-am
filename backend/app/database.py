@@ -8,7 +8,7 @@ class Base(DeclarativeBase):
 
 
 engine = create_async_engine(
-    settings.database_url,
+    settings.here_i_am_database_url,
     echo=settings.debug,
 )
 

@@ -72,7 +72,7 @@ python run.py
 | `ANTHROPIC_API_KEY` | Anthropic API key | Yes |
 | `PINECONE_API_KEY` | Pinecone API key | No (memory features disabled without) |
 | `PINECONE_INDEX_NAME` | Pinecone index name | No (default: "memories") |
-| `DATABASE_URL` | Database connection URL | No (default: SQLite) |
+| `HERE_I_AM_DATABASE_URL` | Database connection URL | No (default: SQLite) |
 
 ### Presets
 
@@ -159,7 +159,7 @@ The server runs with hot reload enabled.
 SQLite is used by default. For production, configure PostgreSQL:
 
 ```
-DATABASE_URL=postgresql+asyncpg://user:password@localhost/here_i_am
+HERE_I_AM_DATABASE_URL=postgresql+asyncpg://user:password@localhost/here_i_am
 ```
 
 ## License
