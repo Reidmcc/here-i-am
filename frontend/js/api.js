@@ -81,10 +81,24 @@ class ApiClient {
         });
     }
 
-    async deleteConversation(id) {
-        return this.request(`/conversations/${id}`, {
-            method: 'DELETE',
+    async archiveConversation(id) {
+        return this.request(`/conversations/${id}/archive`, {
+            method: 'POST',
         });
+    }
+
+    async unarchiveConversation(id) {
+        return this.request(`/conversations/${id}/unarchive`, {
+            method: 'POST',
+        });
+    }
+
+    async listArchivedConversations(limit = 50, offset = 0, entityId = null) {
+        let url = `/conversations/archived?limit=${limit}&offset=${offset}`;
+        if (entityId) {
+            url += `&entity_id=${entityId}`;
+        }
+        return this.request(url);
     }
 
     async exportConversation(id) {

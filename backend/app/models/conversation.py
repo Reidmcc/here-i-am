@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, List
-from sqlalchemy import String, Text, DateTime, JSON, Enum as SQLEnum
+from sqlalchemy import String, Text, DateTime, JSON, Enum as SQLEnum, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 import enum
@@ -29,6 +29,8 @@ class Conversation(Base):
     # Entity ID is the Pinecone index name for the AI entity this conversation belongs to
     # NULL means use the default entity (for backward compatibility)
     entity_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # Archived conversations are hidden from the main list and excluded from memory retrieval
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
 
     messages: Mapped[List["Message"]] = relationship(
         "Message", back_populates="conversation", cascade="all, delete-orphan"

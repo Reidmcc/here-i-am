@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.models import Conversation, Message, ConversationType, MessageRole
+from app.config import settings
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -37,11 +38,20 @@ class ConversationResponse(BaseModel):
     llm_model_used: str
     notes: Optional[str]
     entity_id: Optional[str] = None  # Pinecone index name for the AI entity
+    is_archived: bool = False
+    entity_missing: bool = False  # True if entity_id references a non-existent entity
     message_count: int = 0
     preview: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+
+def check_entity_exists(entity_id: Optional[str]) -> bool:
+    """Check if an entity_id references a configured entity."""
+    if entity_id is None:
+        return True  # NULL means default entity, always valid
+    return settings.get_entity_by_index(entity_id) is not None
 
 
 class MessageResponse(BaseModel):
@@ -88,6 +98,15 @@ async def create_conversation(
     db: AsyncSession = Depends(get_db)
 ):
     """Create a new conversation."""
+    # Validate entity_id if provided
+    if data.entity_id:
+        entity = settings.get_entity_by_index(data.entity_id)
+        if not entity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Entity '{data.entity_id}' is not configured. Check your PINECONE_INDEXES environment variable."
+            )
+
     conv_type = ConversationType.REFLECTION if data.conversation_type == "reflection" else ConversationType.NORMAL
 
     conversation = Conversation(
@@ -114,6 +133,8 @@ async def create_conversation(
         llm_model_used=conversation.llm_model_used,
         notes=conversation.notes,
         entity_id=conversation.entity_id,
+        is_archived=conversation.is_archived,
+        entity_missing=not check_entity_exists(conversation.entity_id),
         message_count=0,
     )
 
@@ -124,6 +145,7 @@ async def list_conversations(
     limit: int = 50,
     offset: int = 0,
     entity_id: Optional[str] = None,
+    include_archived: bool = False,
 ):
     """
     List all conversations with message counts and previews.
@@ -131,12 +153,17 @@ async def list_conversations(
     Args:
         entity_id: Optional filter by AI entity (Pinecone index name).
                    If not provided, returns all conversations.
+        include_archived: If True, include archived conversations. Default False.
     """
     query = select(Conversation)
 
     # Filter by entity_id if provided
     if entity_id is not None:
         query = query.where(Conversation.entity_id == entity_id)
+
+    # Exclude archived by default
+    if not include_archived:
+        query = query.where(Conversation.is_archived == False)
 
     query = query.order_by(
         Conversation.updated_at.desc().nullsfirst(),
@@ -174,6 +201,68 @@ async def list_conversations(
             llm_model_used=conv.llm_model_used,
             notes=conv.notes,
             entity_id=conv.entity_id,
+            is_archived=conv.is_archived,
+            entity_missing=not check_entity_exists(conv.entity_id),
+            message_count=message_count,
+            preview=preview,
+        ))
+
+    return response
+
+
+@router.get("/archived", response_model=List[ConversationResponse])
+async def list_archived_conversations(
+    db: AsyncSession = Depends(get_db),
+    limit: int = 50,
+    offset: int = 0,
+    entity_id: Optional[str] = None,
+):
+    """
+    List archived conversations.
+
+    Args:
+        entity_id: Optional filter by AI entity (Pinecone index name).
+    """
+    query = select(Conversation).where(Conversation.is_archived == True)
+
+    if entity_id is not None:
+        query = query.where(Conversation.entity_id == entity_id)
+
+    query = query.order_by(
+        Conversation.updated_at.desc().nullsfirst(),
+        Conversation.created_at.desc()
+    ).limit(limit).offset(offset)
+
+    result = await db.execute(query)
+    conversations = result.scalars().all()
+
+    response = []
+    for conv in conversations:
+        msg_result = await db.execute(
+            select(Message).where(Message.conversation_id == conv.id)
+        )
+        messages = msg_result.scalars().all()
+        message_count = len(messages)
+
+        preview = None
+        for msg in messages:
+            if msg.role == MessageRole.HUMAN:
+                preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+                break
+
+        response.append(ConversationResponse(
+            id=conv.id,
+            created_at=conv.created_at,
+            updated_at=conv.updated_at,
+            title=conv.title,
+            tags=conv.tags,
+            conversation_type=conv.conversation_type.value,
+            system_prompt_used=conv.system_prompt_used,
+            llm_model_used=conv.llm_model_used,
+            notes=conv.notes,
+            entity_id=conv.entity_id,
+            is_archived=conv.is_archived,
+            entity_missing=not check_entity_exists(conv.entity_id),
             message_count=message_count,
             preview=preview,
         ))
@@ -218,6 +307,8 @@ async def get_conversation(
         llm_model_used=conversation.llm_model_used,
         notes=conversation.notes,
         entity_id=conversation.entity_id,
+        is_archived=conversation.is_archived,
+        entity_missing=not check_entity_exists(conversation.entity_id),
         message_count=len(messages),
         preview=preview,
     )
@@ -301,16 +392,23 @@ async def update_conversation(
         llm_model_used=conversation.llm_model_used,
         notes=conversation.notes,
         entity_id=conversation.entity_id,
+        is_archived=conversation.is_archived,
+        entity_missing=not check_entity_exists(conversation.entity_id),
         message_count=message_count,
     )
 
 
-@router.delete("/{conversation_id}")
-async def delete_conversation(
+@router.post("/{conversation_id}/archive")
+async def archive_conversation(
     conversation_id: str,
     db: AsyncSession = Depends(get_db)
 ):
-    """Delete a conversation and all its messages."""
+    """
+    Archive a conversation.
+
+    Archived conversations are hidden from the main list and their messages
+    are excluded from memory retrieval. All data is preserved.
+    """
     result = await db.execute(
         select(Conversation).where(Conversation.id == conversation_id)
     )
@@ -319,10 +417,43 @@ async def delete_conversation(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    await db.delete(conversation)
+    if conversation.is_archived:
+        raise HTTPException(status_code=400, detail="Conversation is already archived")
+
+    conversation.is_archived = True
+    conversation.updated_at = datetime.utcnow()
     await db.commit()
 
-    return {"status": "deleted", "id": conversation_id}
+    return {"status": "archived", "id": conversation_id}
+
+
+@router.post("/{conversation_id}/unarchive")
+async def unarchive_conversation(
+    conversation_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Unarchive a conversation.
+
+    Restores the conversation to the main list and re-enables memory retrieval
+    for its messages.
+    """
+    result = await db.execute(
+        select(Conversation).where(Conversation.id == conversation_id)
+    )
+    conversation = result.scalar_one_or_none()
+
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if not conversation.is_archived:
+        raise HTTPException(status_code=400, detail="Conversation is not archived")
+
+    conversation.is_archived = False
+    conversation.updated_at = datetime.utcnow()
+    await db.commit()
+
+    return {"status": "unarchived", "id": conversation_id}
 
 
 @router.get("/{conversation_id}/export", response_model=ConversationExport)
@@ -382,6 +513,15 @@ async def import_seed_conversation(
     Messages can include pre-set times_retrieved values for significance seeding.
     """
     from app.services import memory_service
+
+    # Validate entity_id if provided
+    if data.entity_id:
+        entity = settings.get_entity_by_index(data.entity_id)
+        if not entity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Entity '{data.entity_id}' is not configured. Check your PINECONE_INDEXES environment variable."
+            )
 
     conv_type = ConversationType.REFLECTION if data.conversation_type == "reflection" else ConversationType.NORMAL
 

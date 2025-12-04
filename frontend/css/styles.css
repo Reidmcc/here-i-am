@@ -156,6 +156,7 @@ html, body {
 .entity-selector {
     padding: 12px 16px;
     border-bottom: 1px solid var(--border-color);
+    display: block;
 }
 
 .entity-selector label {
@@ -882,6 +883,93 @@ html, body {
     animation: spin 1s linear infinite;
 }
 
+/* Archived Button */
+.archived-btn {
+    flex: 1;
+    padding: 10px;
+    background-color: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.2s;
+}
+
+.archived-btn:hover {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+/* Archived List */
+.archived-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.archived-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-color);
+    transition: background-color 0.2s;
+}
+
+.archived-item:hover {
+    background-color: var(--hover-overlay);
+}
+
+.archived-item:last-child {
+    border-bottom: none;
+}
+
+.archived-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.archived-item-title {
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.archived-item-meta {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.archived-item-actions {
+    display: flex;
+    gap: 8px;
+    margin-left: 12px;
+}
+
+.unarchive-btn {
+    padding: 6px 12px;
+    background-color: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: background-color 0.2s;
+}
+
+.unarchive-btn:hover {
+    background-color: var(--accent-hover);
+}
+
+.archived-empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-muted);
+}
+
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
@@ -946,47 +1034,6 @@ html, body {
 * {
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) var(--bg-primary);
-}
-
-/* Theme Toggle Button */
-.theme-toggle-btn {
-    width: 40px;
-    height: 40px;
-    padding: 0;
-    background-color: var(--bg-tertiary);
-    color: var(--text-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 1.2rem;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-}
-
-.theme-toggle-btn:hover {
-    background-color: var(--bg-primary);
-    color: var(--text-primary);
-}
-
-/* Show/hide icons based on theme */
-.theme-icon-light {
-    display: none;
-}
-
-.theme-icon-dark {
-    display: inline;
-}
-
-/* In light mode, show sun, hide moon */
-:root.theme-light .theme-icon-light {
-    display: inline;
-}
-
-:root.theme-light .theme-icon-dark {
-    display: none;
 }
 
 /* Manual Light Theme Class - overrides system preference */
@@ -1087,15 +1134,6 @@ html, body {
     --hover-overlay: rgba(255, 255, 255, 0.05);
     --memory-item-inner: rgba(0, 0, 0, 0.2);
     --active-text-muted: rgba(255, 255, 255, 0.7);
-}
-
-/* In manual dark mode, show moon, hide sun */
-:root.theme-dark .theme-icon-light {
-    display: none;
-}
-
-:root.theme-dark .theme-icon-dark {
-    display: inline;
 }
 
 /* Responsive */
