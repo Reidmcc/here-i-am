@@ -1,7 +1,8 @@
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, AsyncIterator
 from anthropic import AsyncAnthropic
 from app.config import settings
 import tiktoken
+import json
 
 
 class AnthropicService:
@@ -74,6 +75,78 @@ class AnthropicService:
             },
             "stop_reason": response.stop_reason,
         }
+
+    async def send_message_stream(
+        self,
+        messages: List[Dict[str, str]],
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Send a message to Claude API with streaming response.
+
+        Yields events with type and data:
+        - {"type": "start", "model": str}
+        - {"type": "token", "content": str}
+        - {"type": "done", "content": str, "model": str, "usage": dict, "stop_reason": str}
+        - {"type": "error", "error": str}
+        """
+        model = model or settings.default_model
+        temperature = temperature if temperature is not None else settings.default_temperature
+        max_tokens = max_tokens or settings.default_max_tokens
+
+        api_params = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": messages,
+            "stream": True,
+        }
+
+        if system_prompt:
+            api_params["system"] = system_prompt
+
+        try:
+            # Yield start event
+            yield {"type": "start", "model": model}
+
+            full_content = ""
+            input_tokens = 0
+            output_tokens = 0
+            stop_reason = None
+
+            async with self.client.messages.stream(**api_params) as stream:
+                async for event in stream:
+                    if event.type == "message_start":
+                        if hasattr(event.message, "usage"):
+                            input_tokens = event.message.usage.input_tokens
+                    elif event.type == "content_block_delta":
+                        if hasattr(event.delta, "text"):
+                            text = event.delta.text
+                            full_content += text
+                            yield {"type": "token", "content": text}
+                    elif event.type == "message_delta":
+                        if hasattr(event, "usage"):
+                            output_tokens = event.usage.output_tokens
+                        if hasattr(event.delta, "stop_reason"):
+                            stop_reason = event.delta.stop_reason
+
+            # Yield final done event with complete data
+            yield {
+                "type": "done",
+                "content": full_content,
+                "model": model,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                },
+                "stop_reason": stop_reason,
+            }
+
+        except Exception as e:
+            yield {"type": "error", "error": str(e)}
 
     def build_messages_with_memories(
         self,

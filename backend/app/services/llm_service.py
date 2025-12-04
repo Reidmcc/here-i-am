@@ -6,7 +6,7 @@ Provides a single interface for interacting with multiple LLM providers
 configuration.
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, AsyncIterator
 from enum import Enum
 
 from app.services import anthropic_service, openai_service
@@ -171,6 +171,59 @@ class LLMService:
             )
         else:
             raise ValueError(f"Unsupported provider: {provider}")
+
+    async def send_message_stream(
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Send a message to the appropriate LLM provider with streaming response.
+
+        Yields events with type and data:
+        - {"type": "start", "model": str}
+        - {"type": "token", "content": str}
+        - {"type": "done", "content": str, "model": str, "usage": dict, "stop_reason": str}
+        - {"type": "error", "error": str}
+        """
+        provider = self.get_provider_for_model(model)
+
+        if provider is None:
+            if model.startswith("claude"):
+                provider = ModelProvider.ANTHROPIC
+            elif model.startswith("gpt") or model.startswith("o1"):
+                provider = ModelProvider.OPENAI
+            else:
+                yield {"type": "error", "error": f"Unknown model: {model}"}
+                return
+
+        if not self.is_provider_configured(provider):
+            yield {"type": "error", "error": f"Provider {provider.value} is not configured (missing API key)"}
+            return
+
+        if provider == ModelProvider.ANTHROPIC:
+            async for event in anthropic_service.send_message_stream(
+                messages=messages,
+                system_prompt=system_prompt,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ):
+                yield event
+        elif provider == ModelProvider.OPENAI:
+            async for event in openai_service.send_message_stream(
+                messages=messages,
+                system_prompt=system_prompt,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ):
+                yield event
+        else:
+            yield {"type": "error", "error": f"Unsupported provider: {provider}"}
 
     def build_messages_with_memories(
         self,

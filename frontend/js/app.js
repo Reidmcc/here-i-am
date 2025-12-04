@@ -393,53 +393,75 @@ class App {
         this.addMessage('human', content);
         this.scrollToBottom();
 
-        // Show typing indicator
-        const typingIndicator = this.addTypingIndicator();
+        // Create streaming message element
+        const streamingMessage = this.createStreamingMessage('assistant');
+        let usageData = null;
 
         try {
-            const response = await api.sendMessage({
-                conversation_id: this.currentConversationId,
-                message: content,
-                model: this.settings.model,
-                temperature: this.settings.temperature,
-                max_tokens: this.settings.maxTokens,
-                system_prompt: this.settings.systemPrompt,
-            });
+            await api.sendMessageStream(
+                {
+                    conversation_id: this.currentConversationId,
+                    message: content,
+                    model: this.settings.model,
+                    temperature: this.settings.temperature,
+                    max_tokens: this.settings.maxTokens,
+                    system_prompt: this.settings.systemPrompt,
+                },
+                {
+                    onMemories: (data) => {
+                        // Update memories when retrieved
+                        if (data.new_memories && data.new_memories.length > 0) {
+                            data.new_memories.forEach(mem => {
+                                this.retrievedMemories.push(mem);
+                            });
+                            this.updateMemoriesPanel();
+                        }
+                    },
+                    onStart: (data) => {
+                        // Stream has started
+                    },
+                    onToken: (data) => {
+                        // Update message content progressively
+                        if (data.content) {
+                            streamingMessage.updateContent(data.content);
+                        }
+                    },
+                    onDone: (data) => {
+                        // Stream complete - finalize message
+                        streamingMessage.finalize({ showTimestamp: true });
+                        usageData = data.usage;
 
-            // Remove typing indicator
-            typingIndicator.remove();
-
-            // Add assistant message
-            this.addMessage('assistant', response.content, {
-                showTimestamp: true,
-            });
-
-            // Update memories
-            if (response.new_memories_retrieved && response.new_memories_retrieved.length > 0) {
-                response.new_memories_retrieved.forEach(mem => {
-                    this.retrievedMemories.push(mem);
-                });
-                this.updateMemoriesPanel();
-            }
-
-            // Update token display
-            this.elements.tokenCount.textContent = `Tokens: ${response.usage.input_tokens} in / ${response.usage.output_tokens} out`;
+                        // Update token display
+                        if (usageData) {
+                            this.elements.tokenCount.textContent = `Tokens: ${usageData.input_tokens} in / ${usageData.output_tokens} out`;
+                        }
+                    },
+                    onStored: async (data) => {
+                        // Messages have been stored
+                        // Update conversation title if it's the first message
+                        const conv = this.conversations.find(c => c.id === this.currentConversationId);
+                        if (conv && !conv.title) {
+                            const title = content.substring(0, 50) + (content.length > 50 ? '...' : '');
+                            await api.updateConversation(this.currentConversationId, { title });
+                            conv.title = title;
+                            this.renderConversationList();
+                            this.elements.conversationTitle.textContent = title;
+                        }
+                    },
+                    onError: (data) => {
+                        // Handle error
+                        streamingMessage.element.remove();
+                        this.addMessage('assistant', `Error: ${data.error}`, { isError: true });
+                        this.showToast('Failed to send message', 'error');
+                        console.error('Streaming error:', data.error);
+                    },
+                }
+            );
 
             this.scrollToBottom();
 
-            // Update conversation title if it's the first message
-            const conv = this.conversations.find(c => c.id === this.currentConversationId);
-            if (conv && !conv.title) {
-                // Auto-generate title from first message
-                const title = content.substring(0, 50) + (content.length > 50 ? '...' : '');
-                await api.updateConversation(this.currentConversationId, { title });
-                conv.title = title;
-                this.renderConversationList();
-                this.elements.conversationTitle.textContent = title;
-            }
-
         } catch (error) {
-            typingIndicator.remove();
+            streamingMessage.element.remove();
             this.addMessage('assistant', `Error: ${error.message}`, { isError: true });
             this.showToast('Failed to send message', 'error');
             console.error('Failed to send message:', error);
@@ -472,6 +494,65 @@ class App {
 
         this.elements.messages.appendChild(message);
         return message;
+    }
+
+    /**
+     * Create a streaming message element that can be updated progressively.
+     * @param {string} role - Message role (assistant)
+     * @returns {Object} - Object with element, updateContent, and finalize methods
+     */
+    createStreamingMessage(role) {
+        // Hide welcome message
+        if (this.elements.welcomeMessage) {
+            this.elements.welcomeMessage.style.display = 'none';
+        }
+
+        const message = document.createElement('div');
+        message.className = `message ${role}`;
+
+        const bubble = document.createElement('div');
+        bubble.className = 'message-bubble streaming';
+
+        const contentSpan = document.createElement('span');
+        contentSpan.className = 'message-content';
+        bubble.appendChild(contentSpan);
+
+        // Add cursor element for visual feedback
+        const cursor = document.createElement('span');
+        cursor.className = 'streaming-cursor';
+        cursor.textContent = '\u258c'; // Block cursor character
+        bubble.appendChild(cursor);
+
+        message.appendChild(bubble);
+        this.elements.messages.appendChild(message);
+
+        let accumulatedContent = '';
+
+        return {
+            element: message,
+            updateContent: (newToken) => {
+                accumulatedContent += newToken;
+                contentSpan.textContent = accumulatedContent;
+                this.scrollToBottom();
+            },
+            finalize: (options = {}) => {
+                // Remove cursor
+                cursor.remove();
+                bubble.classList.remove('streaming');
+
+                // Add timestamp
+                const timestamp = options.timestamp ? new Date(options.timestamp) : new Date();
+                const timeStr = timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+                const meta = document.createElement('div');
+                meta.className = 'message-meta';
+                meta.innerHTML = `<span>${timeStr}</span>`;
+                message.appendChild(meta);
+
+                return accumulatedContent;
+            },
+            getContent: () => accumulatedContent,
+        };
     }
 
     addTypingIndicator() {
