@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.config import settings
-from app.services.memory_service import memory_service
+from app.services import memory_service
 
 router = APIRouter(prefix="/api/entities", tags=["entities"])
 

@@ -5,8 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.models import Conversation, Message, MessageRole
-from app.services.memory_service import memory_service
-from app.services.llm_service import llm_service
+from app.services import memory_service, llm_service
 from app.config import settings
 
 

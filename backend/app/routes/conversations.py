@@ -381,7 +381,7 @@ async def import_seed_conversation(
     This is used to import the founding conversation or other seed data.
     Messages can include pre-set times_retrieved values for significance seeding.
     """
-    from app.services.memory_service import memory_service
+    from app.services import memory_service
 
     conv_type = ConversationType.REFLECTION if data.conversation_type == "reflection" else ConversationType.NORMAL
 
