@@ -9,5 +9,5 @@ python-dotenv==1.0.1
 pydantic==2.6.1
 pydantic-settings==2.1.0
 httpx==0.26.0
-numpy==1.26.4
+numpy>=1.26.0,<3.0.0
 tiktoken==0.6.0
