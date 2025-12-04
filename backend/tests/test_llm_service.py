@@ -13,6 +13,7 @@ class TestModelProviderMapping:
     def test_claude_models_map_to_anthropic(self):
         """Test that Claude models map to Anthropic provider."""
         claude_models = [
+            "claude-sonnet-4-5-20250929",
             "claude-sonnet-4-20250514",
             "claude-opus-4-20250514",
             "claude-3-5-sonnet-20241022",

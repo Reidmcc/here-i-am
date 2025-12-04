@@ -22,6 +22,7 @@ class ModelProvider(str, Enum):
 # Model to provider mapping
 MODEL_PROVIDER_MAP = {
     # Anthropic Claude models
+    "claude-sonnet-4-5-20250929": ModelProvider.ANTHROPIC,
     "claude-sonnet-4-20250514": ModelProvider.ANTHROPIC,
     "claude-opus-4-20250514": ModelProvider.ANTHROPIC,
     "claude-3-5-sonnet-20241022": ModelProvider.ANTHROPIC,
@@ -44,6 +45,7 @@ MODEL_PROVIDER_MAP = {
 # Available models by provider
 AVAILABLE_MODELS = {
     ModelProvider.ANTHROPIC: [
+        {"id": "claude-sonnet-4-5-20250929", "name": "Claude Sonnet 4.5"},
         {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"},
         {"id": "claude-opus-4-20250514", "name": "Claude Opus 4"},
         {"id": "claude-3-5-sonnet-20241022", "name": "Claude 3.5 Sonnet"},
