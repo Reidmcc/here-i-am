@@ -12,7 +12,7 @@ class App {
         this.availableModels = [];
         this.providers = [];
         this.settings = {
-            model: 'claude-sonnet-4-5-latest',
+            model: 'claude-sonnet-4-5-20250929',
             temperature: 1.0,
             maxTokens: 4096,
             systemPrompt: null,

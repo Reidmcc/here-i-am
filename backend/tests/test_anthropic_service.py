@@ -80,7 +80,7 @@ class TestAnthropicService:
         response = await service.send_message(messages)
 
         assert response["content"] == "This is a test response from Claude."
-        assert response["model"] == "claude-sonnet-4-5-latest"
+        assert response["model"] == "claude-sonnet-4-5-20250929"
         assert "usage" in response
         assert response["usage"]["input_tokens"] == 100
         assert response["usage"]["output_tokens"] == 50
@@ -123,13 +123,13 @@ class TestAnthropicService:
         messages = [{"role": "user", "content": "Hello!"}]
         await service.send_message(
             messages,
-            model="claude-opus-4-latest",
+            model="claude-opus-4-20250514",
             temperature=0.5,
             max_tokens=2000,
         )
 
         call_kwargs = mock_anthropic_client.messages.create.call_args.kwargs
-        assert call_kwargs["model"] == "claude-opus-4-latest"
+        assert call_kwargs["model"] == "claude-opus-4-20250514"
         assert call_kwargs["temperature"] == 0.5
         assert call_kwargs["max_tokens"] == 2000
 
