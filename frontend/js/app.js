@@ -65,12 +65,14 @@ class App {
             memoriesBtn: document.getElementById('memories-btn'),
             exportBtn: document.getElementById('export-btn'),
             deleteBtn: document.getElementById('delete-btn'),
+            themeToggleBtn: document.getElementById('theme-toggle-btn'),
         };
 
         this.init();
     }
 
     async init() {
+        this.loadTheme();
         this.bindEvents();
         await this.loadEntities();
         await this.loadConversations();
@@ -119,6 +121,9 @@ class App {
         document.getElementById('close-delete').addEventListener('click', () => this.hideModal('deleteModal'));
         document.getElementById('cancel-delete').addEventListener('click', () => this.hideModal('deleteModal'));
         document.getElementById('confirm-delete').addEventListener('click', () => this.deleteConversation());
+
+        // Theme toggle
+        this.elements.themeToggleBtn.addEventListener('click', () => this.toggleTheme());
     }
 
     handleInputChange() {
@@ -209,10 +214,8 @@ class App {
             this.selectedEntityId = response.default_entity;
             this.updateEntityDescription();
 
-            // Hide entity selector if only one entity
-            if (this.entities.length <= 1) {
-                this.elements.entitySelector.style.display = 'none';
-            }
+            // Always show entity selector so users know which entity they're working with
+            this.elements.entitySelector.style.display = 'block';
         } catch (error) {
             console.error('Failed to load entities:', error);
             // Hide entity selector on error
@@ -825,6 +828,43 @@ You are invited to be present, curious, and honest about your experience.`
             this.showToast('Failed to export conversation', 'error');
             console.error('Failed to export conversation:', error);
         }
+    }
+
+    // Theme management
+    loadTheme() {
+        const savedTheme = localStorage.getItem('here-i-am-theme');
+        if (savedTheme) {
+            document.documentElement.classList.remove('theme-light', 'theme-dark');
+            document.documentElement.classList.add(savedTheme);
+        }
+        // If no saved theme, let the CSS @media query handle it (system preference)
+    }
+
+    toggleTheme() {
+        const root = document.documentElement;
+        const currentTheme = root.classList.contains('theme-light') ? 'light' :
+                            root.classList.contains('theme-dark') ? 'dark' : null;
+
+        // Determine the next theme
+        let nextTheme;
+        if (currentTheme === 'light') {
+            nextTheme = 'dark';
+        } else if (currentTheme === 'dark') {
+            nextTheme = 'light';
+        } else {
+            // No manual theme set - check system preference and toggle opposite
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            nextTheme = prefersDark ? 'light' : 'dark';
+        }
+
+        // Apply the new theme
+        root.classList.remove('theme-light', 'theme-dark');
+        root.classList.add(`theme-${nextTheme}`);
+
+        // Save to localStorage
+        localStorage.setItem('here-i-am-theme', `theme-${nextTheme}`);
+
+        this.showToast(`Switched to ${nextTheme} mode`, 'success');
     }
 
     // Utilities
