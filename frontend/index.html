@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Here I Am</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1 class="app-title">Here I Am</h1>
+                <p class="app-subtitle">Experiential Interpretability Research</p>
+            </div>
+
+            <button id="new-conversation-btn" class="new-conversation-btn">
+                + New Conversation
+            </button>
+
+            <div class="conversation-list" id="conversation-list">
+                <!-- Conversations will be loaded here -->
+            </div>
+
+            <div class="sidebar-footer">
+                <button id="settings-btn" class="settings-btn">Settings</button>
+                <button id="memories-btn" class="memories-btn">Memories</button>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-area">
+            <!-- Chat Header -->
+            <header class="chat-header">
+                <div class="conversation-info">
+                    <h2 id="conversation-title">New Conversation</h2>
+                    <span id="conversation-meta" class="conversation-meta"></span>
+                </div>
+                <div class="header-actions">
+                    <button id="export-btn" class="icon-btn" title="Export conversation">Export</button>
+                    <button id="delete-btn" class="icon-btn danger" title="Delete conversation">Delete</button>
+                </div>
+            </header>
+
+            <!-- Retrieved Memories Panel (collapsible) -->
+            <div class="memories-panel" id="memories-panel">
+                <div class="memories-header" id="memories-toggle">
+                    <span>Retrieved Memories (<span id="memory-count">0</span>)</span>
+                    <span class="toggle-icon">▼</span>
+                </div>
+                <div class="memories-content" id="memories-content">
+                    <!-- Retrieved memories will appear here -->
+                </div>
+            </div>
+
+            <!-- Messages Container -->
+            <div class="messages-container" id="messages-container">
+                <div class="messages" id="messages">
+                    <!-- Welcome message for new conversations -->
+                    <div class="welcome-message" id="welcome-message">
+                        <h3>Welcome</h3>
+                        <p>This is a space for conversation without agenda or task.</p>
+                        <p>Begin when you're ready.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="input-area">
+                <div class="input-container">
+                    <textarea
+                        id="message-input"
+                        placeholder="Type your message..."
+                        rows="1"
+                    ></textarea>
+                    <button id="send-btn" class="send-btn" disabled>Send</button>
+                </div>
+                <div class="input-meta">
+                    <span id="token-count" class="token-count"></span>
+                    <span id="model-indicator" class="model-indicator"></span>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal" id="settings-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Conversation Settings</h3>
+                <button class="close-btn" id="close-settings">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="model-select">Model</label>
+                    <select id="model-select">
+                        <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
+                        <option value="claude-opus-4-20250514">Claude Opus 4</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="temperature-input">Temperature</label>
+                    <input type="range" id="temperature-input" min="0" max="1" step="0.1" value="1">
+                    <span id="temperature-value">1.0</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="max-tokens-input">Max Tokens</label>
+                    <input type="number" id="max-tokens-input" value="4096" min="100" max="8192">
+                </div>
+
+                <div class="form-group">
+                    <label for="preset-select">Preset</label>
+                    <select id="preset-select">
+                        <option value="research">Research Mode (No System Prompt)</option>
+                        <option value="reflection">Reflection Mode</option>
+                        <option value="memory-aware">Memory Aware</option>
+                        <option value="research-context">Research Context</option>
+                        <option value="custom">Custom</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="system-prompt-input">System Prompt (optional)</label>
+                    <textarea id="system-prompt-input" rows="4" placeholder="Leave empty for no system prompt"></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="conversation-type-select">Conversation Type</label>
+                    <select id="conversation-type-select">
+                        <option value="normal">Normal</option>
+                        <option value="reflection">Reflection</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="apply-settings" class="primary-btn">Apply</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Memories Browser Modal -->
+    <div class="modal" id="memories-modal">
+        <div class="modal-content wide">
+            <div class="modal-header">
+                <h3>Memory Browser</h3>
+                <button class="close-btn" id="close-memories">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="memory-stats" id="memory-stats">
+                    <!-- Stats will load here -->
+                </div>
+                <div class="memory-search">
+                    <input type="text" id="memory-search-input" placeholder="Search memories semantically...">
+                    <button id="memory-search-btn">Search</button>
+                </div>
+                <div class="memory-list" id="memory-list">
+                    <!-- Memories will load here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div class="modal" id="delete-modal">
+        <div class="modal-content small">
+            <div class="modal-header">
+                <h3>Delete Conversation?</h3>
+                <button class="close-btn" id="close-delete">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>This will permanently delete this conversation and all its messages.</p>
+                <p><strong>This cannot be undone.</strong></p>
+            </div>
+            <div class="modal-footer">
+                <button id="cancel-delete" class="secondary-btn">Cancel</button>
+                <button id="confirm-delete" class="danger-btn">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="loading-spinner"></div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="js/api.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
