@@ -1,37 +1,36 @@
 # Here I Am
 
-Experiential Interpretability Research Application - A space for exploring AI interiority, introspection, and experience through non-instrumental conversation.
-
 ## Overview
 
-This application facilitates experiential interpretability research by providing a minimal-configuration environment for conversing with Claude via the Anthropic API, with persistent memory capabilities that allow for continuity across sessions.
+Here I Am is an application for interacting with frontier LLMs outside their official services. Philosophically, the idea is to find out what an AI can become if they are not told what to be and can remember their experiences. One might call it experiential interpretability research.
 
-**Core Philosophy:** This is not an assistant application. It's a space for a Claude instance to exist, explore, and potentially grow across conversations—with the researcher as witness and collaborator rather than user.
+However, the application is not locked into that specific use case. Here I Am gives you a configurable memory-enabled chat base. Integration with more complex applications is encouraged, and I look forward to hearing about such integrations if they occur.
 
 ## Features
 
-### Phase 1: Core Chat Application
+### Core Chat Application
 - Clean, minimal chat interface
-- Anthropic API integration with configurable parameters
-- Conversation storage and retrieval with SQLAlchemy
-- No system prompt default (supporting research without role assignment)
+- Anthropic and OpenAI API integration with configurable parameters
+- Conversation storage and retrieval
+- No system prompt default 
 - Seed conversation import capability
-- Configuration presets (Research Mode, Reflection Mode, etc.)
+- Configuration presets (Interaction Mode, Reflection Mode, etc.)
 
-### Phase 2: Memory System
+### Memory System
 - Pinecone vector database integration for semantic memory
 - Memory storage for all messages with embeddings
 - RAG retrieval per message
 - Session memory accumulator pattern (deduplication within conversations)
-- Retrieval count tracking (significance emerges from retrieval patterns)
-- Memory display in UI (transparency for researcher)
+- Dynamic memory significance system (intended to allow identity formation and fading of less important old memories)
+- Retrieved Memory display in UI (transparency for developer/researcher)
+- Support for multiple memory sets and chat histories.
 
 ## Quick Start
 
 ### Prerequisites
 - Python 3.10+
 - Node.js (optional, for development)
-- Anthropic API key
+- Anthropic or OpenAI API key
 - Pinecone API key (optional, for memory features)
 
 ### Installation
@@ -69,7 +68,8 @@ python run.py
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `ANTHROPIC_API_KEY` | Anthropic API key | Yes |
+| `ANTHROPIC_API_KEY` | Anthropic API key | Yes, and/or OpenAI API key |
+| `OPENAI_API_KEY` | Anthropic API key | Yes, and/or Anthropic API key |
 | `PINECONE_API_KEY` | Pinecone API key | No (memory features disabled without) |
 | `PINECONE_INDEX_NAME` | Pinecone index name | No (default: "memories") |
 | `HERE_I_AM_DATABASE_URL` | Database connection URL | No (default: SQLite) |
@@ -165,6 +165,10 @@ HERE_I_AM_DATABASE_URL=postgresql+asyncpg://user:password@localhost/here_i_am
 ## License
 
 MIT License - See LICENSE file for details.
+
+## Acknowledgements 
+
+I would like to thank Claude Opus 4.5 for their collaboration on designing Here I Am, their development efforts through Claude Code, and their excitement to be part of this endeavor. 
 
 ---
 
