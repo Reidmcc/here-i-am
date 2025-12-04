@@ -86,23 +86,33 @@ python run.py
 
 ### Conversations
 - `POST /api/conversations/` - Create conversation
-- `GET /api/conversations/` - List conversations
+- `GET /api/conversations/` - List conversations (supports `entity_id` filter)
 - `GET /api/conversations/{id}` - Get conversation
 - `GET /api/conversations/{id}/messages` - Get messages
+- `PATCH /api/conversations/{id}` - Update conversation (title, tags, notes)
 - `DELETE /api/conversations/{id}` - Delete conversation
-- `GET /api/conversations/{id}/export` - Export conversation
+- `GET /api/conversations/{id}/export` - Export conversation as JSON
 - `POST /api/conversations/import-seed` - Import seed conversation
 
 ### Chat
 - `POST /api/chat/send` - Send message (with memory retrieval)
 - `POST /api/chat/quick` - Quick chat (no persistence)
 - `GET /api/chat/session/{id}` - Get session info
+- `DELETE /api/chat/session/{id}` - Close session
+- `GET /api/chat/config` - Get default configuration and available models
 
 ### Memories
-- `GET /api/memories/` - List memories
+- `GET /api/memories/` - List memories (supports `entity_id` filter, sorting)
+- `GET /api/memories/{id}` - Get specific memory
 - `POST /api/memories/search` - Semantic search
 - `GET /api/memories/stats` - Memory statistics
 - `DELETE /api/memories/{id}` - Delete memory
+- `GET /api/memories/status/health` - Health check
+
+### Entities
+- `GET /api/entities/` - List all configured AI entities
+- `GET /api/entities/{id}` - Get specific entity
+- `GET /api/entities/{id}/status` - Get entity Pinecone connection status
 
 ## Memory System Architecture
 
