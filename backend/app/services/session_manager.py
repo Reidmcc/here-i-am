@@ -109,7 +109,7 @@ class SessionManager:
             entity = settings.get_entity_by_index(entity_id)
             if entity:
                 # Use entity's default model, or fall back to provider default
-                model = entity.default_model or settings.get_default_model_for_provider(entity.model_provider)
+                model = entity.default_model or settings.get_default_model_for_provider(entity.llm_provider)
         model = model or settings.default_model
 
         session = ConversationSession(
@@ -144,7 +144,7 @@ class SessionManager:
         # Create session with conversation settings
         session = self.create_session(
             conversation_id=conversation_id,
-            model=conversation.model_used,
+            model=conversation.llm_model_used,
             system_prompt=conversation.system_prompt_used,
             entity_id=conversation.entity_id,
         )

@@ -89,7 +89,7 @@ def test_settings_multi_entity():
         anthropic_api_key="test-anthropic-key",
         openai_api_key="test-openai-key",
         pinecone_api_key="test-pinecone-key",
-        pinecone_indexes='[{"index_name": "claude-test", "label": "Claude Test", "description": "Test entity", "model_provider": "anthropic"}, {"index_name": "gpt-test", "label": "GPT Test", "description": "OpenAI test", "model_provider": "openai", "default_model": "gpt-4o"}]',
+        pinecone_indexes='[{"index_name": "claude-test", "label": "Claude Test", "description": "Test entity", "llm_provider": "anthropic"}, {"index_name": "gpt-test", "label": "GPT Test", "description": "OpenAI test", "llm_provider": "openai", "default_model": "gpt-4o"}]',
         here_i_am_database_url=TEST_DATABASE_URL,
     )
 
@@ -124,7 +124,7 @@ async def sample_conversation(db_session, sample_conversation_id) -> Conversatio
         id=sample_conversation_id,
         title="Test Conversation",
         conversation_type=ConversationType.NORMAL,
-        model_used="claude-sonnet-4-5-20250929",
+        llm_model_used="claude-sonnet-4-5-20250929",
         entity_id="test-memories",
     )
     db_session.add(conversation)

@@ -27,8 +27,6 @@ class ConversationUpdate(BaseModel):
 
 
 class ConversationResponse(BaseModel):
-    model_config = {"protected_namespaces": (), "from_attributes": True}
-
     id: str
     created_at: datetime
     updated_at: Optional[datetime]
@@ -36,11 +34,14 @@ class ConversationResponse(BaseModel):
     tags: Optional[List[str]]
     conversation_type: str
     system_prompt_used: Optional[str]
-    model_used: str
+    llm_model_used: str
     notes: Optional[str]
     entity_id: Optional[str] = None  # Pinecone index name for the AI entity
     message_count: int = 0
     preview: Optional[str] = None
+
+    class Config:
+        from_attributes = True
 
 
 class MessageResponse(BaseModel):
@@ -57,15 +58,13 @@ class MessageResponse(BaseModel):
 
 
 class ConversationExport(BaseModel):
-    model_config = {"protected_namespaces": ()}
-
     id: str
     created_at: str
     title: Optional[str]
     tags: Optional[List[str]]
     conversation_type: str
     system_prompt_used: Optional[str]
-    model_used: str
+    llm_model_used: str
     notes: Optional[str]
     entity_id: Optional[str] = None
     messages: List[dict]
@@ -73,13 +72,11 @@ class ConversationExport(BaseModel):
 
 class SeedConversationImport(BaseModel):
     """Import format for seed conversations."""
-    model_config = {"protected_namespaces": ()}
-
     title: Optional[str] = None
     tags: Optional[List[str]] = None
     conversation_type: str = "normal"
     system_prompt_used: Optional[str] = None
-    model_used: str = "claude-sonnet-4-5-20250929"
+    llm_model_used: str = "claude-sonnet-4-5-20250929"
     notes: Optional[str] = None
     entity_id: Optional[str] = None  # Pinecone index name for the AI entity
     messages: List[dict]  # List of {role: str, content: str, times_retrieved?: int}
@@ -98,7 +95,7 @@ async def create_conversation(
         tags=data.tags,
         conversation_type=conv_type,
         system_prompt_used=data.system_prompt,
-        model_used=data.model,
+        llm_model_used=data.model,
         entity_id=data.entity_id,
     )
 
@@ -114,7 +111,7 @@ async def create_conversation(
         tags=conversation.tags,
         conversation_type=conversation.conversation_type.value,
         system_prompt_used=conversation.system_prompt_used,
-        model_used=conversation.model_used,
+        llm_model_used=conversation.llm_model_used,
         notes=conversation.notes,
         entity_id=conversation.entity_id,
         message_count=0,
@@ -174,7 +171,7 @@ async def list_conversations(
             tags=conv.tags,
             conversation_type=conv.conversation_type.value,
             system_prompt_used=conv.system_prompt_used,
-            model_used=conv.model_used,
+            llm_model_used=conv.llm_model_used,
             notes=conv.notes,
             entity_id=conv.entity_id,
             message_count=message_count,
@@ -218,7 +215,7 @@ async def get_conversation(
         tags=conversation.tags,
         conversation_type=conversation.conversation_type.value,
         system_prompt_used=conversation.system_prompt_used,
-        model_used=conversation.model_used,
+        llm_model_used=conversation.llm_model_used,
         notes=conversation.notes,
         entity_id=conversation.entity_id,
         message_count=len(messages),
@@ -301,7 +298,7 @@ async def update_conversation(
         tags=conversation.tags,
         conversation_type=conversation.conversation_type.value,
         system_prompt_used=conversation.system_prompt_used,
-        model_used=conversation.model_used,
+        llm_model_used=conversation.llm_model_used,
         notes=conversation.notes,
         entity_id=conversation.entity_id,
         message_count=message_count,
@@ -357,7 +354,7 @@ async def export_conversation(
         tags=conversation.tags,
         conversation_type=conversation.conversation_type.value,
         system_prompt_used=conversation.system_prompt_used,
-        model_used=conversation.model_used,
+        llm_model_used=conversation.llm_model_used,
         notes=conversation.notes,
         entity_id=conversation.entity_id,
         messages=[
@@ -393,7 +390,7 @@ async def import_seed_conversation(
         tags=data.tags,
         conversation_type=conv_type,
         system_prompt_used=data.system_prompt_used,
-        model_used=data.model_used,
+        llm_model_used=data.llm_model_used,
         notes=data.notes,
         entity_id=data.entity_id,
     )

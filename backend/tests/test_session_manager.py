@@ -215,7 +215,7 @@ class TestSessionManager:
         with patch("app.services.session_manager.settings") as mock_settings:
             mock_entity = MagicMock()
             mock_entity.default_model = "gpt-4o"
-            mock_entity.model_provider = "openai"
+            mock_entity.llm_provider = "openai"
             mock_settings.get_entity_by_index.return_value = mock_entity
             mock_settings.get_default_model_for_provider.return_value = "gpt-4o"
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
@@ -293,7 +293,7 @@ class TestSessionManager:
 
         assert session is not None
         assert session.conversation_id == sample_conversation.id
-        assert session.model == sample_conversation.model_used
+        assert session.model == sample_conversation.llm_model_used
         assert len(session.conversation_context) == 2  # Two sample messages
 
     @pytest.mark.asyncio
