@@ -9,6 +9,8 @@ router = APIRouter(prefix="/api/entities", tags=["entities"])
 
 
 class EntityResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     index_name: str
     label: str
     description: str

@@ -27,6 +27,8 @@ class ConversationUpdate(BaseModel):
 
 
 class ConversationResponse(BaseModel):
+    model_config = {"protected_namespaces": (), "from_attributes": True}
+
     id: str
     created_at: datetime
     updated_at: Optional[datetime]
@@ -39,9 +41,6 @@ class ConversationResponse(BaseModel):
     entity_id: Optional[str] = None  # Pinecone index name for the AI entity
     message_count: int = 0
     preview: Optional[str] = None
-
-    class Config:
-        from_attributes = True
 
 
 class MessageResponse(BaseModel):
@@ -58,6 +57,8 @@ class MessageResponse(BaseModel):
 
 
 class ConversationExport(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     id: str
     created_at: str
     title: Optional[str]
@@ -72,6 +73,8 @@ class ConversationExport(BaseModel):
 
 class SeedConversationImport(BaseModel):
     """Import format for seed conversations."""
+    model_config = {"protected_namespaces": ()}
+
     title: Optional[str] = None
     tags: Optional[List[str]] = None
     conversation_type: str = "normal"
