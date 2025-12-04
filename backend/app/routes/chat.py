@@ -126,7 +126,7 @@ async def send_message(
     await db.refresh(human_msg)
     await db.refresh(assistant_msg)
 
-    # Store messages as memories in vector database
+    # Store messages as memories in vector database for the session's entity
     if memory_service.is_configured():
         await memory_service.store_memory(
             message_id=human_msg.id,
@@ -134,6 +134,7 @@ async def send_message(
             role="human",
             content=data.message,
             created_at=human_msg.created_at,
+            entity_id=session.entity_id,
         )
         await memory_service.store_memory(
             message_id=assistant_msg.id,
@@ -141,6 +142,7 @@ async def send_message(
             role="assistant",
             content=response["content"],
             created_at=assistant_msg.created_at,
+            entity_id=session.entity_id,
         )
 
     return ChatResponse(
@@ -203,6 +205,7 @@ async def get_session_info(
         "temperature": session.temperature,
         "max_tokens": session.max_tokens,
         "system_prompt": session.system_prompt,
+        "entity_id": session.entity_id,
         "message_count": len(session.conversation_context),
         "memories_in_context": len(session.session_memories),
         "memories": [
@@ -231,7 +234,10 @@ async def close_session(conversation_id: str):
 
 @router.get("/config")
 async def get_chat_config():
-    """Get default chat configuration."""
+    """Get default chat configuration including available entities."""
+    entities = settings.get_entities()
+    default_entity = settings.get_default_entity()
+
     return {
         "default_model": settings.default_model,
         "default_temperature": settings.default_temperature,
@@ -243,4 +249,6 @@ async def get_chat_config():
         "memory_enabled": memory_service.is_configured(),
         "retrieval_top_k": settings.retrieval_top_k,
         "similarity_threshold": settings.similarity_threshold,
+        "entities": [entity.to_dict() for entity in entities],
+        "default_entity": default_entity.index_name,
     }

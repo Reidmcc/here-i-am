@@ -37,9 +37,26 @@ class ApiClient {
         return this.request('/health');
     }
 
+    // Entities
+    async listEntities() {
+        return this.request('/entities/');
+    }
+
+    async getEntity(entityId) {
+        return this.request(`/entities/${entityId}`);
+    }
+
+    async getEntityStatus(entityId) {
+        return this.request(`/entities/${entityId}/status`);
+    }
+
     // Conversations
-    async listConversations(limit = 50, offset = 0) {
-        return this.request(`/conversations/?limit=${limit}&offset=${offset}`);
+    async listConversations(limit = 50, offset = 0, entityId = null) {
+        let url = `/conversations/?limit=${limit}&offset=${offset}`;
+        if (entityId) {
+            url += `&entity_id=${entityId}`;
+        }
+        return this.request(url);
     }
 
     async createConversation(data = {}) {
@@ -117,18 +134,20 @@ class ApiClient {
         if (options.offset) params.set('offset', options.offset);
         if (options.role) params.set('role', options.role);
         if (options.sortBy) params.set('sort_by', options.sortBy);
+        if (options.entityId) params.set('entity_id', options.entityId);
 
         const query = params.toString();
         return this.request(`/memories/${query ? '?' + query : ''}`);
     }
 
-    async searchMemories(query, topK = 10) {
+    async searchMemories(query, topK = 10, includeContent = true, entityId = null) {
         return this.request('/memories/search', {
             method: 'POST',
             body: {
                 query,
                 top_k: topK,
-                include_content: true,
+                include_content: includeContent,
+                entity_id: entityId,
             },
         });
     }

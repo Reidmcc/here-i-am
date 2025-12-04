@@ -12,7 +12,7 @@ import numpy as np
 class MemoryService:
     def __init__(self):
         self._pc = None
-        self._index = None
+        self._indexes: Dict[str, Any] = {}  # Cache for multiple indexes
         self._anthropic = None
 
     @property
@@ -21,11 +21,40 @@ class MemoryService:
             self._pc = Pinecone(api_key=settings.pinecone_api_key)
         return self._pc
 
+    def get_index(self, entity_id: Optional[str] = None):
+        """
+        Get a Pinecone index by entity_id (index name).
+
+        Args:
+            entity_id: The Pinecone index name. If None, uses the default entity.
+
+        Returns:
+            Pinecone Index object or None if not configured.
+        """
+        if not self.pc:
+            return None
+
+        # Use default entity if not specified
+        if entity_id is None:
+            entity_id = settings.get_default_entity().index_name
+
+        # Return cached index if available
+        if entity_id in self._indexes:
+            return self._indexes[entity_id]
+
+        # Create and cache new index connection
+        try:
+            index = self.pc.Index(entity_id)
+            self._indexes[entity_id] = index
+            return index
+        except Exception as e:
+            print(f"Error connecting to Pinecone index '{entity_id}': {e}")
+            return None
+
     @property
     def index(self):
-        if self._index is None and self.pc:
-            self._index = self.pc.Index(settings.pinecone_index_name)
-        return self._index
+        """Backward-compatible property that returns the default index."""
+        return self.get_index(None)
 
     @property
     def anthropic(self):
@@ -33,9 +62,21 @@ class MemoryService:
             self._anthropic = AsyncAnthropic(api_key=settings.anthropic_api_key)
         return self._anthropic
 
-    def is_configured(self) -> bool:
-        """Check if Pinecone is configured and available."""
-        return bool(settings.pinecone_api_key)
+    def is_configured(self, entity_id: Optional[str] = None) -> bool:
+        """
+        Check if Pinecone is configured and the specified entity's index is available.
+
+        Args:
+            entity_id: The entity to check. If None, checks if Pinecone is configured at all.
+        """
+        if not settings.pinecone_api_key:
+            return False
+
+        if entity_id is None:
+            return True
+
+        # Verify the entity exists in configuration
+        return settings.get_entity_by_index(entity_id) is not None
 
     async def get_embedding(self, text: str) -> List[float]:
         """
@@ -72,13 +113,26 @@ class MemoryService:
         role: str,
         content: str,
         created_at: datetime,
+        entity_id: Optional[str] = None,
     ) -> bool:
         """
         Store a message as a memory in the vector database.
 
+        Args:
+            message_id: Unique ID for the message
+            conversation_id: ID of the conversation
+            role: Message role (human/assistant)
+            content: Message content
+            created_at: When the message was created
+            entity_id: The Pinecone index name. If None, uses default entity.
+
         Returns True if successful, False otherwise.
         """
         if not self.is_configured():
+            return False
+
+        index = self.get_index(entity_id)
+        if index is None:
             return False
 
         embedding = await self.get_embedding(content)
@@ -89,7 +143,7 @@ class MemoryService:
         content_preview = content[:200] if len(content) > 200 else content
 
         try:
-            self.index.upsert(
+            index.upsert(
                 vectors=[{
                     "id": message_id,
                     "values": embedding,
@@ -113,6 +167,7 @@ class MemoryService:
         top_k: int = None,
         exclude_conversation_id: Optional[str] = None,
         exclude_ids: Optional[set] = None,
+        entity_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Search for relevant memories using semantic similarity.
@@ -122,11 +177,16 @@ class MemoryService:
             top_k: Number of results to return (defaults to config)
             exclude_conversation_id: Conversation ID to exclude from results
             exclude_ids: Set of message IDs to exclude (for deduplication)
+            entity_id: The Pinecone index name. If None, uses default entity.
 
         Returns:
             List of memory dicts with id, content, score, metadata
         """
         if not self.is_configured():
+            return []
+
+        index = self.get_index(entity_id)
+        if index is None:
             return []
 
         top_k = top_k or settings.retrieval_top_k
@@ -140,7 +200,7 @@ class MemoryService:
             # Query more than we need to allow for filtering
             fetch_k = top_k * 3
 
-            results = self.index.query(
+            results = index.query(
                 vector=embedding,
                 top_k=fetch_k,
                 include_metadata=True,
@@ -207,7 +267,8 @@ class MemoryService:
         self,
         message_id: str,
         conversation_id: str,
-        db: AsyncSession
+        db: AsyncSession,
+        entity_id: Optional[str] = None,
     ) -> bool:
         """
         Update retrieval count for a memory.
@@ -216,6 +277,12 @@ class MemoryService:
         - Updates last_retrieved_at timestamp
         - Creates ConversationMemoryLink for tracking
         - Updates Pinecone metadata
+
+        Args:
+            message_id: The message/memory ID
+            conversation_id: The conversation this retrieval is for
+            db: Database session
+            entity_id: The Pinecone index name. If None, uses default entity.
         """
         try:
             # Update SQL record
@@ -238,18 +305,20 @@ class MemoryService:
 
             # Update Pinecone metadata (get current count and increment)
             if self.is_configured():
-                try:
-                    # Fetch current vector to get metadata
-                    fetch_result = self.index.fetch(ids=[message_id])
-                    if message_id in fetch_result.vectors:
-                        current_count = fetch_result.vectors[message_id].metadata.get("times_retrieved", 0)
-                        # Update with incremented count
-                        self.index.update(
-                            id=message_id,
-                            set_metadata={"times_retrieved": current_count + 1}
-                        )
-                except Exception as e:
-                    print(f"Warning: Could not update Pinecone metadata: {e}")
+                index = self.get_index(entity_id)
+                if index:
+                    try:
+                        # Fetch current vector to get metadata
+                        fetch_result = index.fetch(ids=[message_id])
+                        if message_id in fetch_result.vectors:
+                            current_count = fetch_result.vectors[message_id].metadata.get("times_retrieved", 0)
+                            # Update with incremented count
+                            index.update(
+                                id=message_id,
+                                set_metadata={"times_retrieved": current_count + 1}
+                            )
+                    except Exception as e:
+                        print(f"Warning: Could not update Pinecone metadata: {e}")
 
             return True
         except Exception as e:
@@ -272,13 +341,23 @@ class MemoryService:
         )
         return set(row[0] for row in result.fetchall())
 
-    async def delete_memory(self, message_id: str) -> bool:
-        """Delete a memory from the vector database."""
+    async def delete_memory(self, message_id: str, entity_id: Optional[str] = None) -> bool:
+        """
+        Delete a memory from the vector database.
+
+        Args:
+            message_id: The message/memory ID to delete
+            entity_id: The Pinecone index name. If None, uses default entity.
+        """
         if not self.is_configured():
             return False
 
+        index = self.get_index(entity_id)
+        if index is None:
+            return False
+
         try:
-            self.index.delete(ids=[message_id])
+            index.delete(ids=[message_id])
             return True
         except Exception as e:
             print(f"Error deleting memory: {e}")
