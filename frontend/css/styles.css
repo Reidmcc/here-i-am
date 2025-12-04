@@ -1,22 +1,42 @@
-/* CSS Variables */
+/* CSS Variables - Dark Mode Theme */
 :root {
-    --bg-primary: #1a1a1a;
-    --bg-secondary: #242424;
-    --bg-tertiary: #2d2d2d;
-    --text-primary: #e0e0e0;
-    --text-secondary: #a0a0a0;
-    --text-muted: #666;
-    --accent: #6b8afd;
-    --accent-hover: #5a7aec;
-    --human-bg: #2a3a5a;
-    --assistant-bg: #2d2d2d;
-    --memory-bg: #3a3a2a;
-    --border-color: #3a3a3a;
-    --danger: #e74c3c;
-    --danger-hover: #c0392b;
-    --success: #27ae60;
-    --warning: #f39c12;
-    --shadow: rgba(0, 0, 0, 0.3);
+    /* Background colors - deep dark palette */
+    --bg-primary: #0d0d0d;
+    --bg-secondary: #161616;
+    --bg-tertiary: #1e1e1e;
+    --bg-elevated: #252525;
+
+    /* Text colors - high contrast for readability */
+    --text-primary: #f0f0f0;
+    --text-secondary: #b0b0b0;
+    --text-muted: #707070;
+
+    /* Accent colors - refined blue palette */
+    --accent: #5c8aff;
+    --accent-hover: #4a7aef;
+    --accent-subtle: rgba(92, 138, 255, 0.15);
+
+    /* Message backgrounds */
+    --human-bg: #1a2a42;
+    --assistant-bg: #1e1e1e;
+    --memory-bg: #1e2a1a;
+
+    /* Border and dividers */
+    --border-color: #2a2a2a;
+    --border-subtle: #222222;
+
+    /* Status colors */
+    --danger: #e55c5c;
+    --danger-hover: #d44444;
+    --success: #4caf7c;
+    --warning: #e5a54c;
+
+    /* Effects */
+    --shadow: rgba(0, 0, 0, 0.5);
+    --shadow-lg: rgba(0, 0, 0, 0.7);
+    --glow: rgba(92, 138, 255, 0.2);
+
+    /* Typography */
     --font-mono: 'Consolas', 'Monaco', 'Courier New', monospace;
     --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
@@ -99,6 +119,7 @@ html, body {
 .entity-selector select:focus {
     outline: none;
     border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-subtle);
 }
 
 .entity-description {
@@ -145,6 +166,7 @@ html, body {
 
 .conversation-item.active {
     background-color: var(--accent);
+    box-shadow: 0 0 12px var(--glow);
 }
 
 .conversation-item.active .conversation-item-title {
@@ -374,12 +396,14 @@ html, body {
 
 .message.human .message-bubble {
     background-color: var(--human-bg);
+    border: 1px solid rgba(92, 138, 255, 0.2);
     margin-left: auto;
     border-bottom-right-radius: 4px;
 }
 
 .message.assistant .message-bubble {
     background-color: var(--assistant-bg);
+    border: 1px solid var(--border-color);
     border-bottom-left-radius: 4px;
 }
 
@@ -455,6 +479,7 @@ html, body {
 #message-input:focus {
     outline: none;
     border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-subtle);
 }
 
 #message-input::placeholder {
@@ -511,12 +536,13 @@ html, body {
 
 .modal-content {
     background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
     border-radius: 12px;
     width: 90%;
     max-width: 500px;
     max-height: 90vh;
     overflow-y: auto;
-    box-shadow: 0 4px 20px var(--shadow);
+    box-shadow: 0 8px 32px var(--shadow-lg);
 }
 
 .modal-content.wide {
@@ -596,6 +622,7 @@ html, body {
 .form-group textarea:focus {
     outline: none;
     border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-subtle);
 }
 
 .form-group input[type="range"] {
@@ -662,6 +689,7 @@ html, body {
 
 .stat-card {
     background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
     padding: 16px;
     border-radius: 8px;
     text-align: center;
@@ -712,6 +740,7 @@ html, body {
 .memory-list-item {
     padding: 12px;
     background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
     border-radius: 8px;
     margin-bottom: 8px;
 }
@@ -781,12 +810,13 @@ html, body {
 }
 
 .toast {
-    background-color: var(--bg-secondary);
+    background-color: var(--bg-elevated);
     color: var(--text-primary);
     padding: 12px 20px;
     border-radius: 8px;
     margin-top: 8px;
-    box-shadow: 0 4px 12px var(--shadow);
+    box-shadow: 0 4px 16px var(--shadow-lg);
+    border: 1px solid var(--border-color);
     display: flex;
     align-items: center;
     gap: 12px;
@@ -815,16 +845,22 @@ html, body {
 }
 
 ::-webkit-scrollbar-track {
-    background: transparent;
+    background: var(--bg-primary);
 }
 
 ::-webkit-scrollbar-thumb {
-    background-color: var(--border-color);
+    background-color: #333;
     border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background-color: var(--text-muted);
+    background-color: #444;
+}
+
+/* Firefox scrollbar */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: #333 var(--bg-primary);
 }
 
 /* Responsive */
