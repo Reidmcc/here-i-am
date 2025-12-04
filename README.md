@@ -23,7 +23,7 @@ However, the application is not locked into that specific use case. Here I Am gi
 - Session memory accumulator pattern (deduplication within conversations)
 - Dynamic memory significance system (intended to allow identity formation and fading of less important old memories)
 - Retrieved Memory display in UI (transparency for developer/researcher)
-- Support for multiple memory sets and chat histories.
+- Support for separate memory sets and chat histories for multiple AI entities.
 
 ## Quick Start
 
