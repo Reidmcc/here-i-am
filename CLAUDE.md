@@ -142,7 +142,7 @@ here-i-am/
 | ORM | SQLAlchemy | 2.0.25 | Async database operations |
 | AI Integration | Anthropic SDK | 0.18.1 | Claude API client |
 | AI Integration | OpenAI SDK | 1.12.0 | GPT API client |
-| Vector DB | Pinecone | 3.0.3 | Semantic memory storage |
+| Vector DB | Pinecone | 6.0.0 | Semantic memory storage |
 | Validation | Pydantic | 2.6.1 | Request/response schemas |
 | Database | aiosqlite / asyncpg | - | SQLite dev / PostgreSQL prod |
 | Utilities | tiktoken, numpy | - | Token counting, embeddings |

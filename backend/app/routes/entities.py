@@ -111,8 +111,8 @@ async def get_entity_status(entity_id: str):
             "pinecone_configured": True,
             "index_connected": True,
             "stats": {
-                "total_vector_count": stats.get("total_vector_count", 0),
-                "dimension": stats.get("dimension"),
+                "total_vector_count": stats.total_vector_count or 0,
+                "dimension": stats.dimension,
             },
         }
     except Exception as e:
