@@ -50,26 +50,6 @@ class ApiClient {
         return this.request(`/entities/${entityId}/status`);
     }
 
-    async createEntity(data) {
-        return this.request('/entities/', {
-            method: 'POST',
-            body: data,
-        });
-    }
-
-    async updateEntity(entityId, data) {
-        return this.request(`/entities/${entityId}`, {
-            method: 'PATCH',
-            body: data,
-        });
-    }
-
-    async deleteEntity(entityId) {
-        return this.request(`/entities/${entityId}`, {
-            method: 'DELETE',
-        });
-    }
-
     // Conversations
     async listConversations(limit = 50, offset = 0, entityId = null) {
         let url = `/conversations/?limit=${limit}&offset=${offset}`;

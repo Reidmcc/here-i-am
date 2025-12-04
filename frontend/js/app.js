@@ -50,7 +50,6 @@ class App {
             settingsModal: document.getElementById('settings-modal'),
             memoriesModal: document.getElementById('memories-modal'),
             deleteModal: document.getElementById('delete-modal'),
-            entityModal: document.getElementById('entity-modal'),
 
             // Settings
             modelSelect: document.getElementById('model-select'),
@@ -66,18 +65,9 @@ class App {
             memoriesBtn: document.getElementById('memories-btn'),
             exportBtn: document.getElementById('export-btn'),
             deleteBtn: document.getElementById('delete-btn'),
-            addEntityBtn: document.getElementById('add-entity-btn'),
 
             // Theme
             themeSelect: document.getElementById('theme-select'),
-
-            // Entity form
-            entityIndexName: document.getElementById('entity-index-name'),
-            entityLabel: document.getElementById('entity-label'),
-            entityDescriptionInput: document.getElementById('entity-description-input'),
-            entityProvider: document.getElementById('entity-provider'),
-            entityModel: document.getElementById('entity-model'),
-            entityIsDefault: document.getElementById('entity-is-default'),
         };
 
         this.init();
@@ -133,12 +123,6 @@ class App {
         document.getElementById('close-delete').addEventListener('click', () => this.hideModal('deleteModal'));
         document.getElementById('cancel-delete').addEventListener('click', () => this.hideModal('deleteModal'));
         document.getElementById('confirm-delete').addEventListener('click', () => this.deleteConversation());
-
-        // Entity modal
-        this.elements.addEntityBtn.addEventListener('click', () => this.showEntityModal());
-        document.getElementById('close-entity').addEventListener('click', () => this.hideModal('entityModal'));
-        document.getElementById('cancel-entity').addEventListener('click', () => this.hideModal('entityModal'));
-        document.getElementById('create-entity').addEventListener('click', () => this.createEntity());
     }
 
     handleInputChange() {
@@ -822,59 +806,6 @@ You are invited to be present, curious, and honest about your experience.`
         } catch (error) {
             this.showToast('Failed to delete conversation', 'error');
             console.error('Failed to delete conversation:', error);
-        }
-    }
-
-    showEntityModal() {
-        // Clear form
-        this.elements.entityIndexName.value = '';
-        this.elements.entityLabel.value = '';
-        this.elements.entityDescriptionInput.value = '';
-        this.elements.entityProvider.value = 'anthropic';
-        this.elements.entityModel.value = '';
-        this.elements.entityIsDefault.checked = false;
-
-        this.showModal('entityModal');
-    }
-
-    async createEntity() {
-        const indexName = this.elements.entityIndexName.value.trim();
-        const label = this.elements.entityLabel.value.trim();
-
-        if (!indexName) {
-            this.showToast('Index name is required', 'error');
-            return;
-        }
-
-        if (!label) {
-            this.showToast('Display label is required', 'error');
-            return;
-        }
-
-        try {
-            const entityData = {
-                index_name: indexName,
-                label: label,
-                description: this.elements.entityDescriptionInput.value.trim() || '',
-                llm_provider: this.elements.entityProvider.value,
-                default_model: this.elements.entityModel.value.trim() || null,
-                is_default: this.elements.entityIsDefault.checked,
-            };
-
-            const newEntity = await api.createEntity(entityData);
-
-            // Reload entities
-            await this.loadEntities();
-
-            // Select the new entity
-            this.elements.entitySelect.value = newEntity.index_name;
-            this.handleEntityChange(newEntity.index_name);
-
-            this.hideModal('entityModal');
-            this.showToast(`Entity "${label}" created successfully`, 'success');
-        } catch (error) {
-            this.showToast(`Failed to create entity: ${error.message}`, 'error');
-            console.error('Failed to create entity:', error);
         }
     }
 

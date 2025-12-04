@@ -18,12 +18,9 @@
             <!-- Entity Selector -->
             <div class="entity-selector" id="entity-selector">
                 <label for="entity-select">AI Entity</label>
-                <div class="entity-select-row">
-                    <select id="entity-select">
-                        <!-- Entities will be loaded dynamically -->
-                    </select>
-                    <button id="add-entity-btn" class="add-entity-btn" title="Add new entity">+</button>
-                </div>
+                <select id="entity-select">
+                    <!-- Entities will be loaded dynamically -->
+                </select>
                 <p class="entity-description" id="entity-description"></p>
             </div>
 
@@ -201,58 +198,6 @@
             <div class="modal-footer">
                 <button id="cancel-delete" class="secondary-btn">Cancel</button>
                 <button id="confirm-delete" class="danger-btn">Delete</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Entity Creation Modal -->
-    <div class="modal" id="entity-modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Add New Entity</h3>
-                <button class="close-btn" id="close-entity">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label for="entity-index-name">Index Name</label>
-                    <input type="text" id="entity-index-name" placeholder="e.g., claude-research">
-                    <p class="form-help">The Pinecone index name. Must be pre-created in Pinecone with dimension=1024.</p>
-                </div>
-
-                <div class="form-group">
-                    <label for="entity-label">Display Label</label>
-                    <input type="text" id="entity-label" placeholder="e.g., Claude Research">
-                </div>
-
-                <div class="form-group">
-                    <label for="entity-description-input">Description (optional)</label>
-                    <input type="text" id="entity-description-input" placeholder="e.g., Research conversations">
-                </div>
-
-                <div class="form-group">
-                    <label for="entity-provider">LLM Provider</label>
-                    <select id="entity-provider">
-                        <option value="anthropic">Anthropic (Claude)</option>
-                        <option value="openai">OpenAI (GPT)</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label for="entity-model">Default Model (optional)</label>
-                    <input type="text" id="entity-model" placeholder="e.g., claude-sonnet-4-5-20250929">
-                    <p class="form-help">Leave blank to use provider's default model.</p>
-                </div>
-
-                <div class="form-group">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="entity-is-default">
-                        Set as default entity
-                    </label>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button id="cancel-entity" class="secondary-btn">Cancel</button>
-                <button id="create-entity" class="primary-btn">Create Entity</button>
             </div>
         </div>
     </div>
