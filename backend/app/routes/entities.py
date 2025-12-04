@@ -12,6 +12,8 @@ class EntityResponse(BaseModel):
     index_name: str
     label: str
     description: str
+    model_provider: str = "anthropic"
+    default_model: Optional[str] = None
     is_default: bool = False
 
 
@@ -26,7 +28,7 @@ async def list_entities():
     List all configured AI entities.
 
     Each entity corresponds to a separate Pinecone index with its own
-    conversation history and memory.
+    conversation history and memory, and can have its own model provider/model.
     """
     entities = settings.get_entities()
     default_entity = settings.get_default_entity()
@@ -37,6 +39,8 @@ async def list_entities():
                 index_name=entity.index_name,
                 label=entity.label,
                 description=entity.description,
+                model_provider=entity.model_provider,
+                default_model=entity.default_model,
                 is_default=(entity.index_name == default_entity.index_name),
             )
             for entity in entities
@@ -59,6 +63,8 @@ async def get_entity(entity_id: str):
         index_name=entity.index_name,
         label=entity.label,
         description=entity.description,
+        model_provider=entity.model_provider,
+        default_model=entity.default_model,
         is_default=(entity.index_name == default_entity.index_name),
     )
 

@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.models import Conversation, Message, MessageRole
 from app.services.memory_service import memory_service
-from app.services.anthropic_service import anthropic_service
+from app.services.llm_service import llm_service
 from app.config import settings
 
 
@@ -105,9 +105,17 @@ class SessionManager:
         entity_id: Optional[str] = None,
     ) -> ConversationSession:
         """Create a new session for a conversation."""
+        # Determine default model based on entity configuration
+        if model is None and entity_id:
+            entity = settings.get_entity_by_index(entity_id)
+            if entity:
+                # Use entity's default model, or fall back to provider default
+                model = entity.default_model or settings.get_default_model_for_provider(entity.model_provider)
+        model = model or settings.default_model
+
         session = ConversationSession(
             conversation_id=conversation_id,
-            model=model or settings.default_model,
+            model=model,
             temperature=temperature if temperature is not None else settings.default_temperature,
             max_tokens=max_tokens or settings.default_max_tokens,
             system_prompt=system_prompt,
@@ -233,17 +241,18 @@ class SessionManager:
 
         # Step 4: Build API messages
         memories_for_injection = session.get_memories_for_injection()
-        messages = anthropic_service.build_messages_with_memories(
+        messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
             current_message=user_message,
+            model=session.model,
         )
 
-        # Step 5: Call Claude API
-        response = await anthropic_service.send_message(
+        # Step 5: Call LLM API (routes to appropriate provider based on model)
+        response = await llm_service.send_message(
             messages=messages,
-            system_prompt=session.system_prompt,
             model=session.model,
+            system_prompt=session.system_prompt,
             temperature=session.temperature,
             max_tokens=session.max_tokens,
         )
