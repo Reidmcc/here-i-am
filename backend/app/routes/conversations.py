@@ -16,7 +16,7 @@ class ConversationCreate(BaseModel):
     tags: Optional[List[str]] = None
     conversation_type: str = "normal"
     system_prompt: Optional[str] = None
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "claude-sonnet-4-5-latest"
     entity_id: Optional[str] = None  # Pinecone index name for the AI entity
 
 
@@ -76,7 +76,7 @@ class SeedConversationImport(BaseModel):
     tags: Optional[List[str]] = None
     conversation_type: str = "normal"
     system_prompt_used: Optional[str] = None
-    model_used: str = "claude-sonnet-4-20250514"
+    model_used: str = "claude-sonnet-4-5-latest"
     notes: Optional[str] = None
     entity_id: Optional[str] = None  # Pinecone index name for the AI entity
     messages: List[dict]  # List of {role: str, content: str, times_retrieved?: int}

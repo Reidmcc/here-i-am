@@ -16,14 +16,14 @@ class TestEntityConfig:
             label="Test Entity",
             description="A test entity",
             model_provider="anthropic",
-            default_model="claude-sonnet-4-20250514",
+            default_model="claude-sonnet-4-5-latest",
         )
 
         assert entity.index_name == "test-index"
         assert entity.label == "Test Entity"
         assert entity.description == "A test entity"
         assert entity.model_provider == "anthropic"
-        assert entity.default_model == "claude-sonnet-4-20250514"
+        assert entity.default_model == "claude-sonnet-4-5-latest"
 
     def test_entity_config_defaults(self):
         """Test EntityConfig default values."""
@@ -55,7 +55,7 @@ class TestEntityConfig:
             label="Test Entity",
             description="A test entity",
             model_provider="anthropic",
-            default_model="claude-sonnet-4-20250514",
+            default_model="claude-sonnet-4-5-latest",
         )
 
         result = entity.to_dict()
@@ -65,7 +65,7 @@ class TestEntityConfig:
             "label": "Test Entity",
             "description": "A test entity",
             "model_provider": "anthropic",
-            "default_model": "claude-sonnet-4-20250514",
+            "default_model": "claude-sonnet-4-5-latest",
         }
 
 
@@ -79,7 +79,7 @@ class TestSettings:
             _env_file=None,  # Disable .env loading for test
         )
 
-        assert settings.default_model == "claude-sonnet-4-20250514"
+        assert settings.default_model == "claude-sonnet-4-5-latest"
         assert settings.default_openai_model == "gpt-4o"
         assert settings.default_temperature == 1.0
         assert settings.default_max_tokens == 4096
@@ -166,13 +166,13 @@ class TestSettings:
         """Test get_default_model_for_provider for Anthropic."""
         settings = Settings(
             anthropic_api_key="test-key",
-            default_model="claude-3-opus-20240229",
+            default_model="claude-3-opus-latest",
             _env_file=None,
         )
 
         model = settings.get_default_model_for_provider("anthropic")
 
-        assert model == "claude-3-opus-20240229"
+        assert model == "claude-3-opus-latest"
 
     def test_get_default_model_for_provider_openai(self):
         """Test get_default_model_for_provider for OpenAI."""
