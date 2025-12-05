@@ -422,7 +422,7 @@ class SessionManager:
             current_message=user_message,
         )
 
-        # Step 5: Build API messages
+        # Step 5: Build API messages with caching enabled for Anthropic
         memories_for_injection = session.get_memories_for_injection()
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
@@ -430,15 +430,18 @@ class SessionManager:
             current_message=user_message,
             model=session.model,
             conversation_start_date=session.conversation_start_date,
+            enable_caching=True,  # Enable Anthropic prompt caching
         )
 
         # Step 6: Call LLM API (routes to appropriate provider based on model)
+        # Prompt caching is enabled to reduce costs and latency on repeated context
         response = await llm_service.send_message(
             messages=messages,
             model=session.model,
             system_prompt=session.system_prompt,
             temperature=session.temperature,
             max_tokens=session.max_tokens,
+            enable_caching=True,
         )
 
         # Step 7: Update conversation context
@@ -564,7 +567,7 @@ class SessionManager:
             "trimmed_context_messages": trimmed_context_count,
         }
 
-        # Step 4: Build API messages
+        # Step 4: Build API messages with caching enabled for Anthropic
         memories_for_injection = session.get_memories_for_injection()
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
@@ -572,9 +575,10 @@ class SessionManager:
             current_message=user_message,
             model=session.model,
             conversation_start_date=session.conversation_start_date,
+            enable_caching=True,  # Enable Anthropic prompt caching
         )
 
-        # Step 5: Stream LLM response
+        # Step 5: Stream LLM response with caching enabled
         full_content = ""
         async for event in llm_service.send_message_stream(
             messages=messages,
@@ -582,6 +586,7 @@ class SessionManager:
             system_prompt=session.system_prompt,
             temperature=session.temperature,
             max_tokens=session.max_tokens,
+            enable_caching=True,
         ):
             if event["type"] == "token":
                 full_content += event["content"]

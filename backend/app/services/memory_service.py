@@ -14,10 +14,23 @@ class MemoryService:
 
     Pinecone handles embedding generation internally - we pass raw text and
     Pinecone generates embeddings using the model configured on the index.
+
+    Includes caching for:
+    - Memory search results (short TTL to reduce Pinecone API calls)
+    - Full memory content lookups (medium TTL to reduce DB queries)
     """
     def __init__(self):
         self._pc = None
         self._indexes: Dict[str, Any] = {}  # Cache for multiple indexes
+        self._cache_service = None
+
+    @property
+    def cache(self):
+        """Lazy load cache service to avoid circular imports."""
+        if self._cache_service is None:
+            from app.services.cache_service import cache_service
+            self._cache_service = cache_service
+        return self._cache_service
 
     @property
     def pc(self):
@@ -152,6 +165,7 @@ class MemoryService:
         exclude_conversation_id: Optional[str] = None,
         exclude_ids: Optional[set] = None,
         entity_id: Optional[str] = None,
+        use_cache: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         Search for relevant memories using semantic similarity.
@@ -159,12 +173,16 @@ class MemoryService:
         Uses Pinecone's integrated inference - pass raw text and Pinecone
         generates embeddings using the model configured on the index.
 
+        Results are cached for 60 seconds by default to reduce Pinecone API calls
+        during multi-turn conversations with similar queries.
+
         Args:
             query: The query text to search for
             top_k: Number of results to return (defaults to config)
             exclude_conversation_id: Conversation ID to exclude from results
             exclude_ids: Set of message IDs to exclude (for deduplication)
             entity_id: The Pinecone index name. If None, uses default entity.
+            use_cache: Whether to use cached results (default True)
 
         Returns:
             List of memory dicts with id, content, score, metadata
@@ -178,6 +196,29 @@ class MemoryService:
 
         top_k = top_k or settings.retrieval_top_k
         exclude_ids = exclude_ids or set()
+
+        # Check cache first (before exclude_ids filtering, which happens post-query)
+        # Cache key doesn't include exclude_ids since we filter after retrieval
+        if use_cache:
+            cached_results = self.cache.get_search_results(
+                query=query,
+                entity_id=entity_id,
+                top_k=top_k * 2,  # Cache the larger fetch_k results
+                exclude_conversation_id=exclude_conversation_id,
+            )
+            if cached_results is not None:
+                print(f"[DEBUG] search_memories: CACHE HIT")
+                # Apply exclude_ids filter to cached results
+                filtered = []
+                for mem in cached_results:
+                    if mem["id"] in exclude_ids:
+                        continue
+                    if mem["score"] < settings.similarity_threshold:
+                        continue
+                    filtered.append(mem)
+                    if len(filtered) >= top_k:
+                        break
+                return filtered
 
         try:
             # Query more than we need to allow for filtering
@@ -195,7 +236,7 @@ class MemoryService:
                 },
             )
 
-            memories = []
+            all_memories = []
             # Pinecone inference search returns: results.result.hits
             # Each hit has: _id, _score, fields (metadata dict)
             hits = results.result.hits if hasattr(results, 'result') and hasattr(results.result, 'hits') else []
@@ -209,22 +250,12 @@ class MemoryService:
                 fields = hit_dict.get('fields', {})
                 conv_id = fields.get("conversation_id")
 
-                # Log filtering decisions
-                if match_score < settings.similarity_threshold:
-                    print(f"[DEBUG] SKIP (score {match_score:.3f} < {settings.similarity_threshold}): {match_id[:8]}...")
-                    continue
-
-                if match_id in exclude_ids:
-                    print(f"[DEBUG] SKIP (already retrieved): {match_id[:8]}...")
-                    continue
-
+                # Skip same conversation (this filter is part of cache key)
                 if exclude_conversation_id and conv_id == exclude_conversation_id:
                     print(f"[DEBUG] SKIP (same conversation): {match_id[:8]}...")
                     continue
 
-                print(f"[DEBUG] INCLUDE: {match_id[:8]}... score={match_score:.3f}")
-
-                memories.append({
+                all_memories.append({
                     "id": match_id,
                     "score": match_score,
                     "conversation_id": conv_id,
@@ -233,6 +264,30 @@ class MemoryService:
                     "content_preview": fields.get("content_preview"),
                     "times_retrieved": fields.get("times_retrieved", 0),
                 })
+
+            # Cache the raw results (before exclude_ids and threshold filtering)
+            if use_cache:
+                self.cache.set_search_results(
+                    query=query,
+                    entity_id=entity_id,
+                    top_k=fetch_k,
+                    exclude_conversation_id=exclude_conversation_id,
+                    results=all_memories,
+                )
+
+            # Now apply exclude_ids and threshold filtering
+            memories = []
+            for mem in all_memories:
+                if mem["score"] < settings.similarity_threshold:
+                    print(f"[DEBUG] SKIP (score {mem['score']:.3f} < {settings.similarity_threshold}): {mem['id'][:8]}...")
+                    continue
+
+                if mem["id"] in exclude_ids:
+                    print(f"[DEBUG] SKIP (already retrieved): {mem['id'][:8]}...")
+                    continue
+
+                print(f"[DEBUG] INCLUDE: {mem['id'][:8]}... score={mem['score']:.3f}")
+                memories.append(mem)
 
                 if len(memories) >= top_k:
                     break
@@ -246,26 +301,48 @@ class MemoryService:
     async def get_full_memory_content(
         self,
         message_id: str,
-        db: AsyncSession
+        db: AsyncSession,
+        use_cache: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """
         Get full memory content from the SQL database.
+
+        Results are cached for 5 minutes to reduce database queries when
+        the same memory is accessed multiple times.
+
+        Args:
+            message_id: The message/memory ID to fetch
+            db: Database session
+            use_cache: Whether to use cached results (default True)
+
+        Returns:
+            Dict with memory content or None if not found
         """
+        # Check cache first
+        if use_cache:
+            cached_content = self.cache.get_memory_content(message_id)
+            if cached_content is not None:
+                return cached_content
+
         result = await db.execute(
             select(Message).where(Message.id == message_id)
         )
         message = result.scalar_one_or_none()
 
         if message:
-            return {
-                "id": message.id,
-                "conversation_id": message.conversation_id,
+            content_dict = {
+                "id": str(message.id),
+                "conversation_id": str(message.conversation_id),
                 "role": message.role.value,
                 "content": message.content,
                 "created_at": message.created_at.isoformat(),
                 "times_retrieved": message.times_retrieved,
                 "last_retrieved_at": message.last_retrieved_at.isoformat() if message.last_retrieved_at else None,
             }
+            # Cache the result
+            if use_cache:
+                self.cache.set_memory_content(message_id, content_dict)
+            return content_dict
         return None
 
     async def update_retrieval_count(
