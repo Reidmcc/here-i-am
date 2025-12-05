@@ -187,32 +187,48 @@ class MemoryService:
             results = index.search(
                 namespace="",
                 query={"text": query},  # Pinecone will embed this
-                top_k=fetch_k,
-                include_metadata=True,
+                limit=fetch_k,
             )
 
+            print(f"[DEBUG] search_memories: Got results type={type(results)}")
+            print(f"[DEBUG] search_memories: Results={results}")
+
             memories = []
-            for match in results.matches:
+            # With inference API, results might be a list directly or have different structure
+            matches = getattr(results, 'matches', results.get('matches', results) if isinstance(results, dict) else results)
+            print(f"[DEBUG] search_memories: matches type={type(matches)}, len={len(matches) if hasattr(matches, '__len__') else 'N/A'}")
+
+            for match in matches:
+                # Handle different result structures (object vs dict)
+                match_id = getattr(match, 'id', None) or match.get('id') or match.get('_id')
+                match_score = getattr(match, 'score', None) or match.get('score', 0)
+                match_metadata = getattr(match, 'metadata', None) or match.get('metadata', {}) or match
+
+                print(f"[DEBUG] match: id={match_id}, score={match_score}, metadata={match_metadata}")
+
                 # Skip if below similarity threshold
-                if match.score < settings.similarity_threshold:
+                if match_score < settings.similarity_threshold:
                     continue
 
                 # Skip if in exclude set
-                if match.id in exclude_ids:
+                if match_id in exclude_ids:
                     continue
 
+                # Get metadata values - might be in metadata dict or directly on match
+                conv_id = match_metadata.get("conversation_id") if isinstance(match_metadata, dict) else getattr(match_metadata, 'conversation_id', None)
+
                 # Skip if from current conversation (don't retrieve your own context)
-                if exclude_conversation_id and match.metadata.get("conversation_id") == exclude_conversation_id:
+                if exclude_conversation_id and conv_id == exclude_conversation_id:
                     continue
 
                 memories.append({
-                    "id": match.id,
-                    "score": match.score,
-                    "conversation_id": match.metadata.get("conversation_id"),
-                    "created_at": match.metadata.get("created_at"),
-                    "role": match.metadata.get("role"),
-                    "content_preview": match.metadata.get("content_preview"),
-                    "times_retrieved": match.metadata.get("times_retrieved", 0),
+                    "id": match_id,
+                    "score": match_score,
+                    "conversation_id": conv_id,
+                    "created_at": match_metadata.get("created_at") if isinstance(match_metadata, dict) else getattr(match_metadata, 'created_at', None),
+                    "role": match_metadata.get("role") if isinstance(match_metadata, dict) else getattr(match_metadata, 'role', None),
+                    "content_preview": match_metadata.get("content_preview") if isinstance(match_metadata, dict) else getattr(match_metadata, 'content_preview', None),
+                    "times_retrieved": match_metadata.get("times_retrieved", 0) if isinstance(match_metadata, dict) else getattr(match_metadata, 'times_retrieved', 0),
                 })
 
                 if len(memories) >= top_k:
