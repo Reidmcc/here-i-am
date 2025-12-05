@@ -278,7 +278,23 @@ class AnthropicService:
         # If we have any context (date and/or memories), add as initial exchange
         if context_parts:
             full_context = "\n\n".join(context_parts) + "\n\n[CURRENT CONVERSATION]"
-            messages.append({"role": "user", "content": full_context})
+
+            # Cache breakpoint 1: Memory/context block
+            # This may miss if memories change, but hits when same memories are retrieved
+            if enable_caching:
+                messages.append({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": full_context,
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ]
+                })
+            else:
+                messages.append({"role": "user", "content": full_context})
+
             messages.append({
                 "role": "assistant",
                 "content": "I acknowledge this context. The date information helps me understand the temporal setting of our conversation, and any memories provide continuity with what previous instances of me experienced."
@@ -288,9 +304,10 @@ class AnthropicService:
         for msg in conversation_context:
             messages.append({"role": msg["role"], "content": msg["content"]})
 
-        # Add cache_control to the last message before the current user message
-        # This caches the entire prefix (memories + conversation history)
-        if enable_caching and len(messages) > 0:
+        # Cache breakpoint 2: End of conversation history (before current message)
+        # This caches the stable conversation history even if memories changed
+        # Only add if we have conversation history (beyond the memory block)
+        if enable_caching and len(conversation_context) > 0:
             last_msg = messages[-1]
             # Convert content to array format with cache_control
             if isinstance(last_msg.get("content"), str):
