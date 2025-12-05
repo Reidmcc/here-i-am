@@ -887,8 +887,10 @@ async def import_external_conversations(
             if msg.get("id"):
                 all_message_ids.append(msg["id"])
 
-    existing_ids = set()
+    existing_ids = set()  # IDs that exist for THIS entity (skip these)
+    global_existing_ids = set()  # IDs that exist for ANY entity (need new IDs)
     if all_message_ids:
+        # Check for IDs already imported to THIS entity (for skipping)
         result = await db.execute(
             select(Message.id)
             .join(Conversation)
@@ -898,6 +900,13 @@ async def import_external_conversations(
             )
         )
         existing_ids = {row[0] for row in result.fetchall()}
+
+        # Check for IDs that exist globally (for ID regeneration)
+        # This handles the case where the same file is imported to multiple entities
+        result = await db.execute(
+            select(Message.id).where(Message.id.in_(all_message_ids))
+        )
+        global_existing_ids = {row[0] for row in result.fetchall()}
 
     # Import conversations
     total_messages = 0
@@ -956,14 +965,23 @@ async def import_external_conversations(
             role = MessageRole.HUMAN if msg_data["role"] == "human" else MessageRole.ASSISTANT
             content = msg_data["content"]
 
-            # Skip if message already exists (deduplication)
+            # Skip if message already exists for THIS entity (deduplication)
             if msg_id and msg_id in existing_ids:
                 skipped_messages += 1
                 continue
 
-            # Use original ID if available, otherwise generate new
+            # Determine the message ID to use:
+            # - If ID exists globally (another entity), generate new ID
+            # - If ID is available and not used, use original
+            # - If no ID provided, auto-generate
+            if msg_id and msg_id in global_existing_ids:
+                # ID exists for another entity, generate new ID for this entity
+                use_id = None  # Will auto-generate UUID
+            else:
+                use_id = msg_id if msg_id else None
+
             message = Message(
-                id=msg_id if msg_id else None,  # None will auto-generate UUID
+                id=use_id,
                 conversation_id=conversation.id,
                 role=role,
                 content=content,

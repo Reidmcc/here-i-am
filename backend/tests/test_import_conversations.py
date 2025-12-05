@@ -697,3 +697,133 @@ class TestEdgeCases:
                 convs_after = len(count_after.scalars().all())
 
                 assert convs_after == convs_before
+
+
+class TestCrossEntityImport:
+    """Tests for importing the same file to multiple entities."""
+
+    async def test_import_same_file_to_multiple_entities(self, db_session):
+        """Test that the same file can be imported to different entities.
+
+        When importing to entity A first, then entity B, the messages for entity B
+        should get new UUIDs since the original IDs are already in the database
+        (as primary keys for entity A's messages).
+        """
+        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+
+        with patch("app.routes.conversations.settings") as mock_settings:
+            mock_settings.get_entity_by_index.return_value = MagicMock()
+
+            with patch("app.services.memory_service") as mock_mem:
+                mock_mem.is_configured.return_value = True
+                mock_mem.store_memory = AsyncMock(return_value=True)
+
+                export_data = [
+                    {
+                        "uuid": "conv-cross-entity",
+                        "name": "Cross Entity Test",
+                        "chat_messages": [
+                            {"uuid": "cross-msg-1", "sender": "human", "text": "Hello"},
+                            {"uuid": "cross-msg-2", "sender": "assistant", "text": "Hi there"},
+                        ],
+                    }
+                ]
+
+                # Import to entity A
+                data_a = ExternalConversationImport(
+                    content=json.dumps(export_data),
+                    entity_id="entity-a",
+                    source="anthropic",
+                )
+                result_a = await import_external_conversations(data_a, db_session)
+                assert result_a["conversations_imported"] == 1
+                assert result_a["messages_imported"] == 2
+
+                # Import same file to entity B - should succeed with new message IDs
+                data_b = ExternalConversationImport(
+                    content=json.dumps(export_data),
+                    entity_id="entity-b",
+                    source="anthropic",
+                )
+                result_b = await import_external_conversations(data_b, db_session)
+                assert result_b["conversations_imported"] == 1
+                assert result_b["messages_imported"] == 2
+                assert result_b["messages_skipped"] == 0
+
+                # Verify both entities have their own conversations
+                query = select(Conversation).where(Conversation.entity_id == "entity-a")
+                result = await db_session.execute(query)
+                entity_a_convs = result.scalars().all()
+                assert len(entity_a_convs) == 1
+
+                query = select(Conversation).where(Conversation.entity_id == "entity-b")
+                result = await db_session.execute(query)
+                entity_b_convs = result.scalars().all()
+                assert len(entity_b_convs) == 1
+
+                # Verify messages have different IDs
+                query = select(Message).join(Conversation).where(
+                    Conversation.entity_id == "entity-a"
+                )
+                result = await db_session.execute(query)
+                entity_a_msgs = result.scalars().all()
+
+                query = select(Message).join(Conversation).where(
+                    Conversation.entity_id == "entity-b"
+                )
+                result = await db_session.execute(query)
+                entity_b_msgs = result.scalars().all()
+
+                # Entity A should have original IDs (first import)
+                entity_a_ids = {m.id for m in entity_a_msgs}
+                assert "cross-msg-1" in entity_a_ids
+                assert "cross-msg-2" in entity_a_ids
+
+                # Entity B should have different IDs (generated due to collision)
+                entity_b_ids = {m.id for m in entity_b_msgs}
+                assert "cross-msg-1" not in entity_b_ids
+                assert "cross-msg-2" not in entity_b_ids
+
+                # Both entities should have 2 messages each
+                assert len(entity_a_msgs) == 2
+                assert len(entity_b_msgs) == 2
+
+    async def test_reimport_to_same_entity_still_deduplicates(self, db_session):
+        """Test that reimporting to the same entity still skips duplicates.
+
+        After the cross-entity fix, we need to ensure that importing the same
+        file twice to the SAME entity still correctly deduplicates.
+        """
+        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+
+        with patch("app.routes.conversations.settings") as mock_settings:
+            mock_settings.get_entity_by_index.return_value = MagicMock()
+
+            with patch("app.services.memory_service") as mock_mem:
+                mock_mem.is_configured.return_value = True
+                mock_mem.store_memory = AsyncMock(return_value=True)
+
+                export_data = [
+                    {
+                        "uuid": "conv-same-entity",
+                        "name": "Same Entity Test",
+                        "chat_messages": [
+                            {"uuid": "same-msg-1", "sender": "human", "text": "Hello"},
+                        ],
+                    }
+                ]
+
+                # First import
+                data = ExternalConversationImport(
+                    content=json.dumps(export_data),
+                    entity_id="entity-same",
+                    source="anthropic",
+                )
+                result1 = await import_external_conversations(data, db_session)
+                assert result1["messages_imported"] == 1
+                assert result1["messages_skipped"] == 0
+
+                # Second import to SAME entity - should skip as duplicate
+                result2 = await import_external_conversations(data, db_session)
+                assert result2["messages_imported"] == 0
+                assert result2["messages_skipped"] == 1
