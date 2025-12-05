@@ -180,19 +180,28 @@ class MemoryService:
         exclude_ids = exclude_ids or set()
 
         try:
-            # Query more than we need to allow for filtering
+            # Query more than we need to allow for filtering by exclude_ids
             fetch_k = top_k * 2
 
             print(f"[DEBUG] search_memories: threshold={settings.similarity_threshold}, exclude_conv={exclude_conversation_id}")
 
+            # Build search query with optional metadata filter
+            search_query = {
+                "inputs": {"text": query},  # Pinecone will embed this
+                "top_k": fetch_k,
+            }
+
+            # Add metadata filter to exclude current conversation at Pinecone level
+            # This is more efficient than filtering in Python after retrieval
+            if exclude_conversation_id:
+                search_query["filter"] = {
+                    "conversation_id": {"$ne": exclude_conversation_id}
+                }
+
             # Use Pinecone's integrated inference - search with raw text
-            # The query parameter takes inputs (with text) and top_k together
             results = index.search(
                 namespace="",
-                query={
-                    "inputs": {"text": query},  # Pinecone will embed this
-                    "top_k": fetch_k,
-                },
+                query=search_query,
             )
 
             memories = []
