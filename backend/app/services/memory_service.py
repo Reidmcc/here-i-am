@@ -393,6 +393,71 @@ class MemoryService:
             print(f"Error deleting memory: {e}")
             return False
 
+    def test_connection(self) -> Dict[str, Any]:
+        """
+        Test Pinecone connection for all configured entities.
+
+        Returns a dict with:
+            - configured: bool - whether Pinecone is configured at all
+            - entities: list of dicts with entity_id, success, message, and stats
+        """
+        result = {
+            "configured": False,
+            "entities": []
+        }
+
+        # Check if Pinecone is configured
+        if not settings.pinecone_api_key:
+            return result
+
+        result["configured"] = True
+
+        # Get all configured entities
+        entities = settings.get_entities()
+        if not entities:
+            result["entities"].append({
+                "entity_id": None,
+                "success": False,
+                "message": "No entities configured in PINECONE_INDEXES",
+                "stats": None
+            })
+            return result
+
+        # Test connection to each entity's index
+        for entity in entities:
+            entity_result = {
+                "entity_id": entity.index_name,
+                "label": entity.label,
+                "host": entity.host,
+                "success": False,
+                "message": "",
+                "stats": None
+            }
+
+            try:
+                # Clear cached index to force fresh connection
+                if entity.index_name in self._indexes:
+                    del self._indexes[entity.index_name]
+
+                index = self.get_index(entity.index_name)
+                if index is None:
+                    entity_result["message"] = "Failed to connect to index"
+                else:
+                    # Try to get index stats to verify connection works
+                    stats = index.describe_index_stats()
+                    entity_result["success"] = True
+                    entity_result["message"] = "Connection successful"
+                    entity_result["stats"] = {
+                        "total_vector_count": stats.total_vector_count,
+                        "dimension": stats.dimension,
+                    }
+            except Exception as e:
+                entity_result["message"] = f"Connection error: {str(e)}"
+
+            result["entities"].append(entity_result)
+
+        return result
+
 
 # Singleton instance
 memory_service = MemoryService()

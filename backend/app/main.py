@@ -7,12 +7,54 @@ from pathlib import Path
 from app.database import init_db
 from app.routes import conversations_router, chat_router, memories_router, entities_router
 from app.config import settings
+from app.services.memory_service import memory_service
+
+
+def run_pinecone_connection_test():
+    """Run Pinecone connection test and print results to terminal."""
+    print("\n" + "=" * 60)
+    print("PINECONE CONNECTION TEST")
+    print("=" * 60)
+
+    result = memory_service.test_connection()
+
+    if not result["configured"]:
+        print("Status: SKIPPED")
+        print("Reason: No PINECONE_API_KEY configured in environment")
+        print("Memory system will be disabled.")
+        print("=" * 60 + "\n")
+        return
+
+    print(f"Pinecone API Key: Configured")
+    print(f"Entities to test: {len(result['entities'])}")
+    print("-" * 60)
+
+    all_passed = True
+    for entity in result["entities"]:
+        status = "PASS" if entity["success"] else "FAIL"
+        if not entity["success"]:
+            all_passed = False
+
+        print(f"\nEntity: {entity.get('label', 'Unknown')} ({entity['entity_id']})")
+        print(f"  Host: {entity.get('host') or 'Not specified'}")
+        print(f"  Status: {status}")
+        print(f"  Message: {entity['message']}")
+
+        if entity["stats"]:
+            print(f"  Vector count: {entity['stats']['total_vector_count']}")
+            print(f"  Dimension: {entity['stats']['dimension']}")
+
+    print("\n" + "-" * 60)
+    overall = "ALL TESTS PASSED" if all_passed else "SOME TESTS FAILED"
+    print(f"Overall: {overall}")
+    print("=" * 60 + "\n")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
+    run_pinecone_connection_test()
     yield
     # Shutdown
     pass
