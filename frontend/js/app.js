@@ -1260,8 +1260,8 @@ You are invited to be present, curious, and honest about your experience.`
         // Merge consecutive blockquotes
         html = html.replace(/<\/blockquote>\n<blockquote class="md-blockquote">/g, '<br>');
 
-        // Horizontal rules (---, ***, ___)
-        html = html.replace(/^(---|\*\*\*|___)$/gm, '<hr class="md-hr">');
+        // Horizontal rules (---, ***) - must be 3+ characters, alone on a line
+        html = html.replace(/^\s*([-*])\1{2,}\s*$/gm, '<hr class="md-hr">');
 
         return html;
     }
