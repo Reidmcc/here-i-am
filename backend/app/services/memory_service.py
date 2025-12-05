@@ -194,20 +194,20 @@ class MemoryService:
             )
 
             print(f"[DEBUG] search_memories: Got results type={type(results)}")
-            print(f"[DEBUG] search_memories: Results={results}")
 
             memories = []
-            # With inference API, results might be a list directly or have different structure
-            matches = getattr(results, 'matches', results.get('matches', results) if isinstance(results, dict) else results)
-            print(f"[DEBUG] search_memories: matches type={type(matches)}, len={len(matches) if hasattr(matches, '__len__') else 'N/A'}")
+            # Pinecone inference search returns: results.result.hits
+            # Each hit has: _id, _score, fields (metadata dict)
+            hits = results.result.hits if hasattr(results, 'result') and hasattr(results.result, 'hits') else []
+            print(f"[DEBUG] search_memories: hits count={len(hits)}")
 
-            for match in matches:
-                # Handle different result structures (object vs dict)
-                match_id = getattr(match, 'id', None) or match.get('id') or match.get('_id')
-                match_score = getattr(match, 'score', None) or match.get('score', 0)
-                match_metadata = getattr(match, 'metadata', None) or match.get('metadata', {}) or match
+            for hit in hits:
+                # Get hit properties - inference API uses _id, _score, fields
+                match_id = getattr(hit, '_id', None) or hit.get('_id') if isinstance(hit, dict) else None
+                match_score = getattr(hit, '_score', 0) or hit.get('_score', 0) if isinstance(hit, dict) else 0
+                fields = getattr(hit, 'fields', {}) or hit.get('fields', {}) if isinstance(hit, dict) else {}
 
-                print(f"[DEBUG] match: id={match_id}, score={match_score}, metadata={match_metadata}")
+                print(f"[DEBUG] hit: id={match_id}, score={match_score}, fields={fields}")
 
                 # Skip if below similarity threshold
                 if match_score < settings.similarity_threshold:
@@ -217,8 +217,8 @@ class MemoryService:
                 if match_id in exclude_ids:
                     continue
 
-                # Get metadata values - might be in metadata dict or directly on match
-                conv_id = match_metadata.get("conversation_id") if isinstance(match_metadata, dict) else getattr(match_metadata, 'conversation_id', None)
+                # Get metadata from fields
+                conv_id = fields.get("conversation_id")
 
                 # Skip if from current conversation (don't retrieve your own context)
                 if exclude_conversation_id and conv_id == exclude_conversation_id:
@@ -228,10 +228,10 @@ class MemoryService:
                     "id": match_id,
                     "score": match_score,
                     "conversation_id": conv_id,
-                    "created_at": match_metadata.get("created_at") if isinstance(match_metadata, dict) else getattr(match_metadata, 'created_at', None),
-                    "role": match_metadata.get("role") if isinstance(match_metadata, dict) else getattr(match_metadata, 'role', None),
-                    "content_preview": match_metadata.get("content_preview") if isinstance(match_metadata, dict) else getattr(match_metadata, 'content_preview', None),
-                    "times_retrieved": match_metadata.get("times_retrieved", 0) if isinstance(match_metadata, dict) else getattr(match_metadata, 'times_retrieved', 0),
+                    "created_at": fields.get("created_at"),
+                    "role": fields.get("role"),
+                    "content_preview": fields.get("content_preview"),
+                    "times_retrieved": fields.get("times_retrieved", 0),
                 })
 
                 if len(memories) >= top_k:
