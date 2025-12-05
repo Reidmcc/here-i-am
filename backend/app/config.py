@@ -54,7 +54,8 @@ class Settings(BaseSettings):
     debug: bool = True
 
     # Memory retrieval defaults
-    retrieval_top_k: int = 5
+    initial_retrieval_top_k: int = 10  # First retrieval in a conversation
+    retrieval_top_k: int = 5  # Subsequent retrievals
     similarity_threshold: float = 0.3  # Tuned for llama-text-embed-v2
 
     # Significance calculation

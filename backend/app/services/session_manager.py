@@ -408,9 +408,14 @@ class SessionManager:
                 user_message,
             )
 
+            # Use higher limit for first retrieval in a conversation
+            is_first_retrieval = len(session.retrieved_ids) == 0
+            top_k = settings.initial_retrieval_top_k if is_first_retrieval else settings.retrieval_top_k
+
             # Exclude memories already in context (not all retrieved - allows trimmed ones to return)
             candidates = await memory_service.search_memories(
                 query=memory_query,
+                top_k=top_k,
                 exclude_conversation_id=session.conversation_id,
                 exclude_ids=session.in_context_ids,
                 entity_id=session.entity_id,
@@ -538,9 +543,14 @@ class SessionManager:
                 user_message,
             )
 
+            # Use higher limit for first retrieval in a conversation
+            is_first_retrieval = len(session.retrieved_ids) == 0
+            top_k = settings.initial_retrieval_top_k if is_first_retrieval else settings.retrieval_top_k
+
             # Exclude memories already in context (not all retrieved - allows trimmed ones to return)
             candidates = await memory_service.search_memories(
                 query=memory_query,
+                top_k=top_k,
                 exclude_conversation_id=session.conversation_id,
                 exclude_ids=session.in_context_ids,
                 entity_id=session.entity_id,
