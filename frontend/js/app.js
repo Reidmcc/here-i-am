@@ -137,9 +137,10 @@ class App {
         });
         this.elements.temperatureNumber.addEventListener('input', (e) => {
             let value = parseFloat(e.target.value);
+            const maxTemp = this.getMaxTemperatureForCurrentEntity();
             if (isNaN(value)) value = 1.0;
             if (value < 0) value = 0;
-            if (value > 2) value = 2;
+            if (value > maxTemp) value = maxTemp;
             this.elements.temperatureInput.value = value;
         });
         this.elements.presetSelect.addEventListener('change', (e) => this.loadPreset(e.target.value));
@@ -252,6 +253,7 @@ class App {
             // Set default entity
             this.selectedEntityId = response.default_entity;
             this.updateEntityDescription();
+            this.updateTemperatureMax();
 
             // Always show entity selector so users know which entity they're working with
             this.elements.entitySelector.style.display = 'block';
@@ -279,6 +281,7 @@ class App {
                 }
             }
             this.updateModelIndicator();
+            this.updateTemperatureMax();
         }
 
         // Clear current conversation when switching entities
@@ -323,6 +326,28 @@ class App {
     getEntityLabel(entityId) {
         const entity = this.entities.find(e => e.index_name === entityId);
         return entity ? entity.label : entityId;
+    }
+
+    getMaxTemperatureForCurrentEntity() {
+        const entity = this.entities.find(e => e.index_name === this.selectedEntityId);
+        // OpenAI supports temperature 0-2, Anthropic only 0-1
+        if (entity && entity.llm_provider === 'openai') {
+            return 2.0;
+        }
+        return 1.0;
+    }
+
+    updateTemperatureMax() {
+        const maxTemp = this.getMaxTemperatureForCurrentEntity();
+        this.elements.temperatureInput.max = maxTemp;
+        this.elements.temperatureNumber.max = maxTemp;
+
+        // Clamp current value if it exceeds new max
+        if (this.settings.temperature > maxTemp) {
+            this.settings.temperature = maxTemp;
+            this.elements.temperatureInput.value = maxTemp;
+            this.elements.temperatureNumber.value = maxTemp;
+        }
     }
 
     renderConversationList() {
@@ -746,6 +771,7 @@ class App {
     }
 
     showSettingsModal() {
+        this.updateTemperatureMax();
         this.elements.modelSelect.value = this.settings.model;
         this.elements.temperatureInput.value = this.settings.temperature;
         this.elements.temperatureNumber.value = this.settings.temperature;
