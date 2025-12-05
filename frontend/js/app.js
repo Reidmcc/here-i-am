@@ -1213,6 +1213,8 @@ You are invited to be present, curious, and honest about your experience.`
      * @returns {string} - HTML string with markdown rendered
      */
     renderMarkdown(text) {
+        if (!text) return '';
+
         // First escape HTML to prevent XSS
         let html = this.escapeHtml(text);
 
@@ -1225,15 +1227,17 @@ You are invited to be present, curious, and honest about your experience.`
         // Inline code (`code`) - but not inside code blocks
         html = html.replace(/`([^`\n]+)`/g, '<code class="md-inline-code">$1</code>');
 
-        // Bold (**text** or __text__)
+        // Bold (**text** or __text__) - process before italic
         html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
         html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
 
-        // Italic (*text* or _text_) - but not inside words with underscores
+        // Italic (*text*) - single asterisks
         html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-        html = html.replace(/(?<![a-zA-Z0-9])_([^_]+)_(?![a-zA-Z0-9])/g, '<em>$1</em>');
 
-        // Links [text](url) - but we escaped the HTML, so we need to handle &quot;
+        // Italic (_text_) - underscores at word boundaries (without lookbehind for browser compatibility)
+        html = html.replace(/(^|[\s\(\[])_([^_]+)_([\s\)\]\.,!?;:]|$)/g, '$1<em>$2</em>$3');
+
+        // Links [text](url)
         html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="md-link">$1</a>');
 
         // Headers (## text) - only at start of line
@@ -1241,15 +1245,15 @@ You are invited to be present, curious, and honest about your experience.`
         html = html.replace(/^## (.+)$/gm, '<h3 class="md-header">$1</h3>');
         html = html.replace(/^# (.+)$/gm, '<h2 class="md-header">$1</h2>');
 
-        // Unordered lists (- item or * item)
-        html = html.replace(/^[\-\*] (.+)$/gm, '<li class="md-list-item">$1</li>');
+        // Unordered lists (- item or * item) - but not if * is for bold/italic
+        html = html.replace(/^- (.+)$/gm, '<li class="md-list-item">$1</li>');
         // Wrap consecutive list items in <ul>
-        html = html.replace(/(<li class="md-list-item">.*<\/li>\n?)+/g, '<ul class="md-list">$&</ul>');
+        html = html.replace(/(<li class="md-list-item">[^<]*<\/li>\n?)+/g, '<ul class="md-list">$&</ul>');
 
         // Ordered lists (1. item)
         html = html.replace(/^\d+\. (.+)$/gm, '<li class="md-list-item-ordered">$1</li>');
         // Wrap consecutive ordered list items in <ol>
-        html = html.replace(/(<li class="md-list-item-ordered">.*<\/li>\n?)+/g, '<ol class="md-list">$&</ol>');
+        html = html.replace(/(<li class="md-list-item-ordered">[^<]*<\/li>\n?)+/g, '<ol class="md-list">$&</ol>');
 
         // Blockquotes (> text)
         html = html.replace(/^&gt; (.+)$/gm, '<blockquote class="md-blockquote">$1</blockquote>');
