@@ -36,7 +36,10 @@ class MemoryService:
 
         # Use default entity if not specified
         if entity_id is None:
-            entity_id = settings.get_default_entity().index_name
+            entity = settings.get_default_entity()
+            entity_id = entity.index_name
+        else:
+            entity = settings.get_entity_by_index(entity_id)
 
         # Return cached index if available
         if entity_id in self._indexes:
@@ -44,7 +47,11 @@ class MemoryService:
 
         # Create and cache new index connection
         try:
-            index = self.pc.Index(entity_id)
+            # Use host if provided in entity config (required for serverless indexes)
+            if entity and entity.host:
+                index = self.pc.Index(entity_id, host=entity.host)
+            else:
+                index = self.pc.Index(entity_id)
             self._indexes[entity_id] = index
             return index
         except Exception as e:
