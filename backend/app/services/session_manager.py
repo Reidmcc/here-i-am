@@ -9,6 +9,37 @@ from app.services import memory_service, llm_service
 from app.config import settings
 
 
+def _build_memory_query(
+    conversation_context: List[Dict[str, str]],
+    current_message: str,
+) -> str:
+    """
+    Build the query text for memory similarity search.
+
+    Combines the most recent AI response (if any) with the current human message
+    to provide better context for memory retrieval.
+
+    Args:
+        conversation_context: The conversation history
+        current_message: The current human message
+
+    Returns:
+        Combined query string for memory search
+    """
+    # Find the most recent assistant message
+    last_assistant_content = None
+    for msg in reversed(conversation_context):
+        if msg.get("role") == "assistant":
+            last_assistant_content = msg.get("content", "")
+            break
+
+    # Combine with current message for better semantic matching
+    if last_assistant_content:
+        return f"{last_assistant_content}\n\n{current_message}"
+    else:
+        return current_message
+
+
 def _build_memory_block_text(
     memories: List[Dict[str, Any]],
     conversation_start_date: Optional[datetime] = None,
@@ -371,9 +402,15 @@ class SessionManager:
                 db, entity_id=session.entity_id
             )
 
+            # Build query using both recent AI response and current human message
+            memory_query = _build_memory_query(
+                session.conversation_context,
+                user_message,
+            )
+
             # Exclude memories already in context (not all retrieved - allows trimmed ones to return)
             candidates = await memory_service.search_memories(
-                query=user_message,
+                query=memory_query,
                 exclude_conversation_id=session.conversation_id,
                 exclude_ids=session.in_context_ids,
                 entity_id=session.entity_id,
@@ -495,9 +532,15 @@ class SessionManager:
                 db, entity_id=session.entity_id
             )
 
+            # Build query using both recent AI response and current human message
+            memory_query = _build_memory_query(
+                session.conversation_context,
+                user_message,
+            )
+
             # Exclude memories already in context (not all retrieved - allows trimmed ones to return)
             candidates = await memory_service.search_memories(
-                query=user_message,
+                query=memory_query,
                 exclude_conversation_id=session.conversation_id,
                 exclude_ids=session.in_context_ids,
                 entity_id=session.entity_id,
