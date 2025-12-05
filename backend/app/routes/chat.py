@@ -343,6 +343,13 @@ async def get_session_info(
     if not session:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    # Get memories currently in context (not all retrieved, just those in context)
+    in_context_memories = [
+        session.session_memories[mid]
+        for mid in session.in_context_ids
+        if mid in session.session_memories
+    ]
+
     return {
         "conversation_id": session.conversation_id,
         "model": session.model,
@@ -351,7 +358,7 @@ async def get_session_info(
         "system_prompt": session.system_prompt,
         "entity_id": session.entity_id,
         "message_count": len(session.conversation_context),
-        "memories_in_context": len(session.session_memories),
+        "memories_in_context": len(in_context_memories),
         "memories": [
             {
                 "id": m.id,
@@ -359,8 +366,9 @@ async def get_session_info(
                 "created_at": m.created_at,
                 "times_retrieved": m.times_retrieved,
                 "role": m.role,
+                "score": m.score,
             }
-            for m in session.session_memories.values()
+            for m in in_context_memories
         ],
     }
 
