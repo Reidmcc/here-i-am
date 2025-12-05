@@ -108,7 +108,9 @@ class MemoryService:
                 input=[text]
             )
             return response.data[0].embedding
-        except Exception:
+        except Exception as e:
+            # Log the actual error for debugging
+            print(f"Error generating embedding: {e}")
             # Fallback: If embeddings fail, we still need to function
             # Return None and handle gracefully
             return None
@@ -135,16 +137,24 @@ class MemoryService:
 
         Returns True if successful, False otherwise.
         """
+        print(f"[DEBUG] store_memory called for entity_id={entity_id}")
+
         if not self.is_configured():
+            print("[DEBUG] store_memory: Pinecone not configured")
             return False
 
         index = self.get_index(entity_id)
         if index is None:
+            print(f"[DEBUG] store_memory: Failed to get index for entity_id={entity_id}")
             return False
 
+        print(f"[DEBUG] store_memory: Got index, generating embedding...")
         embedding = await self.get_embedding(content)
         if embedding is None:
+            print("[DEBUG] store_memory: Embedding generation failed")
             return False
+
+        print(f"[DEBUG] store_memory: Got embedding with {len(embedding)} dimensions, upserting...")
 
         # Create content preview for metadata
         content_preview = content[:200] if len(content) > 200 else content
@@ -163,6 +173,7 @@ class MemoryService:
                     }
                 }]
             )
+            print(f"[DEBUG] store_memory: Successfully upserted to Pinecone")
             return True
         except Exception as e:
             print(f"Error storing memory: {e}")
