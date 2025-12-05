@@ -54,8 +54,8 @@ class Settings(BaseSettings):
     debug: bool = True
 
     # Memory retrieval defaults
-    retrieval_top_k: int = 10
-    similarity_threshold: float = 0.7
+    retrieval_top_k: int = 5
+    similarity_threshold: float = 0.3  # Lower for llama-text-embed-v2 which produces lower scores
 
     # Significance calculation
     recency_boost_strength: float = 1.0

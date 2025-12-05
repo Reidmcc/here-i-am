@@ -181,7 +181,9 @@ class MemoryService:
 
         try:
             # Query more than we need to allow for filtering
-            fetch_k = top_k * 3
+            fetch_k = top_k * 2
+
+            print(f"[DEBUG] search_memories: threshold={settings.similarity_threshold}, exclude_conv={exclude_conversation_id}")
 
             # Use Pinecone's integrated inference - search with raw text
             # The query parameter takes inputs (with text) and top_k together
@@ -193,54 +195,34 @@ class MemoryService:
                 },
             )
 
-            print(f"[DEBUG] search_memories: Got results type={type(results)}")
-
             memories = []
             # Pinecone inference search returns: results.result.hits
             # Each hit has: _id, _score, fields (metadata dict)
             hits = results.result.hits if hasattr(results, 'result') and hasattr(results.result, 'hits') else []
-            print(f"[DEBUG] search_memories: hits count={len(hits)}")
+            print(f"[DEBUG] search_memories: got {len(hits)} hits from Pinecone")
 
             for hit in hits:
-                # Debug: print the actual hit object structure
-                print(f"[DEBUG] hit object: {hit}")
-                print(f"[DEBUG] hit type: {type(hit)}")
-                print(f"[DEBUG] hit dir: {[a for a in dir(hit) if not a.startswith('__')]}")
-                if hasattr(hit, 'to_dict'):
-                    print(f"[DEBUG] hit.to_dict(): {hit.to_dict()}")
-
-                # Get hit properties - inference API uses _id, _score, fields
-                # Try multiple access patterns
-                if hasattr(hit, 'to_dict'):
-                    hit_dict = hit.to_dict()
-                    match_id = hit_dict.get('_id') or hit_dict.get('id')
-                    match_score = hit_dict.get('_score') or hit_dict.get('score', 0)
-                    fields = hit_dict.get('fields', {})
-                elif isinstance(hit, dict):
-                    match_id = hit.get('_id') or hit.get('id')
-                    match_score = hit.get('_score') or hit.get('score', 0)
-                    fields = hit.get('fields', {})
-                else:
-                    match_id = getattr(hit, '_id', None) or getattr(hit, 'id', None)
-                    match_score = getattr(hit, '_score', 0) or getattr(hit, 'score', 0)
-                    fields = getattr(hit, 'fields', {})
-
-                print(f"[DEBUG] parsed: id={match_id}, score={match_score}, fields={fields}")
-
-                # Skip if below similarity threshold
-                if match_score < settings.similarity_threshold:
-                    continue
-
-                # Skip if in exclude set
-                if match_id in exclude_ids:
-                    continue
-
-                # Get metadata from fields
+                # Get hit properties via to_dict()
+                hit_dict = hit.to_dict() if hasattr(hit, 'to_dict') else hit
+                match_id = hit_dict.get('_id')
+                match_score = hit_dict.get('_score', 0)
+                fields = hit_dict.get('fields', {})
                 conv_id = fields.get("conversation_id")
 
-                # Skip if from current conversation (don't retrieve your own context)
-                if exclude_conversation_id and conv_id == exclude_conversation_id:
+                # Log filtering decisions
+                if match_score < settings.similarity_threshold:
+                    print(f"[DEBUG] SKIP (score {match_score:.3f} < {settings.similarity_threshold}): {match_id[:8]}...")
                     continue
+
+                if match_id in exclude_ids:
+                    print(f"[DEBUG] SKIP (already retrieved): {match_id[:8]}...")
+                    continue
+
+                if exclude_conversation_id and conv_id == exclude_conversation_id:
+                    print(f"[DEBUG] SKIP (same conversation): {match_id[:8]}...")
+                    continue
+
+                print(f"[DEBUG] INCLUDE: {match_id[:8]}... score={match_score:.3f}")
 
                 memories.append({
                     "id": match_id,
@@ -255,6 +237,7 @@ class MemoryService:
                 if len(memories) >= top_k:
                     break
 
+            print(f"[DEBUG] search_memories: returning {len(memories)} memories")
             return memories
         except Exception as e:
             print(f"Error searching memories: {e}")
