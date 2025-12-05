@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 from pinecone import Pinecone
-from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from app.config import settings
@@ -13,7 +13,7 @@ class MemoryService:
     def __init__(self):
         self._pc = None
         self._indexes: Dict[str, Any] = {}  # Cache for multiple indexes
-        self._anthropic = None
+        self._openai = None
 
     @property
     def pc(self):
@@ -64,10 +64,10 @@ class MemoryService:
         return self.get_index(None)
 
     @property
-    def anthropic(self):
-        if self._anthropic is None:
-            self._anthropic = AsyncAnthropic(api_key=settings.anthropic_api_key)
-        return self._anthropic
+    def openai(self):
+        if self._openai is None:
+            self._openai = AsyncOpenAI(api_key=settings.openai_api_key)
+        return self._openai
 
     def is_configured(self, entity_id: Optional[str] = None) -> bool:
         """
@@ -79,6 +79,10 @@ class MemoryService:
         if not settings.pinecone_api_key:
             return False
 
+        if not settings.openai_api_key:
+            # OpenAI API key required for embeddings
+            return False
+
         if entity_id is None:
             return True
 
@@ -87,25 +91,20 @@ class MemoryService:
 
     async def get_embedding(self, text: str) -> List[float]:
         """
-        Get embedding for text using Anthropic's voyage embeddings via their API.
+        Get embedding for text using OpenAI's text-embedding-3-small model.
 
-        For now, we use a simple approach with the Anthropic client.
-        In production, you might use a dedicated embedding model.
+        Uses 1024 dimensions to match Pinecone index configuration.
         """
-        # Use Anthropic's embeddings endpoint
-        # Note: As of early 2024, Anthropic recommends using Voyage AI for embeddings
-        # For simplicity, we'll use a direct embedding approach
-
         # Truncate text if too long (embedding models have limits)
         max_chars = 8000
         if len(text) > max_chars:
             text = text[:max_chars]
 
         try:
-            # Use Voyage embeddings via Anthropic
-            response = await self.anthropic.embeddings.create(
-                model="voyage-3",
-                input=[text]
+            response = await self.openai.embeddings.create(
+                model="text-embedding-3-small",
+                input=text,
+                dimensions=1024,  # Match Pinecone index dimension
             )
             return response.data[0].embedding
         except Exception as e:
@@ -410,10 +409,12 @@ class MemoryService:
 
         Returns a dict with:
             - configured: bool - whether Pinecone is configured at all
+            - openai_configured: bool - whether OpenAI API key is set (needed for embeddings)
             - entities: list of dicts with entity_id, success, message, and stats
         """
         result = {
             "configured": False,
+            "openai_configured": False,
             "entities": []
         }
 
@@ -422,6 +423,10 @@ class MemoryService:
             return result
 
         result["configured"] = True
+
+        # Check if OpenAI is configured (needed for embeddings)
+        if settings.openai_api_key:
+            result["openai_configured"] = True
 
         # Get all configured entities
         entities = settings.get_entities()

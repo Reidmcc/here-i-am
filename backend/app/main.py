@@ -13,7 +13,7 @@ from app.services.memory_service import memory_service
 def run_pinecone_connection_test():
     """Run Pinecone connection test and print results to terminal."""
     print("\n" + "=" * 60)
-    print("PINECONE CONNECTION TEST")
+    print("MEMORY SYSTEM STATUS")
     print("=" * 60)
 
     result = memory_service.test_connection()
@@ -26,7 +26,14 @@ def run_pinecone_connection_test():
         return
 
     print(f"Pinecone API Key: Configured")
-    print(f"Entities to test: {len(result['entities'])}")
+    openai_status = "Configured" if result.get("openai_configured") else "MISSING (required for embeddings!)"
+    print(f"OpenAI API Key: {openai_status}")
+
+    if not result.get("openai_configured"):
+        print("\nWARNING: Memory storage will fail without OPENAI_API_KEY!")
+        print("OpenAI embeddings (text-embedding-3-small) are used for vector storage.")
+
+    print(f"\nEntities to test: {len(result['entities'])}")
     print("-" * 60)
 
     all_passed = True
