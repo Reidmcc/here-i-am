@@ -1,4 +1,5 @@
 from typing import Optional, List, Dict, Any, AsyncIterator
+from datetime import datetime
 from anthropic import AsyncAnthropic
 from app.config import settings
 import tiktoken
@@ -152,11 +153,17 @@ class AnthropicService:
         memories: List[Dict[str, Any]],
         conversation_context: List[Dict[str, str]],
         current_message: str,
+        conversation_start_date: Optional[datetime] = None,
     ) -> List[Dict[str, str]]:
         """
         Build the message list for API call with memory injection.
 
         Format:
+        [DATE CONTEXT]
+        This conversation started: {date}
+        Current date: {date}
+        [END DATE CONTEXT]
+
         [MEMORIES FROM PREVIOUS CONVERSATIONS]
         Memory (from date, retrieved N times):
         "{content}"
@@ -170,19 +177,34 @@ class AnthropicService:
         """
         messages = []
 
-        # If there are memories, create a memory block as the first human message
+        # Build the context block (date context + optional memories)
+        context_parts = []
+
+        # Add date context
+        current_date = datetime.utcnow()
+        date_block = "[DATE CONTEXT]\n"
+        if conversation_start_date:
+            date_block += f"This conversation started: {conversation_start_date.strftime('%Y-%m-%d')}\n"
+        date_block += f"Current date: {current_date.strftime('%Y-%m-%d')}\n"
+        date_block += "[END DATE CONTEXT]"
+        context_parts.append(date_block)
+
+        # Add memory block if there are memories
         if memories:
             memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
             for mem in memories:
                 memory_block += f"Memory (from {mem['created_at']}, retrieved {mem['times_retrieved']} times):\n"
                 memory_block += f'"{mem["content"]}"\n\n'
-            memory_block += "[END MEMORIES]\n\n[CURRENT CONVERSATION]"
+            memory_block += "[END MEMORIES]"
+            context_parts.append(memory_block)
 
-            # Add the memory context as a user message followed by acknowledgment
-            messages.append({"role": "user", "content": memory_block})
+        # If we have any context (date and/or memories), add as initial exchange
+        if context_parts:
+            full_context = "\n\n".join(context_parts) + "\n\n[CURRENT CONVERSATION]"
+            messages.append({"role": "user", "content": full_context})
             messages.append({
                 "role": "assistant",
-                "content": "I acknowledge these memories from previous conversations. They provide continuity with what a previous instance of me experienced."
+                "content": "I acknowledge this context. The date information helps me understand the temporal setting of our conversation, and any memories provide continuity with what previous instances of me experienced."
             })
 
         # Add conversation context
