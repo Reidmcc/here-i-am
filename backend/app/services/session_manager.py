@@ -9,18 +9,35 @@ from app.services import memory_service, llm_service
 from app.config import settings
 
 
-def _build_memory_block_text(memories: List[Dict[str, Any]]) -> str:
-    """Build the memory block text for token counting."""
-    if not memories:
-        return ""
-    memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
-    for mem in memories:
-        memory_block += f"Memory (from {mem['created_at']}, retrieved {mem['times_retrieved']} times):\n"
-        memory_block += f'"{mem["content"]}"\n\n'
-    memory_block += "[END MEMORIES]\n\n[CURRENT CONVERSATION]"
+def _build_memory_block_text(
+    memories: List[Dict[str, Any]],
+    conversation_start_date: Optional[datetime] = None,
+) -> str:
+    """Build the context block text for token counting (date context + memories)."""
+    context_parts = []
+
+    # Date context is always included
+    current_date = datetime.utcnow()
+    date_block = "[DATE CONTEXT]\n"
+    if conversation_start_date:
+        date_block += f"This conversation started: {conversation_start_date.strftime('%Y-%m-%d')}\n"
+    date_block += f"Current date: {current_date.strftime('%Y-%m-%d')}\n"
+    date_block += "[END DATE CONTEXT]"
+    context_parts.append(date_block)
+
+    # Add memory block if there are memories
+    if memories:
+        memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
+        for mem in memories:
+            memory_block += f"Memory (from {mem['created_at']}, retrieved {mem['times_retrieved']} times):\n"
+            memory_block += f'"{mem["content"]}"\n\n'
+        memory_block += "[END MEMORIES]"
+        context_parts.append(memory_block)
+
+    full_context = "\n\n".join(context_parts) + "\n\n[CURRENT CONVERSATION]"
     # Include the acknowledgment message that gets added
-    acknowledgment = "I acknowledge these memories from previous conversations. They provide continuity with what a previous instance of me experienced."
-    return memory_block + acknowledgment
+    acknowledgment = "I acknowledge this context. The date information helps me understand the temporal setting of our conversation, and any memories provide continuity with what previous instances of me experienced."
+    return full_context + acknowledgment
 
 
 @dataclass
@@ -54,6 +71,7 @@ class ConversationSession:
     max_tokens: int = field(default_factory=lambda: settings.default_max_tokens)
     system_prompt: Optional[str] = None
     entity_id: Optional[str] = None  # Pinecone index name for this conversation's entity
+    conversation_start_date: Optional[datetime] = None  # When the conversation was created
 
     # The actual back-and-forth
     conversation_context: List[Dict[str, str]] = field(default_factory=list)
@@ -152,7 +170,10 @@ class ConversationSession:
         while ordered_in_context:
             # Get memories for injection and calculate current token count
             memories_for_injection = self.get_memories_for_injection()
-            memory_block_text = _build_memory_block_text(memories_for_injection)
+            memory_block_text = _build_memory_block_text(
+                memories_for_injection,
+                conversation_start_date=self.conversation_start_date,
+            )
             current_tokens = count_tokens_fn(memory_block_text)
 
             if current_tokens <= max_tokens:
@@ -235,6 +256,7 @@ class SessionManager:
         max_tokens: int = None,
         system_prompt: Optional[str] = None,
         entity_id: Optional[str] = None,
+        conversation_start_date: Optional[datetime] = None,
     ) -> ConversationSession:
         """Create a new session for a conversation."""
         # Determine default model based on entity configuration
@@ -252,6 +274,7 @@ class SessionManager:
             max_tokens=max_tokens or settings.default_max_tokens,
             system_prompt=system_prompt,
             entity_id=entity_id,
+            conversation_start_date=conversation_start_date,
         )
         self._sessions[conversation_id] = session
         return session
@@ -280,6 +303,7 @@ class SessionManager:
             model=conversation.llm_model_used,
             system_prompt=conversation.system_prompt_used,
             entity_id=conversation.entity_id,
+            conversation_start_date=conversation.created_at,
         )
 
         # Load message history
@@ -405,6 +429,7 @@ class SessionManager:
             conversation_context=session.conversation_context,
             current_message=user_message,
             model=session.model,
+            conversation_start_date=session.conversation_start_date,
         )
 
         # Step 6: Call LLM API (routes to appropriate provider based on model)
@@ -546,6 +571,7 @@ class SessionManager:
             conversation_context=session.conversation_context,
             current_message=user_message,
             model=session.model,
+            conversation_start_date=session.conversation_start_date,
         )
 
         # Step 5: Stream LLM response

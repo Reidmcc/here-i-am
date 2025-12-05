@@ -7,6 +7,7 @@ configuration.
 """
 
 from typing import Optional, List, Dict, Any, AsyncIterator
+from datetime import datetime
 from enum import Enum
 
 from app.services import anthropic_service, openai_service
@@ -231,6 +232,7 @@ class LLMService:
         conversation_context: List[Dict[str, str]],
         current_message: str,
         model: Optional[str] = None,
+        conversation_start_date: Optional[datetime] = None,
     ) -> List[Dict[str, str]]:
         """
         Build the message list for API call with memory injection.
@@ -243,6 +245,7 @@ class LLMService:
             memories=memories,
             conversation_context=conversation_context,
             current_message=current_message,
+            conversation_start_date=conversation_start_date,
         )
 
 
