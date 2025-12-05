@@ -1,7 +1,6 @@
 from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 from pinecone import Pinecone
-from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from app.config import settings
@@ -10,10 +9,15 @@ import numpy as np
 
 
 class MemoryService:
+    """
+    Memory service using Pinecone with integrated inference (llama-text-embed-v2).
+
+    Pinecone handles embedding generation internally - we pass raw text and
+    Pinecone generates embeddings using the model configured on the index.
+    """
     def __init__(self):
         self._pc = None
         self._indexes: Dict[str, Any] = {}  # Cache for multiple indexes
-        self._openai = None
 
     @property
     def pc(self):
@@ -63,12 +67,6 @@ class MemoryService:
         """Backward-compatible property that returns the default index."""
         return self.get_index(None)
 
-    @property
-    def openai(self):
-        if self._openai is None:
-            self._openai = AsyncOpenAI(api_key=settings.openai_api_key)
-        return self._openai
-
     def is_configured(self, entity_id: Optional[str] = None) -> bool:
         """
         Check if Pinecone is configured and the specified entity's index is available.
@@ -79,40 +77,11 @@ class MemoryService:
         if not settings.pinecone_api_key:
             return False
 
-        if not settings.openai_api_key:
-            # OpenAI API key required for embeddings
-            return False
-
         if entity_id is None:
             return True
 
         # Verify the entity exists in configuration
         return settings.get_entity_by_index(entity_id) is not None
-
-    async def get_embedding(self, text: str) -> List[float]:
-        """
-        Get embedding for text using OpenAI's text-embedding-3-small model.
-
-        Uses 1024 dimensions to match Pinecone index configuration.
-        """
-        # Truncate text if too long (embedding models have limits)
-        max_chars = 8000
-        if len(text) > max_chars:
-            text = text[:max_chars]
-
-        try:
-            response = await self.openai.embeddings.create(
-                model="text-embedding-3-small",
-                input=text,
-                dimensions=1024,  # Match Pinecone index dimension
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            # Log the actual error for debugging
-            print(f"Error generating embedding: {e}")
-            # Fallback: If embeddings fail, we still need to function
-            # Return None and handle gracefully
-            return None
 
     async def store_memory(
         self,
@@ -125,6 +94,9 @@ class MemoryService:
     ) -> bool:
         """
         Store a message as a memory in the vector database.
+
+        Uses Pinecone's integrated inference - pass raw text and Pinecone
+        generates embeddings using the model configured on the index.
 
         Args:
             message_id: Unique ID for the message
@@ -147,29 +119,24 @@ class MemoryService:
             print(f"[DEBUG] store_memory: Failed to get index for entity_id={entity_id}")
             return False
 
-        print(f"[DEBUG] store_memory: Got index, generating embedding...")
-        embedding = await self.get_embedding(content)
-        if embedding is None:
-            print("[DEBUG] store_memory: Embedding generation failed")
-            return False
-
-        print(f"[DEBUG] store_memory: Got embedding with {len(embedding)} dimensions, upserting...")
+        print(f"[DEBUG] store_memory: Got index, upserting with integrated inference...")
 
         # Create content preview for metadata
         content_preview = content[:200] if len(content) > 200 else content
 
         try:
-            index.upsert(
-                vectors=[{
-                    "id": message_id,
-                    "values": embedding,
-                    "metadata": {
-                        "conversation_id": conversation_id,
-                        "created_at": created_at.isoformat(),
-                        "role": role,
-                        "content_preview": content_preview,
-                        "times_retrieved": 0,
-                    }
+            # Use Pinecone's integrated inference - upsert_records passes raw text
+            # and Pinecone generates embeddings using the index's configured model
+            index.upsert_records(
+                namespace="",
+                records=[{
+                    "_id": message_id,
+                    "text": content,  # Pinecone will embed this using llama-text-embed-v2
+                    "conversation_id": conversation_id,
+                    "created_at": created_at.isoformat(),
+                    "role": role,
+                    "content_preview": content_preview,
+                    "times_retrieved": 0,
                 }]
             )
             print(f"[DEBUG] store_memory: Successfully upserted to Pinecone")
@@ -188,6 +155,9 @@ class MemoryService:
     ) -> List[Dict[str, Any]]:
         """
         Search for relevant memories using semantic similarity.
+
+        Uses Pinecone's integrated inference - pass raw text and Pinecone
+        generates embeddings using the model configured on the index.
 
         Args:
             query: The query text to search for
@@ -209,16 +179,14 @@ class MemoryService:
         top_k = top_k or settings.retrieval_top_k
         exclude_ids = exclude_ids or set()
 
-        embedding = await self.get_embedding(query)
-        if embedding is None:
-            return []
-
         try:
             # Query more than we need to allow for filtering
             fetch_k = top_k * 3
 
-            results = index.query(
-                vector=embedding,
+            # Use Pinecone's integrated inference - search with raw text
+            results = index.search(
+                namespace="",
+                query={"text": query},  # Pinecone will embed this
                 top_k=fetch_k,
                 include_metadata=True,
             )
@@ -409,12 +377,10 @@ class MemoryService:
 
         Returns a dict with:
             - configured: bool - whether Pinecone is configured at all
-            - openai_configured: bool - whether OpenAI API key is set (needed for embeddings)
             - entities: list of dicts with entity_id, success, message, and stats
         """
         result = {
             "configured": False,
-            "openai_configured": False,
             "entities": []
         }
 
@@ -423,10 +389,6 @@ class MemoryService:
             return result
 
         result["configured"] = True
-
-        # Check if OpenAI is configured (needed for embeddings)
-        if settings.openai_api_key:
-            result["openai_configured"] = True
 
         # Get all configured entities
         entities = settings.get_entities()

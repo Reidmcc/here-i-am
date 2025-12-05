@@ -26,12 +26,7 @@ def run_pinecone_connection_test():
         return
 
     print(f"Pinecone API Key: Configured")
-    openai_status = "Configured" if result.get("openai_configured") else "MISSING (required for embeddings!)"
-    print(f"OpenAI API Key: {openai_status}")
-
-    if not result.get("openai_configured"):
-        print("\nWARNING: Memory storage will fail without OPENAI_API_KEY!")
-        print("OpenAI embeddings (text-embedding-3-small) are used for vector storage.")
+    print(f"Embedding Model: Pinecone integrated inference (llama-text-embed-v2)")
 
     print(f"\nEntities to test: {len(result['entities'])}")
     print("-" * 60)
