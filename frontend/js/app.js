@@ -519,7 +519,7 @@ class App {
         const timeStr = timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
         message.innerHTML = `
-            <div class="message-bubble ${options.isError ? 'error' : ''}">${this.escapeHtml(content)}</div>
+            <div class="message-bubble ${options.isError ? 'error' : ''}">${this.renderMarkdown(content)}</div>
             ${options.showTimestamp !== false ? `
                 <div class="message-meta">
                     <span>${timeStr}</span>
@@ -574,6 +574,9 @@ class App {
                 // Remove cursor
                 cursor.remove();
                 bubble.classList.remove('streaming');
+
+                // Render final content with markdown
+                contentSpan.innerHTML = this.renderMarkdown(accumulatedContent);
 
                 // Add timestamp
                 const timestamp = options.timestamp ? new Date(options.timestamp) : new Date();
@@ -1201,6 +1204,62 @@ You are invited to be present, curious, and honest about your experience.`
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    /**
+     * Render markdown to HTML for message display.
+     * Handles: bold, italic, inline code, code blocks, links, and line breaks.
+     * @param {string} text - The raw text to render
+     * @returns {string} - HTML string with markdown rendered
+     */
+    renderMarkdown(text) {
+        // First escape HTML to prevent XSS
+        let html = this.escapeHtml(text);
+
+        // Code blocks (```language\ncode\n```) - must be processed before inline code
+        html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (match, lang, code) => {
+            const langClass = lang ? ` data-language="${lang}"` : '';
+            return `<pre class="md-code-block"${langClass}><code>${code.trim()}</code></pre>`;
+        });
+
+        // Inline code (`code`) - but not inside code blocks
+        html = html.replace(/`([^`\n]+)`/g, '<code class="md-inline-code">$1</code>');
+
+        // Bold (**text** or __text__)
+        html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+
+        // Italic (*text* or _text_) - but not inside words with underscores
+        html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        html = html.replace(/(?<![a-zA-Z0-9])_([^_]+)_(?![a-zA-Z0-9])/g, '<em>$1</em>');
+
+        // Links [text](url) - but we escaped the HTML, so we need to handle &quot;
+        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="md-link">$1</a>');
+
+        // Headers (## text) - only at start of line
+        html = html.replace(/^### (.+)$/gm, '<h4 class="md-header">$1</h4>');
+        html = html.replace(/^## (.+)$/gm, '<h3 class="md-header">$1</h3>');
+        html = html.replace(/^# (.+)$/gm, '<h2 class="md-header">$1</h2>');
+
+        // Unordered lists (- item or * item)
+        html = html.replace(/^[\-\*] (.+)$/gm, '<li class="md-list-item">$1</li>');
+        // Wrap consecutive list items in <ul>
+        html = html.replace(/(<li class="md-list-item">.*<\/li>\n?)+/g, '<ul class="md-list">$&</ul>');
+
+        // Ordered lists (1. item)
+        html = html.replace(/^\d+\. (.+)$/gm, '<li class="md-list-item-ordered">$1</li>');
+        // Wrap consecutive ordered list items in <ol>
+        html = html.replace(/(<li class="md-list-item-ordered">.*<\/li>\n?)+/g, '<ol class="md-list">$&</ol>');
+
+        // Blockquotes (> text)
+        html = html.replace(/^&gt; (.+)$/gm, '<blockquote class="md-blockquote">$1</blockquote>');
+        // Merge consecutive blockquotes
+        html = html.replace(/<\/blockquote>\n<blockquote class="md-blockquote">/g, '<br>');
+
+        // Horizontal rules (---, ***, ___)
+        html = html.replace(/^(---|\*\*\*|___)$/gm, '<hr class="md-hr">');
+
+        return html;
     }
 }
 
