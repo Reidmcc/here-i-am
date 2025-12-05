@@ -202,12 +202,30 @@ class MemoryService:
             print(f"[DEBUG] search_memories: hits count={len(hits)}")
 
             for hit in hits:
-                # Get hit properties - inference API uses _id, _score, fields
-                match_id = getattr(hit, '_id', None) or hit.get('_id') if isinstance(hit, dict) else None
-                match_score = getattr(hit, '_score', 0) or hit.get('_score', 0) if isinstance(hit, dict) else 0
-                fields = getattr(hit, 'fields', {}) or hit.get('fields', {}) if isinstance(hit, dict) else {}
+                # Debug: print the actual hit object structure
+                print(f"[DEBUG] hit object: {hit}")
+                print(f"[DEBUG] hit type: {type(hit)}")
+                print(f"[DEBUG] hit dir: {[a for a in dir(hit) if not a.startswith('__')]}")
+                if hasattr(hit, 'to_dict'):
+                    print(f"[DEBUG] hit.to_dict(): {hit.to_dict()}")
 
-                print(f"[DEBUG] hit: id={match_id}, score={match_score}, fields={fields}")
+                # Get hit properties - inference API uses _id, _score, fields
+                # Try multiple access patterns
+                if hasattr(hit, 'to_dict'):
+                    hit_dict = hit.to_dict()
+                    match_id = hit_dict.get('_id') or hit_dict.get('id')
+                    match_score = hit_dict.get('_score') or hit_dict.get('score', 0)
+                    fields = hit_dict.get('fields', {})
+                elif isinstance(hit, dict):
+                    match_id = hit.get('_id') or hit.get('id')
+                    match_score = hit.get('_score') or hit.get('score', 0)
+                    fields = hit.get('fields', {})
+                else:
+                    match_id = getattr(hit, '_id', None) or getattr(hit, 'id', None)
+                    match_score = getattr(hit, '_score', 0) or getattr(hit, 'score', 0)
+                    fields = getattr(hit, 'fields', {})
+
+                print(f"[DEBUG] parsed: id={match_id}, score={match_score}, fields={fields}")
 
                 # Skip if below similarity threshold
                 if match_score < settings.similarity_threshold:
