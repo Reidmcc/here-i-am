@@ -278,22 +278,7 @@ class AnthropicService:
         # If we have any context (date and/or memories), add as initial exchange
         if context_parts:
             full_context = "\n\n".join(context_parts) + "\n\n[CURRENT CONVERSATION]"
-
-            # Use content array format with cache_control for Anthropic prompt caching
-            if enable_caching:
-                messages.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": full_context,
-                            "cache_control": {"type": "ephemeral"}
-                        }
-                    ]
-                })
-            else:
-                messages.append({"role": "user", "content": full_context})
-
+            messages.append({"role": "user", "content": full_context})
             messages.append({
                 "role": "assistant",
                 "content": "I acknowledge this context. The date information helps me understand the temporal setting of our conversation, and any memories provide continuity with what previous instances of me experienced."
@@ -303,7 +288,24 @@ class AnthropicService:
         for msg in conversation_context:
             messages.append({"role": msg["role"], "content": msg["content"]})
 
-        # Add current message
+        # Add cache_control to the last message before the current user message
+        # This caches the entire prefix (memories + conversation history)
+        if enable_caching and len(messages) > 0:
+            last_msg = messages[-1]
+            # Convert content to array format with cache_control
+            if isinstance(last_msg.get("content"), str):
+                messages[-1] = {
+                    "role": last_msg["role"],
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": last_msg["content"],
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ]
+                }
+
+        # Add current message (not cached - it's new each time)
         messages.append({"role": "user", "content": current_message})
 
         return messages
