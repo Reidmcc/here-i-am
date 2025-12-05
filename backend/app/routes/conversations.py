@@ -887,8 +887,10 @@ async def import_external_conversations(
             if msg.get("id"):
                 all_message_ids.append(msg["id"])
 
-    existing_ids = set()
+    existing_ids_for_entity = set()
+    globally_existing_ids = set()
     if all_message_ids:
+        # Check which messages exist for THIS entity (these will be skipped)
         result = await db.execute(
             select(Message.id)
             .join(Conversation)
@@ -897,7 +899,13 @@ async def import_external_conversations(
                 Conversation.entity_id == data.entity_id
             )
         )
-        existing_ids = {row[0] for row in result.fetchall()}
+        existing_ids_for_entity = {row[0] for row in result.fetchall()}
+
+        # Check which messages exist globally (these need new IDs if importing)
+        result = await db.execute(
+            select(Message.id).where(Message.id.in_(all_message_ids))
+        )
+        globally_existing_ids = {row[0] for row in result.fetchall()}
 
     # Import conversations
     total_messages = 0
@@ -956,14 +964,19 @@ async def import_external_conversations(
             role = MessageRole.HUMAN if msg_data["role"] == "human" else MessageRole.ASSISTANT
             content = msg_data["content"]
 
-            # Skip if message already exists (deduplication)
-            if msg_id and msg_id in existing_ids:
+            # Skip if message already exists for THIS entity (per-entity deduplication)
+            if msg_id and msg_id in existing_ids_for_entity:
                 skipped_messages += 1
                 continue
 
-            # Use original ID if available, otherwise generate new
+            # Use original ID only if it doesn't exist globally
+            # If it exists for another entity, generate a new UUID
+            use_id = None
+            if msg_id and msg_id not in globally_existing_ids:
+                use_id = msg_id
+
             message = Message(
-                id=msg_id if msg_id else None,  # None will auto-generate UUID
+                id=use_id,  # None will auto-generate UUID
                 conversation_id=conversation.id,
                 role=role,
                 content=content,
