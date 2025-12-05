@@ -184,10 +184,13 @@ class MemoryService:
             fetch_k = top_k * 3
 
             # Use Pinecone's integrated inference - search with raw text
+            # The query parameter takes inputs (with text) and top_k together
             results = index.search(
                 namespace="",
-                query={"text": query},  # Pinecone will embed this
-                limit=fetch_k,
+                query={
+                    "inputs": {"text": query},  # Pinecone will embed this
+                    "top_k": fetch_k,
+                },
             )
 
             print(f"[DEBUG] search_memories: Got results type={type(results)}")
