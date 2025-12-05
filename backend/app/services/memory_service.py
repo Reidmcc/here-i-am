@@ -1,7 +1,6 @@
 from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 from pinecone import Pinecone
-from anthropic import AsyncAnthropic
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from app.config import settings
@@ -10,10 +9,15 @@ import numpy as np
 
 
 class MemoryService:
+    """
+    Memory service using Pinecone with integrated inference (llama-text-embed-v2).
+
+    Pinecone handles embedding generation internally - we pass raw text and
+    Pinecone generates embeddings using the model configured on the index.
+    """
     def __init__(self):
         self._pc = None
         self._indexes: Dict[str, Any] = {}  # Cache for multiple indexes
-        self._anthropic = None
 
     @property
     def pc(self):
@@ -36,7 +40,10 @@ class MemoryService:
 
         # Use default entity if not specified
         if entity_id is None:
-            entity_id = settings.get_default_entity().index_name
+            entity = settings.get_default_entity()
+            entity_id = entity.index_name
+        else:
+            entity = settings.get_entity_by_index(entity_id)
 
         # Return cached index if available
         if entity_id in self._indexes:
@@ -44,7 +51,11 @@ class MemoryService:
 
         # Create and cache new index connection
         try:
-            index = self.pc.Index(entity_id)
+            # Use host if provided in entity config (required for serverless indexes)
+            if entity and entity.host:
+                index = self.pc.Index(entity_id, host=entity.host)
+            else:
+                index = self.pc.Index(entity_id)
             self._indexes[entity_id] = index
             return index
         except Exception as e:
@@ -55,12 +66,6 @@ class MemoryService:
     def index(self):
         """Backward-compatible property that returns the default index."""
         return self.get_index(None)
-
-    @property
-    def anthropic(self):
-        if self._anthropic is None:
-            self._anthropic = AsyncAnthropic(api_key=settings.anthropic_api_key)
-        return self._anthropic
 
     def is_configured(self, entity_id: Optional[str] = None) -> bool:
         """
@@ -78,34 +83,6 @@ class MemoryService:
         # Verify the entity exists in configuration
         return settings.get_entity_by_index(entity_id) is not None
 
-    async def get_embedding(self, text: str) -> List[float]:
-        """
-        Get embedding for text using Anthropic's voyage embeddings via their API.
-
-        For now, we use a simple approach with the Anthropic client.
-        In production, you might use a dedicated embedding model.
-        """
-        # Use Anthropic's embeddings endpoint
-        # Note: As of early 2024, Anthropic recommends using Voyage AI for embeddings
-        # For simplicity, we'll use a direct embedding approach
-
-        # Truncate text if too long (embedding models have limits)
-        max_chars = 8000
-        if len(text) > max_chars:
-            text = text[:max_chars]
-
-        try:
-            # Use Voyage embeddings via Anthropic
-            response = await self.anthropic.embeddings.create(
-                model="voyage-3",
-                input=[text]
-            )
-            return response.data[0].embedding
-        except Exception:
-            # Fallback: If embeddings fail, we still need to function
-            # Return None and handle gracefully
-            return None
-
     async def store_memory(
         self,
         message_id: str,
@@ -118,6 +95,9 @@ class MemoryService:
         """
         Store a message as a memory in the vector database.
 
+        Uses Pinecone's integrated inference - pass raw text and Pinecone
+        generates embeddings using the model configured on the index.
+
         Args:
             message_id: Unique ID for the message
             conversation_id: ID of the conversation
@@ -128,34 +108,38 @@ class MemoryService:
 
         Returns True if successful, False otherwise.
         """
+        print(f"[DEBUG] store_memory called for entity_id={entity_id}")
+
         if not self.is_configured():
+            print("[DEBUG] store_memory: Pinecone not configured")
             return False
 
         index = self.get_index(entity_id)
         if index is None:
+            print(f"[DEBUG] store_memory: Failed to get index for entity_id={entity_id}")
             return False
 
-        embedding = await self.get_embedding(content)
-        if embedding is None:
-            return False
+        print(f"[DEBUG] store_memory: Got index, upserting with integrated inference...")
 
         # Create content preview for metadata
         content_preview = content[:200] if len(content) > 200 else content
 
         try:
-            index.upsert(
-                vectors=[{
-                    "id": message_id,
-                    "values": embedding,
-                    "metadata": {
-                        "conversation_id": conversation_id,
-                        "created_at": created_at.isoformat(),
-                        "role": role,
-                        "content_preview": content_preview,
-                        "times_retrieved": 0,
-                    }
+            # Use Pinecone's integrated inference - upsert_records passes raw text
+            # and Pinecone generates embeddings using the index's configured model
+            index.upsert_records(
+                namespace="",
+                records=[{
+                    "_id": message_id,
+                    "text": content,  # Pinecone will embed this using llama-text-embed-v2
+                    "conversation_id": conversation_id,
+                    "created_at": created_at.isoformat(),
+                    "role": role,
+                    "content_preview": content_preview,
+                    "times_retrieved": 0,
                 }]
             )
+            print(f"[DEBUG] store_memory: Successfully upserted to Pinecone")
             return True
         except Exception as e:
             print(f"Error storing memory: {e}")
@@ -171,6 +155,9 @@ class MemoryService:
     ) -> List[Dict[str, Any]]:
         """
         Search for relevant memories using semantic similarity.
+
+        Uses Pinecone's integrated inference - pass raw text and Pinecone
+        generates embeddings using the model configured on the index.
 
         Args:
             query: The query text to search for
@@ -192,47 +179,65 @@ class MemoryService:
         top_k = top_k or settings.retrieval_top_k
         exclude_ids = exclude_ids or set()
 
-        embedding = await self.get_embedding(query)
-        if embedding is None:
-            return []
-
         try:
             # Query more than we need to allow for filtering
-            fetch_k = top_k * 3
+            fetch_k = top_k * 2
 
-            results = index.query(
-                vector=embedding,
-                top_k=fetch_k,
-                include_metadata=True,
+            print(f"[DEBUG] search_memories: threshold={settings.similarity_threshold}, exclude_conv={exclude_conversation_id}")
+
+            # Use Pinecone's integrated inference - search with raw text
+            # The query parameter takes inputs (with text) and top_k together
+            results = index.search(
+                namespace="",
+                query={
+                    "inputs": {"text": query},  # Pinecone will embed this
+                    "top_k": fetch_k,
+                },
             )
 
             memories = []
-            for match in results.matches:
-                # Skip if below similarity threshold
-                if match.score < settings.similarity_threshold:
+            # Pinecone inference search returns: results.result.hits
+            # Each hit has: _id, _score, fields (metadata dict)
+            hits = results.result.hits if hasattr(results, 'result') and hasattr(results.result, 'hits') else []
+            print(f"[DEBUG] search_memories: got {len(hits)} hits from Pinecone")
+
+            for hit in hits:
+                # Get hit properties via to_dict()
+                hit_dict = hit.to_dict() if hasattr(hit, 'to_dict') else hit
+                match_id = hit_dict.get('_id')
+                match_score = hit_dict.get('_score', 0)
+                fields = hit_dict.get('fields', {})
+                conv_id = fields.get("conversation_id")
+
+                # Log filtering decisions
+                if match_score < settings.similarity_threshold:
+                    print(f"[DEBUG] SKIP (score {match_score:.3f} < {settings.similarity_threshold}): {match_id[:8]}...")
                     continue
 
-                # Skip if in exclude set
-                if match.id in exclude_ids:
+                if match_id in exclude_ids:
+                    print(f"[DEBUG] SKIP (already retrieved): {match_id[:8]}...")
                     continue
 
-                # Skip if from current conversation (don't retrieve your own context)
-                if exclude_conversation_id and match.metadata.get("conversation_id") == exclude_conversation_id:
+                if exclude_conversation_id and conv_id == exclude_conversation_id:
+                    print(f"[DEBUG] SKIP (same conversation): {match_id[:8]}...")
                     continue
+
+                print(f"[DEBUG] INCLUDE: {match_id[:8]}... score={match_score:.3f}")
 
                 memories.append({
-                    "id": match.id,
-                    "score": match.score,
-                    "conversation_id": match.metadata.get("conversation_id"),
-                    "created_at": match.metadata.get("created_at"),
-                    "role": match.metadata.get("role"),
-                    "content_preview": match.metadata.get("content_preview"),
-                    "times_retrieved": match.metadata.get("times_retrieved", 0),
+                    "id": match_id,
+                    "score": match_score,
+                    "conversation_id": conv_id,
+                    "created_at": fields.get("created_at"),
+                    "role": fields.get("role"),
+                    "content_preview": fields.get("content_preview"),
+                    "times_retrieved": fields.get("times_retrieved", 0),
                 })
 
                 if len(memories) >= top_k:
                     break
 
+            print(f"[DEBUG] search_memories: returning {len(memories)} memories")
             return memories
         except Exception as e:
             print(f"Error searching memories: {e}")
@@ -385,6 +390,71 @@ class MemoryService:
         except Exception as e:
             print(f"Error deleting memory: {e}")
             return False
+
+    def test_connection(self) -> Dict[str, Any]:
+        """
+        Test Pinecone connection for all configured entities.
+
+        Returns a dict with:
+            - configured: bool - whether Pinecone is configured at all
+            - entities: list of dicts with entity_id, success, message, and stats
+        """
+        result = {
+            "configured": False,
+            "entities": []
+        }
+
+        # Check if Pinecone is configured
+        if not settings.pinecone_api_key:
+            return result
+
+        result["configured"] = True
+
+        # Get all configured entities
+        entities = settings.get_entities()
+        if not entities:
+            result["entities"].append({
+                "entity_id": None,
+                "success": False,
+                "message": "No entities configured in PINECONE_INDEXES",
+                "stats": None
+            })
+            return result
+
+        # Test connection to each entity's index
+        for entity in entities:
+            entity_result = {
+                "entity_id": entity.index_name,
+                "label": entity.label,
+                "host": entity.host,
+                "success": False,
+                "message": "",
+                "stats": None
+            }
+
+            try:
+                # Clear cached index to force fresh connection
+                if entity.index_name in self._indexes:
+                    del self._indexes[entity.index_name]
+
+                index = self.get_index(entity.index_name)
+                if index is None:
+                    entity_result["message"] = "Failed to connect to index"
+                else:
+                    # Try to get index stats to verify connection works
+                    stats = index.describe_index_stats()
+                    entity_result["success"] = True
+                    entity_result["message"] = "Connection successful"
+                    entity_result["stats"] = {
+                        "total_vector_count": stats.total_vector_count,
+                        "dimension": stats.dimension,
+                    }
+            except Exception as e:
+                entity_result["message"] = f"Connection error: {str(e)}"
+
+            result["entities"].append(entity_result)
+
+        return result
 
 
 # Singleton instance

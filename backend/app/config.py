@@ -13,12 +13,14 @@ class EntityConfig:
         description: str = "",
         llm_provider: str = "anthropic",
         default_model: Optional[str] = None,
+        host: Optional[str] = None,
     ):
         self.index_name = index_name
         self.label = label
         self.description = description
         self.llm_provider = llm_provider  # "anthropic" or "openai"
         self.default_model = default_model  # If None, uses global default for provider
+        self.host = host  # Pinecone index host URL (required for serverless indexes)
 
     def to_dict(self):
         return {
@@ -27,6 +29,7 @@ class EntityConfig:
             "description": self.description,
             "llm_provider": self.llm_provider,
             "default_model": self.default_model,
+            "host": self.host,
         }
 
 
@@ -51,8 +54,8 @@ class Settings(BaseSettings):
     debug: bool = True
 
     # Memory retrieval defaults
-    retrieval_top_k: int = 10
-    similarity_threshold: float = 0.7
+    retrieval_top_k: int = 5
+    similarity_threshold: float = 0.3  # Tuned for llama-text-embed-v2
 
     # Significance calculation
     recency_boost_strength: float = 1.0
@@ -90,6 +93,7 @@ class Settings(BaseSettings):
                         description=idx.get("description", ""),
                         llm_provider=idx.get("llm_provider", "anthropic"),
                         default_model=idx.get("default_model"),
+                        host=idx.get("host"),
                     )
                     for idx in indexes_data
                 ]
