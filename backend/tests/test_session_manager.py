@@ -69,6 +69,7 @@ class TestConversationSession:
         assert session.conversation_context == []
         assert session.session_memories == {}
         assert session.retrieved_ids == set()
+        assert session.in_context_ids == set()
 
     def test_add_memory_new(self):
         """Test adding a new memory."""
@@ -82,15 +83,17 @@ class TestConversationSession:
             times_retrieved=1,
         )
 
-        result = session.add_memory(memory)
+        added, is_new_retrieval = session.add_memory(memory)
 
-        assert result is True
+        assert added is True
+        assert is_new_retrieval is True
         assert "mem-1" in session.retrieved_ids
+        assert "mem-1" in session.in_context_ids
         assert "mem-1" in session.session_memories
         assert session.session_memories["mem-1"] == memory
 
     def test_add_memory_duplicate(self):
-        """Test adding a duplicate memory is rejected."""
+        """Test adding a memory already in context is rejected."""
         session = ConversationSession(conversation_id="conv-123")
         memory = MemoryEntry(
             id="mem-1",
@@ -102,10 +105,54 @@ class TestConversationSession:
         )
 
         session.add_memory(memory)
-        result = session.add_memory(memory)
+        added, is_new_retrieval = session.add_memory(memory)
 
-        assert result is False
+        assert added is False
+        assert is_new_retrieval is False
         assert len(session.session_memories) == 1
+
+    def test_add_memory_restore_trimmed(self):
+        """Test re-adding a previously trimmed memory restores it without updating count."""
+        session = ConversationSession(conversation_id="conv-123")
+        memory = MemoryEntry(
+            id="mem-1",
+            conversation_id="old-conv",
+            role="assistant",
+            content="Test",
+            created_at="2024-01-01",
+            times_retrieved=1,
+            score=0.8,
+        )
+
+        # Add memory initially
+        session.add_memory(memory)
+        assert "mem-1" in session.in_context_ids
+        assert "mem-1" in session.retrieved_ids
+
+        # Simulate trimming by removing from in_context_ids only
+        session.in_context_ids.discard("mem-1")
+        assert "mem-1" not in session.in_context_ids
+        assert "mem-1" in session.retrieved_ids  # Still in retrieved_ids
+
+        # Re-add the same memory (with potentially different score)
+        memory2 = MemoryEntry(
+            id="mem-1",
+            conversation_id="old-conv",
+            role="assistant",
+            content="Test",
+            created_at="2024-01-01",
+            times_retrieved=1,
+            score=0.95,  # Higher score this time
+        )
+        added, is_new_retrieval = session.add_memory(memory2)
+
+        # Should be added back to context but not trigger new retrieval count
+        assert added is True
+        assert is_new_retrieval is False
+        assert "mem-1" in session.in_context_ids
+        assert "mem-1" in session.retrieved_ids
+        # Score should be updated
+        assert session.session_memories["mem-1"].score == 0.95
 
     def test_get_memories_for_injection_sorted(self):
         """Test memories are sorted by score for injection."""
@@ -190,12 +237,13 @@ class TestConversationSession:
         assert removed == []
         assert "mem-1" in session.session_memories
         assert "mem-1" in session.retrieved_ids
+        assert "mem-1" in session.in_context_ids
 
     def test_trim_memories_to_limit_removes_oldest_first(self):
-        """Test that oldest-retrieved memories are removed first (FIFO)."""
+        """Test that oldest-retrieved memories are removed from context first (FIFO)."""
         session = ConversationSession(conversation_id="conv-123")
 
-        # Add memories in order - first added = first to be removed
+        # Add memories in order - first added = first to be removed from context
         for i in range(3):
             memory = MemoryEntry(
                 id=f"mem-{i}",
@@ -219,20 +267,26 @@ class TestConversationSession:
 
         removed = session.trim_memories_to_limit(max_tokens=40000, count_tokens_fn=count_tokens)
 
-        # Should have removed mem-0 and mem-1 (oldest retrieved first)
+        # Should have removed mem-0 and mem-1 from context (oldest retrieved first)
         assert "mem-0" in removed
         assert "mem-1" in removed
         assert "mem-2" not in removed
 
-        # mem-0 and mem-1 should be removed from session
-        assert "mem-0" not in session.session_memories
-        assert "mem-0" not in session.retrieved_ids
-        assert "mem-1" not in session.session_memories
-        assert "mem-1" not in session.retrieved_ids
+        # mem-0 and mem-1 should be removed from in_context_ids only
+        assert "mem-0" not in session.in_context_ids
+        assert "mem-1" not in session.in_context_ids
 
-        # mem-2 should still be present
-        assert "mem-2" in session.session_memories
+        # But they should still be in retrieved_ids and session_memories
+        # (to prevent re-incrementing retrieval count and to allow restoration)
+        assert "mem-0" in session.retrieved_ids
+        assert "mem-0" in session.session_memories
+        assert "mem-1" in session.retrieved_ids
+        assert "mem-1" in session.session_memories
+
+        # mem-2 should still be in context
+        assert "mem-2" in session.in_context_ids
         assert "mem-2" in session.retrieved_ids
+        assert "mem-2" in session.session_memories
 
     def test_trim_context_to_limit_no_trimming_needed(self):
         """Test that context is not trimmed when under limit."""
@@ -607,4 +661,74 @@ class TestSessionManager:
             assert "mem-1" in call_kwargs["exclude_ids"]
 
             # Update count should NOT be called again for same memory
+            mock_memory.update_retrieval_count.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_process_message_restores_trimmed_memory_without_count_update(
+        self, db_session, sample_conversation
+    ):
+        """Test that trimmed memories can be restored without updating retrieval count."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.search_memories = AsyncMock(return_value=[
+                {"id": "mem-1", "score": 0.9, "conversation_id": "old-conv"}
+            ])
+            mock_memory.get_full_memory_content = AsyncMock(return_value={
+                "id": "mem-1",
+                "conversation_id": "old-conv",
+                "role": "assistant",
+                "content": "Memory content",
+                "created_at": "2024-01-01",
+                "times_retrieved": 1,
+            })
+            mock_memory.update_retrieval_count = AsyncMock()
+
+            mock_llm.build_messages_with_memories.return_value = []
+            mock_llm.send_message = AsyncMock(return_value={
+                "content": "Response",
+                "model": "claude-sonnet-4-5-20250929",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "stop_reason": "end_turn",
+            })
+            mock_llm.count_tokens = MagicMock(return_value=50)
+
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
+
+            session = manager.create_session(sample_conversation.id)
+
+            # First message retrieves memory
+            await manager.process_message(session, "First", db_session)
+            assert mock_memory.update_retrieval_count.call_count == 1
+            assert "mem-1" in session.in_context_ids
+            assert "mem-1" in session.retrieved_ids
+
+            # Simulate trimming by removing from in_context_ids
+            session.in_context_ids.discard("mem-1")
+            assert "mem-1" not in session.in_context_ids
+            assert "mem-1" in session.retrieved_ids  # Still tracked
+
+            # Reset mocks for next message
+            mock_memory.search_memories.reset_mock()
+            mock_memory.update_retrieval_count.reset_mock()
+
+            # Third message - search should now return mem-1 again since it's not in context
+            await manager.process_message(session, "Third", db_session)
+
+            # Search should NOT exclude mem-1 since it's not in context
+            call_kwargs = mock_memory.search_memories.call_args.kwargs
+            assert "mem-1" not in call_kwargs["exclude_ids"]
+
+            # Memory should be back in context
+            assert "mem-1" in session.in_context_ids
+
+            # But update_retrieval_count should NOT be called (not a new retrieval)
             mock_memory.update_retrieval_count.assert_not_called()
