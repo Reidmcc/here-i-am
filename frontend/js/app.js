@@ -56,7 +56,7 @@ class App {
             // Settings
             modelSelect: document.getElementById('model-select'),
             temperatureInput: document.getElementById('temperature-input'),
-            temperatureValue: document.getElementById('temperature-value'),
+            temperatureNumber: document.getElementById('temperature-number'),
             maxTokensInput: document.getElementById('max-tokens-input'),
             presetSelect: document.getElementById('preset-select'),
             systemPromptInput: document.getElementById('system-prompt-input'),
@@ -133,7 +133,14 @@ class App {
         document.getElementById('close-settings').addEventListener('click', () => this.hideModal('settingsModal'));
         document.getElementById('apply-settings').addEventListener('click', () => this.applySettings());
         this.elements.temperatureInput.addEventListener('input', (e) => {
-            this.elements.temperatureValue.textContent = e.target.value;
+            this.elements.temperatureNumber.value = e.target.value;
+        });
+        this.elements.temperatureNumber.addEventListener('input', (e) => {
+            let value = parseFloat(e.target.value);
+            if (isNaN(value)) value = 1.0;
+            if (value < 0) value = 0;
+            if (value > 2) value = 2;
+            this.elements.temperatureInput.value = value;
         });
         this.elements.presetSelect.addEventListener('change', (e) => this.loadPreset(e.target.value));
 
@@ -741,7 +748,7 @@ class App {
     showSettingsModal() {
         this.elements.modelSelect.value = this.settings.model;
         this.elements.temperatureInput.value = this.settings.temperature;
-        this.elements.temperatureValue.textContent = this.settings.temperature;
+        this.elements.temperatureNumber.value = this.settings.temperature;
         this.elements.maxTokensInput.value = this.settings.maxTokens;
         this.elements.systemPromptInput.value = this.settings.systemPrompt || '';
         this.elements.conversationTypeSelect.value = this.settings.conversationType;

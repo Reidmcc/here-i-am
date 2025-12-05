@@ -896,6 +896,13 @@ h4.md-header {
     cursor: pointer;
 }
 
+/* Temperature slider + number input layout */
+.form-group input[type="range"] + input[type="number"] {
+    width: 70px;
+    margin-top: 8px;
+    text-align: center;
+}
+
 .form-group input[type="file"] {
     width: 100%;
     padding: 10px 12px;
