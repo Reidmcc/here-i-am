@@ -339,14 +339,63 @@ class App {
             const dateStr = date.toLocaleDateString();
 
             item.innerHTML = `
-                <div class="conversation-item-title">${conv.title || 'Untitled'}</div>
-                <div class="conversation-item-meta">${dateStr} · ${conv.message_count} messages</div>
-                ${conv.preview ? `<div class="conversation-item-preview">${this.escapeHtml(conv.preview)}</div>` : ''}
+                <div class="conversation-item-content">
+                    <div class="conversation-item-title">${conv.title || 'Untitled'}</div>
+                    <div class="conversation-item-meta">${dateStr} · ${conv.message_count} messages</div>
+                    ${conv.preview ? `<div class="conversation-item-preview">${this.escapeHtml(conv.preview)}</div>` : ''}
+                </div>
+                <div class="conversation-item-menu">
+                    <button class="conversation-menu-btn" data-id="${conv.id}" title="More options">⋮</button>
+                    <div class="conversation-dropdown" data-id="${conv.id}">
+                        <button class="conversation-dropdown-item" data-action="archive" data-id="${conv.id}">Archive</button>
+                    </div>
+                </div>
             `;
 
-            item.addEventListener('click', () => this.loadConversation(conv.id));
+            // Click on item content to load conversation
+            const contentEl = item.querySelector('.conversation-item-content');
+            contentEl.addEventListener('click', () => this.loadConversation(conv.id));
+
+            // Click on menu button to toggle dropdown
+            const menuBtn = item.querySelector('.conversation-menu-btn');
+            menuBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.toggleConversationDropdown(conv.id);
+            });
+
+            // Click on archive option
+            const archiveBtn = item.querySelector('[data-action="archive"]');
+            archiveBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.showArchiveModalForConversation(conv.id, conv.title);
+            });
+
             this.elements.conversationList.appendChild(item);
         });
+
+        // Close dropdowns when clicking outside
+        document.addEventListener('click', () => this.closeAllDropdowns());
+    }
+
+    toggleConversationDropdown(conversationId) {
+        // Close all other dropdowns first
+        const allDropdowns = document.querySelectorAll('.conversation-dropdown');
+        allDropdowns.forEach(dropdown => {
+            if (dropdown.dataset.id !== conversationId) {
+                dropdown.classList.remove('open');
+            }
+        });
+
+        // Toggle the clicked dropdown
+        const dropdown = document.querySelector(`.conversation-dropdown[data-id="${conversationId}"]`);
+        if (dropdown) {
+            dropdown.classList.toggle('open');
+        }
+    }
+
+    closeAllDropdowns() {
+        const allDropdowns = document.querySelectorAll('.conversation-dropdown');
+        allDropdowns.forEach(dropdown => dropdown.classList.remove('open'));
     }
 
     async createNewConversation() {
@@ -1040,27 +1089,46 @@ You are invited to be present, curious, and honest about your experience.`
 
     showArchiveModal() {
         if (!this.currentConversationId) return;
+        const conv = this.conversations.find(c => c.id === this.currentConversationId);
+        this.showArchiveModalForConversation(this.currentConversationId, conv?.title);
+    }
+
+    showArchiveModalForConversation(conversationId, conversationTitle) {
+        this.pendingArchiveId = conversationId;
+        // Update modal text to show which conversation
+        const modalBody = document.querySelector('#archive-modal .modal-body');
+        modalBody.innerHTML = `
+            <p><strong>${this.escapeHtml(conversationTitle || 'Untitled')}</strong></p>
+            <p>This conversation will be hidden from the main list and its memories will be excluded from retrieval.</p>
+            <p>You can restore it later from the Archived section.</p>
+        `;
+        this.closeAllDropdowns();
         this.showModal('archiveModal');
     }
 
     async archiveConversation() {
-        if (!this.currentConversationId) return;
+        const conversationId = this.pendingArchiveId || this.currentConversationId;
+        if (!conversationId) return;
 
         try {
-            await api.archiveConversation(this.currentConversationId);
+            await api.archiveConversation(conversationId);
 
             // Remove from list
-            this.conversations = this.conversations.filter(c => c.id !== this.currentConversationId);
-            this.currentConversationId = null;
-            this.retrievedMemories = [];
+            this.conversations = this.conversations.filter(c => c.id !== conversationId);
+
+            // Clear current view if we archived the active conversation
+            if (conversationId === this.currentConversationId) {
+                this.currentConversationId = null;
+                this.retrievedMemories = [];
+                this.clearMessages();
+                this.updateMemoriesPanel();
+                this.elements.conversationTitle.textContent = 'Select a conversation';
+                this.elements.conversationMeta.textContent = '';
+            }
 
             this.renderConversationList();
-            this.clearMessages();
-            this.updateMemoriesPanel();
-            this.elements.conversationTitle.textContent = 'Select a conversation';
-            this.elements.conversationMeta.textContent = '';
-
             this.hideModal('archiveModal');
+            this.pendingArchiveId = null;
             this.showToast('Conversation archived', 'success');
         } catch (error) {
             this.showToast('Failed to archive conversation', 'error');

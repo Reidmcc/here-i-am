@@ -217,11 +217,13 @@ html, body {
 }
 
 .conversation-item {
+    display: flex;
+    align-items: flex-start;
     padding: 12px;
     border-radius: 8px;
-    cursor: pointer;
     margin-bottom: 4px;
     transition: background-color 0.2s;
+    position: relative;
 }
 
 .conversation-item:hover {
@@ -239,6 +241,12 @@ html, body {
 
 .conversation-item.active .conversation-item-meta {
     color: var(--active-text-muted);
+}
+
+.conversation-item-content {
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
 }
 
 .conversation-item-title {
@@ -263,6 +271,91 @@ html, body {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* Conversation Item Menu */
+.conversation-item-menu {
+    position: relative;
+    flex-shrink: 0;
+    margin-left: 4px;
+}
+
+.conversation-menu-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px 8px;
+    font-size: 1.1rem;
+    line-height: 1;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 0.2s, background-color 0.2s, color 0.2s;
+}
+
+.conversation-item:hover .conversation-menu-btn,
+.conversation-menu-btn:focus,
+.conversation-dropdown.open + .conversation-menu-btn,
+.conversation-item-menu:has(.conversation-dropdown.open) .conversation-menu-btn {
+    opacity: 1;
+}
+
+.conversation-menu-btn:hover {
+    background-color: var(--hover-overlay);
+    color: var(--text-primary);
+}
+
+.conversation-item.active .conversation-menu-btn {
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.conversation-item.active .conversation-menu-btn:hover {
+    color: white;
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Conversation Dropdown Menu */
+.conversation-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 0;
+    background-color: var(--bg-elevated);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px var(--shadow-lg);
+    min-width: 120px;
+    z-index: 100;
+    overflow: hidden;
+}
+
+.conversation-dropdown.open {
+    display: block;
+}
+
+.conversation-dropdown-item {
+    display: block;
+    width: 100%;
+    padding: 10px 14px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.conversation-dropdown-item:hover {
+    background-color: var(--hover-overlay);
+}
+
+.conversation-dropdown-item.danger {
+    color: var(--danger);
+}
+
+.conversation-dropdown-item.danger:hover {
+    background-color: rgba(229, 92, 92, 0.1);
 }
 
 .sidebar-footer {
