@@ -112,6 +112,20 @@ class ApiClient {
         });
     }
 
+    async importExternalConversations(data) {
+        return this.request('/conversations/import-external', {
+            method: 'POST',
+            body: data,
+        });
+    }
+
+    async previewExternalConversations(data) {
+        return this.request('/conversations/import-external/preview', {
+            method: 'POST',
+            body: data,
+        });
+    }
+
     // Chat
     async sendMessage(data) {
         return this.request('/chat/send', {

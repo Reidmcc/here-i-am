@@ -71,7 +71,25 @@ class App {
 
             // Theme
             themeSelect: document.getElementById('theme-select'),
+
+            // Import
+            importSource: document.getElementById('import-source'),
+            importFile: document.getElementById('import-file'),
+            importPreviewBtn: document.getElementById('import-preview-btn'),
+            importBtn: document.getElementById('import-btn'),
+            importStatus: document.getElementById('import-status'),
+            importStep1: document.getElementById('import-step-1'),
+            importStep2: document.getElementById('import-step-2'),
+            importBackBtn: document.getElementById('import-back-btn'),
+            importPreviewInfo: document.getElementById('import-preview-info'),
+            importConversationList: document.getElementById('import-conversation-list'),
+            importSelectAllMemory: document.getElementById('import-select-all-memory'),
+            importSelectAllHistory: document.getElementById('import-select-all-history'),
         };
+
+        // Import state
+        this.importFileContent = null;
+        this.importPreviewData = null;
 
         this.init();
     }
@@ -130,6 +148,14 @@ class App {
 
         // Archived modal
         document.getElementById('close-archived').addEventListener('click', () => this.hideModal('archivedModal'));
+
+        // Import functionality
+        this.elements.importFile.addEventListener('change', () => this.handleImportFileChange());
+        this.elements.importPreviewBtn.addEventListener('click', () => this.previewImportFile());
+        this.elements.importBackBtn.addEventListener('click', () => this.resetImportToStep1());
+        this.elements.importBtn.addEventListener('click', () => this.importExternalConversations());
+        this.elements.importSelectAllMemory.addEventListener('change', (e) => this.toggleAllImportCheckboxes('memory', e.target.checked));
+        this.elements.importSelectAllHistory.addEventListener('change', (e) => this.toggleAllImportCheckboxes('history', e.target.checked));
     }
 
     handleInputChange() {
@@ -650,7 +676,21 @@ class App {
         this.elements.systemPromptInput.value = this.settings.systemPrompt || '';
         this.elements.conversationTypeSelect.value = this.settings.conversationType;
         this.elements.themeSelect.value = this.getCurrentTheme();
+        // Reset import section to step 1
+        this.resetImportToStep1();
         this.showModal('settingsModal');
+    }
+
+    resetImportToStep1() {
+        this.elements.importFile.value = '';
+        this.elements.importPreviewBtn.disabled = true;
+        this.elements.importStatus.style.display = 'none';
+        this.elements.importStep1.style.display = 'block';
+        this.elements.importStep2.style.display = 'none';
+        this.elements.importSelectAllMemory.checked = true;
+        this.elements.importSelectAllHistory.checked = false;
+        this.importFileContent = null;
+        this.importPreviewData = null;
     }
 
     applySettings() {
@@ -666,6 +706,215 @@ class App {
         this.updateModelIndicator();
         this.hideModal('settingsModal');
         this.showToast('Settings applied', 'success');
+    }
+
+    handleImportFileChange() {
+        const file = this.elements.importFile.files[0];
+        this.elements.importPreviewBtn.disabled = !file;
+        this.elements.importStatus.style.display = 'none';
+    }
+
+    async previewImportFile() {
+        const file = this.elements.importFile.files[0];
+        if (!file) {
+            this.showToast('Please select a file to import', 'error');
+            return;
+        }
+
+        if (!this.selectedEntityId) {
+            this.showToast('Please select an entity first', 'error');
+            return;
+        }
+
+        // Show loading state
+        this.elements.importPreviewBtn.disabled = true;
+        this.elements.importPreviewBtn.textContent = 'Loading...';
+        this.elements.importStatus.style.display = 'block';
+        this.elements.importStatus.className = 'import-status loading';
+        this.elements.importStatus.textContent = 'Reading file...';
+
+        try {
+            // Read file content
+            this.importFileContent = await this.readFileAsText(file);
+
+            this.elements.importStatus.textContent = 'Analyzing conversations...';
+
+            // Get source hint from select
+            const source = this.elements.importSource.value || null;
+
+            // Call API to preview
+            this.importPreviewData = await api.previewExternalConversations({
+                content: this.importFileContent,
+                entity_id: this.selectedEntityId,
+                source: source,
+            });
+
+            // Show step 2
+            this.elements.importStatus.style.display = 'none';
+            this.elements.importStep1.style.display = 'none';
+            this.elements.importStep2.style.display = 'block';
+
+            // Update preview info
+            this.elements.importPreviewInfo.textContent = `${this.importPreviewData.total_conversations} conversations found (${this.importPreviewData.source_format})`;
+
+            // Render conversation list
+            this.renderImportConversationList();
+
+        } catch (error) {
+            this.elements.importStatus.className = 'import-status error';
+            this.elements.importStatus.textContent = `Error: ${error.message}`;
+            this.showToast('Failed to load conversations', 'error');
+            console.error('Preview failed:', error);
+        } finally {
+            this.elements.importPreviewBtn.disabled = false;
+            this.elements.importPreviewBtn.textContent = 'Load Conversations';
+        }
+    }
+
+    renderImportConversationList() {
+        if (!this.importPreviewData || !this.importPreviewData.conversations) {
+            this.elements.importConversationList.innerHTML = '<p>No conversations found</p>';
+            return;
+        }
+
+        const html = this.importPreviewData.conversations.map(conv => {
+            const alreadyImported = conv.already_imported;
+            const partiallyImported = conv.imported_count > 0 && !alreadyImported;
+
+            let statusText = '';
+            let statusClass = '';
+            if (alreadyImported) {
+                statusText = ' (already imported)';
+                statusClass = 'imported';
+            } else if (partiallyImported) {
+                statusText = ` (${conv.imported_count}/${conv.message_count} imported)`;
+                statusClass = 'partial';
+            }
+
+            return `
+                <div class="import-conversation-item ${statusClass}" data-index="${conv.index}">
+                    <div class="import-conversation-info">
+                        <div class="import-conversation-title">${this.escapeHtml(conv.title)}</div>
+                        <div class="import-conversation-meta">
+                            ${conv.message_count} messages${statusText}
+                        </div>
+                    </div>
+                    <div class="import-conversation-options">
+                        <label title="Import as searchable memories">
+                            <input type="checkbox" class="import-cb-memory" data-index="${conv.index}" ${alreadyImported ? '' : 'checked'} ${alreadyImported ? 'disabled' : ''}>
+                            Memory
+                        </label>
+                        <label title="Also add to conversation history">
+                            <input type="checkbox" class="import-cb-history" data-index="${conv.index}" ${alreadyImported ? 'disabled' : ''}>
+                            History
+                        </label>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        this.elements.importConversationList.innerHTML = html;
+    }
+
+    toggleAllImportCheckboxes(type, checked) {
+        const selector = type === 'memory' ? '.import-cb-memory' : '.import-cb-history';
+        const checkboxes = this.elements.importConversationList.querySelectorAll(selector + ':not(:disabled)');
+        checkboxes.forEach(cb => cb.checked = checked);
+    }
+
+    async importExternalConversations() {
+        if (!this.importFileContent || !this.importPreviewData) {
+            this.showToast('Please load a file first', 'error');
+            return;
+        }
+
+        if (!this.selectedEntityId) {
+            this.showToast('Please select an entity first', 'error');
+            return;
+        }
+
+        // Gather selected conversations
+        const selectedConversations = [];
+        this.importPreviewData.conversations.forEach(conv => {
+            const memoryCheckbox = this.elements.importConversationList.querySelector(`.import-cb-memory[data-index="${conv.index}"]`);
+            const historyCheckbox = this.elements.importConversationList.querySelector(`.import-cb-history[data-index="${conv.index}"]`);
+
+            const importAsMemory = memoryCheckbox && memoryCheckbox.checked;
+            const importToHistory = historyCheckbox && historyCheckbox.checked;
+
+            if (importAsMemory || importToHistory) {
+                selectedConversations.push({
+                    index: conv.index,
+                    import_as_memory: importAsMemory,
+                    import_to_history: importToHistory,
+                });
+            }
+        });
+
+        if (selectedConversations.length === 0) {
+            this.showToast('Please select at least one conversation to import', 'warning');
+            return;
+        }
+
+        // Show loading state
+        this.elements.importBtn.disabled = true;
+        this.elements.importBtn.textContent = 'Importing...';
+        this.elements.importStatus.style.display = 'block';
+        this.elements.importStatus.className = 'import-status loading';
+        this.elements.importStatus.textContent = `Importing ${selectedConversations.length} conversations...`;
+
+        try {
+            const source = this.elements.importSource.value || null;
+
+            // Call API to import
+            const result = await api.importExternalConversations({
+                content: this.importFileContent,
+                entity_id: this.selectedEntityId,
+                source: source,
+                selected_conversations: selectedConversations,
+            });
+
+            // Show success
+            this.elements.importStatus.className = 'import-status success';
+            let statusHtml = `<strong>Import successful!</strong><br>
+                Conversations: ${result.conversations_imported}<br>
+                Messages: ${result.messages_imported}`;
+
+            if (result.messages_skipped > 0) {
+                statusHtml += `<br>Skipped (duplicates): ${result.messages_skipped}`;
+            }
+            if (result.conversations_to_history > 0) {
+                statusHtml += `<br>Added to history: ${result.conversations_to_history}`;
+            }
+            statusHtml += `<br>Memories stored: ${result.memories_stored}`;
+
+            this.elements.importStatus.innerHTML = statusHtml;
+
+            this.showToast(`Imported ${result.messages_imported} messages`, 'success');
+
+            // Reload conversations if any were added to history
+            if (result.conversations_to_history > 0) {
+                await this.loadConversations();
+            }
+
+        } catch (error) {
+            this.elements.importStatus.className = 'import-status error';
+            this.elements.importStatus.textContent = `Error: ${error.message}`;
+            this.showToast('Import failed', 'error');
+            console.error('Import failed:', error);
+        } finally {
+            this.elements.importBtn.disabled = false;
+            this.elements.importBtn.textContent = 'Import Selected';
+        }
+    }
+
+    readFileAsText(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('Failed to read file'));
+            reader.readAsText(file);
+        });
     }
 
     async loadPreset(presetName) {

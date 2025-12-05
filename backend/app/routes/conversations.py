@@ -165,6 +165,9 @@ async def list_conversations(
     if not include_archived:
         query = query.where(Conversation.is_archived == False)
 
+    # Always exclude imported conversations from the list (they only serve as memory sources)
+    query = query.where(Conversation.is_imported == False)
+
     query = query.order_by(
         Conversation.updated_at.desc().nullsfirst(),
         Conversation.created_at.desc()
@@ -224,6 +227,9 @@ async def list_archived_conversations(
         entity_id: Optional filter by AI entity (Pinecone index name).
     """
     query = select(Conversation).where(Conversation.is_archived == True)
+
+    # Exclude imported conversations from archived list
+    query = query.where(Conversation.is_imported == False)
 
     if entity_id is not None:
         query = query.where(Conversation.entity_id == entity_id)
@@ -573,4 +579,419 @@ async def import_seed_conversation(
         "message_count": len(data.messages),
         "memories_stored": stored_count,
         "entity_id": conversation.entity_id,
+    }
+
+
+class ExternalConversationImport(BaseModel):
+    """Import format for external conversations (OpenAI/Anthropic exports)."""
+    content: str  # JSON string content of the export file
+    entity_id: str  # Target entity (required)
+    source: Optional[str] = None  # Optional source hint: "openai", "anthropic", or auto-detect
+    selected_conversations: Optional[List[dict]] = None  # List of {index, import_as_memory, import_to_history}
+
+
+class ExternalConversationPreview(BaseModel):
+    """Request to preview an export file."""
+    content: str  # JSON string content of the export file
+    source: Optional[str] = None  # Optional source hint
+    entity_id: str  # Target entity for deduplication check
+
+
+def _parse_openai_export(data: list, include_ids: bool = False) -> List[dict]:
+    """
+    Parse OpenAI ChatGPT export format.
+
+    OpenAI exports conversations as a list where each conversation has a 'mapping'
+    dict containing messages in a tree structure, and 'title' field.
+    """
+    all_conversations = []
+
+    for idx, conv in enumerate(data):
+        if not isinstance(conv, dict):
+            continue
+
+        conv_id = conv.get("id", f"openai-{idx}")
+        title = conv.get("title", "Imported from ChatGPT")
+        mapping = conv.get("mapping", {})
+
+        # Build message chain from the tree structure
+        message_nodes = []
+        for node_id, node in mapping.items():
+            if not isinstance(node, dict):
+                continue
+            message = node.get("message")
+            if not message:
+                continue
+
+            msg_id = message.get("id", node_id)
+            author = message.get("author", {})
+            role = author.get("role", "")
+
+            # Skip system messages
+            if role not in ("user", "assistant"):
+                continue
+
+            content = message.get("content", {})
+            parts = content.get("parts", [])
+
+            # Combine text parts
+            text = ""
+            for part in parts:
+                if isinstance(part, str):
+                    text += part
+                elif isinstance(part, dict) and "text" in part:
+                    text += part["text"]
+
+            if text.strip():
+                create_time = message.get("create_time", 0)
+                msg_entry = {
+                    "role": "human" if role == "user" else "assistant",
+                    "content": text.strip(),
+                    "timestamp": create_time,
+                }
+                if include_ids:
+                    msg_entry["id"] = msg_id
+                message_nodes.append(msg_entry)
+
+        # Sort by timestamp
+        message_nodes.sort(key=lambda x: x.get("timestamp", 0))
+
+        if include_ids:
+            messages = [{"id": m.get("id"), "role": m["role"], "content": m["content"]} for m in message_nodes]
+        else:
+            messages = [{"role": m["role"], "content": m["content"]} for m in message_nodes]
+
+        if messages:
+            conv_entry = {
+                "title": title,
+                "messages": messages,
+                "message_count": len(messages),
+            }
+            if include_ids:
+                conv_entry["id"] = conv_id
+                conv_entry["index"] = idx
+            all_conversations.append(conv_entry)
+
+    return all_conversations
+
+
+def _parse_anthropic_export(data: list, include_ids: bool = False) -> List[dict]:
+    """
+    Parse Anthropic Claude export format.
+
+    Anthropic exports as a list of conversations, each with 'chat_messages' array
+    containing messages with 'sender' and 'text' fields.
+    """
+    all_conversations = []
+
+    for idx, conv in enumerate(data):
+        if not isinstance(conv, dict):
+            continue
+
+        conv_id = conv.get("uuid", f"anthropic-{idx}")
+        title = conv.get("name", "Imported from Claude")
+        chat_messages = conv.get("chat_messages", [])
+
+        messages = []
+        for msg in chat_messages:
+            if not isinstance(msg, dict):
+                continue
+
+            msg_id = msg.get("uuid")
+            sender = msg.get("sender", "")
+            text = msg.get("text", "")
+
+            if sender in ("human", "user") and text.strip():
+                msg_entry = {
+                    "role": "human",
+                    "content": text.strip(),
+                }
+                if include_ids and msg_id:
+                    msg_entry["id"] = msg_id
+                messages.append(msg_entry)
+            elif sender == "assistant" and text.strip():
+                msg_entry = {
+                    "role": "assistant",
+                    "content": text.strip(),
+                }
+                if include_ids and msg_id:
+                    msg_entry["id"] = msg_id
+                messages.append(msg_entry)
+
+        if messages:
+            conv_entry = {
+                "title": title,
+                "messages": messages,
+                "message_count": len(messages),
+            }
+            if include_ids:
+                conv_entry["id"] = conv_id
+                conv_entry["index"] = idx
+            all_conversations.append(conv_entry)
+
+    return all_conversations
+
+
+def _detect_and_parse_export(content: str, source_hint: Optional[str] = None, include_ids: bool = False) -> tuple:
+    """
+    Detect export format and parse conversations.
+
+    Returns: (conversations_list, detected_source)
+    """
+    import json
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON: {e}")
+
+    if not isinstance(data, list):
+        raise ValueError("Export file must contain a JSON array")
+
+    if len(data) == 0:
+        return [], "unknown"
+
+    # Try to detect format from structure
+    first_item = data[0]
+
+    if source_hint == "openai" or (source_hint is None and "mapping" in first_item):
+        # OpenAI format has 'mapping' field
+        return _parse_openai_export(data, include_ids), "openai"
+    elif source_hint == "anthropic" or (source_hint is None and "chat_messages" in first_item):
+        # Anthropic format has 'chat_messages' field
+        return _parse_anthropic_export(data, include_ids), "anthropic"
+    else:
+        # Try to auto-detect by checking for common patterns
+        if any("mapping" in item for item in data if isinstance(item, dict)):
+            return _parse_openai_export(data, include_ids), "openai"
+        elif any("chat_messages" in item for item in data if isinstance(item, dict)):
+            return _parse_anthropic_export(data, include_ids), "anthropic"
+        else:
+            raise ValueError(
+                "Could not detect export format. Supported formats: OpenAI ChatGPT export, Anthropic Claude export"
+            )
+
+
+@router.post("/import-external/preview")
+async def preview_external_conversations(
+    data: ExternalConversationPreview,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Preview conversations from an external export file.
+
+    Returns a list of conversations with their titles, message counts, and
+    whether they've already been imported (for deduplication).
+    """
+    # Parse the export file with IDs for deduplication
+    try:
+        conversations, detected_source = _detect_and_parse_export(data.content, data.source, include_ids=True)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not conversations:
+        raise HTTPException(status_code=400, detail="No conversations found in export file")
+
+    # Check for already imported message IDs
+    all_message_ids = []
+    for conv in conversations:
+        for msg in conv.get("messages", []):
+            if msg.get("id"):
+                all_message_ids.append(msg["id"])
+
+    # Query existing message IDs
+    existing_ids = set()
+    if all_message_ids:
+        result = await db.execute(
+            select(Message.id).where(Message.id.in_(all_message_ids))
+        )
+        existing_ids = {row[0] for row in result.fetchall()}
+
+    # Build preview response
+    preview = []
+    for conv in conversations:
+        messages = conv.get("messages", [])
+        imported_count = sum(1 for m in messages if m.get("id") in existing_ids)
+        already_imported = imported_count == len(messages) and len(messages) > 0
+
+        preview.append({
+            "index": conv.get("index", 0),
+            "id": conv.get("id"),
+            "title": conv["title"],
+            "message_count": conv["message_count"],
+            "imported_count": imported_count,
+            "already_imported": already_imported,
+        })
+
+    return {
+        "source_format": detected_source,
+        "total_conversations": len(preview),
+        "conversations": preview,
+    }
+
+
+@router.post("/import-external")
+async def import_external_conversations(
+    data: ExternalConversationImport,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Import conversations from external services (OpenAI ChatGPT or Anthropic Claude exports).
+
+    If selected_conversations is provided, only import those conversations.
+    Each conversation can be imported as:
+    - Memory only (is_imported=True, won't show in conversation list)
+    - Memory + History (is_imported=False, will show in conversation list)
+
+    Messages with existing IDs are skipped for deduplication.
+    """
+    from app.services import memory_service
+
+    # Validate entity_id
+    entity = settings.get_entity_by_index(data.entity_id)
+    if not entity:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Entity '{data.entity_id}' is not configured. Check your PINECONE_INDEXES environment variable."
+        )
+
+    # Parse the export file with IDs
+    try:
+        conversations, detected_source = _detect_and_parse_export(data.content, data.source, include_ids=True)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not conversations:
+        raise HTTPException(status_code=400, detail="No conversations found in export file")
+
+    # Build selection map if provided
+    selection_map = {}
+    if data.selected_conversations:
+        for sel in data.selected_conversations:
+            selection_map[sel["index"]] = {
+                "import_as_memory": sel.get("import_as_memory", True),
+                "import_to_history": sel.get("import_to_history", False),
+            }
+
+    # Get existing message IDs for deduplication
+    all_message_ids = []
+    for conv in conversations:
+        for msg in conv.get("messages", []):
+            if msg.get("id"):
+                all_message_ids.append(msg["id"])
+
+    existing_ids = set()
+    if all_message_ids:
+        result = await db.execute(
+            select(Message.id).where(Message.id.in_(all_message_ids))
+        )
+        existing_ids = {row[0] for row in result.fetchall()}
+
+    # Import conversations
+    total_messages = 0
+    total_memories = 0
+    imported_conversations = 0
+    skipped_messages = 0
+    history_conversations = 0
+
+    for conv in conversations:
+        conv_index = conv.get("index", 0)
+
+        # Check if this conversation should be imported
+        if data.selected_conversations is not None:
+            if conv_index not in selection_map:
+                continue  # Not selected, skip
+            selection = selection_map[conv_index]
+            import_as_memory = selection["import_as_memory"]
+            import_to_history = selection["import_to_history"]
+
+            # Skip if neither option is selected
+            if not import_as_memory and not import_to_history:
+                continue
+        else:
+            # Legacy behavior: import all as memory only
+            import_as_memory = True
+            import_to_history = False
+
+        title = conv.get("title", f"Imported from {detected_source}")
+        messages = conv.get("messages", [])
+
+        if not messages:
+            continue
+
+        # If importing to history, conversation should be visible (is_imported=False)
+        # Otherwise, mark as imported (hidden)
+        is_imported = not import_to_history
+
+        # Create conversation
+        conversation = Conversation(
+            title=f"[Imported] {title}" if is_imported else title,
+            conversation_type=ConversationType.NORMAL,
+            llm_model_used="imported",
+            entity_id=data.entity_id,
+            is_imported=is_imported,
+        )
+
+        db.add(conversation)
+        await db.flush()
+
+        # Track if any messages were added
+        messages_added = 0
+
+        # Add messages
+        for msg_data in messages:
+            msg_id = msg_data.get("id")
+            role = MessageRole.HUMAN if msg_data["role"] == "human" else MessageRole.ASSISTANT
+            content = msg_data["content"]
+
+            # Skip if message already exists (deduplication)
+            if msg_id and msg_id in existing_ids:
+                skipped_messages += 1
+                continue
+
+            # Use original ID if available, otherwise generate new
+            message = Message(
+                id=msg_id if msg_id else None,  # None will auto-generate UUID
+                conversation_id=conversation.id,
+                role=role,
+                content=content,
+                times_retrieved=0,
+            )
+            db.add(message)
+            await db.flush()
+            total_messages += 1
+            messages_added += 1
+
+            # Store in vector database if importing as memory
+            if import_as_memory and memory_service.is_configured():
+                success = await memory_service.store_memory(
+                    message_id=message.id,
+                    conversation_id=conversation.id,
+                    role=role.value,
+                    content=content,
+                    created_at=message.created_at,
+                    entity_id=data.entity_id,
+                )
+                if success:
+                    total_memories += 1
+
+        # If no messages were added (all duplicates), remove the empty conversation
+        if messages_added == 0:
+            await db.delete(conversation)
+        else:
+            imported_conversations += 1
+            if import_to_history:
+                history_conversations += 1
+
+    await db.commit()
+
+    return {
+        "status": "imported",
+        "source_format": detected_source,
+        "conversations_imported": imported_conversations,
+        "conversations_to_history": history_conversations,
+        "messages_imported": total_messages,
+        "messages_skipped": skipped_messages,
+        "memories_stored": total_memories,
+        "entity_id": data.entity_id,
     }

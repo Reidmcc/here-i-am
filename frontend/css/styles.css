@@ -716,6 +716,212 @@ html, body {
     cursor: pointer;
 }
 
+.form-group input[type="file"] {
+    width: 100%;
+    padding: 10px 12px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+
+.form-group input[type="file"]::-webkit-file-upload-button {
+    padding: 6px 12px;
+    margin-right: 12px;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.form-group input[type="file"]::-webkit-file-upload-button:hover {
+    background-color: var(--hover-overlay);
+    color: var(--text-primary);
+}
+
+.form-help {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+/* Settings Section Styles */
+.settings-divider {
+    height: 1px;
+    background-color: var(--border-color);
+    margin: 24px 0;
+}
+
+.settings-section-title {
+    font-size: 1rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+}
+
+.settings-section-description {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+    line-height: 1.5;
+}
+
+/* Import Status */
+.import-status {
+    padding: 12px 16px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    margin-top: 12px;
+    line-height: 1.5;
+}
+
+.import-status.loading {
+    background-color: var(--accent-subtle);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+}
+
+.import-status.success {
+    background-color: rgba(76, 175, 124, 0.15);
+    color: var(--success);
+    border: 1px solid var(--success);
+}
+
+.import-status.error {
+    background-color: rgba(229, 92, 92, 0.15);
+    color: var(--danger);
+    border: 1px solid var(--danger);
+}
+
+/* Import Preview Header */
+.import-preview-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.import-preview-header span {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+/* Select All Controls */
+.import-select-all {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    background-color: var(--bg-tertiary);
+    border-radius: 6px;
+}
+
+.import-select-all label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.import-select-all input[type="checkbox"] {
+    cursor: pointer;
+}
+
+/* Conversation List */
+.import-conversation-list {
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    margin-bottom: 16px;
+}
+
+.import-conversation-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+    transition: background-color 0.2s;
+}
+
+.import-conversation-item:last-child {
+    border-bottom: none;
+}
+
+.import-conversation-item:hover {
+    background-color: var(--hover-overlay);
+}
+
+.import-conversation-item.imported {
+    opacity: 0.5;
+    background-color: var(--bg-tertiary);
+}
+
+.import-conversation-item.partial {
+    background-color: rgba(229, 165, 76, 0.1);
+}
+
+.import-conversation-info {
+    flex: 1;
+    min-width: 0;
+    margin-right: 12px;
+}
+
+.import-conversation-title {
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 2px;
+}
+
+.import-conversation-meta {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.import-conversation-options {
+    display: flex;
+    gap: 12px;
+    flex-shrink: 0;
+}
+
+.import-conversation-options label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.import-conversation-options input[type="checkbox"] {
+    cursor: pointer;
+}
+
+.import-conversation-options input[type="checkbox"]:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+/* Small Button Variant */
+.secondary-btn.small {
+    padding: 6px 12px;
+    font-size: 0.8rem;
+}
+
 /* Buttons */
 .primary-btn {
     padding: 10px 20px;

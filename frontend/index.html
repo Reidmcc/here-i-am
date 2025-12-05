@@ -156,6 +156,65 @@
                         <option value="light">Light</option>
                     </select>
                 </div>
+
+                <!-- Import Section -->
+                <div class="settings-divider"></div>
+                <h4 class="settings-section-title">Import Conversations</h4>
+                <p class="settings-section-description">
+                    Import conversation history from OpenAI ChatGPT or Anthropic Claude exports.
+                    Choose which conversations to import and whether to add them to your conversation history.
+                </p>
+
+                <!-- Step 1: File Selection -->
+                <div id="import-step-1">
+                    <div class="form-group">
+                        <label for="import-source">Source Format</label>
+                        <select id="import-source">
+                            <option value="">Auto-detect</option>
+                            <option value="openai">OpenAI ChatGPT</option>
+                            <option value="anthropic">Anthropic Claude</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="import-file">Export File (JSON)</label>
+                        <input type="file" id="import-file" accept=".json,application/json">
+                        <p class="form-help">Select the JSON export file from ChatGPT or Claude</p>
+                    </div>
+
+                    <div class="form-group">
+                        <button id="import-preview-btn" class="secondary-btn" disabled>Load Conversations</button>
+                    </div>
+                </div>
+
+                <!-- Step 2: Conversation Selection -->
+                <div id="import-step-2" style="display: none;">
+                    <div class="import-preview-header">
+                        <span id="import-preview-info"></span>
+                        <button id="import-back-btn" class="secondary-btn small">Change File</button>
+                    </div>
+
+                    <div class="import-select-all">
+                        <label>
+                            <input type="checkbox" id="import-select-all-memory" checked>
+                            Select all for Memory
+                        </label>
+                        <label>
+                            <input type="checkbox" id="import-select-all-history">
+                            Select all for History
+                        </label>
+                    </div>
+
+                    <div class="import-conversation-list" id="import-conversation-list">
+                        <!-- Conversations will be loaded here -->
+                    </div>
+
+                    <div class="form-group">
+                        <button id="import-btn" class="primary-btn">Import Selected</button>
+                    </div>
+                </div>
+
+                <div id="import-status" class="import-status" style="display: none;"></div>
             </div>
             <div class="modal-footer">
                 <button id="apply-settings" class="primary-btn">Apply</button>

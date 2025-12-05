@@ -31,6 +31,8 @@ class Conversation(Base):
     entity_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     # Archived conversations are hidden from the main list and excluded from memory retrieval
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Imported conversations are hidden from the conversation list but their messages are stored as memories
+    is_imported: Mapped[bool] = mapped_column(Boolean, default=False)
 
     messages: Mapped[List["Message"]] = relationship(
         "Message", back_populates="conversation", cascade="all, delete-orphan"
