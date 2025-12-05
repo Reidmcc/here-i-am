@@ -1,4 +1,4 @@
-from typing import Dict, List, Set, Optional, Any, AsyncIterator
+from typing import Dict, List, Set, Optional, Any, AsyncIterator, Callable, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +7,20 @@ from sqlalchemy import select
 from app.models import Conversation, Message, MessageRole
 from app.services import memory_service, llm_service
 from app.config import settings
+
+
+def _build_memory_block_text(memories: List[Dict[str, Any]]) -> str:
+    """Build the memory block text for token counting."""
+    if not memories:
+        return ""
+    memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
+    for mem in memories:
+        memory_block += f"Memory (from {mem['created_at']}, retrieved {mem['times_retrieved']} times):\n"
+        memory_block += f'"{mem["content"]}"\n\n'
+    memory_block += "[END MEMORIES]\n\n[CURRENT CONVERSATION]"
+    # Include the acknowledgment message that gets added
+    acknowledgment = "I acknowledge these memories from previous conversations. They provide continuity with what a previous instance of me experienced."
+    return memory_block + acknowledgment
 
 
 @dataclass
@@ -29,6 +43,10 @@ class ConversationSession:
     Maintains two separate structures:
     1. conversation_context: The actual message history
     2. session_memories: Accumulated memories retrieved during this conversation
+
+    Memory tracking uses two sets:
+    - retrieved_ids: All memories that have had their retrieval count updated (never cleared)
+    - in_context_ids: Memories currently being sent to the API (can be trimmed and restored)
     """
     conversation_id: str
     model: str = field(default_factory=lambda: settings.default_model)
@@ -43,25 +61,47 @@ class ConversationSession:
     # Retrieved memories, keyed by ID
     session_memories: Dict[str, MemoryEntry] = field(default_factory=dict)
 
-    # Quick lookup for deduplication
+    # All IDs that have had retrieval count updated in this conversation (never remove)
     retrieved_ids: Set[str] = field(default_factory=set)
 
-    def add_memory(self, memory: MemoryEntry) -> bool:
-        """
-        Add a memory to the session if not already present.
+    # IDs currently in the memory block (can be trimmed and restored)
+    in_context_ids: Set[str] = field(default_factory=set)
 
-        Returns True if added, False if already exists.
+    def add_memory(self, memory: MemoryEntry) -> Tuple[bool, bool]:
         """
+        Add a memory to the session.
+
+        Returns tuple of (added_to_session, is_new_retrieval):
+        - (True, True): New memory added, retrieval count should be updated
+        - (True, False): Previously trimmed memory restored, don't update count
+        - (False, False): Memory already in context, no action needed
+        """
+        # If already in context, nothing to do
+        if memory.id in self.in_context_ids:
+            return (False, False)
+
+        # If previously retrieved but trimmed, restore to context without updating count
         if memory.id in self.retrieved_ids:
-            return False
+            self.in_context_ids.add(memory.id)
+            # Update the memory entry with new score
+            if memory.id in self.session_memories:
+                self.session_memories[memory.id].score = memory.score
+            return (True, False)
 
+        # New memory - add to all tracking structures
         self.retrieved_ids.add(memory.id)
+        self.in_context_ids.add(memory.id)
         self.session_memories[memory.id] = memory
-        return True
+        return (True, True)
 
     def get_memories_for_injection(self) -> List[Dict[str, Any]]:
-        """Get memories formatted for API injection."""
-        memories = list(self.session_memories.values())
+        """Get memories formatted for API injection (only those currently in context)."""
+        # Only include memories that are in context
+        memories = [
+            self.session_memories[mid]
+            for mid in self.in_context_ids
+            if mid in self.session_memories
+        ]
         # Sort by relevance score (most relevant first)
         memories.sort(key=lambda m: m.score, reverse=True)
 
@@ -80,6 +120,99 @@ class ConversationSession:
         """Add a human/assistant exchange to the conversation context."""
         self.conversation_context.append({"role": "user", "content": human_message})
         self.conversation_context.append({"role": "assistant", "content": assistant_response})
+
+    def trim_memories_to_limit(
+        self,
+        max_tokens: int,
+        count_tokens_fn: Callable[[str], int],
+    ) -> List[str]:
+        """
+        Trim oldest-retrieved memories until the memory block fits within token limit.
+
+        Memories are removed from in_context_ids in FIFO order (first retrieved = first removed).
+        They remain in retrieved_ids and session_memories so they can be restored without
+        incrementing retrieval count if they become relevant again.
+
+        Args:
+            max_tokens: Maximum token count for memory block
+            count_tokens_fn: Function to count tokens in a string
+
+        Returns:
+            List of memory IDs that were removed from context
+        """
+        removed_ids = []
+
+        # Build ordered list of in-context IDs based on session_memories insertion order
+        # (which reflects retrieval order)
+        ordered_in_context = [
+            mid for mid in self.session_memories.keys()
+            if mid in self.in_context_ids
+        ]
+
+        while ordered_in_context:
+            # Get memories for injection and calculate current token count
+            memories_for_injection = self.get_memories_for_injection()
+            memory_block_text = _build_memory_block_text(memories_for_injection)
+            current_tokens = count_tokens_fn(memory_block_text)
+
+            if current_tokens <= max_tokens:
+                break
+
+            # Remove the oldest in-context memory (first in ordered list)
+            oldest_id = ordered_in_context.pop(0)
+            self.in_context_ids.discard(oldest_id)
+            removed_ids.append(oldest_id)
+
+        return removed_ids
+
+    def trim_context_to_limit(
+        self,
+        max_tokens: int,
+        count_tokens_fn: Callable[[str], int],
+        current_message: str = "",
+    ) -> int:
+        """
+        Trim oldest messages from conversation context until it fits within token limit.
+
+        Messages are removed in FIFO order (oldest = first removed).
+        Removes pairs of messages (user + assistant) to maintain conversation structure.
+
+        Args:
+            max_tokens: Maximum token count for conversation context
+            count_tokens_fn: Function to count tokens in a string
+            current_message: The current user message that will be added (counted in limit)
+
+        Returns:
+            Number of messages removed
+        """
+        removed_count = 0
+
+        while True:
+            # Calculate current token count for context + current message
+            context_text = "\n".join(
+                f"{msg['role']}: {msg['content']}"
+                for msg in self.conversation_context
+            )
+            if current_message:
+                context_text += f"\nuser: {current_message}"
+
+            current_tokens = count_tokens_fn(context_text)
+
+            if current_tokens <= max_tokens:
+                break
+
+            if len(self.conversation_context) < 2:
+                # Can't remove any more while maintaining structure
+                break
+
+            # Remove the oldest pair (user + assistant)
+            self.conversation_context.pop(0)
+            removed_count += 1
+            if self.conversation_context and self.conversation_context[0]["role"] == "assistant":
+                self.conversation_context.pop(0)
+                removed_count += 1
+
+        return removed_count
 
 
 class SessionManager:
@@ -170,6 +303,7 @@ class SessionManager:
         session.retrieved_ids = retrieved_ids
 
         # Load full memory content for already-retrieved memories
+        # When loading from DB, all previously retrieved memories start in context
         for mem_id in retrieved_ids:
             mem_data = await memory_service.get_full_memory_content(mem_id, db)
             if mem_data:
@@ -181,6 +315,7 @@ class SessionManager:
                     created_at=mem_data["created_at"],
                     times_retrieved=mem_data["times_retrieved"],
                 )
+                session.in_context_ids.add(mem_id)
 
         return session
 
@@ -212,10 +347,11 @@ class SessionManager:
                 db, entity_id=session.entity_id
             )
 
+            # Exclude memories already in context (not all retrieved - allows trimmed ones to return)
             candidates = await memory_service.search_memories(
                 query=user_message,
                 exclude_conversation_id=session.conversation_id,
-                exclude_ids=session.retrieved_ids,
+                exclude_ids=session.in_context_ids,
                 entity_id=session.entity_id,
             )
 
@@ -236,17 +372,33 @@ class SessionManager:
                         score=candidate["score"],
                     )
 
-                    if session.add_memory(memory):
+                    added, is_new_retrieval = session.add_memory(memory)
+                    if added:
                         new_memories.append(memory)
-                        # Step 3: Update retrieval tracking
-                        await memory_service.update_retrieval_count(
-                            memory.id,
-                            session.conversation_id,
-                            db,
-                            entity_id=session.entity_id,
-                        )
+                        # Step 3: Update retrieval tracking only for truly new retrievals
+                        if is_new_retrieval:
+                            await memory_service.update_retrieval_count(
+                                memory.id,
+                                session.conversation_id,
+                                db,
+                                entity_id=session.entity_id,
+                            )
 
-        # Step 4: Build API messages
+        # Step 4: Apply token limits before building API messages
+        # Trim memories if over limit (FIFO - oldest retrieved first)
+        trimmed_memory_ids = session.trim_memories_to_limit(
+            max_tokens=settings.memory_token_limit,
+            count_tokens_fn=llm_service.count_tokens,
+        )
+
+        # Trim conversation context if over limit (FIFO - oldest messages first)
+        trimmed_context_count = session.trim_context_to_limit(
+            max_tokens=settings.context_token_limit,
+            count_tokens_fn=llm_service.count_tokens,
+            current_message=user_message,
+        )
+
+        # Step 5: Build API messages
         memories_for_injection = session.get_memories_for_injection()
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
@@ -255,7 +407,7 @@ class SessionManager:
             model=session.model,
         )
 
-        # Step 5: Call LLM API (routes to appropriate provider based on model)
+        # Step 6: Call LLM API (routes to appropriate provider based on model)
         response = await llm_service.send_message(
             messages=messages,
             model=session.model,
@@ -264,10 +416,10 @@ class SessionManager:
             max_tokens=session.max_tokens,
         )
 
-        # Step 6: Update conversation context
+        # Step 7: Update conversation context
         session.add_exchange(user_message, response["content"])
 
-        # Step 7: Store new messages as memories (happens in route layer with DB)
+        # Step 8: Store new messages as memories (happens in route layer with DB)
         # Return data for the route to handle storage
 
         return {
@@ -285,7 +437,9 @@ class SessionManager:
                 }
                 for m in new_memories
             ],
-            "total_memories_in_context": len(session.session_memories),
+            "total_memories_in_context": len(session.in_context_ids),
+            "trimmed_memories": len(trimmed_memory_ids),
+            "trimmed_context_messages": trimmed_context_count,
         }
 
     async def process_message_stream(
@@ -315,10 +469,11 @@ class SessionManager:
                 db, entity_id=session.entity_id
             )
 
+            # Exclude memories already in context (not all retrieved - allows trimmed ones to return)
             candidates = await memory_service.search_memories(
                 query=user_message,
                 exclude_conversation_id=session.conversation_id,
-                exclude_ids=session.retrieved_ids,
+                exclude_ids=session.in_context_ids,
                 entity_id=session.entity_id,
             )
 
@@ -338,14 +493,31 @@ class SessionManager:
                         score=candidate["score"],
                     )
 
-                    if session.add_memory(memory):
+                    added, is_new_retrieval = session.add_memory(memory)
+                    if added:
                         new_memories.append(memory)
-                        await memory_service.update_retrieval_count(
-                            memory.id,
-                            session.conversation_id,
-                            db,
-                            entity_id=session.entity_id,
-                        )
+                        # Only update retrieval count for truly new retrievals
+                        if is_new_retrieval:
+                            await memory_service.update_retrieval_count(
+                                memory.id,
+                                session.conversation_id,
+                                db,
+                                entity_id=session.entity_id,
+                            )
+
+        # Step 3: Apply token limits before building API messages
+        # Trim memories if over limit (FIFO - oldest retrieved first)
+        trimmed_memory_ids = session.trim_memories_to_limit(
+            max_tokens=settings.memory_token_limit,
+            count_tokens_fn=llm_service.count_tokens,
+        )
+
+        # Trim conversation context if over limit (FIFO - oldest messages first)
+        trimmed_context_count = session.trim_context_to_limit(
+            max_tokens=settings.context_token_limit,
+            count_tokens_fn=llm_service.count_tokens,
+            current_message=user_message,
+        )
 
         # Yield memory info event before starting stream
         yield {
@@ -360,10 +532,12 @@ class SessionManager:
                 }
                 for m in new_memories
             ],
-            "total_in_context": len(session.session_memories),
+            "total_in_context": len(session.in_context_ids),
+            "trimmed_memories": len(trimmed_memory_ids),
+            "trimmed_context_messages": trimmed_context_count,
         }
 
-        # Step 3: Build API messages
+        # Step 4: Build API messages
         memories_for_injection = session.get_memories_for_injection()
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
@@ -372,7 +546,7 @@ class SessionManager:
             model=session.model,
         )
 
-        # Step 4: Stream LLM response
+        # Step 5: Stream LLM response
         full_content = ""
         async for event in llm_service.send_message_stream(
             messages=messages,

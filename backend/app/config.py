@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     default_temperature: float = 1.0
     default_max_tokens: int = 4096
 
+    # Context window limits (in tokens)
+    # Anthropic's max context is 200k; we cap at 150k to leave room for response
+    context_token_limit: int = 150000  # Conversation history cap
+    memory_token_limit: int = 40000    # Memory block cap
+
     class Config:
         env_file = ".env"
         extra = "ignore"
