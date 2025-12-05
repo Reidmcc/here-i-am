@@ -799,11 +799,17 @@ async def preview_external_conversations(
             if msg.get("id"):
                 all_message_ids.append(msg["id"])
 
-    # Query existing message IDs
+    # Query existing message IDs for THIS entity only
+    # This allows the same file to be imported to different entities
     existing_ids = set()
     if all_message_ids:
         result = await db.execute(
-            select(Message.id).where(Message.id.in_(all_message_ids))
+            select(Message.id)
+            .join(Conversation)
+            .where(
+                Message.id.in_(all_message_ids),
+                Conversation.entity_id == data.entity_id
+            )
         )
         existing_ids = {row[0] for row in result.fetchall()}
 
@@ -873,7 +879,8 @@ async def import_external_conversations(
                 "import_to_history": sel.get("import_to_history", False),
             }
 
-    # Get existing message IDs for deduplication
+    # Get existing message IDs for deduplication (per-entity)
+    # Only messages already imported for THIS entity are considered duplicates
     all_message_ids = []
     for conv in conversations:
         for msg in conv.get("messages", []):
@@ -883,7 +890,12 @@ async def import_external_conversations(
     existing_ids = set()
     if all_message_ids:
         result = await db.execute(
-            select(Message.id).where(Message.id.in_(all_message_ids))
+            select(Message.id)
+            .join(Conversation)
+            .where(
+                Message.id.in_(all_message_ids),
+                Conversation.entity_id == data.entity_id
+            )
         )
         existing_ids = {row[0] for row in result.fetchall()}
 
