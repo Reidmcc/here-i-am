@@ -434,11 +434,12 @@ class SessionManager:
                     "created_at": m.created_at,
                     "times_retrieved": m.times_retrieved + 1,  # Account for this retrieval
                     "score": m.score,
+                    "role": m.role,
                 }
                 for m in new_memories
             ],
             "total_memories_in_context": len(session.in_context_ids),
-            "trimmed_memories": len(trimmed_memory_ids),
+            "trimmed_memory_ids": trimmed_memory_ids,
             "trimmed_context_messages": trimmed_context_count,
         }
 
@@ -529,11 +530,12 @@ class SessionManager:
                     "created_at": m.created_at,
                     "times_retrieved": m.times_retrieved + 1,
                     "score": m.score,
+                    "role": m.role,
                 }
                 for m in new_memories
             ],
             "total_in_context": len(session.in_context_ids),
-            "trimmed_memories": len(trimmed_memory_ids),
+            "trimmed_memory_ids": trimmed_memory_ids,
             "trimmed_context_messages": trimmed_context_count,
         }
 

@@ -444,11 +444,29 @@ class App {
                 },
                 {
                     onMemories: (data) => {
-                        // Update memories when retrieved
+                        let hasChanges = false;
+
+                        // Remove trimmed memories (FIFO trimming for token limits)
+                        if (data.trimmed_memory_ids && data.trimmed_memory_ids.length > 0) {
+                            const trimmedSet = new Set(data.trimmed_memory_ids);
+                            this.retrievedMemories = this.retrievedMemories.filter(
+                                mem => !trimmedSet.has(mem.id)
+                            );
+                            hasChanges = true;
+                        }
+
+                        // Add new memories (with deduplication for restored memories)
                         if (data.new_memories && data.new_memories.length > 0) {
+                            const existingIds = new Set(this.retrievedMemories.map(m => m.id));
                             data.new_memories.forEach(mem => {
-                                this.retrievedMemories.push(mem);
+                                if (!existingIds.has(mem.id)) {
+                                    this.retrievedMemories.push(mem);
+                                }
                             });
+                            hasChanges = true;
+                        }
+
+                        if (hasChanges) {
                             this.updateMemoriesPanel();
                         }
                     },
