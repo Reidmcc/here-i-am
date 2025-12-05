@@ -56,7 +56,7 @@ class App {
             // Settings
             modelSelect: document.getElementById('model-select'),
             temperatureInput: document.getElementById('temperature-input'),
-            temperatureValue: document.getElementById('temperature-value'),
+            temperatureNumber: document.getElementById('temperature-number'),
             maxTokensInput: document.getElementById('max-tokens-input'),
             presetSelect: document.getElementById('preset-select'),
             systemPromptInput: document.getElementById('system-prompt-input'),
@@ -133,7 +133,15 @@ class App {
         document.getElementById('close-settings').addEventListener('click', () => this.hideModal('settingsModal'));
         document.getElementById('apply-settings').addEventListener('click', () => this.applySettings());
         this.elements.temperatureInput.addEventListener('input', (e) => {
-            this.elements.temperatureValue.textContent = e.target.value;
+            this.elements.temperatureNumber.value = e.target.value;
+        });
+        this.elements.temperatureNumber.addEventListener('input', (e) => {
+            let value = parseFloat(e.target.value);
+            const maxTemp = this.getMaxTemperatureForCurrentEntity();
+            if (isNaN(value)) value = 1.0;
+            if (value < 0) value = 0;
+            if (value > maxTemp) value = maxTemp;
+            this.elements.temperatureInput.value = value;
         });
         this.elements.presetSelect.addEventListener('change', (e) => this.loadPreset(e.target.value));
 
@@ -245,6 +253,7 @@ class App {
             // Set default entity
             this.selectedEntityId = response.default_entity;
             this.updateEntityDescription();
+            this.updateTemperatureMax();
 
             // Always show entity selector so users know which entity they're working with
             this.elements.entitySelector.style.display = 'block';
@@ -272,6 +281,7 @@ class App {
                 }
             }
             this.updateModelIndicator();
+            this.updateTemperatureMax();
         }
 
         // Clear current conversation when switching entities
@@ -316,6 +326,28 @@ class App {
     getEntityLabel(entityId) {
         const entity = this.entities.find(e => e.index_name === entityId);
         return entity ? entity.label : entityId;
+    }
+
+    getMaxTemperatureForCurrentEntity() {
+        const entity = this.entities.find(e => e.index_name === this.selectedEntityId);
+        // OpenAI supports temperature 0-2, Anthropic only 0-1
+        if (entity && entity.llm_provider === 'openai') {
+            return 2.0;
+        }
+        return 1.0;
+    }
+
+    updateTemperatureMax() {
+        const maxTemp = this.getMaxTemperatureForCurrentEntity();
+        this.elements.temperatureInput.max = maxTemp;
+        this.elements.temperatureNumber.max = maxTemp;
+
+        // Clamp current value if it exceeds new max
+        if (this.settings.temperature > maxTemp) {
+            this.settings.temperature = maxTemp;
+            this.elements.temperatureInput.value = maxTemp;
+            this.elements.temperatureNumber.value = maxTemp;
+        }
     }
 
     renderConversationList() {
@@ -739,9 +771,10 @@ class App {
     }
 
     showSettingsModal() {
+        this.updateTemperatureMax();
         this.elements.modelSelect.value = this.settings.model;
         this.elements.temperatureInput.value = this.settings.temperature;
-        this.elements.temperatureValue.textContent = this.settings.temperature;
+        this.elements.temperatureNumber.value = this.settings.temperature;
         this.elements.maxTokensInput.value = this.settings.maxTokens;
         this.elements.systemPromptInput.value = this.settings.systemPrompt || '';
         this.elements.conversationTypeSelect.value = this.settings.conversationType;
