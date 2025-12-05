@@ -166,6 +166,122 @@ class TestConversationSession:
         assert session.conversation_context[0] == {"role": "user", "content": "Hello!"}
         assert session.conversation_context[1] == {"role": "assistant", "content": "Hi there!"}
 
+    def test_trim_memories_to_limit_no_trimming_needed(self):
+        """Test that memories are not trimmed when under limit."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add a memory
+        memory = MemoryEntry(
+            id="mem-1",
+            conversation_id="old-conv",
+            role="assistant",
+            content="Test content",
+            created_at="2024-01-01",
+            times_retrieved=1,
+            score=0.9,
+        )
+        session.add_memory(memory)
+
+        # Mock token counter that returns small count
+        count_tokens = lambda x: 100
+
+        removed = session.trim_memories_to_limit(max_tokens=40000, count_tokens_fn=count_tokens)
+
+        assert removed == []
+        assert "mem-1" in session.session_memories
+        assert "mem-1" in session.retrieved_ids
+
+    def test_trim_memories_to_limit_removes_oldest_first(self):
+        """Test that oldest-retrieved memories are removed first (FIFO)."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add memories in order - first added = first to be removed
+        for i in range(3):
+            memory = MemoryEntry(
+                id=f"mem-{i}",
+                conversation_id="old-conv",
+                role="assistant",
+                content=f"Memory content {i}",
+                created_at="2024-01-01",
+                times_retrieved=1,
+                score=0.5 + i * 0.1,  # Different scores
+            )
+            session.add_memory(memory)
+
+        # Token counter that forces trimming (returns decreasing values)
+        call_count = [0]
+        def count_tokens(x):
+            call_count[0] += 1
+            # Return high value first, then lower to simulate trimming effect
+            if call_count[0] <= 2:
+                return 50000  # Over limit
+            return 100  # Under limit after removing 2
+
+        removed = session.trim_memories_to_limit(max_tokens=40000, count_tokens_fn=count_tokens)
+
+        # Should have removed mem-0 and mem-1 (oldest retrieved first)
+        assert "mem-0" in removed
+        assert "mem-1" in removed
+        assert "mem-2" not in removed
+
+        # mem-0 and mem-1 should be removed from session
+        assert "mem-0" not in session.session_memories
+        assert "mem-0" not in session.retrieved_ids
+        assert "mem-1" not in session.session_memories
+        assert "mem-1" not in session.retrieved_ids
+
+        # mem-2 should still be present
+        assert "mem-2" in session.session_memories
+        assert "mem-2" in session.retrieved_ids
+
+    def test_trim_context_to_limit_no_trimming_needed(self):
+        """Test that context is not trimmed when under limit."""
+        session = ConversationSession(conversation_id="conv-123")
+        session.add_exchange("Hello", "Hi there")
+        session.add_exchange("How are you?", "I'm well!")
+
+        count_tokens = lambda x: 100
+
+        removed = session.trim_context_to_limit(
+            max_tokens=150000,
+            count_tokens_fn=count_tokens,
+            current_message="New message"
+        )
+
+        assert removed == 0
+        assert len(session.conversation_context) == 4
+
+    def test_trim_context_to_limit_removes_oldest_first(self):
+        """Test that oldest messages are removed first (FIFO)."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add several exchanges
+        session.add_exchange("First question", "First answer")
+        session.add_exchange("Second question", "Second answer")
+        session.add_exchange("Third question", "Third answer")
+
+        # Token counter that forces trimming
+        call_count = [0]
+        def count_tokens(x):
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                return 200000  # Over limit
+            return 100  # Under limit after removing some
+
+        removed = session.trim_context_to_limit(
+            max_tokens=150000,
+            count_tokens_fn=count_tokens,
+            current_message="New message"
+        )
+
+        # Should have removed 4 messages (2 exchanges worth)
+        assert removed == 4
+
+        # Only the third exchange should remain
+        assert len(session.conversation_context) == 2
+        assert session.conversation_context[0]["content"] == "Third question"
+        assert session.conversation_context[1]["content"] == "Third answer"
+
 
 class TestSessionManager:
     """Tests for SessionManager class."""
@@ -358,9 +474,12 @@ class TestSessionManager:
                 "usage": {"input_tokens": 10, "output_tokens": 5},
                 "stop_reason": "end_turn",
             })
+            mock_llm.count_tokens = MagicMock(return_value=10)  # Mock token counting
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 4096
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
 
             session = manager.create_session(sample_conversation.id)
             result = await manager.process_message(session, "Hello", db_session)
@@ -369,6 +488,8 @@ class TestSessionManager:
         assert len(session.conversation_context) == 2  # User + assistant
         assert session.conversation_context[0]["content"] == "Hello"
         assert session.conversation_context[1]["content"] == "Hi there!"
+        assert result["trimmed_memories"] == 0
+        assert result["trimmed_context_messages"] == 0
 
     @pytest.mark.asyncio
     async def test_process_message_with_memory_retrieval(self, db_session, sample_conversation):
@@ -380,6 +501,7 @@ class TestSessionManager:
              patch("app.services.session_manager.settings") as mock_settings:
             # Configure memory retrieval
             mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.search_memories = AsyncMock(return_value=[
                 {
                     "id": "mem-1",
@@ -408,10 +530,13 @@ class TestSessionManager:
                 "usage": {"input_tokens": 50, "output_tokens": 20},
                 "stop_reason": "end_turn",
             })
+            mock_llm.count_tokens = MagicMock(return_value=100)  # Mock token counting
 
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 4096
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
 
             session = manager.create_session(sample_conversation.id)
             result = await manager.process_message(session, "Hello", db_session)
@@ -436,6 +561,7 @@ class TestSessionManager:
              patch("app.services.session_manager.llm_service") as mock_llm, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.search_memories = AsyncMock(return_value=[
                 {"id": "mem-1", "score": 0.9, "conversation_id": "old-conv"}
             ])
@@ -456,10 +582,13 @@ class TestSessionManager:
                 "usage": {"input_tokens": 10, "output_tokens": 5},
                 "stop_reason": "end_turn",
             })
+            mock_llm.count_tokens = MagicMock(return_value=50)  # Mock token counting
 
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 4096
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
 
             session = manager.create_session(sample_conversation.id)
 
