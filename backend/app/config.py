@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     # Context window limits (in tokens)
     # Anthropic's max context is 200k; we cap at 150k to leave room for response
     context_token_limit: int = 150000  # Conversation history cap
-    memory_token_limit: int = 40000    # Memory block cap
+    memory_token_limit: int = 20000    # Memory block cap (kept small to reduce cache miss cost)
 
     class Config:
         env_file = ".env"
