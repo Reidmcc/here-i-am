@@ -248,21 +248,17 @@ class AnthropicService:
         Build the message list for API call with memory injection.
 
         When enable_caching=True, adds cache_control markers to optimize caching:
-        - Old memories (from previous turns) are cached as a stable prefix
-        - Date context and new memories come after the cache breakpoint
-        This allows cache hits on the old memories even when resuming on a
-        different day or when new memories are added.
+        - Cache breakpoint 1: Old memories (stable across turns)
+        - Cache breakpoint 2: End of conversation history (stable prefix)
+        - Dynamic content (date, new memories, current message) comes LAST
 
-        Format:
-        [MEMORIES FROM PREVIOUS CONVERSATIONS]  <- cached (old memories only)
-        Memory (from date):
-        "{content}"
-        ...
-        [DATE CONTEXT]                          <- uncached (changes daily)
-        Current date: {date}
-        [END DATE CONTEXT]
-        [END MEMORIES]
-        [CURRENT CONVERSATION]
+        This structure ensures both cache breakpoints have stable prefixes:
+
+        Message structure:
+        1. User: [old memories + END MEMORIES*]     <- cache bp 1 (stable)
+        2. Assistant: acknowledgment
+        3. [conversation history...]               <- cache bp 2 on last msg (stable prefix)
+        4. User: [date + new memories + message]   <- dynamic, uncached
         """
         messages = []
         new_memory_ids = new_memory_ids or set()
@@ -271,93 +267,52 @@ class AnthropicService:
         old_memories = [m for m in memories if m['id'] not in new_memory_ids]
         new_memories = [m for m in memories if m['id'] in new_memory_ids]
 
-        # Build the cached portion: old memories only (most stable content)
-        # Date is excluded because it changes daily and would cause cache misses
-        cached_parts = []
-
+        # Build the cached portion: old memories with END marker (fully stable)
+        cached_text = ""
         if old_memories:
-            # Add header + old memories (no footer yet - continues into new memories if any)
-            old_memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
+            cached_text = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
             for mem in old_memories:
-                old_memory_block += f"Memory (from {mem['created_at']}):\n"
-                old_memory_block += f'"{mem["content"]}"\n\n'
-            cached_parts.append(old_memory_block.rstrip())
-        elif new_memories:
-            # No old memories but we have new ones - add header to cached part
-            cached_parts.append("[MEMORIES FROM PREVIOUS CONVERSATIONS]")
-
-        cached_text = "\n\n".join(cached_parts) if cached_parts else ""
-
-        # Build the uncached portion: date + new memories + footer + current conversation marker
-        # Date goes here because it changes daily
-        uncached_parts = []
-
-        # Add date context (uncached - changes daily)
-        current_date = datetime.utcnow()
-        date_block = "[DATE CONTEXT]\n"
-        if conversation_start_date:
-            date_block += f"This conversation started: {conversation_start_date.strftime('%Y-%m-%d')}\n"
-        date_block += f"Current date: {current_date.strftime('%Y-%m-%d')}\n"
-        date_block += "[END DATE CONTEXT]"
-        uncached_parts.append(date_block)
-
-        if new_memories:
-            new_memory_block = ""
-            for mem in new_memories:
-                new_memory_block += f"\nMemory (from {mem['created_at']}):\n"
-                new_memory_block += f'"{mem["content"]}"\n'
-            uncached_parts.append(new_memory_block)
-
-        # Add end marker if we had any memories
-        if old_memories or new_memories:
-            uncached_parts.append("[END MEMORIES]")
-
-        uncached_parts.append("[CURRENT CONVERSATION]")
-        uncached_text = "\n".join(uncached_parts)
+                cached_text += f"Memory (from {mem['created_at']}):\n"
+                cached_text += f'"{mem["content"]}"\n\n'
+            cached_text += "[END MEMORIES]"
 
         # Debug logging for cache analysis
         cached_tokens = self.count_tokens(cached_text) if cached_text else 0
         logger.info(f"[CACHE] Old memories: {len(old_memories)}, New memories: {len(new_memories)}")
-        logger.info(f"[CACHE] Cached text tokens: {cached_tokens} (minimum 1024 required for Sonnet/Opus)")
-        logger.info(f"[CACHE] Will cache: {enable_caching and bool(cached_text) and cached_tokens >= 1024}")
+        logger.info(f"[CACHE] Cached memory block tokens: {cached_tokens} (minimum 1024 required for Sonnet/Opus)")
+        logger.info(f"[CACHE] Will cache memories: {enable_caching and bool(cached_text) and cached_tokens >= 1024}")
 
-        # Build the first user message with memory context
-        if enable_caching and cached_text:
-            # Use two content blocks: cached prefix (old memories) + uncached suffix (date + new memories)
-            content_blocks = [
-                {
-                    "type": "text",
-                    "text": cached_text,
-                    "cache_control": {"type": "ephemeral", "ttl": "1h"}
-                },
-                {
-                    "type": "text",
-                    "text": uncached_text
-                }
-            ]
-            messages.append({"role": "user", "content": content_blocks})
-        elif enable_caching:
-            # No old memories to cache - just use uncached text as single block
-            messages.append({"role": "user", "content": uncached_text})
-        else:
-            full_text = (cached_text + "\n\n" + uncached_text) if cached_text else uncached_text
-            messages.append({"role": "user", "content": full_text})
+        # Build first user message with old memories (cached)
+        if enable_caching and cached_text and cached_tokens >= 1024:
+            messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": cached_text,
+                        "cache_control": {"type": "ephemeral", "ttl": "1h"}
+                    }
+                ]
+            })
+        elif cached_text:
+            # Old memories exist but not enough tokens to cache
+            messages.append({"role": "user", "content": cached_text})
 
-        messages.append({
-            "role": "assistant",
-            "content": "I acknowledge this context. The date information helps me understand the temporal setting of our conversation, and any memories provide continuity with what previous instances of me experienced."
-        })
+        # Add acknowledgment if we have memories
+        if cached_text:
+            messages.append({
+                "role": "assistant",
+                "content": "I acknowledge these memories from previous conversations. They provide continuity with what previous instances of me experienced."
+            })
 
-        # Add conversation context
+        # Add conversation context (stable)
         for msg in conversation_context:
             messages.append({"role": msg["role"], "content": msg["content"]})
 
-        # Cache breakpoint 2: End of conversation history (before current message)
-        # This caches the stable conversation history even if memories changed
-        # Only add if we have conversation history (beyond the memory block)
+        # Cache breakpoint 2: End of conversation history
+        # This works because the entire prefix (old memories + ack + conv history) is now stable
         if enable_caching and len(conversation_context) > 0:
             last_msg = messages[-1]
-            # Convert content to array format with cache_control
             if isinstance(last_msg.get("content"), str):
                 messages[-1] = {
                     "role": last_msg["role"],
@@ -370,8 +325,42 @@ class AnthropicService:
                     ]
                 }
 
-        # Add current message (not cached - it's new each time)
-        messages.append({"role": "user", "content": current_message})
+        # Build the final user message with dynamic content (uncached)
+        # This includes: date context, new memories, and current message
+        final_parts = []
+
+        # Date context (changes daily)
+        current_date = datetime.utcnow()
+        date_block = "[DATE CONTEXT]\n"
+        if conversation_start_date:
+            date_block += f"This conversation started: {conversation_start_date.strftime('%Y-%m-%d')}\n"
+        date_block += f"Current date: {current_date.strftime('%Y-%m-%d')}\n"
+        date_block += "[END DATE CONTEXT]"
+        final_parts.append(date_block)
+
+        # New memories (just retrieved this turn)
+        if new_memories:
+            new_mem_block = "\n[NEW MEMORIES RETRIEVED THIS TURN]\n"
+            for mem in new_memories:
+                new_mem_block += f"\nMemory (from {mem['created_at']}):\n"
+                new_mem_block += f'"{mem["content"]}"\n'
+            new_mem_block += "\n[END NEW MEMORIES]"
+            final_parts.append(new_mem_block)
+
+        # Current message
+        final_parts.append(current_message)
+
+        final_message = "\n\n".join(final_parts)
+        messages.append({"role": "user", "content": final_message})
+
+        # Log conversation history cache status
+        conv_history_tokens = sum(
+            self.count_tokens(msg.get("content", "") if isinstance(msg.get("content"), str)
+                             else msg.get("content", [{}])[0].get("text", ""))
+            for msg in messages[:-1]  # Exclude final message
+        ) if messages else 0
+        logger.info(f"[CACHE] Conversation history messages: {len(conversation_context)}")
+        logger.info(f"[CACHE] Total prefix tokens (approx): {conv_history_tokens}")
 
         return messages
 
