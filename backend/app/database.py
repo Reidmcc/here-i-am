@@ -9,7 +9,7 @@ class Base(DeclarativeBase):
 
 engine = create_async_engine(
     settings.here_i_am_database_url,
-    echo=settings.debug,
+    echo=False,  # SQL logging disabled; use logging config if needed
 )
 
 async_session_maker = async_sessionmaker(

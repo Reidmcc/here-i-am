@@ -267,11 +267,12 @@ class TestLLMService:
                 "Current message",
             )
 
-            mock_anthropic.build_messages_with_memories.assert_called_once_with(
-                memories=sample_memories,
-                conversation_context=sample_conversation_context,
-                current_message="Current message",
-            )
+            # Verify the call was made with the required parameters
+            mock_anthropic.build_messages_with_memories.assert_called_once()
+            call_kwargs = mock_anthropic.build_messages_with_memories.call_args.kwargs
+            assert call_kwargs["memories"] == sample_memories
+            assert call_kwargs["conversation_context"] == sample_conversation_context
+            assert call_kwargs["current_message"] == "Current message"
 
 
 class TestAvailableModels:
