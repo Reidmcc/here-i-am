@@ -441,12 +441,15 @@ html, body {
     background-color: var(--memory-bg);
     border-bottom: 1px solid var(--border-color);
     height: calc(100vh - 200px);
+    min-height: calc(100vh - 200px);
+    flex-shrink: 0;
     overflow: hidden;
-    transition: height 0.3s ease;
+    transition: height 0.3s ease, min-height 0.3s ease;
 }
 
 .memories-panel.collapsed {
     height: 40px;
+    min-height: 40px;
 }
 
 .memories-header {
