@@ -270,7 +270,7 @@ class AnthropicService:
         if memories:
             memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
             for mem in memories:
-                memory_block += f"Memory (from {mem['created_at']}, retrieved {mem['times_retrieved']} times):\n"
+                memory_block += f"Memory (from {mem['created_at']}):\n"
                 memory_block += f'"{mem["content"]}"\n\n'
             memory_block += "[END MEMORIES]"
             context_parts.append(memory_block)

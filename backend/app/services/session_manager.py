@@ -29,7 +29,7 @@ def _build_memory_block_text(
     if memories:
         memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
         for mem in memories:
-            memory_block += f"Memory (from {mem['created_at']}, retrieved {mem['times_retrieved']} times):\n"
+            memory_block += f"Memory (from {mem['created_at']}):\n"
             memory_block += f'"{mem["content"]}"\n\n'
         memory_block += "[END MEMORIES]"
         context_parts.append(memory_block)
@@ -120,8 +120,8 @@ class ConversationSession:
             for mid in self.in_context_ids
             if mid in self.session_memories
         ]
-        # Sort by relevance score (most relevant first)
-        memories.sort(key=lambda m: m.score, reverse=True)
+        # Sort by ID for stable ordering (improves Anthropic cache hit rate)
+        memories.sort(key=lambda m: m.id)
 
         return [
             {
