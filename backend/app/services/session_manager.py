@@ -232,7 +232,7 @@ class ConversationSession:
         Consolidation causes a cache MISS but creates a larger cache for future hits.
         We consolidate when:
         1. Cached history is too small to actually cache (< 1024 tokens) - grow it!
-        2. New context grows too large (> 2000 tokens) - time to expand the cache
+        2. New context grows large enough to be worth caching (> 1024 tokens)
         """
         if not self.conversation_context:
             return False
@@ -261,11 +261,11 @@ class ConversationSession:
         new_tokens = count_tokens_fn(new_text)
 
         # Log the decision
-        will_consolidate = new_tokens > 2000
-        logger.info(f"[CACHE] Consolidation check: cached={len(cached_context)} msgs/{cached_tokens} tokens, new={len(new_context)} msgs/{new_tokens} tokens, threshold=2000, will_consolidate={will_consolidate}")
+        # Consolidate when new content reaches Anthropic's minimum cacheable size (1024 tokens)
+        # This ensures the new content is worth adding to the cache
+        will_consolidate = new_tokens >= 1024
+        logger.info(f"[CACHE] Consolidation check: cached={len(cached_context)} msgs/{cached_tokens} tokens, new={len(new_context)} msgs/{new_tokens} tokens, threshold=1024, will_consolidate={will_consolidate}")
 
-        # Consolidate when new content exceeds 2000 tokens (roughly 4-6 exchanges)
-        # Lower threshold = more frequent consolidation = more content gets cached
         return will_consolidate
 
     def update_cache_state(self, cached_memory_ids: Set[str], cached_context_length: int):
