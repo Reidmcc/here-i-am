@@ -488,6 +488,7 @@ html, body {
     font-size: 0.85rem;
     cursor: pointer;
     transition: background-color 0.2s;
+    overflow: hidden;
 }
 
 .memory-item:hover {
@@ -516,6 +517,14 @@ html, body {
     color: var(--text-secondary);
     white-space: pre-wrap;
     word-break: break-word;
+    max-height: 3.6em;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+    line-height: 1.2;
+}
+
+.memory-item.expanded .memory-item-content {
+    max-height: none;
 }
 
 /* Messages Container */
