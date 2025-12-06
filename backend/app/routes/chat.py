@@ -23,6 +23,7 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     system_prompt: Optional[str] = None  # None means use conversation default
+    verbosity: Optional[str] = None  # Verbosity level for gpt-5.1 models (short, medium, long)
 
 
 class MemoryInfo(BaseModel):
@@ -51,6 +52,7 @@ class QuickChatRequest(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     system_prompt: Optional[str] = None
+    verbosity: Optional[str] = None  # Verbosity level for gpt-5.1 models (short, medium, long)
 
 
 @router.post("/send", response_model=ChatResponse)
@@ -89,6 +91,8 @@ async def send_message(
         session.max_tokens = data.max_tokens
     if data.system_prompt is not None:
         session.system_prompt = data.system_prompt
+    if data.verbosity is not None:
+        session.verbosity = data.verbosity
 
     # Process the message through the full pipeline
     response = await session_manager.process_message(
@@ -199,6 +203,8 @@ async def stream_message(data: ChatRequest):
                     session.max_tokens = data.max_tokens
                 if data.system_prompt is not None:
                     session.system_prompt = data.system_prompt
+                if data.verbosity is not None:
+                    session.verbosity = data.verbosity
 
                 full_content = ""
                 model_used = session.model
@@ -312,6 +318,7 @@ async def quick_chat(data: QuickChatRequest):
         system_prompt=data.system_prompt,
         temperature=data.temperature,
         max_tokens=data.max_tokens,
+        verbosity=data.verbosity,
     )
 
     return {

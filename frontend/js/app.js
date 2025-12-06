@@ -17,6 +17,7 @@ class App {
             maxTokens: 4096,
             systemPrompt: null,
             conversationType: 'normal',
+            verbosity: null,
         };
         this.isLoading = false;
         this.retrievedMemories = [];
@@ -58,6 +59,8 @@ class App {
             modelSelect: document.getElementById('model-select'),
             temperatureInput: document.getElementById('temperature-input'),
             temperatureNumber: document.getElementById('temperature-number'),
+            verbositySelect: document.getElementById('verbosity-select'),
+            verbosityGroup: document.getElementById('verbosity-group'),
             maxTokensInput: document.getElementById('max-tokens-input'),
             presetSelect: document.getElementById('preset-select'),
             systemPromptInput: document.getElementById('system-prompt-input'),
@@ -144,7 +147,10 @@ class App {
             if (value > maxTemp) value = maxTemp;
             this.elements.temperatureInput.value = value;
         });
-        this.elements.modelSelect.addEventListener('change', () => this.updateTemperatureControlState());
+        this.elements.modelSelect.addEventListener('change', () => {
+            this.updateTemperatureControlState();
+            this.updateVerbosityControlState();
+        });
         this.elements.presetSelect.addEventListener('change', (e) => this.loadPreset(e.target.value));
 
         // Memories modal
@@ -368,6 +374,34 @@ class App {
         }
     }
 
+    modelSupportsVerbosity(modelId) {
+        // Check if the model supports verbosity parameter
+        const model = this.availableModels.find(m => m.id === modelId);
+        // Default to false if model not found
+        return model ? model.verbosity_supported === true : false;
+    }
+
+    updateVerbosityControlState() {
+        const selectedModel = this.elements.modelSelect.value;
+        const supportsVerbosity = this.modelSupportsVerbosity(selectedModel);
+
+        // Disable or enable verbosity control
+        this.elements.verbositySelect.disabled = !supportsVerbosity;
+
+        // Add visual indication to the form group
+        if (this.elements.verbosityGroup) {
+            if (supportsVerbosity) {
+                this.elements.verbosityGroup.classList.remove('disabled');
+                this.elements.verbosityGroup.title = '';
+            } else {
+                this.elements.verbosityGroup.classList.add('disabled');
+                this.elements.verbosityGroup.title = 'Verbosity is only supported by GPT-5.1 models';
+                // Reset to default when disabled
+                this.elements.verbositySelect.value = '';
+            }
+        }
+    }
+
     updateTemperatureMax() {
         const maxTemp = this.getMaxTemperatureForCurrentEntity();
         this.elements.temperatureInput.max = maxTemp;
@@ -555,6 +589,7 @@ class App {
                     temperature: this.settings.temperature,
                     max_tokens: this.settings.maxTokens,
                     system_prompt: this.settings.systemPrompt,
+                    verbosity: this.settings.verbosity,
                 },
                 {
                     onMemories: (data) => {
@@ -836,12 +871,15 @@ class App {
         this.elements.modelSelect.value = this.settings.model;
         this.elements.temperatureInput.value = this.settings.temperature;
         this.elements.temperatureNumber.value = this.settings.temperature;
+        this.elements.verbositySelect.value = this.settings.verbosity || '';
         this.elements.maxTokensInput.value = this.settings.maxTokens;
         this.elements.systemPromptInput.value = this.settings.systemPrompt || '';
         this.elements.conversationTypeSelect.value = this.settings.conversationType;
         this.elements.themeSelect.value = this.getCurrentTheme();
         // Update temperature control state based on current model
         this.updateTemperatureControlState();
+        // Update verbosity control state based on current model
+        this.updateVerbosityControlState();
         // Reset import section to step 1
         this.resetImportToStep1();
         this.showModal('settingsModal');
@@ -865,6 +903,9 @@ class App {
         this.settings.maxTokens = parseInt(this.elements.maxTokensInput.value);
         this.settings.systemPrompt = this.elements.systemPromptInput.value.trim() || null;
         this.settings.conversationType = this.elements.conversationTypeSelect.value;
+        // Only save verbosity if the model supports it
+        const verbosityValue = this.elements.verbositySelect.value;
+        this.settings.verbosity = this.modelSupportsVerbosity(this.settings.model) && verbosityValue ? verbosityValue : null;
 
         // Apply theme
         this.setTheme(this.elements.themeSelect.value);
