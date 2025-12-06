@@ -521,20 +521,15 @@ class SessionManager:
         # Step 7: Update conversation context and cache state
         session.add_exchange(user_message, response["content"])
 
-        # For cache HITS, we must send IDENTICAL content next time.
-        # Record what was in the cached block (not new content).
-        # BUT on first turn (bootstrap), record current state for next time.
-        cached_mem_ids = {m["id"] for m in cache_content["cached_memories"]}
-        cached_ctx_len = len(cache_content["cached_context"])
+        # GROW the cache after each turn:
+        # - This turn used the PREVIOUS cached state for cache hits
+        # - Now update to include ALL current content for NEXT turn
+        # - Next turn will have a cache MISS (different prefix) but writes larger cache
+        # - The trade-off: occasional misses, but cache grows over time
+        new_cached_mem_ids = set(session.in_context_ids)  # All current memories
+        new_cached_ctx_len = len(session.conversation_context) - 2  # Context before this exchange
 
-        # Bootstrap: if nothing was cached, record current state for next turn
-        if not cached_mem_ids and session.in_context_ids:
-            cached_mem_ids = set(session.in_context_ids)
-        if cached_ctx_len == 0 and session.conversation_context:
-            # Record context BEFORE the exchange we just added
-            cached_ctx_len = len(session.conversation_context) - 2
-
-        session.update_cache_state(cached_mem_ids, cached_ctx_len)
+        session.update_cache_state(new_cached_mem_ids, new_cached_ctx_len)
 
         # Step 8: Store new messages as memories (happens in route layer with DB)
         # Return data for the route to handle storage
@@ -694,20 +689,15 @@ class SessionManager:
                 # Update conversation context and cache state
                 session.add_exchange(user_message, full_content)
 
-                # For cache HITS, we must send IDENTICAL content next time.
-                # Record what was in the cached block (not new content).
-                # BUT on first turn (bootstrap), record current state for next time.
-                cached_mem_ids = {m["id"] for m in cache_content["cached_memories"]}
-                cached_ctx_len = len(cache_content["cached_context"])
+                # GROW the cache after each turn:
+                # - This turn used the PREVIOUS cached state for cache hits
+                # - Now update to include ALL current content for NEXT turn
+                # - Next turn will have a cache MISS (different prefix) but writes larger cache
+                # - The trade-off: occasional misses, but cache grows over time
+                new_cached_mem_ids = set(session.in_context_ids)  # All current memories
+                new_cached_ctx_len = len(session.conversation_context) - 2  # Context before this exchange
 
-                # Bootstrap: if nothing was cached, record current state for next turn
-                if not cached_mem_ids and session.in_context_ids:
-                    cached_mem_ids = set(session.in_context_ids)
-                if cached_ctx_len == 0 and session.conversation_context:
-                    # Record context BEFORE the exchange we just added
-                    cached_ctx_len = len(session.conversation_context) - 2
-
-                session.update_cache_state(cached_mem_ids, cached_ctx_len)
+                session.update_cache_state(new_cached_mem_ids, new_cached_ctx_len)
             yield event
 
     def close_session(self, conversation_id: str):
