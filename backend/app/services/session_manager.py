@@ -665,7 +665,7 @@ class SessionManager:
             "new_memories_retrieved": [
                 {
                     "id": m.id,
-                    "content": m.content,
+                    "content": m.content[:3000] if len(m.content) > 3000 else m.content,
                     "content_preview": m.content[:200] if len(m.content) > 200 else m.content,
                     "created_at": m.created_at,
                     "times_retrieved": m.times_retrieved + 1,  # Account for this retrieval
@@ -777,7 +777,7 @@ class SessionManager:
             "new_memories": [
                 {
                     "id": m.id,
-                    "content": m.content,
+                    "content": m.content[:3000] if len(m.content) > 3000 else m.content,
                     "content_preview": m.content[:200] if len(m.content) > 200 else m.content,
                     "created_at": m.created_at,
                     "times_retrieved": m.times_retrieved + 1,
