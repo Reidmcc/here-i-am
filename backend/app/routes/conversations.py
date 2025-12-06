@@ -1,3 +1,4 @@
+import logging
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
@@ -8,6 +9,8 @@ from pydantic import BaseModel
 from app.database import get_db
 from app.models import Conversation, Message, ConversationType, MessageRole
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -89,7 +92,7 @@ class SeedConversationImport(BaseModel):
     llm_model_used: str = "claude-sonnet-4-5-20250929"
     notes: Optional[str] = None
     entity_id: Optional[str] = None  # Pinecone index name for the AI entity
-    messages: List[dict]  # List of {role: str, content: str, times_retrieved?: int}
+    messages: List[dict]  # List of {role: str, content: str, times_retrieved?: int, created_at?: str (ISO format)}
 
 
 @router.post("/", response_model=ConversationResponse)
@@ -544,19 +547,42 @@ async def import_seed_conversation(
     db.add(conversation)
     await db.flush()  # Get the ID
 
+    logger.info(f"Importing seed conversation: {data.title or 'Untitled'} (id={conversation.id}, entity={data.entity_id})")
+
     stored_count = 0
-    for msg_data in data.messages:
+    for idx, msg_data in enumerate(data.messages):
         role = MessageRole.HUMAN if msg_data["role"] == "human" else MessageRole.ASSISTANT
         times_retrieved = msg_data.get("times_retrieved", 0)
 
-        message = Message(
-            conversation_id=conversation.id,
-            role=role,
-            content=msg_data["content"],
-            times_retrieved=times_retrieved,
-        )
+        # Parse created_at if provided (ISO format string)
+        created_at = None
+        original_timestamp = msg_data.get("created_at")
+        if original_timestamp:
+            try:
+                created_at = datetime.fromisoformat(original_timestamp.replace("Z", "+00:00"))
+                # Convert to UTC naive datetime for consistency
+                if created_at.tzinfo is not None:
+                    created_at = created_at.replace(tzinfo=None)
+            except (ValueError, TypeError):
+                logger.warning(f"  Message {idx+1}: Failed to parse timestamp '{original_timestamp}', using current time")
+
+        # Build message kwargs, only include created_at if we have a valid timestamp
+        message_kwargs = {
+            "conversation_id": conversation.id,
+            "role": role,
+            "content": msg_data["content"],
+            "times_retrieved": times_retrieved,
+        }
+        if created_at is not None:
+            message_kwargs["created_at"] = created_at
+
+        message = Message(**message_kwargs)
         db.add(message)
         await db.flush()
+
+        # Log the message with its timestamp
+        timestamp_source = "original" if created_at is not None else "default (now)"
+        logger.info(f"  Message {idx+1}/{len(data.messages)}: {role.value} | timestamp={message.created_at.isoformat()} ({timestamp_source})")
 
         # Store in vector database for the specified entity
         if memory_service.is_configured():
@@ -657,9 +683,9 @@ def _parse_openai_export(data: list, include_ids: bool = False) -> List[dict]:
         message_nodes.sort(key=lambda x: x.get("timestamp", 0))
 
         if include_ids:
-            messages = [{"id": m.get("id"), "role": m["role"], "content": m["content"]} for m in message_nodes]
+            messages = [{"id": m.get("id"), "role": m["role"], "content": m["content"], "timestamp": m.get("timestamp")} for m in message_nodes]
         else:
-            messages = [{"role": m["role"], "content": m["content"]} for m in message_nodes]
+            messages = [{"role": m["role"], "content": m["content"], "timestamp": m.get("timestamp")} for m in message_nodes]
 
         if messages:
             conv_entry = {
@@ -700,11 +726,14 @@ def _parse_anthropic_export(data: list, include_ids: bool = False) -> List[dict]
             msg_id = msg.get("uuid")
             sender = msg.get("sender", "")
             text = msg.get("text", "")
+            # Anthropic exports use created_at or updated_at in ISO format
+            timestamp_str = msg.get("created_at") or msg.get("updated_at")
 
             if sender in ("human", "user") and text.strip():
                 msg_entry = {
                     "role": "human",
                     "content": text.strip(),
+                    "timestamp_str": timestamp_str,
                 }
                 if include_ids and msg_id:
                     msg_entry["id"] = msg_id
@@ -713,6 +742,7 @@ def _parse_anthropic_export(data: list, include_ids: bool = False) -> List[dict]
                 msg_entry = {
                     "role": "assistant",
                     "content": text.strip(),
+                    "timestamp_str": timestamp_str,
                 }
                 if include_ids and msg_id:
                     msg_entry["id"] = msg_id
@@ -867,6 +897,8 @@ async def import_external_conversations(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    logger.info(f"Starting external import: source={detected_source}, entity={data.entity_id}, conversations_found={len(conversations)}")
+
     if not conversations:
         raise HTTPException(status_code=400, detail="No conversations found in export file")
 
@@ -956,11 +988,13 @@ async def import_external_conversations(
         db.add(conversation)
         await db.flush()
 
+        logger.info(f"Importing conversation: {title} (id={conversation.id}, source={detected_source}, entity={data.entity_id})")
+
         # Track if any messages were added
         messages_added = 0
 
         # Add messages
-        for msg_data in messages:
+        for msg_idx, msg_data in enumerate(messages):
             msg_id = msg_data.get("id")
             role = MessageRole.HUMAN if msg_data["role"] == "human" else MessageRole.ASSISTANT
             content = msg_data["content"]
@@ -968,6 +1002,7 @@ async def import_external_conversations(
             # Skip if message already exists for THIS entity (deduplication)
             if msg_id and msg_id in existing_ids:
                 skipped_messages += 1
+                logger.debug(f"  Message {msg_idx+1}/{len(messages)}: Skipped (duplicate id={msg_id})")
                 continue
 
             # Determine the message ID to use:
@@ -980,17 +1015,47 @@ async def import_external_conversations(
             else:
                 use_id = msg_id if msg_id else None
 
-            message = Message(
-                id=use_id,
-                conversation_id=conversation.id,
-                role=role,
-                content=content,
-                times_retrieved=0,
-            )
+            # Extract and parse timestamp from the original message
+            # OpenAI uses Unix timestamp (float), Anthropic uses ISO string
+            created_at = None
+            original_ts = msg_data.get("timestamp") or msg_data.get("timestamp_str")
+            if msg_data.get("timestamp"):
+                # OpenAI: Unix timestamp (seconds since epoch)
+                try:
+                    created_at = datetime.utcfromtimestamp(msg_data["timestamp"])
+                except (ValueError, TypeError, OSError):
+                    logger.warning(f"  Message {msg_idx+1}: Failed to parse Unix timestamp '{msg_data['timestamp']}', using current time")
+            elif msg_data.get("timestamp_str"):
+                # Anthropic: ISO format string
+                try:
+                    created_at = datetime.fromisoformat(msg_data["timestamp_str"].replace("Z", "+00:00"))
+                    # Convert to UTC naive datetime for consistency
+                    if created_at.tzinfo is not None:
+                        created_at = created_at.replace(tzinfo=None)
+                except (ValueError, TypeError):
+                    logger.warning(f"  Message {msg_idx+1}: Failed to parse ISO timestamp '{msg_data['timestamp_str']}', using current time")
+
+            # Build message kwargs, only include created_at if we have a valid timestamp
+            message_kwargs = {
+                "id": use_id,
+                "conversation_id": conversation.id,
+                "role": role,
+                "content": content,
+                "times_retrieved": 0,
+            }
+            if created_at is not None:
+                message_kwargs["created_at"] = created_at
+
+            message = Message(**message_kwargs)
             db.add(message)
             await db.flush()
             total_messages += 1
             messages_added += 1
+
+            # Log the message with its timestamp
+            timestamp_source = "original" if created_at is not None else "default (now)"
+            content_preview = content[:50] + "..." if len(content) > 50 else content
+            logger.info(f"  Message {msg_idx+1}/{len(messages)}: {role.value} | timestamp={message.created_at.isoformat()} ({timestamp_source}) | {content_preview!r}")
 
             # Store in vector database if importing as memory
             if import_as_memory and memory_service.is_configured():
@@ -1014,6 +1079,8 @@ async def import_external_conversations(
                 history_conversations += 1
 
     await db.commit()
+
+    logger.info(f"Import complete: {imported_conversations} conversations, {total_messages} messages imported, {skipped_messages} skipped, {total_memories} memories stored")
 
     return {
         "status": "imported",

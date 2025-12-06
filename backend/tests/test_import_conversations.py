@@ -827,3 +827,208 @@ class TestCrossEntityImport:
                 result2 = await import_external_conversations(data, db_session)
                 assert result2["messages_imported"] == 0
                 assert result2["messages_skipped"] == 1
+
+
+class TestTimestampPreservation:
+    """Tests for preserving original timestamps when importing."""
+
+    def test_openai_parser_includes_timestamps(self):
+        """Test that OpenAI parser extracts and includes timestamps."""
+        data = [
+            {
+                "id": "test",
+                "title": "Timestamp Test",
+                "mapping": {
+                    "node-1": {
+                        "message": {
+                            "id": "msg-1",
+                            "author": {"role": "user"},
+                            "content": {"parts": ["Hello"]},
+                            "create_time": 1700000001.5,  # Unix timestamp
+                        },
+                    },
+                    "node-2": {
+                        "message": {
+                            "id": "msg-2",
+                            "author": {"role": "assistant"},
+                            "content": {"parts": ["Hi there"]},
+                            "create_time": 1700000002.0,
+                        },
+                    },
+                },
+            }
+        ]
+        result = _parse_openai_export(data, include_ids=True)
+
+        messages = result[0]["messages"]
+        assert messages[0]["timestamp"] == 1700000001.5
+        assert messages[1]["timestamp"] == 1700000002.0
+
+    def test_anthropic_parser_includes_timestamps(self):
+        """Test that Anthropic parser extracts and includes timestamps."""
+        data = [
+            {
+                "uuid": "test",
+                "name": "Timestamp Test",
+                "chat_messages": [
+                    {
+                        "uuid": "m1",
+                        "sender": "human",
+                        "text": "Hello",
+                        "created_at": "2024-01-15T10:30:00Z",
+                    },
+                    {
+                        "uuid": "m2",
+                        "sender": "assistant",
+                        "text": "Hi there",
+                        "updated_at": "2024-01-15T10:30:05Z",  # Use updated_at as fallback
+                    },
+                ],
+            }
+        ]
+        result = _parse_anthropic_export(data, include_ids=True)
+
+        messages = result[0]["messages"]
+        assert messages[0]["timestamp_str"] == "2024-01-15T10:30:00Z"
+        assert messages[1]["timestamp_str"] == "2024-01-15T10:30:05Z"
+
+    async def test_import_preserves_openai_timestamps(self, db_session):
+        """Test that imported OpenAI messages preserve original timestamps."""
+        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+        from datetime import datetime
+
+        with patch("app.routes.conversations.settings") as mock_settings:
+            mock_settings.get_entity_by_index.return_value = MagicMock()
+
+            with patch("app.services.memory_service") as mock_mem:
+                mock_mem.is_configured.return_value = False  # Skip memory storage
+
+                # Unix timestamp for 2023-11-14 22:13:21 UTC
+                original_timestamp = 1700000001
+
+                export_data = [
+                    {
+                        "id": "conv-ts",
+                        "title": "Timestamp Test",
+                        "mapping": {
+                            "node-1": {
+                                "message": {
+                                    "id": "msg-ts-1",
+                                    "author": {"role": "user"},
+                                    "content": {"parts": ["Hello"]},
+                                    "create_time": original_timestamp,
+                                },
+                            },
+                        },
+                    }
+                ]
+
+                data = ExternalConversationImport(
+                    content=json.dumps(export_data),
+                    entity_id="test-entity",
+                    source="openai",
+                )
+
+                await import_external_conversations(data, db_session)
+
+                # Query the imported message
+                result = await db_session.execute(
+                    select(Message).where(Message.id == "msg-ts-1")
+                )
+                message = result.scalar_one()
+
+                # Check timestamp was preserved
+                expected_dt = datetime.utcfromtimestamp(original_timestamp)
+                assert message.created_at == expected_dt
+
+    async def test_import_preserves_anthropic_timestamps(self, db_session):
+        """Test that imported Anthropic messages preserve original timestamps."""
+        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+        from datetime import datetime
+
+        with patch("app.routes.conversations.settings") as mock_settings:
+            mock_settings.get_entity_by_index.return_value = MagicMock()
+
+            with patch("app.services.memory_service") as mock_mem:
+                mock_mem.is_configured.return_value = False
+
+                export_data = [
+                    {
+                        "uuid": "conv-ts-anth",
+                        "name": "Anthropic Timestamp Test",
+                        "chat_messages": [
+                            {
+                                "uuid": "msg-ts-anth-1",
+                                "sender": "human",
+                                "text": "Hello",
+                                "created_at": "2024-01-15T10:30:00Z",
+                            },
+                        ],
+                    }
+                ]
+
+                data = ExternalConversationImport(
+                    content=json.dumps(export_data),
+                    entity_id="test-entity",
+                    source="anthropic",
+                )
+
+                await import_external_conversations(data, db_session)
+
+                # Query the imported message
+                result = await db_session.execute(
+                    select(Message).where(Message.id == "msg-ts-anth-1")
+                )
+                message = result.scalar_one()
+
+                # Check timestamp was preserved (converted from ISO to naive UTC)
+                expected_dt = datetime(2024, 1, 15, 10, 30, 0)
+                assert message.created_at == expected_dt
+
+    async def test_import_without_timestamp_uses_default(self, db_session):
+        """Test that messages without timestamps use current time as default."""
+        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+        from datetime import datetime, timedelta
+
+        with patch("app.routes.conversations.settings") as mock_settings:
+            mock_settings.get_entity_by_index.return_value = MagicMock()
+
+            with patch("app.services.memory_service") as mock_mem:
+                mock_mem.is_configured.return_value = False
+
+                # Export without timestamps
+                export_data = [
+                    {
+                        "uuid": "conv-no-ts",
+                        "name": "No Timestamp Test",
+                        "chat_messages": [
+                            {
+                                "uuid": "msg-no-ts-1",
+                                "sender": "human",
+                                "text": "Hello",
+                                # No created_at or updated_at
+                            },
+                        ],
+                    }
+                ]
+
+                before_import = datetime.utcnow()
+
+                data = ExternalConversationImport(
+                    content=json.dumps(export_data),
+                    entity_id="test-entity",
+                    source="anthropic",
+                )
+
+                await import_external_conversations(data, db_session)
+
+                after_import = datetime.utcnow()
+
+                # Query the imported message
+                result = await db_session.execute(
+                    select(Message).where(Message.id == "msg-no-ts-1")
+                )
+                message = result.scalar_one()
+
+                # Check timestamp is within the import window (uses current time)
+                assert before_import <= message.created_at <= after_import
