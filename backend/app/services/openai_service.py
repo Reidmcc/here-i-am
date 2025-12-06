@@ -10,9 +10,41 @@ logger = logging.getLogger(__name__)
 class OpenAIService:
     """Service for OpenAI API interactions."""
 
+    # Models that use max_completion_tokens instead of max_tokens
+    MODELS_WITH_COMPLETION_TOKENS = {
+        "o1", "o1-mini", "o1-preview",
+        "o3", "o3-mini",
+        "o4-mini",
+        "gpt-5.1", "gpt-5-mini", "gpt-5.1-chat-latest",
+    }
+
+    # Models that don't support the temperature parameter
+    MODELS_WITHOUT_TEMPERATURE = {
+        "o1", "o1-mini", "o1-preview",
+        "o3", "o3-mini",
+        "o4-mini",
+    }
+
+    # Models that don't support stream_options
+    MODELS_WITHOUT_STREAM_OPTIONS = {
+        "o1", "o1-mini", "o1-preview",
+    }
+
     def __init__(self):
         self.client = None
         self._encoder = None
+
+    def _uses_completion_tokens(self, model: str) -> bool:
+        """Check if model uses max_completion_tokens instead of max_tokens."""
+        return model in self.MODELS_WITH_COMPLETION_TOKENS
+
+    def _supports_temperature(self, model: str) -> bool:
+        """Check if model supports the temperature parameter."""
+        return model not in self.MODELS_WITHOUT_TEMPERATURE
+
+    def _supports_stream_options(self, model: str) -> bool:
+        """Check if model supports stream_options parameter."""
+        return model not in self.MODELS_WITHOUT_STREAM_OPTIONS
 
     def _ensure_client(self):
         """Lazily initialize the OpenAI client."""
@@ -76,12 +108,23 @@ class OpenAIService:
             # OpenAI accepts 'user' and 'assistant' directly
             api_messages.append({"role": role, "content": msg["content"]})
 
-        response = await client.chat.completions.create(
-            model=model,
-            messages=api_messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        # Build API parameters based on model capabilities
+        api_params = {
+            "model": model,
+            "messages": api_messages,
+        }
+
+        # Use max_completion_tokens for newer models, max_tokens for older ones
+        if self._uses_completion_tokens(model):
+            api_params["max_completion_tokens"] = max_tokens
+        else:
+            api_params["max_tokens"] = max_tokens
+
+        # Only include temperature for models that support it
+        if self._supports_temperature(model):
+            api_params["temperature"] = temperature
+
+        response = await client.chat.completions.create(**api_params)
 
         # Extract content
         content = response.choices[0].message.content or ""
@@ -148,15 +191,28 @@ class OpenAIService:
             full_content = ""
             stop_reason = None
 
-            # Request stream with usage info
-            stream = await client.chat.completions.create(
-                model=model,
-                messages=api_messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
-                stream_options={"include_usage": True},
-            )
+            # Build API parameters based on model capabilities
+            api_params = {
+                "model": model,
+                "messages": api_messages,
+                "stream": True,
+            }
+
+            # Use max_completion_tokens for newer models, max_tokens for older ones
+            if self._uses_completion_tokens(model):
+                api_params["max_completion_tokens"] = max_tokens
+            else:
+                api_params["max_tokens"] = max_tokens
+
+            # Only include temperature for models that support it
+            if self._supports_temperature(model):
+                api_params["temperature"] = temperature
+
+            # Only include stream_options for models that support it
+            if self._supports_stream_options(model):
+                api_params["stream_options"] = {"include_usage": True}
+
+            stream = await client.chat.completions.create(**api_params)
 
             input_tokens = 0
             output_tokens = 0

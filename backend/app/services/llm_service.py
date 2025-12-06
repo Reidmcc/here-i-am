@@ -29,15 +29,23 @@ MODEL_PROVIDER_MAP = {
     # Anthropic Claude 4 models
     "claude-sonnet-4-20250514": ModelProvider.ANTHROPIC,
     "claude-opus-4-20250514": ModelProvider.ANTHROPIC,
-    # OpenAI GPT models
+    # OpenAI GPT-4 models
     "gpt-4o": ModelProvider.OPENAI,
     "gpt-4o-mini": ModelProvider.OPENAI,
     "gpt-4-turbo": ModelProvider.OPENAI,
     "gpt-4": ModelProvider.OPENAI,
     "gpt-3.5-turbo": ModelProvider.OPENAI,
+    # OpenAI GPT-5 models
+    "gpt-5.1": ModelProvider.OPENAI,
+    "gpt-5-mini": ModelProvider.OPENAI,
+    "gpt-5.1-chat-latest": ModelProvider.OPENAI,
+    # OpenAI o-series models
     "o1": ModelProvider.OPENAI,
     "o1-mini": ModelProvider.OPENAI,
     "o1-preview": ModelProvider.OPENAI,
+    "o3": ModelProvider.OPENAI,
+    "o3-mini": ModelProvider.OPENAI,
+    "o4-mini": ModelProvider.OPENAI,
 }
 
 
@@ -51,9 +59,15 @@ AVAILABLE_MODELS = {
         {"id": "claude-opus-4-20250514", "name": "Claude Opus 4"},
     ],
     ModelProvider.OPENAI: [
+        {"id": "gpt-5.1", "name": "GPT-5.1"},
+        {"id": "gpt-5-mini", "name": "GPT-5 Mini"},
+        {"id": "gpt-5.1-chat-latest", "name": "GPT-5.1 Chat (Latest)"},
         {"id": "gpt-4o", "name": "GPT-4o"},
         {"id": "gpt-4o-mini", "name": "GPT-4o Mini"},
         {"id": "gpt-4-turbo", "name": "GPT-4 Turbo"},
+        {"id": "o4-mini", "name": "o4 Mini"},
+        {"id": "o3", "name": "o3"},
+        {"id": "o3-mini", "name": "o3 Mini"},
         {"id": "o1", "name": "o1"},
         {"id": "o1-mini", "name": "o1 Mini"},
     ],
@@ -150,7 +164,7 @@ class LLMService:
             # Unknown model - try to infer from name pattern
             if model.startswith("claude"):
                 provider = ModelProvider.ANTHROPIC
-            elif model.startswith("gpt") or model.startswith("o1"):
+            elif model.startswith("gpt") or model.startswith("o"):
                 provider = ModelProvider.OPENAI
             else:
                 raise ValueError(f"Unknown model: {model}")
@@ -205,7 +219,7 @@ class LLMService:
         if provider is None:
             if model.startswith("claude"):
                 provider = ModelProvider.ANTHROPIC
-            elif model.startswith("gpt") or model.startswith("o1"):
+            elif model.startswith("gpt") or model.startswith("o"):
                 provider = ModelProvider.OPENAI
             else:
                 yield {"type": "error", "error": f"Unknown model: {model}"}
