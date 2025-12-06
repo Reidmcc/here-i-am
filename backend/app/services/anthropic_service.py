@@ -121,8 +121,8 @@ class AnthropicService:
             usage["cache_read_input_tokens"] = response.usage.cache_read_input_tokens
 
         # Debug logging for cache results
-        print(f"[CACHE DEBUG] API Response - input: {usage.get('input_tokens')}, output: {usage.get('output_tokens')}")
-        print(f"[CACHE DEBUG] Cache write: {usage.get('cache_creation_input_tokens', 0)}, Cache read: {usage.get('cache_read_input_tokens', 0)}")
+        logger.info(f"[CACHE] API Response - input: {usage.get('input_tokens')}, output: {usage.get('output_tokens')}")
+        logger.info(f"[CACHE] Cache write: {usage.get('cache_creation_input_tokens', 0)}, Cache read: {usage.get('cache_read_input_tokens', 0)}")
 
         return {
             "content": content,
@@ -220,8 +220,8 @@ class AnthropicService:
                 usage["cache_read_input_tokens"] = cache_read_input_tokens
 
             # Debug logging for cache results
-            print(f"[CACHE DEBUG] Stream API Response - input: {input_tokens}, output: {output_tokens}")
-            print(f"[CACHE DEBUG] Cache write: {cache_creation_input_tokens}, Cache read: {cache_read_input_tokens}")
+            logger.info(f"[CACHE] Stream API Response - input: {input_tokens}, output: {output_tokens}")
+            logger.info(f"[CACHE] Cache write: {cache_creation_input_tokens}, Cache read: {cache_read_input_tokens}")
 
             # Yield final done event with complete data
             yield {
@@ -317,9 +317,9 @@ class AnthropicService:
 
         # Debug logging for cache analysis
         cached_tokens = self.count_tokens(cached_text) if cached_text else 0
-        print(f"[CACHE DEBUG] Old memories: {len(old_memories)}, New memories: {len(new_memories)}")
-        print(f"[CACHE DEBUG] Cached text tokens: {cached_tokens} (minimum 1024 required for Sonnet/Opus)")
-        print(f"[CACHE DEBUG] Will cache: {enable_caching and bool(cached_text) and cached_tokens >= 1024}")
+        logger.info(f"[CACHE] Old memories: {len(old_memories)}, New memories: {len(new_memories)}")
+        logger.info(f"[CACHE] Cached text tokens: {cached_tokens} (minimum 1024 required for Sonnet/Opus)")
+        logger.info(f"[CACHE] Will cache: {enable_caching and bool(cached_text) and cached_tokens >= 1024}")
 
         # Build the first user message with memory context
         if enable_caching and cached_text:

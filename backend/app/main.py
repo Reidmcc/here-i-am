@@ -1,4 +1,7 @@
 from contextlib import asynccontextmanager
+import logging
+import sys
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -8,6 +11,43 @@ from app.database import init_db
 from app.routes import conversations_router, chat_router, memories_router, entities_router
 from app.config import settings
 from app.services.memory_service import memory_service
+
+
+def setup_logging():
+    """Configure logging for the application."""
+    # Determine log level based on debug setting
+    log_level = logging.DEBUG if settings.debug else logging.INFO
+
+    # Create formatter
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+
+    # Remove existing handlers to avoid duplicates
+    root_logger.handlers.clear()
+
+    # Add stdout handler
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setLevel(log_level)
+    stdout_handler.setFormatter(formatter)
+    root_logger.addHandler(stdout_handler)
+
+    # Set specific log levels for noisy libraries
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+    # Log startup message
+    logging.info(f"Logging configured at {logging.getLevelName(log_level)} level")
+
+
+# Initialize logging on module load
+setup_logging()
 
 
 def run_pinecone_connection_test():
