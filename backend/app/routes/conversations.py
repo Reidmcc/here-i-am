@@ -643,7 +643,7 @@ def _parse_openai_export(data: list, include_ids: bool = False) -> List[dict]:
                     text += part["text"]
 
             if text.strip():
-                create_time = message.get("create_time", 0)
+                create_time = message.get("create_time") or 0
                 msg_entry = {
                     "role": "human" if role == "user" else "assistant",
                     "content": text.strip(),
