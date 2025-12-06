@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
+# Batch size for committing during imports to prevent memory exhaustion
+IMPORT_BATCH_SIZE = 50
+
 
 class ConversationCreate(BaseModel):
     title: Optional[str] = None
@@ -576,6 +579,7 @@ async def import_seed_conversation(
     stored_count = 0
     skipped_count = 0
     imported_count = 0
+    batch_counter = 0  # Track messages for batch commits
 
     for idx, msg_data in enumerate(data.messages):
         msg_id = msg_data.get("id")
@@ -635,6 +639,15 @@ async def import_seed_conversation(
             )
             if success:
                 stored_count += 1
+
+        # Batch commit to prevent memory exhaustion
+        batch_counter += 1
+        if batch_counter >= IMPORT_BATCH_SIZE:
+            await db.commit()
+            # Expire all objects to release memory - they'll be re-fetched if needed
+            db.expire_all()
+            batch_counter = 0
+            logger.debug(f"Batch commit: {imported_count} messages imported so far")
 
     # If no messages were imported (all duplicates), remove the empty conversation
     if imported_count == 0:
@@ -940,6 +953,8 @@ async def import_external_conversations(
     The allow_reimport flag only affects the UI preview (allows selecting conversations
     that appear fully imported), but per-message deduplication is always enforced.
     This is useful for retrying failed imports where some messages succeeded.
+
+    Uses batch processing to prevent memory exhaustion during large imports.
     """
     from app.services import memory_service
 
@@ -1006,6 +1021,7 @@ async def import_external_conversations(
     imported_conversations = 0
     skipped_messages = 0
     history_conversations = 0
+    batch_counter = 0  # Track messages for batch commits
 
     for conv in conversations:
         conv_index = conv.get("index", 0)
@@ -1131,6 +1147,15 @@ async def import_external_conversations(
                 )
                 if success:
                     total_memories += 1
+
+            # Batch commit to prevent memory exhaustion
+            batch_counter += 1
+            if batch_counter >= IMPORT_BATCH_SIZE:
+                await db.commit()
+                # Expire all objects to release memory - they'll be re-fetched if needed
+                db.expire_all()
+                batch_counter = 0
+                logger.debug(f"Batch commit: {total_messages} messages imported so far")
 
         # If no messages were added (all duplicates), remove the empty conversation
         if messages_added == 0:
