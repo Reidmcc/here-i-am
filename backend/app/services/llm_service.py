@@ -11,6 +11,7 @@ from datetime import datetime
 from enum import Enum
 
 from app.services import anthropic_service, openai_service
+from app.services.openai_service import OpenAIService
 from app.config import settings
 
 
@@ -118,10 +119,19 @@ class LLMService:
         models = []
         for provider_info in self.get_available_providers():
             for model in provider_info["models"]:
+                # Check if model supports temperature
+                # All Anthropic models support temperature
+                # OpenAI models check against MODELS_WITHOUT_TEMPERATURE
+                if provider_info["id"] == ModelProvider.OPENAI.value:
+                    supports_temp = model["id"] not in OpenAIService.MODELS_WITHOUT_TEMPERATURE
+                else:
+                    supports_temp = True
+
                 models.append({
                     **model,
                     "provider": provider_info["id"],
                     "provider_name": provider_info["name"],
+                    "temperature_supported": supports_temp,
                 })
         return models
 

@@ -144,6 +144,7 @@ class App {
             if (value > maxTemp) value = maxTemp;
             this.elements.temperatureInput.value = value;
         });
+        this.elements.modelSelect.addEventListener('change', () => this.updateTemperatureControlState());
         this.elements.presetSelect.addEventListener('change', (e) => this.loadPreset(e.target.value));
 
         // Memories modal
@@ -337,6 +338,34 @@ class App {
             return 2.0;
         }
         return 1.0;
+    }
+
+    modelSupportsTemperature(modelId) {
+        // Check if the model supports temperature parameter
+        const model = this.availableModels.find(m => m.id === modelId);
+        // Default to true if model not found (safer default)
+        return model ? model.temperature_supported !== false : true;
+    }
+
+    updateTemperatureControlState() {
+        const selectedModel = this.elements.modelSelect.value;
+        const supportsTemp = this.modelSupportsTemperature(selectedModel);
+
+        // Disable or enable temperature controls
+        this.elements.temperatureInput.disabled = !supportsTemp;
+        this.elements.temperatureNumber.disabled = !supportsTemp;
+
+        // Add visual indication to the form group
+        const formGroup = this.elements.temperatureInput.closest('.form-group');
+        if (formGroup) {
+            if (supportsTemp) {
+                formGroup.classList.remove('disabled');
+                formGroup.title = '';
+            } else {
+                formGroup.classList.add('disabled');
+                formGroup.title = 'Temperature is not supported by this model';
+            }
+        }
     }
 
     updateTemperatureMax() {
@@ -811,6 +840,8 @@ class App {
         this.elements.systemPromptInput.value = this.settings.systemPrompt || '';
         this.elements.conversationTypeSelect.value = this.settings.conversationType;
         this.elements.themeSelect.value = this.getCurrentTheme();
+        // Update temperature control state based on current model
+        this.updateTemperatureControlState();
         // Reset import section to step 1
         this.resetImportToStep1();
         this.showModal('settingsModal');

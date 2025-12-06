@@ -933,6 +933,22 @@ h4.md-header {
     text-align: center;
 }
 
+/* Disabled form group (e.g., temperature when model doesn't support it) */
+.form-group.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.form-group.disabled label {
+    color: var(--text-muted);
+}
+
+.form-group.disabled input,
+.form-group.disabled select {
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
 .form-group input[type="file"] {
     width: 100%;
     padding: 10px 12px;
