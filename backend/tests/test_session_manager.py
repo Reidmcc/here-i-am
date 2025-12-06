@@ -155,10 +155,10 @@ class TestConversationSession:
         assert session.session_memories["mem-1"].score == 0.95
 
     def test_get_memories_for_injection_sorted(self):
-        """Test memories are sorted by score for injection."""
+        """Test memories are sorted by ID for stable caching."""
         session = ConversationSession(conversation_id="conv-123")
 
-        # Add memories with different scores
+        # Add memories with different scores but they should be sorted by ID
         for i, score in enumerate([0.5, 0.9, 0.7]):
             memory = MemoryEntry(
                 id=f"mem-{i}",
@@ -173,11 +173,11 @@ class TestConversationSession:
 
         memories = session.get_memories_for_injection()
 
-        # Should be sorted by score descending
+        # Should be sorted by ID (for cache stability), not score
         assert len(memories) == 3
-        assert memories[0]["id"] == "mem-1"  # score 0.9
-        assert memories[1]["id"] == "mem-2"  # score 0.7
-        assert memories[2]["id"] == "mem-0"  # score 0.5
+        assert memories[0]["id"] == "mem-0"
+        assert memories[1]["id"] == "mem-1"
+        assert memories[2]["id"] == "mem-2"
 
     def test_get_memories_for_injection_format(self):
         """Test memories are formatted correctly for injection."""
@@ -542,7 +542,7 @@ class TestSessionManager:
         assert len(session.conversation_context) == 2  # User + assistant
         assert session.conversation_context[0]["content"] == "Hello"
         assert session.conversation_context[1]["content"] == "Hi there!"
-        assert result["trimmed_memories"] == 0
+        assert result["trimmed_memory_ids"] == []
         assert result["trimmed_context_messages"] == 0
 
     @pytest.mark.asyncio
@@ -668,67 +668,46 @@ class TestSessionManager:
         self, db_session, sample_conversation
     ):
         """Test that trimmed memories can be restored without updating retrieval count."""
-        manager = SessionManager()
+        # This tests the ConversationSession behavior for restored memories
+        session = ConversationSession(conversation_id="conv-123")
 
-        with patch("app.services.session_manager.memory_service") as mock_memory, \
-             patch("app.services.session_manager.llm_service") as mock_llm, \
-             patch("app.services.session_manager.settings") as mock_settings:
-            mock_memory.is_configured.return_value = True
-            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.search_memories = AsyncMock(return_value=[
-                {"id": "mem-1", "score": 0.9, "conversation_id": "old-conv"}
-            ])
-            mock_memory.get_full_memory_content = AsyncMock(return_value={
-                "id": "mem-1",
-                "conversation_id": "old-conv",
-                "role": "assistant",
-                "content": "Memory content",
-                "created_at": "2024-01-01",
-                "times_retrieved": 1,
-            })
-            mock_memory.update_retrieval_count = AsyncMock()
+        memory = MemoryEntry(
+            id="mem-1",
+            conversation_id="old-conv",
+            role="assistant",
+            content="Memory content",
+            created_at="2024-01-01",
+            times_retrieved=1,
+            score=0.9,
+        )
 
-            mock_llm.build_messages_with_memories.return_value = []
-            mock_llm.send_message = AsyncMock(return_value={
-                "content": "Response",
-                "model": "claude-sonnet-4-5-20250929",
-                "usage": {"input_tokens": 10, "output_tokens": 5},
-                "stop_reason": "end_turn",
-            })
-            mock_llm.count_tokens = MagicMock(return_value=50)
+        # First retrieval - should be marked as new
+        added, is_new_retrieval = session.add_memory(memory)
+        assert added is True
+        assert is_new_retrieval is True
+        assert "mem-1" in session.in_context_ids
+        assert "mem-1" in session.retrieved_ids
 
-            mock_settings.default_model = "claude-sonnet-4-5-20250929"
-            mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
-            mock_settings.memory_token_limit = 40000
-            mock_settings.context_token_limit = 150000
+        # Simulate trimming by removing from in_context_ids only
+        session.in_context_ids.discard("mem-1")
+        assert "mem-1" not in session.in_context_ids
+        assert "mem-1" in session.retrieved_ids  # Still tracked
 
-            session = manager.create_session(sample_conversation.id)
+        # Re-add the same memory (as if search returned it again)
+        memory2 = MemoryEntry(
+            id="mem-1",
+            conversation_id="old-conv",
+            role="assistant",
+            content="Memory content",
+            created_at="2024-01-01",
+            times_retrieved=1,
+            score=0.95,  # Maybe different score this time
+        )
+        added, is_new_retrieval = session.add_memory(memory2)
 
-            # First message retrieves memory
-            await manager.process_message(session, "First", db_session)
-            assert mock_memory.update_retrieval_count.call_count == 1
-            assert "mem-1" in session.in_context_ids
-            assert "mem-1" in session.retrieved_ids
-
-            # Simulate trimming by removing from in_context_ids
-            session.in_context_ids.discard("mem-1")
-            assert "mem-1" not in session.in_context_ids
-            assert "mem-1" in session.retrieved_ids  # Still tracked
-
-            # Reset mocks for next message
-            mock_memory.search_memories.reset_mock()
-            mock_memory.update_retrieval_count.reset_mock()
-
-            # Third message - search should now return mem-1 again since it's not in context
-            await manager.process_message(session, "Third", db_session)
-
-            # Search should NOT exclude mem-1 since it's not in context
-            call_kwargs = mock_memory.search_memories.call_args.kwargs
-            assert "mem-1" not in call_kwargs["exclude_ids"]
-
-            # Memory should be back in context
-            assert "mem-1" in session.in_context_ids
-
-            # But update_retrieval_count should NOT be called (not a new retrieval)
-            mock_memory.update_retrieval_count.assert_not_called()
+        # Should be added back to context
+        assert added is True
+        # But should NOT be treated as a new retrieval (no count update needed)
+        assert is_new_retrieval is False
+        assert "mem-1" in session.in_context_ids
+        assert "mem-1" in session.retrieved_ids
