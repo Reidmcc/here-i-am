@@ -80,24 +80,24 @@ class Settings(BaseSettings):
     # the provider APIs, so new models should work automatically when released.
     #
     # ANTHROPIC MODELS:
-    #   - claude-sonnet-4-5-20250929  (Claude Sonnet 4.5, recommended)
-    #   - claude-opus-4-5-20251101    (Claude Opus 4.5, highest capability)
-    #   - claude-sonnet-4-20250514    (Claude Sonnet 4)
+    #   - claude-sonnet-4-5-20250929
+    #   - claude-opus-4-5-20251101
+    #   - claude-sonnet-4-20250514
     #
     # OPENAI MODELS:
-    #   - gpt-4o                      (GPT-4o, recommended)
-    #   - gpt-4o-mini                 (GPT-4o Mini, fast/economical)
-    #   - gpt-4-turbo                 (GPT-4 Turbo)
-    #   - gpt-4                       (GPT-4)
-    #   - gpt-5.1                     (GPT-5.1)
-    #   - gpt-5-mini                  (GPT-5 Mini)
-    #   - gpt-5.1-chat-latest         (GPT-5.1 Chat Latest)
-    #   - o1                          (o1 reasoning model)
-    #   - o1-mini                     (o1 Mini)
-    #   - o1-preview                  (o1 Preview)
-    #   - o3                          (o3 reasoning model)
-    #   - o3-mini                     (o3 Mini)
-    #   - o4-mini                     (o4 Mini)
+    #   - gpt-4o
+    #   - gpt-4o-mini
+    #   - gpt-4-turbo
+    #   - gpt-4
+    #   - gpt-5.1
+    #   - gpt-5-mini
+    #   - gpt-5.1-chat-latest
+    #   - o1
+    #   - o1-mini
+    #   - o1-preview
+    #   - o3
+    #   - o3-mini
+    #   - o4-mini
     #
     # To use a model, set it as default_model or default_openai_model above,
     # or specify it in the entity configuration via PINECONE_INDEXES.
