@@ -574,7 +574,10 @@ async def import_seed_conversation(
     db.add(conversation)
     await db.flush()  # Get the ID
 
-    logger.info(f"Importing seed conversation: {data.title or 'Untitled'} (id={conversation.id}, entity={data.entity_id})")
+    # Store conversation ID before loop - we may expunge the conversation object during batch commits
+    conversation_id = conversation.id
+
+    logger.info(f"Importing seed conversation: {data.title or 'Untitled'} (id={conversation_id}, entity={data.entity_id})")
 
     stored_count = 0
     skipped_count = 0
@@ -608,7 +611,7 @@ async def import_seed_conversation(
         # Build message kwargs, only include created_at if we have a valid timestamp
         # Use provided ID if available, otherwise auto-generate
         message_kwargs = {
-            "conversation_id": conversation.id,
+            "conversation_id": conversation_id,
             "role": role,
             "content": msg_data["content"],
             "times_retrieved": times_retrieved,
@@ -623,36 +626,46 @@ async def import_seed_conversation(
         await db.flush()
         imported_count += 1
 
+        # Extract values we need before potential expunge
+        message_id = message.id
+        message_created_at = message.created_at
+        message_content = message.content
+
         # Log the message with its timestamp
         timestamp_source = "original" if created_at is not None else "default (now)"
-        logger.info(f"  Message {idx+1}/{len(data.messages)}: {role.value} | timestamp={message.created_at.isoformat()} ({timestamp_source})")
+        logger.info(f"  Message {idx+1}/{len(data.messages)}: {role.value} | timestamp={message_created_at.isoformat()} ({timestamp_source})")
 
         # Store in vector database for the specified entity
         if memory_service.is_configured():
             success = await memory_service.store_memory(
-                message_id=message.id,
-                conversation_id=conversation.id,
+                message_id=message_id,
+                conversation_id=conversation_id,
                 role=role.value,
-                content=message.content,
-                created_at=message.created_at,
+                content=message_content,
+                created_at=message_created_at,
                 entity_id=data.entity_id,
             )
             if success:
                 stored_count += 1
 
-        # Expunge message from session to release memory (we no longer need it)
-        db.expunge(message)
-
         # Batch commit to prevent memory exhaustion
         batch_counter += 1
         if batch_counter >= IMPORT_BATCH_SIZE:
             await db.commit()
+            # Expunge all to release memory after commit (use run_sync for async compatibility)
+            await db.run_sync(lambda session: session.expunge_all())
             batch_counter = 0
             logger.debug(f"Batch commit: {imported_count} messages imported so far")
 
     # If no messages were imported (all duplicates), remove the empty conversation
     if imported_count == 0:
-        await db.delete(conversation)
+        # Re-fetch conversation since it may have been expunged
+        result = await db.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+        conv_to_delete = result.scalar_one_or_none()
+        if conv_to_delete:
+            await db.delete(conv_to_delete)
         await db.commit()
         return {
             "status": "skipped",
@@ -667,11 +680,11 @@ async def import_seed_conversation(
 
     return {
         "status": "imported",
-        "conversation_id": conversation.id,
+        "conversation_id": conversation_id,
         "message_count": imported_count,
         "messages_skipped": skipped_count,
         "memories_stored": stored_count,
-        "entity_id": conversation.entity_id,
+        "entity_id": data.entity_id,
     }
 
 
@@ -1065,7 +1078,10 @@ async def import_external_conversations(
         db.add(conversation)
         await db.flush()
 
-        logger.info(f"Importing conversation: {title} (id={conversation.id}, source={detected_source}, entity={data.entity_id})")
+        # Store conversation ID - we may expunge the conversation object during batch commits
+        conv_id = conversation.id
+
+        logger.info(f"Importing conversation: {title} (id={conv_id}, source={detected_source}, entity={data.entity_id})")
 
         # Track if any messages were added
         messages_added = 0
@@ -1117,7 +1133,7 @@ async def import_external_conversations(
             # Build message kwargs, only include created_at if we have a valid timestamp
             message_kwargs = {
                 "id": use_id,
-                "conversation_id": conversation.id,
+                "conversation_id": conv_id,
                 "role": role,
                 "content": content,
                 "times_retrieved": 0,
@@ -1131,37 +1147,46 @@ async def import_external_conversations(
             total_messages += 1
             messages_added += 1
 
+            # Extract values we need before potential expunge
+            message_id = message.id
+            message_created_at = message.created_at
+
             # Log the message with its timestamp
             timestamp_source = "original" if created_at is not None else "default (now)"
             content_preview = content[:50] + "..." if len(content) > 50 else content
-            logger.info(f"  Message {msg_idx+1}/{len(messages)}: {role.value} | timestamp={message.created_at.isoformat()} ({timestamp_source}) | {content_preview!r}")
+            logger.info(f"  Message {msg_idx+1}/{len(messages)}: {role.value} | timestamp={message_created_at.isoformat()} ({timestamp_source}) | {content_preview!r}")
 
             # Store in vector database if importing as memory
             if import_as_memory and memory_service.is_configured():
                 success = await memory_service.store_memory(
-                    message_id=message.id,
-                    conversation_id=conversation.id,
+                    message_id=message_id,
+                    conversation_id=conv_id,
                     role=role.value,
                     content=content,
-                    created_at=message.created_at,
+                    created_at=message_created_at,
                     entity_id=data.entity_id,
                 )
                 if success:
                     total_memories += 1
 
-            # Expunge message from session to release memory (we no longer need it)
-            db.expunge(message)
-
             # Batch commit to prevent memory exhaustion
             batch_counter += 1
             if batch_counter >= IMPORT_BATCH_SIZE:
                 await db.commit()
+                # Expunge all to release memory after commit (use run_sync for async compatibility)
+                await db.run_sync(lambda session: session.expunge_all())
                 batch_counter = 0
                 logger.debug(f"Batch commit: {total_messages} messages imported so far")
 
         # If no messages were added (all duplicates), remove the empty conversation
         if messages_added == 0:
-            await db.delete(conversation)
+            # Re-fetch conversation since it may have been expunged
+            result = await db.execute(
+                select(Conversation).where(Conversation.id == conv_id)
+            )
+            conv_to_delete = result.scalar_one_or_none()
+            if conv_to_delete:
+                await db.delete(conv_to_delete)
         else:
             imported_conversations += 1
             if import_to_history:
