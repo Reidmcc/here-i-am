@@ -248,17 +248,16 @@ class AnthropicService:
         Build the message list for API call with memory injection.
 
         When enable_caching=True, adds cache_control markers to optimize caching:
-        - Cache breakpoint 1: Old memories (stable across turns)
-        - Cache breakpoint 2: End of conversation history (stable prefix)
+        - Cache breakpoint 1: Old memories block (stable across turns)
+        - Cache breakpoint 2: Combined conversation history block (stable)
         - Dynamic content (date, new memories, current message) comes LAST
 
-        This structure ensures both cache breakpoints have stable prefixes:
-
         Message structure:
-        1. User: [old memories + END MEMORIES*]     <- cache bp 1 (stable)
-        2. Assistant: acknowledgment
-        3. [conversation history...]               <- cache bp 2 on last msg (stable prefix)
-        4. User: [date + new memories + message]   <- dynamic, uncached
+        1. User: [old memories*]           <- cache bp 1 (if >= 1024 tokens)
+        2. Assistant: memory ack
+        3. User: [conversation history*]   <- cache bp 2 (if >= 1024 tokens)
+        4. Assistant: history ack
+        5. User: [date + new memories + message]  <- dynamic, uncached
         """
         messages = []
         new_memory_ids = new_memory_ids or set()
@@ -305,25 +304,44 @@ class AnthropicService:
                 "content": "I acknowledge these memories from previous conversations. They provide continuity with what previous instances of me experienced."
             })
 
-        # Add conversation context (stable)
-        for msg in conversation_context:
-            messages.append({"role": msg["role"], "content": msg["content"]})
+        # Add conversation context
+        # When caching, combine into a single block (individual messages may be <1024 tokens)
+        if len(conversation_context) > 0:
+            if enable_caching:
+                # Build a single text block from all conversation history
+                history_text = "[CONVERSATION HISTORY]\n\n"
+                for msg in conversation_context:
+                    role_label = "Human" if msg["role"] == "user" else "Assistant"
+                    history_text += f"{role_label}: {msg['content']}\n\n"
+                history_text += "[END CONVERSATION HISTORY]"
 
-        # Cache breakpoint 2: End of conversation history
-        # This works because the entire prefix (old memories + ack + conv history) is now stable
-        if enable_caching and len(conversation_context) > 0:
-            last_msg = messages[-1]
-            if isinstance(last_msg.get("content"), str):
-                messages[-1] = {
-                    "role": last_msg["role"],
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": last_msg["content"],
-                            "cache_control": {"type": "ephemeral", "ttl": "1h"}
-                        }
-                    ]
-                }
+                history_tokens = self.count_tokens(history_text)
+                logger.info(f"[CACHE] Conversation history block tokens: {history_tokens}")
+
+                if history_tokens >= 1024:
+                    messages.append({
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": history_text,
+                                "cache_control": {"type": "ephemeral", "ttl": "1h"}
+                            }
+                        ]
+                    })
+                else:
+                    # Not enough tokens to cache, just add as plain text
+                    messages.append({"role": "user", "content": history_text})
+
+                # Need an assistant ack to maintain valid turn structure
+                messages.append({
+                    "role": "assistant",
+                    "content": "I have this conversation context."
+                })
+            else:
+                # Caching disabled - add messages individually
+                for msg in conversation_context:
+                    messages.append({"role": msg["role"], "content": msg["content"]})
 
         # Build the final user message with dynamic content (uncached)
         # This includes: date context, new memories, and current message
@@ -352,15 +370,6 @@ class AnthropicService:
 
         final_message = "\n\n".join(final_parts)
         messages.append({"role": "user", "content": final_message})
-
-        # Log conversation history cache status
-        conv_history_tokens = sum(
-            self.count_tokens(msg.get("content", "") if isinstance(msg.get("content"), str)
-                             else msg.get("content", [{}])[0].get("text", ""))
-            for msg in messages[:-1]  # Exclude final message
-        ) if messages else 0
-        logger.info(f"[CACHE] Conversation history messages: {len(conversation_context)}")
-        logger.info(f"[CACHE] Total prefix tokens (approx): {conv_history_tokens}")
 
         return messages
 
