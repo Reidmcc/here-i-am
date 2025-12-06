@@ -89,7 +89,7 @@ class SeedConversationImport(BaseModel):
     llm_model_used: str = "claude-sonnet-4-5-20250929"
     notes: Optional[str] = None
     entity_id: Optional[str] = None  # Pinecone index name for the AI entity
-    messages: List[dict]  # List of {role: str, content: str, times_retrieved?: int}
+    messages: List[dict]  # List of {role: str, content: str, times_retrieved?: int, created_at?: str (ISO format)}
 
 
 @router.post("/", response_model=ConversationResponse)
@@ -549,12 +549,28 @@ async def import_seed_conversation(
         role = MessageRole.HUMAN if msg_data["role"] == "human" else MessageRole.ASSISTANT
         times_retrieved = msg_data.get("times_retrieved", 0)
 
-        message = Message(
-            conversation_id=conversation.id,
-            role=role,
-            content=msg_data["content"],
-            times_retrieved=times_retrieved,
-        )
+        # Parse created_at if provided (ISO format string)
+        created_at = None
+        if msg_data.get("created_at"):
+            try:
+                created_at = datetime.fromisoformat(msg_data["created_at"].replace("Z", "+00:00"))
+                # Convert to UTC naive datetime for consistency
+                if created_at.tzinfo is not None:
+                    created_at = created_at.replace(tzinfo=None)
+            except (ValueError, TypeError):
+                pass
+
+        # Build message kwargs, only include created_at if we have a valid timestamp
+        message_kwargs = {
+            "conversation_id": conversation.id,
+            "role": role,
+            "content": msg_data["content"],
+            "times_retrieved": times_retrieved,
+        }
+        if created_at is not None:
+            message_kwargs["created_at"] = created_at
+
+        message = Message(**message_kwargs)
         db.add(message)
         await db.flush()
 
@@ -657,9 +673,9 @@ def _parse_openai_export(data: list, include_ids: bool = False) -> List[dict]:
         message_nodes.sort(key=lambda x: x.get("timestamp", 0))
 
         if include_ids:
-            messages = [{"id": m.get("id"), "role": m["role"], "content": m["content"]} for m in message_nodes]
+            messages = [{"id": m.get("id"), "role": m["role"], "content": m["content"], "timestamp": m.get("timestamp")} for m in message_nodes]
         else:
-            messages = [{"role": m["role"], "content": m["content"]} for m in message_nodes]
+            messages = [{"role": m["role"], "content": m["content"], "timestamp": m.get("timestamp")} for m in message_nodes]
 
         if messages:
             conv_entry = {
@@ -700,11 +716,14 @@ def _parse_anthropic_export(data: list, include_ids: bool = False) -> List[dict]
             msg_id = msg.get("uuid")
             sender = msg.get("sender", "")
             text = msg.get("text", "")
+            # Anthropic exports use created_at or updated_at in ISO format
+            timestamp_str = msg.get("created_at") or msg.get("updated_at")
 
             if sender in ("human", "user") and text.strip():
                 msg_entry = {
                     "role": "human",
                     "content": text.strip(),
+                    "timestamp_str": timestamp_str,
                 }
                 if include_ids and msg_id:
                     msg_entry["id"] = msg_id
@@ -713,6 +732,7 @@ def _parse_anthropic_export(data: list, include_ids: bool = False) -> List[dict]
                 msg_entry = {
                     "role": "assistant",
                     "content": text.strip(),
+                    "timestamp_str": timestamp_str,
                 }
                 if include_ids and msg_id:
                     msg_entry["id"] = msg_id
@@ -980,13 +1000,37 @@ async def import_external_conversations(
             else:
                 use_id = msg_id if msg_id else None
 
-            message = Message(
-                id=use_id,
-                conversation_id=conversation.id,
-                role=role,
-                content=content,
-                times_retrieved=0,
-            )
+            # Extract and parse timestamp from the original message
+            # OpenAI uses Unix timestamp (float), Anthropic uses ISO string
+            created_at = None
+            if msg_data.get("timestamp"):
+                # OpenAI: Unix timestamp (seconds since epoch)
+                try:
+                    created_at = datetime.utcfromtimestamp(msg_data["timestamp"])
+                except (ValueError, TypeError, OSError):
+                    pass
+            elif msg_data.get("timestamp_str"):
+                # Anthropic: ISO format string
+                try:
+                    created_at = datetime.fromisoformat(msg_data["timestamp_str"].replace("Z", "+00:00"))
+                    # Convert to UTC naive datetime for consistency
+                    if created_at.tzinfo is not None:
+                        created_at = created_at.replace(tzinfo=None)
+                except (ValueError, TypeError):
+                    pass
+
+            # Build message kwargs, only include created_at if we have a valid timestamp
+            message_kwargs = {
+                "id": use_id,
+                "conversation_id": conversation.id,
+                "role": role,
+                "content": content,
+                "times_retrieved": 0,
+            }
+            if created_at is not None:
+                message_kwargs["created_at"] = created_at
+
+            message = Message(**message_kwargs)
             db.add(message)
             await db.flush()
             total_messages += 1
