@@ -73,6 +73,40 @@ class Settings(BaseSettings):
     default_temperature: float = 1.0
     default_max_tokens: int = 4096
 
+    # =========================================================================
+    # SUPPORTED MODELS REFERENCE
+    # =========================================================================
+    # The following models are supported. Model names are passed directly to
+    # the provider APIs, so new models should work automatically when released.
+    #
+    # ANTHROPIC MODELS:
+    #   - claude-sonnet-4-5-20250929  (Claude Sonnet 4.5, recommended)
+    #   - claude-opus-4-5-20251101    (Claude Opus 4.5, highest capability)
+    #   - claude-sonnet-4-20250514    (Claude Sonnet 4)
+    #   - claude-3-5-sonnet-20241022  (Claude 3.5 Sonnet)
+    #   - claude-3-5-haiku-20241022   (Claude 3.5 Haiku, fast/economical)
+    #   - claude-3-opus-20240229      (Claude 3 Opus)
+    #   - claude-3-haiku-20240307     (Claude 3 Haiku)
+    #
+    # OPENAI MODELS:
+    #   - gpt-4o                      (GPT-4o, recommended)
+    #   - gpt-4o-mini                 (GPT-4o Mini, fast/economical)
+    #   - gpt-4-turbo                 (GPT-4 Turbo)
+    #   - gpt-4                       (GPT-4)
+    #   - gpt-5.1                     (GPT-5.1)
+    #   - gpt-5-mini                  (GPT-5 Mini)
+    #   - gpt-5.1-chat-latest         (GPT-5.1 Chat Latest)
+    #   - o1                          (o1 reasoning model)
+    #   - o1-mini                     (o1 Mini)
+    #   - o1-preview                  (o1 Preview)
+    #   - o3                          (o3 reasoning model)
+    #   - o3-mini                     (o3 Mini)
+    #   - o4-mini                     (o4 Mini)
+    #
+    # To use a model, set it as default_model or default_openai_model above,
+    # or specify it in the entity configuration via PINECONE_INDEXES.
+    # =========================================================================
+
     # Context window limits (in tokens)
     # Anthropic's max context is 200k; we cap at 150k to leave room for response
     context_token_limit: int = 150000  # Conversation history cap
