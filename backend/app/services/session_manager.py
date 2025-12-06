@@ -85,9 +85,11 @@ class ConversationSession:
     # IDs currently in the memory block (can be trimmed and restored)
     in_context_ids: Set[str] = field(default_factory=set)
 
-    # Cache tracking: memories that were in the cached block on the LAST API call
-    # History is no longer cached (it's regular messages), so only track memories
+    # Cache tracking for two-breakpoint caching:
+    # 1. Memory block (breakpoint 1) - changes when new memories retrieved
+    # 2. History block (breakpoint 2) - kept stable, periodically consolidated
     last_cached_memory_ids: Set[str] = field(default_factory=set)
+    last_cached_context_length: int = 0  # Frozen history length for cache stability
 
     def add_memory(self, memory: MemoryEntry) -> Tuple[bool, bool]:
         """
@@ -145,13 +147,14 @@ class ConversationSession:
 
     def get_cache_aware_content(self) -> Dict[str, Any]:
         """
-        Get memories split into cached vs new portions.
+        Get memories and context split into cached vs new portions.
 
-        For cache hits, the memory block must be IDENTICAL to the previous call.
-        - cached_memories: Memories that were in the cached block last time
-        - new_memories: Memories added since last cache (go in final message)
+        Two-breakpoint caching strategy:
+        1. Memory block: cached_memories (stable) vs new_memories
+        2. History block: cached_context (frozen) vs new_context (grows)
 
-        History is no longer tracked here - it's sent as regular messages.
+        Cache hits occur when both blocks are identical to previous call.
+        Periodic consolidation moves new_context into cached_context.
         """
         # Get all in-context memories, sorted by ID for stability
         all_memories = [
@@ -161,7 +164,7 @@ class ConversationSession:
         ]
         all_memories.sort(key=lambda m: m.id)
 
-        # Split into previously cached vs new
+        # Split memories into previously cached vs new
         cached_memories = []
         new_memories = []
         for m in all_memories:
@@ -177,22 +180,52 @@ class ConversationSession:
             else:
                 new_memories.append(mem_dict)
 
+        # Split context into cached (frozen) vs new
+        cached_context = self.conversation_context[:self.last_cached_context_length]
+        new_context = self.conversation_context[self.last_cached_context_length:]
+
         return {
             "cached_memories": cached_memories,
             "new_memories": new_memories,
+            "cached_context": cached_context,
+            "new_context": new_context,
         }
 
-    def update_cache_state(self, cached_memory_ids: Set[str]):
+    def should_consolidate_cache(self, count_tokens_fn) -> bool:
+        """
+        Determine if we should consolidate (grow) the cached history.
+
+        Consolidation causes a cache MISS but creates a larger cache for future hits.
+        We consolidate when new_context grows too large relative to cached_context.
+        """
+        if not self.conversation_context:
+            return False
+
+        # Get current cache state
+        cached_context = self.conversation_context[:self.last_cached_context_length]
+        new_context = self.conversation_context[self.last_cached_context_length:]
+
+        if not new_context:
+            return False
+
+        # Calculate tokens in new vs cached
+        new_text = "\n".join(f"{m['role']}: {m['content']}" for m in new_context)
+        new_tokens = count_tokens_fn(new_text)
+
+        # Consolidate when new content exceeds 4000 tokens (roughly 2-3 long exchanges)
+        # This balances cache hits vs growing uncached portion
+        return new_tokens > 4000
+
+    def update_cache_state(self, cached_memory_ids: Set[str], cached_context_length: int):
         """
         Update cache tracking after an API call.
 
-        Records what memories were in the cached block, so the next call
-        can rebuild the exact same prefix for cache hits.
-
         Args:
-            cached_memory_ids: IDs of memories that should be in the cached block next time
+            cached_memory_ids: IDs of memories in the cached block
+            cached_context_length: Number of messages in the cached history block
         """
         self.last_cached_memory_ids = cached_memory_ids
+        self.last_cached_context_length = cached_context_length
 
     def trim_memories_to_limit(
         self,
@@ -481,10 +514,13 @@ class SessionManager:
             current_message=user_message,
         )
 
-        # Step 5: Build API messages with cache-aware content
-        # - Cached memories go in a cached block (for cache hits)
-        # - New memories go in the final message
-        # - History is regular alternating messages (grows naturally, not cached)
+        # Step 5: Check if we should consolidate (grow) the cached history
+        # This causes a cache MISS but creates a larger cache for future hits
+        should_consolidate = session.should_consolidate_cache(llm_service.count_tokens)
+
+        # Step 6: Build API messages with two-breakpoint caching
+        # Breakpoint 1: memories (changes when new memories retrieved)
+        # Breakpoint 2: history (kept stable, consolidated periodically)
         memories_for_injection = session.get_memories_for_injection()
         cache_content = session.get_cache_aware_content()
         messages = llm_service.build_messages_with_memories(
@@ -496,9 +532,11 @@ class SessionManager:
             enable_caching=True,
             new_memory_ids=truly_new_memory_ids,
             cached_memories=cache_content["cached_memories"],
+            cached_context=cache_content["cached_context"],
+            new_context=cache_content["new_context"],
         )
 
-        # Step 6: Call LLM API (routes to appropriate provider based on model)
+        # Step 7: Call LLM API (routes to appropriate provider based on model)
         response = await llm_service.send_message(
             messages=messages,
             model=session.model,
@@ -508,13 +546,21 @@ class SessionManager:
             enable_caching=True,
         )
 
-        # Step 7: Update conversation context and cache state
+        # Step 8: Update conversation context and cache state
         session.add_exchange(user_message, response["content"])
 
-        # Add new memories to the cached set for next turn
-        # - If no new memories next turn: cache HIT (same memory block)
-        # - If new memories next turn: cache MISS (different block), but they get added
-        session.update_cache_state(set(session.in_context_ids))
+        # Update cache state:
+        # - Memories: always grow to include new memories (they're in the cached block now)
+        # - History: only grow on consolidation, otherwise keep stable for cache hits
+        new_cached_mem_ids = set(session.in_context_ids)
+        if should_consolidate:
+            # Consolidate: include all context BEFORE this exchange in cached block
+            new_cached_ctx_len = len(session.conversation_context) - 2
+        else:
+            # Keep stable: don't grow cached history (for cache hits)
+            new_cached_ctx_len = session.last_cached_context_length
+
+        session.update_cache_state(new_cached_mem_ids, new_cached_ctx_len)
 
         # Step 8: Store new messages as memories (happens in route layer with DB)
         # Return data for the route to handle storage
@@ -640,10 +686,10 @@ class SessionManager:
             "trimmed_context_messages": trimmed_context_count,
         }
 
-        # Step 4: Build API messages with cache-aware content
-        # - Cached memories go in a cached block (for cache hits)
-        # - New memories go in the final message
-        # - History is regular alternating messages (grows naturally, not cached)
+        # Step 4: Check if we should consolidate (grow) the cached history
+        should_consolidate = session.should_consolidate_cache(llm_service.count_tokens)
+
+        # Step 5: Build API messages with two-breakpoint caching
         memories_for_injection = session.get_memories_for_injection()
         cache_content = session.get_cache_aware_content()
         messages = llm_service.build_messages_with_memories(
@@ -655,9 +701,11 @@ class SessionManager:
             enable_caching=True,
             new_memory_ids=truly_new_memory_ids,
             cached_memories=cache_content["cached_memories"],
+            cached_context=cache_content["cached_context"],
+            new_context=cache_content["new_context"],
         )
 
-        # Step 5: Stream LLM response with caching enabled
+        # Step 6: Stream LLM response with caching enabled
         full_content = ""
         async for event in llm_service.send_message_stream(
             messages=messages,
@@ -673,10 +721,14 @@ class SessionManager:
                 # Update conversation context and cache state
                 session.add_exchange(user_message, full_content)
 
-                # Add new memories to the cached set for next turn
-                # - If no new memories next turn: cache HIT (same memory block)
-                # - If new memories next turn: cache MISS (different block), but they get added
-                session.update_cache_state(set(session.in_context_ids))
+                # Update cache state with consolidation logic
+                new_cached_mem_ids = set(session.in_context_ids)
+                if should_consolidate:
+                    new_cached_ctx_len = len(session.conversation_context) - 2
+                else:
+                    new_cached_ctx_len = session.last_cached_context_length
+
+                session.update_cache_state(new_cached_mem_ids, new_cached_ctx_len)
             yield event
 
     def close_session(self, conversation_id: str):
