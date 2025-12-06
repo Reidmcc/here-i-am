@@ -231,10 +231,11 @@ class ConversationSession:
 
         Consolidation causes a cache MISS but creates a larger cache for future hits.
         We consolidate when:
-        1. Cached content is too small to actually cache (< 1024 tokens) - grow it!
-        2. New content (memories OR history) grows large enough to be worth caching (>= 1024 tokens)
+        1. Cached history is too small to actually cache (< 1024 tokens) - grow it!
+        2. New memories >= 2048 tokens (higher threshold since memories grow faster)
+        3. New history >= 1024 tokens
         """
-        # Check new memories
+        # Check new memories (higher threshold since memories grow faster - multiple per turn)
         new_memory_ids = self.in_context_ids - self.last_cached_memory_ids
         if new_memory_ids:
             new_memories = [
@@ -245,8 +246,8 @@ class ConversationSession:
             if new_memories:
                 new_mem_text = "\n".join(f'"{m.content}"' for m in new_memories)
                 new_mem_tokens = count_tokens_fn(new_mem_text)
-                if new_mem_tokens >= 1024:
-                    logger.info(f"[CACHE] Consolidation check: new_memories={len(new_memories)}/{new_mem_tokens} tokens >= 1024, will consolidate")
+                if new_mem_tokens >= 2048:
+                    logger.info(f"[CACHE] Consolidation check: new_memories={len(new_memories)}/{new_mem_tokens} tokens >= 2048, will consolidate")
                     return True
 
         # Check conversation context
