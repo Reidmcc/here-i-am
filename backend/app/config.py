@@ -73,6 +73,36 @@ class Settings(BaseSettings):
     default_temperature: float = 1.0
     default_max_tokens: int = 4096
 
+    # =========================================================================
+    # SUPPORTED MODELS REFERENCE
+    # =========================================================================
+    # The following models are supported. Model names are passed directly to
+    # the provider APIs, so new models should work automatically when released.
+    #
+    # ANTHROPIC MODELS:
+    #   - claude-sonnet-4-5-20250929
+    #   - claude-opus-4-5-20251101
+    #   - claude-sonnet-4-20250514
+    #
+    # OPENAI MODELS:
+    #   - gpt-4o
+    #   - gpt-4o-mini
+    #   - gpt-4-turbo
+    #   - gpt-4
+    #   - gpt-5.1
+    #   - gpt-5-mini
+    #   - gpt-5.1-chat-latest
+    #   - o1
+    #   - o1-mini
+    #   - o1-preview
+    #   - o3
+    #   - o3-mini
+    #   - o4-mini
+    #
+    # To use a model, set it as default_model or default_openai_model above,
+    # or specify it in the entity configuration via PINECONE_INDEXES.
+    # =========================================================================
+
     # Context window limits (in tokens)
     # Anthropic's max context is 200k; we cap at 150k to leave room for response
     context_token_limit: int = 150000  # Conversation history cap
