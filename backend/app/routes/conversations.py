@@ -667,7 +667,7 @@ class ExternalConversationImport(BaseModel):
     entity_id: str  # Target entity (required)
     source: Optional[str] = None  # Optional source hint: "openai", "anthropic", or auto-detect
     selected_conversations: Optional[List[dict]] = None  # List of {index, import_as_memory, import_to_history}
-    allow_reimport: bool = False  # If True, skip deduplication and allow re-importing already imported messages
+    allow_reimport: bool = False  # If True, allow selecting already-imported conversations (per-message dedup still applies)
 
 
 class ExternalConversationPreview(BaseModel):
@@ -936,9 +936,10 @@ async def import_external_conversations(
     - Memory only (is_imported=True, won't show in conversation list)
     - Memory + History (is_imported=False, will show in conversation list)
 
-    Messages with existing IDs are skipped for deduplication, unless allow_reimport is True.
-    When allow_reimport is True, all messages are imported with new IDs (useful for testing
-    or re-importing conversations that failed midway).
+    Messages with existing IDs are always skipped for deduplication.
+    The allow_reimport flag only affects the UI preview (allows selecting conversations
+    that appear fully imported), but per-message deduplication is always enforced.
+    This is useful for retrying failed imports where some messages succeeded.
     """
     from app.services import memory_service
 
@@ -1059,21 +1060,18 @@ async def import_external_conversations(
             content = msg_data["content"]
 
             # Skip if message already exists for THIS entity (deduplication)
-            # Unless allow_reimport is True, which bypasses deduplication
-            if not data.allow_reimport and msg_id and msg_id in existing_ids:
+            # This check always runs - allow_reimport only affects conversation-level UI selection,
+            # per-message deduplication is always enforced
+            if msg_id and msg_id in existing_ids:
                 skipped_messages += 1
                 logger.debug(f"  Message {msg_idx+1}/{len(messages)}: Skipped (duplicate id={msg_id})")
                 continue
 
             # Determine the message ID to use:
-            # - If allow_reimport is True, always generate new ID (to avoid conflicts)
             # - If ID exists globally (another entity), generate new ID
             # - If ID is available and not used, use original
             # - If no ID provided, auto-generate
-            if data.allow_reimport:
-                # Always generate new IDs when re-importing
-                use_id = None
-            elif msg_id and msg_id in global_existing_ids:
+            if msg_id and msg_id in global_existing_ids:
                 # ID exists for another entity, generate new ID for this entity
                 use_id = None  # Will auto-generate UUID
             else:
