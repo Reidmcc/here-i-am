@@ -193,25 +193,31 @@ class TestOpenAIService:
         assert messages[2]["role"] == "user"
         assert messages[2]["content"] == "What do you remember?"
 
-    def test_build_messages_format_same_as_anthropic(self, sample_memories, sample_conversation_context):
-        """Test that OpenAI uses same format as Anthropic."""
-        from app.services.anthropic_service import AnthropicService
-
+    def test_build_messages_structure(self, sample_memories, sample_conversation_context):
+        """Test that OpenAI produces valid message structure."""
         openai_service = OpenAIService()
-        anthropic_service = AnthropicService()
 
         current = "Test message"
 
-        openai_messages = openai_service.build_messages_with_memories(
-            sample_memories, sample_conversation_context, current
-        )
-        anthropic_messages = anthropic_service.build_messages_with_memories(
+        messages = openai_service.build_messages_with_memories(
             sample_memories, sample_conversation_context, current
         )
 
-        # Both should produce the same structure
-        assert len(openai_messages) == len(anthropic_messages)
+        # Should have: memory block, ack, context (2), current
+        assert len(messages) == 5
 
-        for i, (openai_msg, anthropic_msg) in enumerate(zip(openai_messages, anthropic_messages)):
-            assert openai_msg["role"] == anthropic_msg["role"]
-            assert openai_msg["content"] == anthropic_msg["content"]
+        # Verify memory block is first
+        assert messages[0]["role"] == "user"
+        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in messages[0]["content"]
+
+        # Verify acknowledgment
+        assert messages[1]["role"] == "assistant"
+        assert "acknowledge" in messages[1]["content"].lower()
+
+        # Verify context messages
+        assert messages[2]["content"] == "Hello!"
+        assert messages[3]["content"] == "Hi there!"
+
+        # Verify current message
+        assert messages[4]["role"] == "user"
+        assert messages[4]["content"] == current

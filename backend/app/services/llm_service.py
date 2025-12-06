@@ -6,7 +6,7 @@ Provides a single interface for interacting with multiple LLM providers
 configuration.
 """
 
-from typing import Optional, List, Dict, Any, AsyncIterator
+from typing import Optional, List, Dict, Any, AsyncIterator, Set
 from datetime import datetime
 from enum import Enum
 
@@ -118,11 +118,12 @@ class LLMService:
 
     async def send_message(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         model: str,
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        enable_caching: bool = True,
     ) -> Dict[str, Any]:
         """
         Send a message to the appropriate LLM provider based on model.
@@ -133,9 +134,12 @@ class LLMService:
             system_prompt: Optional system prompt
             temperature: Temperature setting
             max_tokens: Max tokens in response
+            enable_caching: Enable Anthropic prompt caching (default True, ignored for OpenAI)
 
         Returns:
-            Dict with 'content', 'model', 'usage', 'stop_reason' keys
+            Dict with 'content', 'model', 'usage', 'stop_reason' keys.
+            For Anthropic with caching, usage may include cache_creation_input_tokens
+            and cache_read_input_tokens.
 
         Raises:
             ValueError: If model provider not configured or unknown model
@@ -161,6 +165,7 @@ class LLMService:
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                enable_caching=enable_caching,
             )
         elif provider == ModelProvider.OPENAI:
             return await openai_service.send_message(
@@ -175,11 +180,12 @@ class LLMService:
 
     async def send_message_stream(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         model: str,
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        enable_caching: bool = True,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Send a message to the appropriate LLM provider with streaming response.
@@ -189,6 +195,10 @@ class LLMService:
         - {"type": "token", "content": str}
         - {"type": "done", "content": str, "model": str, "usage": dict, "stop_reason": str}
         - {"type": "error", "error": str}
+
+        For Anthropic with caching enabled, the "done" event's usage dict may include:
+        - cache_creation_input_tokens: Tokens written to cache
+        - cache_read_input_tokens: Tokens read from cache (90% cost reduction)
         """
         provider = self.get_provider_for_model(model)
 
@@ -212,6 +222,7 @@ class LLMService:
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                enable_caching=enable_caching,
             ):
                 yield event
         elif provider == ModelProvider.OPENAI:
@@ -233,19 +244,53 @@ class LLMService:
         current_message: str,
         model: Optional[str] = None,
         conversation_start_date: Optional[datetime] = None,
-    ) -> List[Dict[str, str]]:
+        enable_caching: bool = True,
+        new_memory_ids: Optional[Set[str]] = None,
+        # Cache-aware parameters for proper cache hits
+        cached_memories: Optional[List[Dict[str, Any]]] = None,
+        cached_context: Optional[List[Dict[str, str]]] = None,
+        new_context: Optional[List[Dict[str, str]]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Build the message list for API call with memory injection.
 
         Uses the appropriate service based on model/provider.
-        Both providers currently use the same format.
+        When enable_caching=True and using Anthropic, adds cache_control markers
+        to optimize caching.
+
+        For cache hits, the cached_memories and cached_context must be IDENTICAL
+        to the previous call. New content goes in new_context and is added after
+        the cache breakpoints.
+
+        Args:
+            memories: List of memory dicts to inject
+            conversation_context: Previous messages in conversation
+            current_message: The current user message
+            model: Model ID (used to determine provider)
+            conversation_start_date: When the conversation started
+            enable_caching: Enable Anthropic prompt caching (default True)
+            new_memory_ids: Set of memory IDs just retrieved this turn
+            cached_memories: Memories that were cached in the previous call
+            cached_context: Context messages that were cached in the previous call
+            new_context: New context messages added since last cache
+
+        Returns:
+            List of message dicts formatted for the LLM API
         """
-        # Both services use the same memory injection format
+        # Determine if we should use caching based on provider
+        provider = self.get_provider_for_model(model) if model else ModelProvider.ANTHROPIC
+        use_caching = enable_caching and provider == ModelProvider.ANTHROPIC
+
         return anthropic_service.build_messages_with_memories(
             memories=memories,
             conversation_context=conversation_context,
             current_message=current_message,
             conversation_start_date=conversation_start_date,
+            enable_caching=use_caching,
+            new_memory_ids=new_memory_ids,
+            cached_memories=cached_memories,
+            cached_context=cached_context,
+            new_context=new_context,
         )
 
 
