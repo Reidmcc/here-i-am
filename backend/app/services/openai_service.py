@@ -31,6 +31,11 @@ class OpenAIService:
         "o1", "o1-mini", "o1-preview",
     }
 
+    # Models that support the verbosity parameter
+    MODELS_WITH_VERBOSITY = {
+        "gpt-5.1", "gpt-5.1-chat-latest",
+    }
+
     def __init__(self):
         self.client = None
         self._encoder = None
@@ -46,6 +51,10 @@ class OpenAIService:
     def _supports_stream_options(self, model: str) -> bool:
         """Check if model supports stream_options parameter."""
         return model not in self.MODELS_WITHOUT_STREAM_OPTIONS
+
+    def _supports_verbosity(self, model: str) -> bool:
+        """Check if model supports the verbosity parameter."""
+        return model in self.MODELS_WITH_VERBOSITY
 
     def _ensure_client(self):
         """Lazily initialize the OpenAI client."""
@@ -78,6 +87,7 @@ class OpenAIService:
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        verbosity: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Send a message to OpenAI API.
@@ -88,6 +98,7 @@ class OpenAIService:
             model: Model to use (defaults to gpt-4o)
             temperature: Temperature setting (defaults to 1.0)
             max_tokens: Max tokens in response (defaults to 4096)
+            verbosity: Verbosity level for gpt-5.1 models (low, medium, high)
 
         Returns:
             Dict with 'content', 'model', 'usage' keys
@@ -125,6 +136,10 @@ class OpenAIService:
         if self._supports_temperature(model):
             api_params["temperature"] = temperature
 
+        # Only include verbosity for models that support it (use default if not specified)
+        if self._supports_verbosity(model):
+            api_params["verbosity"] = verbosity or settings.default_verbosity
+
         response = await client.chat.completions.create(**api_params)
 
         # Extract content
@@ -161,6 +176,7 @@ class OpenAIService:
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        verbosity: Optional[str] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Send a message to OpenAI API with streaming response.
@@ -212,6 +228,10 @@ class OpenAIService:
             # Only include stream_options for models that support it
             if self._supports_stream_options(model):
                 api_params["stream_options"] = {"include_usage": True}
+
+            # Only include verbosity for models that support it (use default if not specified)
+            if self._supports_verbosity(model):
+                api_params["verbosity"] = verbosity or settings.default_verbosity
 
             stream = await client.chat.completions.create(**api_params)
 

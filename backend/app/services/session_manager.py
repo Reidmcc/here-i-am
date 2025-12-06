@@ -106,6 +106,7 @@ class ConversationSession:
     system_prompt: Optional[str] = None
     entity_id: Optional[str] = None  # Pinecone index name for this conversation's entity
     conversation_start_date: Optional[datetime] = None  # When the conversation was created
+    verbosity: Optional[str] = None  # Verbosity level for gpt-5.1 models (low, medium, high)
 
     # The actual back-and-forth
     conversation_context: List[Dict[str, str]] = field(default_factory=list)
@@ -632,6 +633,7 @@ class SessionManager:
             temperature=session.temperature,
             max_tokens=session.max_tokens,
             enable_caching=True,
+            verbosity=session.verbosity,
         )
 
         # Step 8: Update conversation context and cache state
@@ -819,6 +821,7 @@ class SessionManager:
             temperature=session.temperature,
             max_tokens=session.max_tokens,
             enable_caching=True,
+            verbosity=session.verbosity,
         ):
             if event["type"] == "token":
                 full_content += event["content"]

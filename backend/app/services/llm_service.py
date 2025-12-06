@@ -124,14 +124,17 @@ class LLMService:
                 # OpenAI models check against MODELS_WITHOUT_TEMPERATURE
                 if provider_info["id"] == ModelProvider.OPENAI.value:
                     supports_temp = model["id"] not in OpenAIService.MODELS_WITHOUT_TEMPERATURE
+                    supports_verbosity = model["id"] in OpenAIService.MODELS_WITH_VERBOSITY
                 else:
                     supports_temp = True
+                    supports_verbosity = False
 
                 models.append({
                     **model,
                     "provider": provider_info["id"],
                     "provider_name": provider_info["name"],
                     "temperature_supported": supports_temp,
+                    "verbosity_supported": supports_verbosity,
                 })
         return models
 
@@ -148,6 +151,7 @@ class LLMService:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         enable_caching: bool = True,
+        verbosity: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Send a message to the appropriate LLM provider based on model.
@@ -159,6 +163,7 @@ class LLMService:
             temperature: Temperature setting
             max_tokens: Max tokens in response
             enable_caching: Enable Anthropic prompt caching (default True, ignored for OpenAI)
+            verbosity: Verbosity level for gpt-5.1 models (low, medium, high)
 
         Returns:
             Dict with 'content', 'model', 'usage', 'stop_reason' keys.
@@ -198,6 +203,7 @@ class LLMService:
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                verbosity=verbosity,
             )
         else:
             raise ValueError(f"Unsupported provider: {provider}")
@@ -210,6 +216,7 @@ class LLMService:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         enable_caching: bool = True,
+        verbosity: Optional[str] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Send a message to the appropriate LLM provider with streaming response.
@@ -256,6 +263,7 @@ class LLMService:
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                verbosity=verbosity,
             ):
                 yield event
         else:
