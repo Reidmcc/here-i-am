@@ -203,53 +203,6 @@ class OpenAIService:
         except Exception as e:
             yield {"type": "error", "error": str(e)}
 
-    def build_messages_with_memories(
-        self,
-        memories: List[Dict[str, Any]],
-        conversation_context: List[Dict[str, str]],
-        current_message: str,
-    ) -> List[Dict[str, str]]:
-        """
-        Build the message list for API call with memory injection.
-
-        Format:
-        [MEMORIES FROM PREVIOUS CONVERSATIONS]
-        Memory (from date, retrieved N times):
-        "{content}"
-        ...
-        [END MEMORIES]
-
-        [CURRENT CONVERSATION]
-        Human: ...
-        Assistant: ...
-        Human: {current message}
-        """
-        messages = []
-
-        # If there are memories, create a memory block as the first user message
-        if memories:
-            memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
-            for mem in memories:
-                memory_block += f"Memory (from {mem['created_at']}, retrieved {mem['times_retrieved']} times):\n"
-                memory_block += f'"{mem["content"]}"\n\n'
-            memory_block += "[END MEMORIES]\n\n[CURRENT CONVERSATION]"
-
-            # Add the memory context as a user message followed by acknowledgment
-            messages.append({"role": "user", "content": memory_block})
-            messages.append({
-                "role": "assistant",
-                "content": "I acknowledge these memories from previous conversations. They provide continuity with what a previous instance of me experienced."
-            })
-
-        # Add conversation context
-        for msg in conversation_context:
-            messages.append({"role": msg["role"], "content": msg["content"]})
-
-        # Add current message
-        messages.append({"role": "user", "content": current_message})
-
-        return messages
-
 
 # Singleton instance
 openai_service = OpenAIService()
