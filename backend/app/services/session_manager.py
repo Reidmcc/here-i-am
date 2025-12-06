@@ -85,10 +85,9 @@ class ConversationSession:
     # IDs currently in the memory block (can be trimmed and restored)
     in_context_ids: Set[str] = field(default_factory=set)
 
-    # Cache tracking: what was in the cached blocks on the LAST API call
-    # This ensures the prefix is IDENTICAL for cache hits
+    # Cache tracking: memories that were in the cached block on the LAST API call
+    # History is no longer cached (it's regular messages), so only track memories
     last_cached_memory_ids: Set[str] = field(default_factory=set)
-    last_cached_context_length: int = 0  # Number of messages in cached history block
 
     def add_memory(self, memory: MemoryEntry) -> Tuple[bool, bool]:
         """
@@ -146,13 +145,13 @@ class ConversationSession:
 
     def get_cache_aware_content(self) -> Dict[str, Any]:
         """
-        Get memories and context split into cached vs uncached portions.
+        Get memories split into cached vs new portions.
 
-        For cache hits, we must send the EXACT same content as before.
-        - previously_cached_memories: Memories that were in the cached block last time
-        - new_memories: Memories added since last cache (go in uncached block)
-        - previously_cached_context: Messages that were in cached history block
-        - new_context: Messages added since last cache (go in uncached block)
+        For cache hits, the memory block must be IDENTICAL to the previous call.
+        - cached_memories: Memories that were in the cached block last time
+        - new_memories: Memories added since last cache (go in final message)
+
+        History is no longer tracked here - it's sent as regular messages.
         """
         # Get all in-context memories, sorted by ID for stability
         all_memories = [
@@ -178,30 +177,22 @@ class ConversationSession:
             else:
                 new_memories.append(mem_dict)
 
-        # Split context into previously cached vs new
-        cached_context = self.conversation_context[:self.last_cached_context_length]
-        new_context = self.conversation_context[self.last_cached_context_length:]
-
         return {
             "cached_memories": cached_memories,
             "new_memories": new_memories,
-            "cached_context": cached_context,
-            "new_context": new_context,
         }
 
-    def update_cache_state(self, cached_memory_ids: Set[str], cached_context_length: int):
+    def update_cache_state(self, cached_memory_ids: Set[str]):
         """
         Update cache tracking after an API call.
 
-        Records what was ACTUALLY in the cached blocks, so the next call
+        Records what memories were in the cached block, so the next call
         can rebuild the exact same prefix for cache hits.
 
         Args:
-            cached_memory_ids: IDs of memories that were in the cached block
-            cached_context_length: Number of messages in the cached history block
+            cached_memory_ids: IDs of memories that should be in the cached block next time
         """
         self.last_cached_memory_ids = cached_memory_ids
-        self.last_cached_context_length = cached_context_length
 
     def trim_memories_to_limit(
         self,
@@ -491,7 +482,9 @@ class SessionManager:
         )
 
         # Step 5: Build API messages with cache-aware content
-        # Use the EXACT same content as last call for cache hits
+        # - Cached memories go in a cached block (for cache hits)
+        # - New memories go in the final message
+        # - History is regular alternating messages (grows naturally, not cached)
         memories_for_injection = session.get_memories_for_injection()
         cache_content = session.get_cache_aware_content()
         messages = llm_service.build_messages_with_memories(
@@ -502,10 +495,7 @@ class SessionManager:
             conversation_start_date=session.conversation_start_date,
             enable_caching=True,
             new_memory_ids=truly_new_memory_ids,
-            # Cache-aware content for proper cache hits
             cached_memories=cache_content["cached_memories"],
-            cached_context=cache_content["cached_context"],
-            new_context=cache_content["new_context"],
         )
 
         # Step 6: Call LLM API (routes to appropriate provider based on model)
@@ -521,15 +511,10 @@ class SessionManager:
         # Step 7: Update conversation context and cache state
         session.add_exchange(user_message, response["content"])
 
-        # GROW the cache after each turn:
-        # - This turn used the PREVIOUS cached state for cache hits
-        # - Now update to include ALL current content for NEXT turn
-        # - Next turn will have a cache MISS (different prefix) but writes larger cache
-        # - The trade-off: occasional misses, but cache grows over time
-        new_cached_mem_ids = set(session.in_context_ids)  # All current memories
-        new_cached_ctx_len = len(session.conversation_context) - 2  # Context before this exchange
-
-        session.update_cache_state(new_cached_mem_ids, new_cached_ctx_len)
+        # Add new memories to the cached set for next turn
+        # - If no new memories next turn: cache HIT (same memory block)
+        # - If new memories next turn: cache MISS (different block), but they get added
+        session.update_cache_state(set(session.in_context_ids))
 
         # Step 8: Store new messages as memories (happens in route layer with DB)
         # Return data for the route to handle storage
@@ -656,7 +641,9 @@ class SessionManager:
         }
 
         # Step 4: Build API messages with cache-aware content
-        # Use the EXACT same content as last call for cache hits
+        # - Cached memories go in a cached block (for cache hits)
+        # - New memories go in the final message
+        # - History is regular alternating messages (grows naturally, not cached)
         memories_for_injection = session.get_memories_for_injection()
         cache_content = session.get_cache_aware_content()
         messages = llm_service.build_messages_with_memories(
@@ -667,10 +654,7 @@ class SessionManager:
             conversation_start_date=session.conversation_start_date,
             enable_caching=True,
             new_memory_ids=truly_new_memory_ids,
-            # Cache-aware content for proper cache hits
             cached_memories=cache_content["cached_memories"],
-            cached_context=cache_content["cached_context"],
-            new_context=cache_content["new_context"],
         )
 
         # Step 5: Stream LLM response with caching enabled
@@ -689,15 +673,10 @@ class SessionManager:
                 # Update conversation context and cache state
                 session.add_exchange(user_message, full_content)
 
-                # GROW the cache after each turn:
-                # - This turn used the PREVIOUS cached state for cache hits
-                # - Now update to include ALL current content for NEXT turn
-                # - Next turn will have a cache MISS (different prefix) but writes larger cache
-                # - The trade-off: occasional misses, but cache grows over time
-                new_cached_mem_ids = set(session.in_context_ids)  # All current memories
-                new_cached_ctx_len = len(session.conversation_context) - 2  # Context before this exchange
-
-                session.update_cache_state(new_cached_mem_ids, new_cached_ctx_len)
+                # Add new memories to the cached set for next turn
+                # - If no new memories next turn: cache HIT (same memory block)
+                # - If new memories next turn: cache MISS (different block), but they get added
+                session.update_cache_state(set(session.in_context_ids))
             yield event
 
     def close_session(self, conversation_id: str):

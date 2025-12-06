@@ -179,20 +179,16 @@ class TestAnthropicService:
 
         messages = service.build_messages_with_memories(memories, context, current)
 
-        # With caching enabled:
-        # - No memories = no memory block
-        # - Context is combined into [CONVERSATION HISTORY] block + ack
+        # With caching enabled but no memories:
+        # - History is regular alternating messages (not cached)
         # - Final message with date + current
         assert len(messages) == 3
 
-        # First message: conversation history block
+        # First two messages: conversation history as regular messages
         assert messages[0]["role"] == "user"
-        assert "[CONVERSATION HISTORY]" in messages[0]["content"]
-        assert "Human: Hi" in messages[0]["content"]
-        assert "Assistant: Hello!" in messages[0]["content"]
-
-        # Second message: history acknowledgment
+        assert messages[0]["content"] == "Hi"
         assert messages[1]["role"] == "assistant"
+        assert messages[1]["content"] == "Hello!"
 
         # Third message: final message with date context + current
         assert messages[2]["role"] == "user"
@@ -271,11 +267,11 @@ class TestAnthropicService:
             current
         )
 
-        # Should have:
-        # 1. memory block
+        # New structure:
+        # 1. memory block (cached)
         # 2. memory acknowledgment
-        # 3. conversation history block
-        # 4. history acknowledgment
+        # 3. user: "Hello!" (regular message)
+        # 4. assistant: "Hi there!" (regular message)
         # 5. final message (date + current)
         assert len(messages) == 5
 
@@ -285,13 +281,15 @@ class TestAnthropicService:
             first_content = first_content[0]["text"]
         assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in first_content
 
-        # Verify history block contains the context
-        history_content = messages[2]["content"]
-        if isinstance(history_content, list):
-            history_content = history_content[0]["text"]
-        assert "[CONVERSATION HISTORY]" in history_content
-        assert "Human: Hello!" in history_content
-        assert "Assistant: Hi there!" in history_content
+        # Verify memory acknowledgment
+        assert messages[1]["role"] == "assistant"
+        assert "acknowledge" in messages[1]["content"].lower()
+
+        # Verify history is regular alternating messages (not cached block)
+        assert messages[2]["role"] == "user"
+        assert messages[2]["content"] == "Hello!"
+        assert messages[3]["role"] == "assistant"
+        assert messages[3]["content"] == "Hi there!"
 
         # Verify final message
         assert "Tell me more." in messages[4]["content"]
@@ -368,5 +366,5 @@ class TestAnthropicService:
 
         # New memory should be in the final uncached message
         final_content = messages[-1]["content"]
-        assert "[NEW MEMORIES]" in final_content
+        assert "[NEW MEMORIES RETRIEVED THIS TURN]" in final_content
         assert "New memory" in final_content
