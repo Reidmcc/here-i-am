@@ -597,18 +597,18 @@ class SessionManager:
         session.add_exchange(user_message, response["content"])
 
         # Update cache state:
-        # - Memories: always grow to include new memories (they're in the cached block now)
-        # - History: only grow on consolidation, otherwise keep stable for cache hits
-        new_cached_mem_ids = set(session.in_context_ids)
+        # Both memories and history only grow on consolidation/bootstrap to keep cache stable
         if should_consolidate:
-            # Consolidate: include all context BEFORE this exchange in cached block
+            # Consolidate: grow both memory and history cache
+            new_cached_mem_ids = set(session.in_context_ids)
             new_cached_ctx_len = len(session.conversation_context) - 2
         elif session.last_cached_context_length == 0 and len(session.conversation_context) > 0:
-            # Bootstrap: start caching with all current history (including this exchange)
-            # This enables cache hits starting from the next turn
+            # Bootstrap: start caching with all current content
+            new_cached_mem_ids = set(session.in_context_ids)
             new_cached_ctx_len = len(session.conversation_context)
         else:
-            # Keep stable: don't grow cached history (for cache hits)
+            # Keep stable: don't grow either cache (for cache hits)
+            new_cached_mem_ids = session.last_cached_memory_ids
             new_cached_ctx_len = session.last_cached_context_length
 
         session.update_cache_state(new_cached_mem_ids, new_cached_ctx_len)
@@ -784,13 +784,17 @@ class SessionManager:
                 session.add_exchange(user_message, full_content)
 
                 # Update cache state with consolidation logic
-                new_cached_mem_ids = set(session.in_context_ids)
+                # Both memories and history only grow on consolidation/bootstrap
                 if should_consolidate:
+                    new_cached_mem_ids = set(session.in_context_ids)
                     new_cached_ctx_len = len(session.conversation_context) - 2
                 elif session.last_cached_context_length == 0 and len(session.conversation_context) > 0:
-                    # Bootstrap: start caching with all current history
+                    # Bootstrap: start caching with all current content
+                    new_cached_mem_ids = set(session.in_context_ids)
                     new_cached_ctx_len = len(session.conversation_context)
                 else:
+                    # Keep stable for cache hits
+                    new_cached_mem_ids = session.last_cached_memory_ids
                     new_cached_ctx_len = session.last_cached_context_length
 
                 session.update_cache_state(new_cached_mem_ids, new_cached_ctx_len)
