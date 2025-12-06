@@ -189,17 +189,19 @@ class ConversationSession:
             "new_context": new_context,
         }
 
-    def update_cache_state(self):
+    def update_cache_state(self, cached_memory_ids: Set[str], cached_context_length: int):
         """
         Update cache tracking after an API call.
 
-        Call this after successfully sending a message to record what was cached,
-        so the next call can send the same prefix for cache hits.
+        Records what was ACTUALLY in the cached blocks, so the next call
+        can rebuild the exact same prefix for cache hits.
+
+        Args:
+            cached_memory_ids: IDs of memories that were in the cached block
+            cached_context_length: Number of messages in the cached history block
         """
-        # Record all current in-context memories as "cached"
-        self.last_cached_memory_ids = set(self.in_context_ids)
-        # Record current context length as "cached"
-        self.last_cached_context_length = len(self.conversation_context)
+        self.last_cached_memory_ids = cached_memory_ids
+        self.last_cached_context_length = cached_context_length
 
     def trim_memories_to_limit(
         self,
@@ -518,7 +520,21 @@ class SessionManager:
 
         # Step 7: Update conversation context and cache state
         session.add_exchange(user_message, response["content"])
-        session.update_cache_state()  # Record what was cached for next call
+
+        # For cache HITS, we must send IDENTICAL content next time.
+        # Record what was in the cached block (not new content).
+        # BUT on first turn (bootstrap), record current state for next time.
+        cached_mem_ids = {m["id"] for m in cache_content["cached_memories"]}
+        cached_ctx_len = len(cache_content["cached_context"])
+
+        # Bootstrap: if nothing was cached, record current state for next turn
+        if not cached_mem_ids and session.in_context_ids:
+            cached_mem_ids = set(session.in_context_ids)
+        if cached_ctx_len == 0 and session.conversation_context:
+            # Record context BEFORE the exchange we just added
+            cached_ctx_len = len(session.conversation_context) - 2
+
+        session.update_cache_state(cached_mem_ids, cached_ctx_len)
 
         # Step 8: Store new messages as memories (happens in route layer with DB)
         # Return data for the route to handle storage
@@ -677,7 +693,21 @@ class SessionManager:
             elif event["type"] == "done":
                 # Update conversation context and cache state
                 session.add_exchange(user_message, full_content)
-                session.update_cache_state()  # Record what was cached for next call
+
+                # For cache HITS, we must send IDENTICAL content next time.
+                # Record what was in the cached block (not new content).
+                # BUT on first turn (bootstrap), record current state for next time.
+                cached_mem_ids = {m["id"] for m in cache_content["cached_memories"]}
+                cached_ctx_len = len(cache_content["cached_context"])
+
+                # Bootstrap: if nothing was cached, record current state for next turn
+                if not cached_mem_ids and session.in_context_ids:
+                    cached_mem_ids = set(session.in_context_ids)
+                if cached_ctx_len == 0 and session.conversation_context:
+                    # Record context BEFORE the exchange we just added
+                    cached_ctx_len = len(session.conversation_context) - 2
+
+                session.update_cache_state(cached_mem_ids, cached_ctx_len)
             yield event
 
     def close_session(self, conversation_id: str):
