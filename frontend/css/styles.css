@@ -440,13 +440,13 @@ html, body {
 .memories-panel {
     background-color: var(--memory-bg);
     border-bottom: 1px solid var(--border-color);
-    max-height: calc(100vh - 200px);
+    height: calc(100vh - 200px);
     overflow: hidden;
-    transition: max-height 0.3s ease;
+    transition: height 0.3s ease;
 }
 
 .memories-panel.collapsed {
-    max-height: 40px;
+    height: 40px;
 }
 
 .memories-header {
@@ -474,7 +474,7 @@ html, body {
 .memories-content {
     padding: 0 24px 12px;
     overflow-y: auto;
-    max-height: calc(100vh - 260px);
+    height: calc(100% - 50px);
 }
 
 .memory-item {
