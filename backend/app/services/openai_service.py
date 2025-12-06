@@ -23,6 +23,7 @@ class OpenAIService:
         "o1", "o1-mini", "o1-preview",
         "o3", "o3-mini",
         "o4-mini",
+        "gpt-5.1", "gpt-5-mini", "gpt-5.1-chat-latest",
     }
 
     # Models that don't support stream_options
