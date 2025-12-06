@@ -460,6 +460,11 @@ class SessionManager:
                 )
                 session.in_context_ids.add(mem_id)
 
+        # Bootstrap cache state: all existing content should be in the "cached" portion
+        # This ensures cache_control markers are placed correctly for cache hits
+        session.last_cached_memory_ids = set(session.in_context_ids)
+        session.last_cached_context_length = len(session.conversation_context)
+
         return session
 
     async def process_message(
@@ -598,6 +603,10 @@ class SessionManager:
         if should_consolidate:
             # Consolidate: include all context BEFORE this exchange in cached block
             new_cached_ctx_len = len(session.conversation_context) - 2
+        elif session.last_cached_context_length == 0 and len(session.conversation_context) > 0:
+            # Bootstrap: start caching with all current history (including this exchange)
+            # This enables cache hits starting from the next turn
+            new_cached_ctx_len = len(session.conversation_context)
         else:
             # Keep stable: don't grow cached history (for cache hits)
             new_cached_ctx_len = session.last_cached_context_length
@@ -778,6 +787,9 @@ class SessionManager:
                 new_cached_mem_ids = set(session.in_context_ids)
                 if should_consolidate:
                     new_cached_ctx_len = len(session.conversation_context) - 2
+                elif session.last_cached_context_length == 0 and len(session.conversation_context) > 0:
+                    # Bootstrap: start caching with all current history
+                    new_cached_ctx_len = len(session.conversation_context)
                 else:
                     new_cached_ctx_len = session.last_cached_context_length
 
