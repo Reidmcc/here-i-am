@@ -1,11 +1,15 @@
 from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
+import logging
+
 from pinecone import Pinecone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from app.config import settings
 from app.models import Message, ConversationMemoryLink, Conversation
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryService:
@@ -72,7 +76,7 @@ class MemoryService:
             self._indexes[entity_id] = index
             return index
         except Exception as e:
-            print(f"Error connecting to Pinecone index '{entity_id}': {e}")
+            logger.error(f"Error connecting to Pinecone index '{entity_id}': {e}")
             return None
 
     @property
@@ -121,18 +125,18 @@ class MemoryService:
 
         Returns True if successful, False otherwise.
         """
-        print(f"[DEBUG] store_memory called for entity_id={entity_id}")
+        logger.debug(f"store_memory called for entity_id={entity_id}")
 
         if not self.is_configured():
-            print("[DEBUG] store_memory: Pinecone not configured")
+            logger.debug("store_memory: Pinecone not configured")
             return False
 
         index = self.get_index(entity_id)
         if index is None:
-            print(f"[DEBUG] store_memory: Failed to get index for entity_id={entity_id}")
+            logger.warning(f"store_memory: Failed to get index for entity_id={entity_id}")
             return False
 
-        print(f"[DEBUG] store_memory: Got index, upserting with integrated inference...")
+        logger.debug("store_memory: Got index, upserting with integrated inference...")
 
         # Create content preview for metadata
         content_preview = content[:200] if len(content) > 200 else content
@@ -152,10 +156,10 @@ class MemoryService:
                     "times_retrieved": 0,
                 }]
             )
-            print(f"[DEBUG] store_memory: Successfully upserted to Pinecone")
+            logger.debug("store_memory: Successfully upserted to Pinecone")
             return True
         except Exception as e:
-            print(f"Error storing memory: {e}")
+            logger.error(f"Error storing memory: {e}")
             return False
 
     async def search_memories(
@@ -207,7 +211,7 @@ class MemoryService:
                 exclude_conversation_id=exclude_conversation_id,
             )
             if cached_results is not None:
-                print(f"[DEBUG] search_memories: CACHE HIT")
+                logger.debug("search_memories: CACHE HIT")
                 # Apply exclude_ids filter to cached results
                 filtered = []
                 for mem in cached_results:
@@ -224,7 +228,7 @@ class MemoryService:
             # Query more than we need to allow for filtering
             fetch_k = top_k * 2
 
-            print(f"[DEBUG] search_memories: threshold={settings.similarity_threshold}, exclude_conv={exclude_conversation_id}")
+            logger.debug(f"search_memories: threshold={settings.similarity_threshold}, exclude_conv={exclude_conversation_id}")
 
             # Use Pinecone's integrated inference - search with raw text
             # The query parameter takes inputs (with text) and top_k together
@@ -240,7 +244,7 @@ class MemoryService:
             # Pinecone inference search returns: results.result.hits
             # Each hit has: _id, _score, fields (metadata dict)
             hits = results.result.hits if hasattr(results, 'result') and hasattr(results.result, 'hits') else []
-            print(f"[DEBUG] search_memories: got {len(hits)} hits from Pinecone")
+            logger.debug(f"search_memories: got {len(hits)} hits from Pinecone")
 
             for hit in hits:
                 # Get hit properties via to_dict()
@@ -252,7 +256,7 @@ class MemoryService:
 
                 # Skip same conversation (this filter is part of cache key)
                 if exclude_conversation_id and conv_id == exclude_conversation_id:
-                    print(f"[DEBUG] SKIP (same conversation): {match_id[:8]}...")
+                    logger.debug(f"SKIP (same conversation): {match_id[:8]}...")
                     continue
 
                 all_memories.append({
@@ -279,23 +283,23 @@ class MemoryService:
             memories = []
             for mem in all_memories:
                 if mem["score"] < settings.similarity_threshold:
-                    print(f"[DEBUG] SKIP (score {mem['score']:.3f} < {settings.similarity_threshold}): {mem['id'][:8]}...")
+                    logger.debug(f"SKIP (score {mem['score']:.3f} < {settings.similarity_threshold}): {mem['id'][:8]}...")
                     continue
 
                 if mem["id"] in exclude_ids:
-                    print(f"[DEBUG] SKIP (already retrieved): {mem['id'][:8]}...")
+                    logger.debug(f"SKIP (already retrieved): {mem['id'][:8]}...")
                     continue
 
-                print(f"[DEBUG] INCLUDE: {mem['id'][:8]}... score={mem['score']:.3f}")
+                logger.debug(f"INCLUDE: {mem['id'][:8]}... score={mem['score']:.3f}")
                 memories.append(mem)
 
                 if len(memories) >= top_k:
                     break
 
-            print(f"[DEBUG] search_memories: returning {len(memories)} memories")
+            logger.debug(f"search_memories: returning {len(memories)} memories")
             return memories
         except Exception as e:
-            print(f"Error searching memories: {e}")
+            logger.error(f"Error searching memories: {e}")
             return []
 
     async def get_full_memory_content(
@@ -400,11 +404,11 @@ class MemoryService:
                                 set_metadata={"times_retrieved": current_count + 1}
                             )
                     except Exception as e:
-                        print(f"Warning: Could not update Pinecone metadata: {e}")
+                        logger.warning(f"Could not update Pinecone metadata: {e}")
 
             return True
         except Exception as e:
-            print(f"Error updating retrieval count: {e}")
+            logger.error(f"Error updating retrieval count: {e}")
             await db.rollback()
             return False
 
@@ -465,7 +469,7 @@ class MemoryService:
             index.delete(ids=[message_id])
             return True
         except Exception as e:
-            print(f"Error deleting memory: {e}")
+            logger.error(f"Error deleting memory: {e}")
             return False
 
     def test_connection(self) -> Dict[str, Any]:

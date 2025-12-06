@@ -363,6 +363,7 @@ class SessionManager:
         Returns response data including content, usage, and retrieved memories.
         """
         new_memories = []
+        truly_new_memory_ids = set()  # Only memories never seen before (for cache stability)
 
         # Step 1-2: Retrieve and deduplicate memories
         if memory_service.is_configured():
@@ -399,8 +400,11 @@ class SessionManager:
                     added, is_new_retrieval = session.add_memory(memory)
                     if added:
                         new_memories.append(memory)
-                        # Step 3: Update retrieval tracking only for truly new retrievals
+                        # Track truly new memories separately for cache stability
+                        # Restored memories (trimmed then re-retrieved) should be treated as "old"
                         if is_new_retrieval:
+                            truly_new_memory_ids.add(memory.id)
+                            # Step 3: Update retrieval tracking only for truly new retrievals
                             await memory_service.update_retrieval_count(
                                 memory.id,
                                 session.conversation_id,
@@ -423,9 +427,10 @@ class SessionManager:
         )
 
         # Step 5: Build API messages with caching enabled for Anthropic
-        # Pass new_memory_ids so old memories can be cached separately from new ones
+        # Use truly_new_memory_ids (not all new_memories) for cache stability
+        # Restored memories are treated as "old" so the cache prefix stays stable
         memories_for_injection = session.get_memories_for_injection()
-        new_memory_ids = {m.id for m in new_memories}
+        new_memory_ids = truly_new_memory_ids
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
@@ -493,6 +498,7 @@ class SessionManager:
         - {"type": "error", "error": str}
         """
         new_memories = []
+        truly_new_memory_ids = set()  # Only memories never seen before (for cache stability)
 
         # Step 1-2: Retrieve and deduplicate memories
         if memory_service.is_configured():
@@ -528,8 +534,11 @@ class SessionManager:
                     added, is_new_retrieval = session.add_memory(memory)
                     if added:
                         new_memories.append(memory)
-                        # Only update retrieval count for truly new retrievals
+                        # Track truly new memories separately for cache stability
+                        # Restored memories (trimmed then re-retrieved) should be treated as "old"
                         if is_new_retrieval:
+                            truly_new_memory_ids.add(memory.id)
+                            # Only update retrieval count for truly new retrievals
                             await memory_service.update_retrieval_count(
                                 memory.id,
                                 session.conversation_id,
@@ -571,9 +580,10 @@ class SessionManager:
         }
 
         # Step 4: Build API messages with caching enabled for Anthropic
-        # Pass new_memory_ids so old memories can be cached separately from new ones
+        # Use truly_new_memory_ids (not all new_memories) for cache stability
+        # Restored memories are treated as "old" so the cache prefix stays stable
         memories_for_injection = session.get_memories_for_injection()
-        new_memory_ids = {m.id for m in new_memories}
+        new_memory_ids = truly_new_memory_ids
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
