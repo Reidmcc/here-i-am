@@ -221,3 +221,47 @@ class TestOpenAIService:
         # Verify current message
         assert messages[4]["role"] == "user"
         assert messages[4]["content"] == current
+
+    @pytest.mark.asyncio
+    async def test_send_message_with_cache_hit(self, mock_openai_client_with_cache):
+        """Test that cached_tokens is extracted from API response."""
+        service = OpenAIService()
+        service.client = mock_openai_client_with_cache
+
+        messages = [{"role": "user", "content": "Hello!"}]
+
+        with patch("app.services.openai_service.settings") as mock_settings:
+            mock_settings.default_openai_model = "gpt-4o"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+
+            response = await service.send_message(messages)
+
+        assert response["content"] == "This is a cached response from GPT."
+        assert response["model"] == "gpt-4o"
+        assert "usage" in response
+        assert response["usage"]["input_tokens"] == 1566
+        assert response["usage"]["output_tokens"] == 50
+        # Verify cached_tokens is extracted
+        assert response["usage"]["cached_tokens"] == 1408
+
+    @pytest.mark.asyncio
+    async def test_send_message_no_cache_hit(self, mock_openai_client):
+        """Test that cached_tokens is 0 when there's no cache hit."""
+        service = OpenAIService()
+        service.client = mock_openai_client
+
+        messages = [{"role": "user", "content": "Hello!"}]
+
+        with patch("app.services.openai_service.settings") as mock_settings:
+            mock_settings.default_openai_model = "gpt-4o"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+
+            response = await service.send_message(messages)
+
+        assert "usage" in response
+        assert response["usage"]["input_tokens"] == 100
+        assert response["usage"]["output_tokens"] == 50
+        # cached_tokens should be 0 (or not present) when no cache hit
+        assert response["usage"].get("cached_tokens", 0) == 0
