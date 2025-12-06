@@ -368,5 +368,5 @@ class TestAnthropicService:
 
         # New memory should be in the final uncached message
         final_content = messages[-1]["content"]
-        assert "[NEW MEMORIES RETRIEVED THIS TURN]" in final_content
+        assert "[NEW MEMORIES]" in final_content
         assert "New memory" in final_content

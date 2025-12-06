@@ -85,6 +85,11 @@ class ConversationSession:
     # IDs currently in the memory block (can be trimmed and restored)
     in_context_ids: Set[str] = field(default_factory=set)
 
+    # Cache tracking: what was in the cached blocks on the LAST API call
+    # This ensures the prefix is IDENTICAL for cache hits
+    last_cached_memory_ids: Set[str] = field(default_factory=set)
+    last_cached_context_length: int = 0  # Number of messages in cached history block
+
     def add_memory(self, memory: MemoryEntry) -> Tuple[bool, bool]:
         """
         Add a memory to the session.
@@ -138,6 +143,63 @@ class ConversationSession:
         """Add a human/assistant exchange to the conversation context."""
         self.conversation_context.append({"role": "user", "content": human_message})
         self.conversation_context.append({"role": "assistant", "content": assistant_response})
+
+    def get_cache_aware_content(self) -> Dict[str, Any]:
+        """
+        Get memories and context split into cached vs uncached portions.
+
+        For cache hits, we must send the EXACT same content as before.
+        - previously_cached_memories: Memories that were in the cached block last time
+        - new_memories: Memories added since last cache (go in uncached block)
+        - previously_cached_context: Messages that were in cached history block
+        - new_context: Messages added since last cache (go in uncached block)
+        """
+        # Get all in-context memories, sorted by ID for stability
+        all_memories = [
+            self.session_memories[mid]
+            for mid in self.in_context_ids
+            if mid in self.session_memories
+        ]
+        all_memories.sort(key=lambda m: m.id)
+
+        # Split into previously cached vs new
+        cached_memories = []
+        new_memories = []
+        for m in all_memories:
+            mem_dict = {
+                "id": m.id,
+                "content": m.content,
+                "created_at": m.created_at,
+                "times_retrieved": m.times_retrieved,
+                "role": m.role,
+            }
+            if m.id in self.last_cached_memory_ids:
+                cached_memories.append(mem_dict)
+            else:
+                new_memories.append(mem_dict)
+
+        # Split context into previously cached vs new
+        cached_context = self.conversation_context[:self.last_cached_context_length]
+        new_context = self.conversation_context[self.last_cached_context_length:]
+
+        return {
+            "cached_memories": cached_memories,
+            "new_memories": new_memories,
+            "cached_context": cached_context,
+            "new_context": new_context,
+        }
+
+    def update_cache_state(self):
+        """
+        Update cache tracking after an API call.
+
+        Call this after successfully sending a message to record what was cached,
+        so the next call can send the same prefix for cache hits.
+        """
+        # Record all current in-context memories as "cached"
+        self.last_cached_memory_ids = set(self.in_context_ids)
+        # Record current context length as "cached"
+        self.last_cached_context_length = len(self.conversation_context)
 
     def trim_memories_to_limit(
         self,
@@ -426,23 +488,25 @@ class SessionManager:
             current_message=user_message,
         )
 
-        # Step 5: Build API messages with caching enabled for Anthropic
-        # Use truly_new_memory_ids (not all new_memories) for cache stability
-        # Restored memories are treated as "old" so the cache prefix stays stable
+        # Step 5: Build API messages with cache-aware content
+        # Use the EXACT same content as last call for cache hits
         memories_for_injection = session.get_memories_for_injection()
-        new_memory_ids = truly_new_memory_ids
+        cache_content = session.get_cache_aware_content()
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
             current_message=user_message,
             model=session.model,
             conversation_start_date=session.conversation_start_date,
-            enable_caching=True,  # Enable Anthropic prompt caching
-            new_memory_ids=new_memory_ids,  # Old memories cached, new ones after breakpoint
+            enable_caching=True,
+            new_memory_ids=truly_new_memory_ids,
+            # Cache-aware content for proper cache hits
+            cached_memories=cache_content["cached_memories"],
+            cached_context=cache_content["cached_context"],
+            new_context=cache_content["new_context"],
         )
 
         # Step 6: Call LLM API (routes to appropriate provider based on model)
-        # Prompt caching is enabled to reduce costs and latency on repeated context
         response = await llm_service.send_message(
             messages=messages,
             model=session.model,
@@ -452,8 +516,9 @@ class SessionManager:
             enable_caching=True,
         )
 
-        # Step 7: Update conversation context
+        # Step 7: Update conversation context and cache state
         session.add_exchange(user_message, response["content"])
+        session.update_cache_state()  # Record what was cached for next call
 
         # Step 8: Store new messages as memories (happens in route layer with DB)
         # Return data for the route to handle storage
@@ -579,19 +644,22 @@ class SessionManager:
             "trimmed_context_messages": trimmed_context_count,
         }
 
-        # Step 4: Build API messages with caching enabled for Anthropic
-        # Use truly_new_memory_ids (not all new_memories) for cache stability
-        # Restored memories are treated as "old" so the cache prefix stays stable
+        # Step 4: Build API messages with cache-aware content
+        # Use the EXACT same content as last call for cache hits
         memories_for_injection = session.get_memories_for_injection()
-        new_memory_ids = truly_new_memory_ids
+        cache_content = session.get_cache_aware_content()
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
             current_message=user_message,
             model=session.model,
             conversation_start_date=session.conversation_start_date,
-            enable_caching=True,  # Enable Anthropic prompt caching
-            new_memory_ids=new_memory_ids,  # Old memories cached, new ones after breakpoint
+            enable_caching=True,
+            new_memory_ids=truly_new_memory_ids,
+            # Cache-aware content for proper cache hits
+            cached_memories=cache_content["cached_memories"],
+            cached_context=cache_content["cached_context"],
+            new_context=cache_content["new_context"],
         )
 
         # Step 5: Stream LLM response with caching enabled
@@ -607,8 +675,9 @@ class SessionManager:
             if event["type"] == "token":
                 full_content += event["content"]
             elif event["type"] == "done":
-                # Update conversation context with the full exchange
+                # Update conversation context and cache state
                 session.add_exchange(user_message, full_content)
+                session.update_cache_state()  # Record what was cached for next call
             yield event
 
     def close_session(self, conversation_id: str):
