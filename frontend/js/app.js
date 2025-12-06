@@ -79,6 +79,7 @@ class App {
             // Import
             importSource: document.getElementById('import-source'),
             importFile: document.getElementById('import-file'),
+            importAllowReimport: document.getElementById('import-allow-reimport'),
             importPreviewBtn: document.getElementById('import-preview-btn'),
             importBtn: document.getElementById('import-btn'),
             importStatus: document.getElementById('import-status'),
@@ -945,12 +946,14 @@ class App {
 
             // Get source hint from select
             const source = this.elements.importSource.value || null;
+            const allowReimport = this.elements.importAllowReimport.checked;
 
             // Call API to preview
             this.importPreviewData = await api.previewExternalConversations({
                 content: this.importFileContent,
                 entity_id: this.selectedEntityId,
                 source: source,
+                allow_reimport: allowReimport,
             });
 
             // Show step 2
@@ -1069,6 +1072,7 @@ class App {
 
         try {
             const source = this.elements.importSource.value || null;
+            const allowReimport = this.elements.importAllowReimport.checked;
 
             // Call API to import
             const result = await api.importExternalConversations({
@@ -1076,6 +1080,7 @@ class App {
                 entity_id: this.selectedEntityId,
                 source: source,
                 selected_conversations: selectedConversations,
+                allow_reimport: allowReimport,
             });
 
             // Show success
