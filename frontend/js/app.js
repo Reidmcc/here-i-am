@@ -750,7 +750,7 @@ class App {
             const isExpanded = this.expandedMemoryIds.has(mem.id);
             const fullContent = mem.content || mem.content_preview || '';
             const truncatedContent = this.truncateText(fullContent, 100);
-            const expandedContent = this.truncateText(fullContent, 1000);
+            const expandedContent = this.truncateText(fullContent, 3000);
             const displayContent = isExpanded ? expandedContent : truncatedContent;
             const canExpand = fullContent.length > 100;
             const expandHint = canExpand && !isExpanded ? '<span class="memory-item-expand-hint">(click to expand)</span>' : '';
