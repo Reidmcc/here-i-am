@@ -23,7 +23,7 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     system_prompt: Optional[str] = None  # None means use conversation default
-    verbosity: Optional[str] = None  # Verbosity level for gpt-5.1 models (short, medium, long)
+    verbosity: Optional[str] = None  # Verbosity level for gpt-5.1 models (low, medium, high)
 
 
 class MemoryInfo(BaseModel):
@@ -52,7 +52,7 @@ class QuickChatRequest(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     system_prompt: Optional[str] = None
-    verbosity: Optional[str] = None  # Verbosity level for gpt-5.1 models (short, medium, long)
+    verbosity: Optional[str] = None  # Verbosity level for gpt-5.1 models (low, medium, high)
 
 
 @router.post("/send", response_model=ChatResponse)

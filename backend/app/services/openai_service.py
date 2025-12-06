@@ -98,7 +98,7 @@ class OpenAIService:
             model: Model to use (defaults to gpt-4o)
             temperature: Temperature setting (defaults to 1.0)
             max_tokens: Max tokens in response (defaults to 4096)
-            verbosity: Verbosity level for gpt-5.1 models (short, medium, long)
+            verbosity: Verbosity level for gpt-5.1 models (low, medium, high)
 
         Returns:
             Dict with 'content', 'model', 'usage' keys
@@ -136,9 +136,9 @@ class OpenAIService:
         if self._supports_temperature(model):
             api_params["temperature"] = temperature
 
-        # Only include verbosity for models that support it
-        if self._supports_verbosity(model) and verbosity:
-            api_params["verbosity"] = verbosity
+        # Only include verbosity for models that support it (use default if not specified)
+        if self._supports_verbosity(model):
+            api_params["verbosity"] = verbosity or settings.default_verbosity
 
         response = await client.chat.completions.create(**api_params)
 
@@ -229,9 +229,9 @@ class OpenAIService:
             if self._supports_stream_options(model):
                 api_params["stream_options"] = {"include_usage": True}
 
-            # Only include verbosity for models that support it
-            if self._supports_verbosity(model) and verbosity:
-                api_params["verbosity"] = verbosity
+            # Only include verbosity for models that support it (use default if not specified)
+            if self._supports_verbosity(model):
+                api_params["verbosity"] = verbosity or settings.default_verbosity
 
             stream = await client.chat.completions.create(**api_params)
 

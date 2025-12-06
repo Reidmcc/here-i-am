@@ -163,7 +163,7 @@ class LLMService:
             temperature: Temperature setting
             max_tokens: Max tokens in response
             enable_caching: Enable Anthropic prompt caching (default True, ignored for OpenAI)
-            verbosity: Verbosity level for gpt-5.1 models (short, medium, long)
+            verbosity: Verbosity level for gpt-5.1 models (low, medium, high)
 
         Returns:
             Dict with 'content', 'model', 'usage', 'stop_reason' keys.

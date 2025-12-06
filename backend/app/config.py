@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     default_openai_model: str = "gpt-4o"  # Default OpenAI model
     default_temperature: float = 1.0
     default_max_tokens: int = 4096
+    default_verbosity: str = "low"  # Default verbosity for GPT-5.1 models (low, medium, high)
 
     # =========================================================================
     # SUPPORTED MODELS REFERENCE
