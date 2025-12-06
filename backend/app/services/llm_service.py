@@ -6,7 +6,7 @@ Provides a single interface for interacting with multiple LLM providers
 configuration.
 """
 
-from typing import Optional, List, Dict, Any, AsyncIterator
+from typing import Optional, List, Dict, Any, AsyncIterator, Set
 from datetime import datetime
 from enum import Enum
 
@@ -245,13 +245,15 @@ class LLMService:
         model: Optional[str] = None,
         conversation_start_date: Optional[datetime] = None,
         enable_caching: bool = True,
+        new_memory_ids: Optional[Set[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build the message list for API call with memory injection.
 
         Uses the appropriate service based on model/provider.
         When enable_caching=True and using Anthropic, adds cache_control markers
-        to the memory context block for server-side caching.
+        to optimize caching - old memories are cached as a stable prefix while
+        new memories come after the cache breakpoint.
 
         Args:
             memories: List of memory dicts to inject
@@ -260,6 +262,8 @@ class LLMService:
             model: Model ID (used to determine provider)
             conversation_start_date: When the conversation started
             enable_caching: Enable Anthropic prompt caching (default True)
+            new_memory_ids: Set of memory IDs that were just retrieved this turn
+                           (these won't be cached, allowing old memories to hit cache)
 
         Returns:
             List of message dicts formatted for the LLM API
@@ -274,6 +278,7 @@ class LLMService:
             current_message=current_message,
             conversation_start_date=conversation_start_date,
             enable_caching=use_caching,
+            new_memory_ids=new_memory_ids,
         )
 
 

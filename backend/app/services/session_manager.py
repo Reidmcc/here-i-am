@@ -423,7 +423,9 @@ class SessionManager:
         )
 
         # Step 5: Build API messages with caching enabled for Anthropic
+        # Pass new_memory_ids so old memories can be cached separately from new ones
         memories_for_injection = session.get_memories_for_injection()
+        new_memory_ids = {m.id for m in new_memories}
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
@@ -431,6 +433,7 @@ class SessionManager:
             model=session.model,
             conversation_start_date=session.conversation_start_date,
             enable_caching=True,  # Enable Anthropic prompt caching
+            new_memory_ids=new_memory_ids,  # Old memories cached, new ones after breakpoint
         )
 
         # Step 6: Call LLM API (routes to appropriate provider based on model)
@@ -568,7 +571,9 @@ class SessionManager:
         }
 
         # Step 4: Build API messages with caching enabled for Anthropic
+        # Pass new_memory_ids so old memories can be cached separately from new ones
         memories_for_injection = session.get_memories_for_injection()
+        new_memory_ids = {m.id for m in new_memories}
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
@@ -576,6 +581,7 @@ class SessionManager:
             model=session.model,
             conversation_start_date=session.conversation_start_date,
             enable_caching=True,  # Enable Anthropic prompt caching
+            new_memory_ids=new_memory_ids,  # Old memories cached, new ones after breakpoint
         )
 
         # Step 5: Stream LLM response with caching enabled

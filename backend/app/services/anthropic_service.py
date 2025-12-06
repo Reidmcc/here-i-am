@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any, AsyncIterator
+from typing import Optional, List, Dict, Any, AsyncIterator, Set
 from datetime import datetime
 from anthropic import AsyncAnthropic
 from app.config import settings
@@ -227,13 +227,15 @@ class AnthropicService:
         current_message: str,
         conversation_start_date: Optional[datetime] = None,
         enable_caching: bool = True,
+        new_memory_ids: Optional[Set[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build the message list for API call with memory injection.
 
-        When enable_caching=True, adds cache_control markers to the memory/context
-        block so it can be cached on Anthropic's servers. This reduces costs by up
-        to 90% and latency by up to 85% on subsequent calls with the same context.
+        When enable_caching=True, adds cache_control markers to optimize caching:
+        - Old memories (from previous turns) are cached as a stable prefix
+        - New memories (just retrieved this turn) come after the cache breakpoint
+        This allows cache hits on the old memories even when new ones are added.
 
         Format:
         [DATE CONTEXT]
@@ -242,7 +244,7 @@ class AnthropicService:
         [END DATE CONTEXT]
 
         [MEMORIES FROM PREVIOUS CONVERSATIONS]
-        Memory (from date, retrieved N times):
+        Memory (from date):
         "{content}"
         ...
         [END MEMORIES]
@@ -253,52 +255,76 @@ class AnthropicService:
         Human: {current message}
         """
         messages = []
+        new_memory_ids = new_memory_ids or set()
 
-        # Build the context block (date context + optional memories)
-        context_parts = []
+        # Split memories into old (stable, from previous turns) and new (just retrieved)
+        old_memories = [m for m in memories if m['id'] not in new_memory_ids]
+        new_memories = [m for m in memories if m['id'] in new_memory_ids]
 
-        # Add date context
+        # Build date context
         current_date = datetime.utcnow()
         date_block = "[DATE CONTEXT]\n"
         if conversation_start_date:
             date_block += f"This conversation started: {conversation_start_date.strftime('%Y-%m-%d')}\n"
         date_block += f"Current date: {current_date.strftime('%Y-%m-%d')}\n"
         date_block += "[END DATE CONTEXT]"
-        context_parts.append(date_block)
 
-        # Add memory block if there are memories
-        if memories:
-            memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
-            for mem in memories:
-                memory_block += f"Memory (from {mem['created_at']}):\n"
-                memory_block += f'"{mem["content"]}"\n\n'
-            memory_block += "[END MEMORIES]"
-            context_parts.append(memory_block)
+        # Build the cached portion: date + old memories
+        # This stays stable across turns as long as no memories are trimmed
+        cached_parts = [date_block]
 
-        # If we have any context (date and/or memories), add as initial exchange
-        if context_parts:
-            full_context = "\n\n".join(context_parts) + "\n\n[CURRENT CONVERSATION]"
+        if old_memories:
+            # Add header + old memories (no footer yet - continues into new memories if any)
+            old_memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
+            for mem in old_memories:
+                old_memory_block += f"Memory (from {mem['created_at']}):\n"
+                old_memory_block += f'"{mem["content"]}"\n\n'
+            cached_parts.append(old_memory_block.rstrip())
+        elif new_memories:
+            # No old memories but we have new ones - add header to cached part
+            cached_parts.append("[MEMORIES FROM PREVIOUS CONVERSATIONS]")
 
-            # Cache breakpoint 1: Memory/context block
-            # This may miss if memories change, but hits when same memories are retrieved
-            if enable_caching:
-                messages.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": full_context,
-                            "cache_control": {"type": "ephemeral"}
-                        }
-                    ]
-                })
-            else:
-                messages.append({"role": "user", "content": full_context})
+        cached_text = "\n\n".join(cached_parts)
 
-            messages.append({
-                "role": "assistant",
-                "content": "I acknowledge this context. The date information helps me understand the temporal setting of our conversation, and any memories provide continuity with what previous instances of me experienced."
-            })
+        # Build the uncached portion: new memories + footer + current conversation marker
+        uncached_parts = []
+
+        if new_memories:
+            new_memory_block = ""
+            for mem in new_memories:
+                new_memory_block += f"\nMemory (from {mem['created_at']}):\n"
+                new_memory_block += f'"{mem["content"]}"\n'
+            uncached_parts.append(new_memory_block)
+
+        # Add end marker if we had any memories
+        if old_memories or new_memories:
+            uncached_parts.append("[END MEMORIES]")
+
+        uncached_parts.append("[CURRENT CONVERSATION]")
+        uncached_text = "\n".join(uncached_parts)
+
+        # Build the first user message with memory context
+        if enable_caching:
+            # Use two content blocks: cached prefix (old memories) + uncached suffix (new memories)
+            content_blocks = [
+                {
+                    "type": "text",
+                    "text": cached_text,
+                    "cache_control": {"type": "ephemeral"}
+                },
+                {
+                    "type": "text",
+                    "text": uncached_text
+                }
+            ]
+            messages.append({"role": "user", "content": content_blocks})
+        else:
+            messages.append({"role": "user", "content": cached_text + "\n\n" + uncached_text})
+
+        messages.append({
+            "role": "assistant",
+            "content": "I acknowledge this context. The date information helps me understand the temporal setting of our conversation, and any memories provide continuity with what previous instances of me experienced."
+        })
 
         # Add conversation context
         for msg in conversation_context:
