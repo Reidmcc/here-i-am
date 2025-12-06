@@ -1,12 +1,15 @@
 from typing import Dict, List, Set, Optional, Any, AsyncIterator, Callable, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
+import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.models import Conversation, Message, MessageRole
 from app.services import memory_service, llm_service
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _build_memory_query(
@@ -229,7 +232,7 @@ class ConversationSession:
         Consolidation causes a cache MISS but creates a larger cache for future hits.
         We consolidate when:
         1. Cached history is too small to actually cache (< 1024 tokens) - grow it!
-        2. New context grows too large (> 4000 tokens) - time to expand the cache
+        2. New context grows too large (> 2000 tokens) - time to expand the cache
         """
         if not self.conversation_context:
             return False
@@ -255,9 +258,9 @@ class ConversationSession:
         new_text = "\n".join(f"{m['role']}: {m['content']}" for m in new_context)
         new_tokens = count_tokens_fn(new_text)
 
-        # Consolidate when new content exceeds 4000 tokens (roughly 2-3 long exchanges)
-        # This balances cache hits vs growing uncached portion
-        return new_tokens > 4000
+        # Consolidate when new content exceeds 2000 tokens (roughly 4-6 exchanges)
+        # Lower threshold = more frequent consolidation = more content gets cached
+        return new_tokens > 2000
 
     def update_cache_state(self, cached_memory_ids: Set[str], cached_context_length: int):
         """
@@ -576,6 +579,8 @@ class SessionManager:
         # Step 5: Check if we should consolidate (grow) the cached history
         # This causes a cache MISS but creates a larger cache for future hits
         should_consolidate = session.should_consolidate_cache(llm_service.count_tokens)
+        if should_consolidate:
+            logger.info("[CACHE] Consolidating: growing cached content")
 
         # Step 6: Build API messages with two-breakpoint caching
         # Breakpoint 1: memories (changes when new memories retrieved)
@@ -762,6 +767,8 @@ class SessionManager:
 
         # Step 4: Check if we should consolidate (grow) the cached history
         should_consolidate = session.should_consolidate_cache(llm_service.count_tokens)
+        if should_consolidate:
+            logger.info("[CACHE] Consolidating: growing cached content")
 
         # Step 5: Build API messages with two-breakpoint caching
         memories_for_injection = session.get_memories_for_injection()
