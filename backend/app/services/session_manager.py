@@ -245,6 +245,7 @@ class ConversationSession:
             return False
 
         # Calculate tokens in cached context
+        cached_tokens = 0
         if cached_context:
             cached_text = "\n".join(f"{m['role']}: {m['content']}" for m in cached_context)
             cached_tokens = count_tokens_fn(cached_text)
@@ -252,15 +253,20 @@ class ConversationSession:
             # If cached context is too small to be cached (< 1024 tokens), grow it
             # No point keeping it "stable" if it can't be cached anyway
             if cached_tokens < 1024:
+                logger.info(f"[CACHE] Consolidation check: cached_tokens={cached_tokens} < 1024, will consolidate")
                 return True
 
         # Calculate tokens in new context
         new_text = "\n".join(f"{m['role']}: {m['content']}" for m in new_context)
         new_tokens = count_tokens_fn(new_text)
 
+        # Log the decision
+        will_consolidate = new_tokens > 2000
+        logger.info(f"[CACHE] Consolidation check: cached={len(cached_context)} msgs/{cached_tokens} tokens, new={len(new_context)} msgs/{new_tokens} tokens, threshold=2000, will_consolidate={will_consolidate}")
+
         # Consolidate when new content exceeds 2000 tokens (roughly 4-6 exchanges)
         # Lower threshold = more frequent consolidation = more content gets cached
-        return new_tokens > 2000
+        return will_consolidate
 
     def update_cache_state(self, cached_memory_ids: Set[str], cached_context_length: int):
         """
@@ -270,8 +276,15 @@ class ConversationSession:
             cached_memory_ids: IDs of memories in the cached block
             cached_context_length: Number of messages in the cached history block
         """
+        old_mem_count = len(self.last_cached_memory_ids)
+        old_ctx_len = self.last_cached_context_length
+
         self.last_cached_memory_ids = cached_memory_ids
         self.last_cached_context_length = cached_context_length
+
+        # Log if cache state changed
+        if len(cached_memory_ids) != old_mem_count or cached_context_length != old_ctx_len:
+            logger.info(f"[CACHE] Cache state updated: memories {old_mem_count}->{len(cached_memory_ids)}, history {old_ctx_len}->{cached_context_length} msgs")
 
     def trim_memories_to_limit(
         self,
@@ -579,8 +592,6 @@ class SessionManager:
         # Step 5: Check if we should consolidate (grow) the cached history
         # This causes a cache MISS but creates a larger cache for future hits
         should_consolidate = session.should_consolidate_cache(llm_service.count_tokens)
-        if should_consolidate:
-            logger.info("[CACHE] Consolidating: growing cached content")
 
         # Step 6: Build API messages with two-breakpoint caching
         # Breakpoint 1: memories (changes when new memories retrieved)
@@ -767,8 +778,6 @@ class SessionManager:
 
         # Step 4: Check if we should consolidate (grow) the cached history
         should_consolidate = session.should_consolidate_cache(llm_service.count_tokens)
-        if should_consolidate:
-            logger.info("[CACHE] Consolidating: growing cached content")
 
         # Step 5: Build API messages with two-breakpoint caching
         memories_for_injection = session.get_memories_for_injection()
