@@ -440,13 +440,16 @@ html, body {
 .memories-panel {
     background-color: var(--memory-bg);
     border-bottom: 1px solid var(--border-color);
-    max-height: 200px;
+    height: calc(100vh - 200px) !important;
+    min-height: calc(100vh - 200px) !important;
+    flex-shrink: 0;
     overflow: hidden;
-    transition: max-height 0.3s ease;
+    transition: height 0.3s ease, min-height 0.3s ease;
 }
 
 .memories-panel.collapsed {
-    max-height: 40px;
+    height: 40px !important;
+    min-height: 40px !important;
 }
 
 .memories-header {
@@ -474,7 +477,7 @@ html, body {
 .memories-content {
     padding: 0 24px 12px;
     overflow-y: auto;
-    max-height: 150px;
+    height: calc(100% - 50px);
 }
 
 .memory-item {
@@ -483,6 +486,13 @@ html, body {
     border-radius: 6px;
     margin-bottom: 8px;
     font-size: 0.85rem;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    overflow: hidden;
+}
+
+.memory-item:hover {
+    background-color: var(--hover-overlay);
 }
 
 .memory-item-header {
@@ -493,8 +503,28 @@ html, body {
     color: var(--text-muted);
 }
 
+.memory-item-expand-hint {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-left: 8px;
+}
+
+.memory-item.expanded .memory-item-expand-hint {
+    display: none;
+}
+
 .memory-item-content {
     color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 3.6em;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+    line-height: 1.2;
+}
+
+.memory-item.expanded .memory-item-content {
+    max-height: none;
 }
 
 /* Messages Container */

@@ -27,6 +27,7 @@ class ChatRequest(BaseModel):
 
 class MemoryInfo(BaseModel):
     id: str
+    content: Optional[str] = None
     content_preview: str
     created_at: str
     times_retrieved: int
@@ -356,6 +357,7 @@ async def get_session_info(
         "memories": [
             {
                 "id": m.id,
+                "content": m.content[:3000] if len(m.content) > 3000 else m.content,
                 "content_preview": m.content[:200] if len(m.content) > 200 else m.content,
                 "created_at": m.created_at,
                 "times_retrieved": m.times_retrieved,

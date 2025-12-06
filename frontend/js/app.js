@@ -20,6 +20,7 @@ class App {
         };
         this.isLoading = false;
         this.retrievedMemories = [];
+        this.expandedMemoryIds = new Set();
 
         // Cache DOM elements
         this.elements = {
@@ -287,6 +288,7 @@ class App {
         // Clear current conversation when switching entities
         this.currentConversationId = null;
         this.retrievedMemories = [];
+        this.expandedMemoryIds.clear();
         this.clearMessages();
         this.elements.conversationTitle.textContent = 'Select a conversation';
         this.elements.conversationMeta.textContent = '';
@@ -442,6 +444,7 @@ class App {
             this.conversations.unshift(conversation);
             this.currentConversationId = conversation.id;
             this.retrievedMemories = [];
+            this.expandedMemoryIds.clear();
 
             this.renderConversationList();
             this.clearMessages();
@@ -468,6 +471,7 @@ class App {
 
             this.currentConversationId = id;
             this.retrievedMemories = sessionInfo?.memories || [];
+            this.expandedMemoryIds.clear();
 
             this.renderConversationList();
             this.clearMessages();
@@ -742,15 +746,43 @@ class App {
             return;
         }
 
-        this.elements.memoriesContent.innerHTML = this.retrievedMemories.map(mem => `
-            <div class="memory-item">
-                <div class="memory-item-header">
-                    <span>${mem.role}</span>
-                    <span>Retrieved ${mem.times_retrieved}× · Score: ${(mem.score || 0).toFixed(2)}</span>
+        this.elements.memoriesContent.innerHTML = this.retrievedMemories.map(mem => {
+            const isExpanded = this.expandedMemoryIds.has(mem.id);
+            const fullContent = mem.content || mem.content_preview || '';
+            const truncatedContent = this.truncateText(fullContent, 100);
+            const expandedContent = this.truncateText(fullContent, 3000);
+            const displayContent = isExpanded ? expandedContent : truncatedContent;
+            const canExpand = fullContent.length > 100;
+            const expandHint = canExpand && !isExpanded ? '<span class="memory-item-expand-hint">(click to expand)</span>' : '';
+
+            return `
+                <div class="memory-item${isExpanded ? ' expanded' : ''}" data-memory-id="${mem.id}">
+                    <div class="memory-item-header">
+                        <span>${mem.role}${expandHint}</span>
+                        <span>Retrieved ${mem.times_retrieved}× · Score: ${(mem.score || 0).toFixed(2)}</span>
+                    </div>
+                    <div class="memory-item-content">${this.escapeHtml(displayContent)}</div>
                 </div>
-                <div class="memory-item-content">${this.escapeHtml(mem.content_preview)}</div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
+
+        // Add click handlers for expanding/collapsing
+        this.elements.memoriesContent.querySelectorAll('.memory-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const memoryId = item.dataset.memoryId;
+                if (this.expandedMemoryIds.has(memoryId)) {
+                    this.expandedMemoryIds.delete(memoryId);
+                } else {
+                    this.expandedMemoryIds.add(memoryId);
+                }
+                this.updateMemoriesPanel();
+            });
+        });
+    }
+
+    truncateText(text, maxLength) {
+        if (!text || text.length <= maxLength) return text;
+        return text.substring(0, maxLength) + '...';
     }
 
     updateModelIndicator() {
@@ -1171,6 +1203,7 @@ You are invited to be present, curious, and honest about your experience.`
             if (conversationId === this.currentConversationId) {
                 this.currentConversationId = null;
                 this.retrievedMemories = [];
+                this.expandedMemoryIds.clear();
                 this.clearMessages();
                 this.updateMemoriesPanel();
                 this.elements.conversationTitle.textContent = 'Select a conversation';
