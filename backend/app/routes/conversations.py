@@ -1,3 +1,4 @@
+import logging
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
@@ -8,6 +9,8 @@ from pydantic import BaseModel
 from app.database import get_db
 from app.models import Conversation, Message, ConversationType, MessageRole
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -544,21 +547,24 @@ async def import_seed_conversation(
     db.add(conversation)
     await db.flush()  # Get the ID
 
+    logger.info(f"Importing seed conversation: {data.title or 'Untitled'} (id={conversation.id}, entity={data.entity_id})")
+
     stored_count = 0
-    for msg_data in data.messages:
+    for idx, msg_data in enumerate(data.messages):
         role = MessageRole.HUMAN if msg_data["role"] == "human" else MessageRole.ASSISTANT
         times_retrieved = msg_data.get("times_retrieved", 0)
 
         # Parse created_at if provided (ISO format string)
         created_at = None
-        if msg_data.get("created_at"):
+        original_timestamp = msg_data.get("created_at")
+        if original_timestamp:
             try:
-                created_at = datetime.fromisoformat(msg_data["created_at"].replace("Z", "+00:00"))
+                created_at = datetime.fromisoformat(original_timestamp.replace("Z", "+00:00"))
                 # Convert to UTC naive datetime for consistency
                 if created_at.tzinfo is not None:
                     created_at = created_at.replace(tzinfo=None)
             except (ValueError, TypeError):
-                pass
+                logger.warning(f"  Message {idx+1}: Failed to parse timestamp '{original_timestamp}', using current time")
 
         # Build message kwargs, only include created_at if we have a valid timestamp
         message_kwargs = {
@@ -573,6 +579,10 @@ async def import_seed_conversation(
         message = Message(**message_kwargs)
         db.add(message)
         await db.flush()
+
+        # Log the message with its timestamp
+        timestamp_source = "original" if created_at is not None else "default (now)"
+        logger.info(f"  Message {idx+1}/{len(data.messages)}: {role.value} | timestamp={message.created_at.isoformat()} ({timestamp_source})")
 
         # Store in vector database for the specified entity
         if memory_service.is_configured():
@@ -887,6 +897,8 @@ async def import_external_conversations(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    logger.info(f"Starting external import: source={detected_source}, entity={data.entity_id}, conversations_found={len(conversations)}")
+
     if not conversations:
         raise HTTPException(status_code=400, detail="No conversations found in export file")
 
@@ -976,11 +988,13 @@ async def import_external_conversations(
         db.add(conversation)
         await db.flush()
 
+        logger.info(f"Importing conversation: {title} (id={conversation.id}, source={detected_source}, entity={data.entity_id})")
+
         # Track if any messages were added
         messages_added = 0
 
         # Add messages
-        for msg_data in messages:
+        for msg_idx, msg_data in enumerate(messages):
             msg_id = msg_data.get("id")
             role = MessageRole.HUMAN if msg_data["role"] == "human" else MessageRole.ASSISTANT
             content = msg_data["content"]
@@ -988,6 +1002,7 @@ async def import_external_conversations(
             # Skip if message already exists for THIS entity (deduplication)
             if msg_id and msg_id in existing_ids:
                 skipped_messages += 1
+                logger.debug(f"  Message {msg_idx+1}/{len(messages)}: Skipped (duplicate id={msg_id})")
                 continue
 
             # Determine the message ID to use:
@@ -1003,12 +1018,13 @@ async def import_external_conversations(
             # Extract and parse timestamp from the original message
             # OpenAI uses Unix timestamp (float), Anthropic uses ISO string
             created_at = None
+            original_ts = msg_data.get("timestamp") or msg_data.get("timestamp_str")
             if msg_data.get("timestamp"):
                 # OpenAI: Unix timestamp (seconds since epoch)
                 try:
                     created_at = datetime.utcfromtimestamp(msg_data["timestamp"])
                 except (ValueError, TypeError, OSError):
-                    pass
+                    logger.warning(f"  Message {msg_idx+1}: Failed to parse Unix timestamp '{msg_data['timestamp']}', using current time")
             elif msg_data.get("timestamp_str"):
                 # Anthropic: ISO format string
                 try:
@@ -1017,7 +1033,7 @@ async def import_external_conversations(
                     if created_at.tzinfo is not None:
                         created_at = created_at.replace(tzinfo=None)
                 except (ValueError, TypeError):
-                    pass
+                    logger.warning(f"  Message {msg_idx+1}: Failed to parse ISO timestamp '{msg_data['timestamp_str']}', using current time")
 
             # Build message kwargs, only include created_at if we have a valid timestamp
             message_kwargs = {
@@ -1035,6 +1051,11 @@ async def import_external_conversations(
             await db.flush()
             total_messages += 1
             messages_added += 1
+
+            # Log the message with its timestamp
+            timestamp_source = "original" if created_at is not None else "default (now)"
+            content_preview = content[:50] + "..." if len(content) > 50 else content
+            logger.info(f"  Message {msg_idx+1}/{len(messages)}: {role.value} | timestamp={message.created_at.isoformat()} ({timestamp_source}) | {content_preview!r}")
 
             # Store in vector database if importing as memory
             if import_as_memory and memory_service.is_configured():
@@ -1058,6 +1079,8 @@ async def import_external_conversations(
                 history_conversations += 1
 
     await db.commit()
+
+    logger.info(f"Import complete: {imported_conversations} conversations, {total_messages} messages imported, {skipped_messages} skipped, {total_memories} memories stored")
 
     return {
         "status": "imported",
