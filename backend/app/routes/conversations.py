@@ -92,7 +92,9 @@ class SeedConversationImport(BaseModel):
     llm_model_used: str = "claude-sonnet-4-5-20250929"
     notes: Optional[str] = None
     entity_id: Optional[str] = None  # Pinecone index name for the AI entity
-    messages: List[dict]  # List of {role: str, content: str, times_retrieved?: int, created_at?: str (ISO format)}
+    # Messages format: {role: str, content: str, id?: str, times_retrieved?: int, created_at?: str (ISO format)}
+    # If 'id' is provided, it will be used for deduplication - messages with existing IDs will be skipped
+    messages: List[dict]
 
 
 @router.post("/", response_model=ConversationResponse)
@@ -520,6 +522,8 @@ async def import_seed_conversation(
 
     This is used to import the founding conversation or other seed data.
     Messages can include pre-set times_retrieved values for significance seeding.
+    Messages with an 'id' field will be deduplicated - if a message with that ID
+    already exists for this entity, it will be skipped.
     """
     from app.services import memory_service
 
@@ -532,6 +536,25 @@ async def import_seed_conversation(
                 detail=f"Entity '{data.entity_id}' is not configured. Check your PINECONE_INDEXES environment variable."
             )
 
+    # Collect message IDs for deduplication
+    all_message_ids = []
+    for msg_data in data.messages:
+        if msg_data.get("id"):
+            all_message_ids.append(msg_data["id"])
+
+    # Query existing message IDs for THIS entity only (for deduplication)
+    existing_ids = set()
+    if all_message_ids:
+        result = await db.execute(
+            select(Message.id)
+            .join(Conversation)
+            .where(
+                Message.id.in_(all_message_ids),
+                Conversation.entity_id == data.entity_id
+            )
+        )
+        existing_ids = {row[0] for row in result.fetchall()}
+
     conv_type = ConversationType.REFLECTION if data.conversation_type == "reflection" else ConversationType.NORMAL
 
     conversation = Conversation(
@@ -542,6 +565,7 @@ async def import_seed_conversation(
         llm_model_used=data.llm_model_used,
         notes=data.notes,
         entity_id=data.entity_id,
+        is_imported=True,  # Mark as imported so it doesn't show in conversation list
     )
 
     db.add(conversation)
@@ -550,7 +574,18 @@ async def import_seed_conversation(
     logger.info(f"Importing seed conversation: {data.title or 'Untitled'} (id={conversation.id}, entity={data.entity_id})")
 
     stored_count = 0
+    skipped_count = 0
+    imported_count = 0
+
     for idx, msg_data in enumerate(data.messages):
+        msg_id = msg_data.get("id")
+
+        # Skip if message already exists for this entity (deduplication)
+        if msg_id and msg_id in existing_ids:
+            skipped_count += 1
+            logger.debug(f"  Message {idx+1}/{len(data.messages)}: Skipped (duplicate id={msg_id})")
+            continue
+
         role = MessageRole.HUMAN if msg_data["role"] == "human" else MessageRole.ASSISTANT
         times_retrieved = msg_data.get("times_retrieved", 0)
 
@@ -567,18 +602,22 @@ async def import_seed_conversation(
                 logger.warning(f"  Message {idx+1}: Failed to parse timestamp '{original_timestamp}', using current time")
 
         # Build message kwargs, only include created_at if we have a valid timestamp
+        # Use provided ID if available, otherwise auto-generate
         message_kwargs = {
             "conversation_id": conversation.id,
             "role": role,
             "content": msg_data["content"],
             "times_retrieved": times_retrieved,
         }
+        if msg_id:
+            message_kwargs["id"] = msg_id
         if created_at is not None:
             message_kwargs["created_at"] = created_at
 
         message = Message(**message_kwargs)
         db.add(message)
         await db.flush()
+        imported_count += 1
 
         # Log the message with its timestamp
         timestamp_source = "original" if created_at is not None else "default (now)"
@@ -597,12 +636,26 @@ async def import_seed_conversation(
             if success:
                 stored_count += 1
 
+    # If no messages were imported (all duplicates), remove the empty conversation
+    if imported_count == 0:
+        await db.delete(conversation)
+        await db.commit()
+        return {
+            "status": "skipped",
+            "conversation_id": None,
+            "message_count": 0,
+            "messages_skipped": skipped_count,
+            "memories_stored": 0,
+            "entity_id": data.entity_id,
+        }
+
     await db.commit()
 
     return {
         "status": "imported",
         "conversation_id": conversation.id,
-        "message_count": len(data.messages),
+        "message_count": imported_count,
+        "messages_skipped": skipped_count,
         "memories_stored": stored_count,
         "entity_id": conversation.entity_id,
     }
@@ -614,6 +667,7 @@ class ExternalConversationImport(BaseModel):
     entity_id: str  # Target entity (required)
     source: Optional[str] = None  # Optional source hint: "openai", "anthropic", or auto-detect
     selected_conversations: Optional[List[dict]] = None  # List of {index, import_as_memory, import_to_history}
+    allow_reimport: bool = False  # If True, allow selecting already-imported conversations (per-message dedup still applies)
 
 
 class ExternalConversationPreview(BaseModel):
@@ -621,6 +675,7 @@ class ExternalConversationPreview(BaseModel):
     content: str  # JSON string content of the export file
     source: Optional[str] = None  # Optional source hint
     entity_id: str  # Target entity for deduplication check
+    allow_reimport: bool = False  # If True, don't mark conversations as already imported
 
 
 def _parse_openai_export(data: list, include_ids: bool = False) -> List[dict]:
@@ -848,7 +903,8 @@ async def preview_external_conversations(
     for conv in conversations:
         messages = conv.get("messages", [])
         imported_count = sum(1 for m in messages if m.get("id") in existing_ids)
-        already_imported = imported_count == len(messages) and len(messages) > 0
+        # When allow_reimport is True, don't mark as already_imported (keeps checkboxes enabled)
+        already_imported = (imported_count == len(messages) and len(messages) > 0) and not data.allow_reimport
 
         preview.append({
             "index": conv.get("index", 0),
@@ -863,6 +919,7 @@ async def preview_external_conversations(
         "source_format": detected_source,
         "total_conversations": len(preview),
         "conversations": preview,
+        "allow_reimport": data.allow_reimport,
     }
 
 
@@ -879,7 +936,10 @@ async def import_external_conversations(
     - Memory only (is_imported=True, won't show in conversation list)
     - Memory + History (is_imported=False, will show in conversation list)
 
-    Messages with existing IDs are skipped for deduplication.
+    Messages with existing IDs are always skipped for deduplication.
+    The allow_reimport flag only affects the UI preview (allows selecting conversations
+    that appear fully imported), but per-message deduplication is always enforced.
+    This is useful for retrying failed imports where some messages succeeded.
     """
     from app.services import memory_service
 
@@ -1000,6 +1060,8 @@ async def import_external_conversations(
             content = msg_data["content"]
 
             # Skip if message already exists for THIS entity (deduplication)
+            # This check always runs - allow_reimport only affects conversation-level UI selection,
+            # per-message deduplication is always enforced
             if msg_id and msg_id in existing_ids:
                 skipped_messages += 1
                 logger.debug(f"  Message {msg_idx+1}/{len(messages)}: Skipped (duplicate id={msg_id})")

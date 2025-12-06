@@ -983,6 +983,21 @@ h4.md-header {
     margin-top: 4px;
 }
 
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
 /* Settings Section Styles */
 .settings-divider {
     height: 1px;
