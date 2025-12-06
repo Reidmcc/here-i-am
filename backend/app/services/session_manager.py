@@ -227,17 +227,32 @@ class ConversationSession:
 
     def should_consolidate_cache(self, count_tokens_fn) -> bool:
         """
-        Determine if we should consolidate (grow) the cached history.
+        Determine if we should consolidate (grow) the cached content.
 
         Consolidation causes a cache MISS but creates a larger cache for future hits.
         We consolidate when:
-        1. Cached history is too small to actually cache (< 1024 tokens) - grow it!
-        2. New context grows large enough to be worth caching (> 1024 tokens)
+        1. Cached content is too small to actually cache (< 1024 tokens) - grow it!
+        2. New content (memories OR history) grows large enough to be worth caching (>= 1024 tokens)
         """
+        # Check new memories
+        new_memory_ids = self.in_context_ids - self.last_cached_memory_ids
+        if new_memory_ids:
+            new_memories = [
+                self.session_memories[mid]
+                for mid in new_memory_ids
+                if mid in self.session_memories
+            ]
+            if new_memories:
+                new_mem_text = "\n".join(f'"{m.content}"' for m in new_memories)
+                new_mem_tokens = count_tokens_fn(new_mem_text)
+                if new_mem_tokens >= 1024:
+                    logger.info(f"[CACHE] Consolidation check: new_memories={len(new_memories)}/{new_mem_tokens} tokens >= 1024, will consolidate")
+                    return True
+
+        # Check conversation context
         if not self.conversation_context:
             return False
 
-        # Get current cache state
         cached_context = self.conversation_context[:self.last_cached_context_length]
         new_context = self.conversation_context[self.last_cached_context_length:]
 
@@ -251,7 +266,6 @@ class ConversationSession:
             cached_tokens = count_tokens_fn(cached_text)
 
             # If cached context is too small to be cached (< 1024 tokens), grow it
-            # No point keeping it "stable" if it can't be cached anyway
             if cached_tokens < 1024:
                 logger.info(f"[CACHE] Consolidation check: cached_tokens={cached_tokens} < 1024, will consolidate")
                 return True
@@ -260,11 +274,9 @@ class ConversationSession:
         new_text = "\n".join(f"{m['role']}: {m['content']}" for m in new_context)
         new_tokens = count_tokens_fn(new_text)
 
-        # Log the decision
-        # Consolidate when new content reaches Anthropic's minimum cacheable size (1024 tokens)
-        # This ensures the new content is worth adding to the cache
+        # Consolidate when new history reaches minimum cacheable size
         will_consolidate = new_tokens >= 1024
-        logger.info(f"[CACHE] Consolidation check: cached={len(cached_context)} msgs/{cached_tokens} tokens, new={len(new_context)} msgs/{new_tokens} tokens, threshold=1024, will_consolidate={will_consolidate}")
+        logger.info(f"[CACHE] Consolidation check: cached_history={len(cached_context)} msgs/{cached_tokens} tokens, new_history={len(new_context)} msgs/{new_tokens} tokens, threshold=1024, will_consolidate={will_consolidate}")
 
         return will_consolidate
 
