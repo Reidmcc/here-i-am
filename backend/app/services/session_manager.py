@@ -227,7 +227,9 @@ class ConversationSession:
         Determine if we should consolidate (grow) the cached history.
 
         Consolidation causes a cache MISS but creates a larger cache for future hits.
-        We consolidate when new_context grows too large relative to cached_context.
+        We consolidate when:
+        1. Cached history is too small to actually cache (< 1024 tokens) - grow it!
+        2. New context grows too large (> 4000 tokens) - time to expand the cache
         """
         if not self.conversation_context:
             return False
@@ -239,7 +241,17 @@ class ConversationSession:
         if not new_context:
             return False
 
-        # Calculate tokens in new vs cached
+        # Calculate tokens in cached context
+        if cached_context:
+            cached_text = "\n".join(f"{m['role']}: {m['content']}" for m in cached_context)
+            cached_tokens = count_tokens_fn(cached_text)
+
+            # If cached context is too small to be cached (< 1024 tokens), grow it
+            # No point keeping it "stable" if it can't be cached anyway
+            if cached_tokens < 1024:
+                return True
+
+        # Calculate tokens in new context
         new_text = "\n".join(f"{m['role']}: {m['content']}" for m in new_context)
         new_tokens = count_tokens_fn(new_text)
 

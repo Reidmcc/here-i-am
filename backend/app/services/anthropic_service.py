@@ -330,6 +330,11 @@ class AnthropicService:
             will_cache_history = enable_caching and cached_history_tokens >= 1024
             logger.info(f"[CACHE] Cached history: {len(cached_context)} msgs, {cached_history_tokens} tokens, will cache: {will_cache_history}")
 
+            # Debug: log individual message lengths
+            for i, msg in enumerate(cached_context):
+                msg_tokens = self.count_tokens(msg["content"])
+                logger.debug(f"[CACHE]   Message {i}: role={msg['role']}, tokens={msg_tokens}")
+
             for i, msg in enumerate(cached_context):
                 is_last = (i == len(cached_context) - 1)
                 if is_last and will_cache_history:
