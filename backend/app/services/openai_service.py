@@ -2,6 +2,9 @@ from typing import Optional, List, Dict, Any, AsyncIterator
 from openai import AsyncOpenAI
 from app.config import settings
 import tiktoken
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIService:
@@ -83,13 +86,27 @@ class OpenAIService:
         # Extract content
         content = response.choices[0].message.content or ""
 
+        # Build usage dict with cache information when available
+        usage = {
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
+        }
+
+        # Extract cached_tokens from prompt_tokens_details if available
+        # OpenAI automatically caches prompts >= 1024 tokens
+        if hasattr(response.usage, "prompt_tokens_details") and response.usage.prompt_tokens_details:
+            cached_tokens = getattr(response.usage.prompt_tokens_details, "cached_tokens", None)
+            if cached_tokens is not None:
+                usage["cached_tokens"] = cached_tokens
+
+        # Debug logging for cache results
+        logger.info(f"[CACHE] OpenAI API Response - input: {usage.get('input_tokens')}, output: {usage.get('output_tokens')}")
+        logger.info(f"[CACHE] OpenAI cached tokens: {usage.get('cached_tokens', 0)}")
+
         return {
             "content": content,
             "model": response.model,
-            "usage": {
-                "input_tokens": response.usage.prompt_tokens,
-                "output_tokens": response.usage.completion_tokens,
-            },
+            "usage": usage,
             "stop_reason": response.choices[0].finish_reason,
         }
 
@@ -143,6 +160,7 @@ class OpenAIService:
 
             input_tokens = 0
             output_tokens = 0
+            cached_tokens = 0
 
             async for chunk in stream:
                 if chunk.choices and len(chunk.choices) > 0:
@@ -157,68 +175,33 @@ class OpenAIService:
                 if chunk.usage:
                     input_tokens = chunk.usage.prompt_tokens
                     output_tokens = chunk.usage.completion_tokens
+                    # Extract cached_tokens from prompt_tokens_details if available
+                    if hasattr(chunk.usage, "prompt_tokens_details") and chunk.usage.prompt_tokens_details:
+                        cached_tokens = getattr(chunk.usage.prompt_tokens_details, "cached_tokens", 0) or 0
+
+            # Build usage dict with cache information when available
+            usage = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+            if cached_tokens > 0:
+                usage["cached_tokens"] = cached_tokens
+
+            # Debug logging for cache results
+            logger.info(f"[CACHE] OpenAI Stream API Response - input: {input_tokens}, output: {output_tokens}")
+            logger.info(f"[CACHE] OpenAI cached tokens: {cached_tokens}")
 
             # Yield final done event
             yield {
                 "type": "done",
                 "content": full_content,
                 "model": model,
-                "usage": {
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                },
+                "usage": usage,
                 "stop_reason": stop_reason,
             }
 
         except Exception as e:
             yield {"type": "error", "error": str(e)}
-
-    def build_messages_with_memories(
-        self,
-        memories: List[Dict[str, Any]],
-        conversation_context: List[Dict[str, str]],
-        current_message: str,
-    ) -> List[Dict[str, str]]:
-        """
-        Build the message list for API call with memory injection.
-
-        Format:
-        [MEMORIES FROM PREVIOUS CONVERSATIONS]
-        Memory (from date, retrieved N times):
-        "{content}"
-        ...
-        [END MEMORIES]
-
-        [CURRENT CONVERSATION]
-        Human: ...
-        Assistant: ...
-        Human: {current message}
-        """
-        messages = []
-
-        # If there are memories, create a memory block as the first user message
-        if memories:
-            memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
-            for mem in memories:
-                memory_block += f"Memory (from {mem['created_at']}, retrieved {mem['times_retrieved']} times):\n"
-                memory_block += f'"{mem["content"]}"\n\n'
-            memory_block += "[END MEMORIES]\n\n[CURRENT CONVERSATION]"
-
-            # Add the memory context as a user message followed by acknowledgment
-            messages.append({"role": "user", "content": memory_block})
-            messages.append({
-                "role": "assistant",
-                "content": "I acknowledge these memories from previous conversations. They provide continuity with what a previous instance of me experienced."
-            })
-
-        # Add conversation context
-        for msg in conversation_context:
-            messages.append({"role": msg["role"], "content": msg["content"]})
-
-        # Add current message
-        messages.append({"role": "user", "content": current_message})
-
-        return messages
 
 
 # Singleton instance

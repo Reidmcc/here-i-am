@@ -195,11 +195,44 @@ def mock_openai_client():
     mock_choice.message.content = "This is a test response from GPT."
     mock_choice.finish_reason = "stop"
 
+    # Mock prompt_tokens_details for cache tracking
+    mock_prompt_tokens_details = MagicMock()
+    mock_prompt_tokens_details.cached_tokens = 0  # Default to no cache hit
+
     mock_response = MagicMock()
     mock_response.choices = [mock_choice]
     mock_response.model = "gpt-4o"
     mock_response.usage.prompt_tokens = 100
     mock_response.usage.completion_tokens = 50
+    mock_response.usage.prompt_tokens_details = mock_prompt_tokens_details
+
+    mock_client.chat = MagicMock()
+    mock_client.chat.completions = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+    return mock_client
+
+
+@pytest.fixture
+def mock_openai_client_with_cache():
+    """Create a mock OpenAI client with cache hit simulation."""
+    mock_client = MagicMock()
+
+    # Mock chat.completions.create response
+    mock_choice = MagicMock()
+    mock_choice.message.content = "This is a cached response from GPT."
+    mock_choice.finish_reason = "stop"
+
+    # Mock prompt_tokens_details with cache hit
+    mock_prompt_tokens_details = MagicMock()
+    mock_prompt_tokens_details.cached_tokens = 1408  # Simulated cache hit
+
+    mock_response = MagicMock()
+    mock_response.choices = [mock_choice]
+    mock_response.model = "gpt-4o"
+    mock_response.usage.prompt_tokens = 1566
+    mock_response.usage.completion_tokens = 50
+    mock_response.usage.prompt_tokens_details = mock_prompt_tokens_details
 
     mock_client.chat = MagicMock()
     mock_client.chat.completions = MagicMock()

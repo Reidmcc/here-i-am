@@ -150,74 +150,46 @@ class TestOpenAIService:
         assert call_kwargs["temperature"] == 0.5
         assert call_kwargs["max_tokens"] == 2000
 
-    def test_build_messages_with_memories_no_memories(self):
-        """Test building messages without memories."""
+    @pytest.mark.asyncio
+    async def test_send_message_with_cache_hit(self, mock_openai_client_with_cache):
+        """Test that cached_tokens is extracted from API response."""
         service = OpenAIService()
+        service.client = mock_openai_client_with_cache
 
-        memories = []
-        context = [
-            {"role": "user", "content": "Hi"},
-            {"role": "assistant", "content": "Hello!"},
-        ]
-        current = "How are you?"
+        messages = [{"role": "user", "content": "Hello!"}]
 
-        messages = service.build_messages_with_memories(memories, context, current)
+        with patch("app.services.openai_service.settings") as mock_settings:
+            mock_settings.default_openai_model = "gpt-4o"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
 
-        # Should have context + current message
-        assert len(messages) == 3
-        assert messages[0]["role"] == "user"
-        assert messages[0]["content"] == "Hi"
-        assert messages[2]["role"] == "user"
-        assert messages[2]["content"] == "How are you?"
+            response = await service.send_message(messages)
 
-    def test_build_messages_with_memories(self, sample_memories):
-        """Test building messages with memories."""
+        assert response["content"] == "This is a cached response from GPT."
+        assert response["model"] == "gpt-4o"
+        assert "usage" in response
+        assert response["usage"]["input_tokens"] == 1566
+        assert response["usage"]["output_tokens"] == 50
+        # Verify cached_tokens is extracted
+        assert response["usage"]["cached_tokens"] == 1408
+
+    @pytest.mark.asyncio
+    async def test_send_message_no_cache_hit(self, mock_openai_client):
+        """Test that cached_tokens is 0 when there's no cache hit."""
         service = OpenAIService()
+        service.client = mock_openai_client
 
-        context = []
-        current = "What do you remember?"
+        messages = [{"role": "user", "content": "Hello!"}]
 
-        messages = service.build_messages_with_memories(sample_memories, context, current)
+        with patch("app.services.openai_service.settings") as mock_settings:
+            mock_settings.default_openai_model = "gpt-4o"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
 
-        # Should have: memory block, acknowledgment, current message
-        assert len(messages) == 3
+            response = await service.send_message(messages)
 
-        # First message should contain memory block
-        assert messages[0]["role"] == "user"
-        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in messages[0]["content"]
-
-        # Second message should be acknowledgment
-        assert messages[1]["role"] == "assistant"
-
-        # Third message should be current message
-        assert messages[2]["role"] == "user"
-        assert messages[2]["content"] == "What do you remember?"
-
-    def test_build_messages_structure(self, sample_memories, sample_conversation_context):
-        """Test that OpenAI produces valid message structure."""
-        openai_service = OpenAIService()
-
-        current = "Test message"
-
-        messages = openai_service.build_messages_with_memories(
-            sample_memories, sample_conversation_context, current
-        )
-
-        # Should have: memory block, ack, context (2), current
-        assert len(messages) == 5
-
-        # Verify memory block is first
-        assert messages[0]["role"] == "user"
-        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in messages[0]["content"]
-
-        # Verify acknowledgment
-        assert messages[1]["role"] == "assistant"
-        assert "acknowledge" in messages[1]["content"].lower()
-
-        # Verify context messages
-        assert messages[2]["content"] == "Hello!"
-        assert messages[3]["content"] == "Hi there!"
-
-        # Verify current message
-        assert messages[4]["role"] == "user"
-        assert messages[4]["content"] == current
+        assert "usage" in response
+        assert response["usage"]["input_tokens"] == 100
+        assert response["usage"]["output_tokens"] == 50
+        # cached_tokens should be 0 (or not present) when no cache hit
+        assert response["usage"].get("cached_tokens", 0) == 0
