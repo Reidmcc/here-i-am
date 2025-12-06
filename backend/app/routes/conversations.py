@@ -640,12 +640,13 @@ async def import_seed_conversation(
             if success:
                 stored_count += 1
 
+        # Expunge message from session to release memory (we no longer need it)
+        db.expunge(message)
+
         # Batch commit to prevent memory exhaustion
         batch_counter += 1
         if batch_counter >= IMPORT_BATCH_SIZE:
             await db.commit()
-            # Expire all objects to release memory - they'll be re-fetched if needed
-            db.expire_all()
             batch_counter = 0
             logger.debug(f"Batch commit: {imported_count} messages imported so far")
 
@@ -1148,12 +1149,13 @@ async def import_external_conversations(
                 if success:
                     total_memories += 1
 
+            # Expunge message from session to release memory (we no longer need it)
+            db.expunge(message)
+
             # Batch commit to prevent memory exhaustion
             batch_counter += 1
             if batch_counter >= IMPORT_BATCH_SIZE:
                 await db.commit()
-                # Expire all objects to release memory - they'll be re-fetched if needed
-                db.expire_all()
                 batch_counter = 0
                 logger.debug(f"Batch commit: {total_messages} messages imported so far")
 
