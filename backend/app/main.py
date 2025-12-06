@@ -15,35 +15,36 @@ from app.services.memory_service import memory_service
 
 def setup_logging():
     """Configure logging for the application."""
-    # Determine log level based on debug setting
-    log_level = logging.DEBUG if settings.debug else logging.INFO
-
     # Create formatter
     formatter = logging.Formatter(
         fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
 
-    # Configure root logger
+    # Configure root logger at INFO level (keeps third-party libs quiet)
     root_logger = logging.getLogger()
-    root_logger.setLevel(log_level)
+    root_logger.setLevel(logging.INFO)
 
     # Remove existing handlers to avoid duplicates
     root_logger.handlers.clear()
 
     # Add stdout handler
     stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.setLevel(log_level)
+    stdout_handler.setLevel(logging.INFO)
     stdout_handler.setFormatter(formatter)
     root_logger.addHandler(stdout_handler)
 
-    # Set specific log levels for noisy libraries
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    # Set app-specific log level based on debug setting
+    app_log_level = logging.DEBUG if settings.debug else logging.INFO
+    logging.getLogger("app").setLevel(app_log_level)
+
+    # Suppress noisy third-party libraries
+    for lib in ["uvicorn.access", "httpx", "httpcore", "aiosqlite",
+                "sqlalchemy", "anthropic", "openai", "pinecone"]:
+        logging.getLogger(lib).setLevel(logging.WARNING)
 
     # Log startup message
-    logging.info(f"Logging configured at {logging.getLevelName(log_level)} level")
+    logging.info(f"Logging configured (app: {logging.getLevelName(app_log_level)}, libs: WARNING)")
 
 
 # Initialize logging on module load
