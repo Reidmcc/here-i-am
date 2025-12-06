@@ -8,7 +8,11 @@ import json
 
 class AnthropicService:
     def __init__(self):
-        self.client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        # Enable extended cache TTL (1-hour) via beta header
+        self.client = AsyncAnthropic(
+            api_key=settings.anthropic_api_key,
+            default_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"}
+        )
         self._encoder = None
         self._cache_service = None
 
@@ -87,7 +91,7 @@ class AnthropicService:
                     {
                         "type": "text",
                         "text": system_prompt,
-                        "cache_control": {"type": "ephemeral"}
+                        "cache_control": {"type": "ephemeral", "ttl": "1h"}
                     }
                 ]
             else:
@@ -160,7 +164,7 @@ class AnthropicService:
                     {
                         "type": "text",
                         "text": system_prompt,
-                        "cache_control": {"type": "ephemeral"}
+                        "cache_control": {"type": "ephemeral", "ttl": "1h"}
                     }
                 ]
             else:
@@ -307,7 +311,7 @@ class AnthropicService:
                 {
                     "type": "text",
                     "text": cached_text,
-                    "cache_control": {"type": "ephemeral"}
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"}
                 },
                 {
                     "type": "text",
@@ -344,7 +348,7 @@ class AnthropicService:
                         {
                             "type": "text",
                             "text": last_msg["content"],
-                            "cache_control": {"type": "ephemeral"}
+                            "cache_control": {"type": "ephemeral", "ttl": "1h"}
                         }
                     ]
                 }
