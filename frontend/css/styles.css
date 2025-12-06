@@ -486,6 +486,12 @@ html, body {
     border-radius: 6px;
     margin-bottom: 8px;
     font-size: 0.85rem;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.memory-item:hover {
+    background-color: var(--hover-overlay);
 }
 
 .memory-item-header {
@@ -496,8 +502,20 @@ html, body {
     color: var(--text-muted);
 }
 
+.memory-item-expand-hint {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-left: 8px;
+}
+
+.memory-item.expanded .memory-item-expand-hint {
+    display: none;
+}
+
 .memory-item-content {
     color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
 /* Messages Container */
