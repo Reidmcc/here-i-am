@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 from app.database import init_db
-from app.routes import conversations_router, chat_router, memories_router, entities_router
+from app.routes import conversations_router, chat_router, memories_router, entities_router, messages_router
 from app.config import settings
 from app.services.memory_service import memory_service
 
@@ -124,6 +124,7 @@ app.include_router(conversations_router)
 app.include_router(chat_router)
 app.include_router(memories_router)
 app.include_router(entities_router)
+app.include_router(messages_router)
 
 # Serve static frontend files
 frontend_path = Path(__file__).parent.parent.parent / "frontend"

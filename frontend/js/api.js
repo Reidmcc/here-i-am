@@ -316,6 +316,104 @@ class ApiClient {
     async getPresets() {
         return this.request('/config/presets');
     }
+
+    // Messages
+    async updateMessage(messageId, content) {
+        return this.request(`/messages/${messageId}`, {
+            method: 'PUT',
+            body: { content },
+        });
+    }
+
+    async deleteMessage(messageId) {
+        return this.request(`/messages/${messageId}`, {
+            method: 'DELETE',
+        });
+    }
+
+    /**
+     * Regenerate an AI response with streaming.
+     * @param {Object} data - Regenerate request data
+     * @param {string} data.message_id - ID of message to regenerate from
+     * @param {Object} callbacks - Event callbacks (same as sendMessageStream)
+     * @returns {Promise<void>}
+     */
+    async regenerateStream(data, callbacks = {}) {
+        const url = `${API_BASE}/chat/regenerate`;
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(data),
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+            throw new Error(error.detail || `HTTP ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // Process complete SSE events in buffer
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+            let eventType = null;
+            let eventData = null;
+
+            for (const line of lines) {
+                if (line.startsWith('event: ')) {
+                    eventType = line.slice(7).trim();
+                } else if (line.startsWith('data: ')) {
+                    eventData = line.slice(6);
+                } else if (line === '' && eventType && eventData) {
+                    // Empty line marks end of event
+                    try {
+                        const parsedData = JSON.parse(eventData);
+                        this._handleStreamEvent(eventType, parsedData, callbacks);
+                    } catch (e) {
+                        console.error('Failed to parse SSE data:', e, eventData);
+                    }
+                    eventType = null;
+                    eventData = null;
+                }
+            }
+        }
+
+        // Process any remaining data in buffer
+        if (buffer.trim()) {
+            const lines = buffer.split('\n');
+            let eventType = null;
+            let eventData = null;
+
+            for (const line of lines) {
+                if (line.startsWith('event: ')) {
+                    eventType = line.slice(7).trim();
+                } else if (line.startsWith('data: ')) {
+                    eventData = line.slice(6);
+                }
+            }
+
+            if (eventType && eventData) {
+                try {
+                    const parsedData = JSON.parse(eventData);
+                    this._handleStreamEvent(eventType, parsedData, callbacks);
+                } catch (e) {
+                    console.error('Failed to parse final SSE data:', e, eventData);
+                }
+            }
+        }
+    }
 }
 
 // Export singleton instance

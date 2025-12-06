@@ -606,6 +606,108 @@ html, body {
     text-align: right;
 }
 
+/* Message Actions (Edit/Regenerate buttons) */
+.message-actions {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: 8px;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.message:hover .message-actions {
+    opacity: 1;
+}
+
+.message-action-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.message-action-btn:hover {
+    background-color: var(--hover-overlay);
+    color: var(--text-primary);
+}
+
+.message-action-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+/* Message Edit Form */
+.message.editing .message-bubble {
+    max-width: 100%;
+}
+
+.message-edit-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.message-edit-textarea {
+    width: 100%;
+    min-height: 80px;
+    padding: 10px 12px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 0.95rem;
+    resize: vertical;
+    line-height: 1.5;
+}
+
+.message-edit-textarea:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+.message-edit-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.message-edit-btn {
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.message-edit-btn.cancel-edit {
+    background-color: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+}
+
+.message-edit-btn.cancel-edit:hover {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.message-edit-btn.save-edit {
+    background-color: var(--accent);
+    color: white;
+    border: none;
+}
+
+.message-edit-btn.save-edit:hover {
+    background-color: var(--accent-hover);
+}
+
 /* Markdown Styles */
 .message-bubble strong {
     font-weight: 600;
