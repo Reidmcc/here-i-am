@@ -83,10 +83,6 @@ class Settings(BaseSettings):
     #   - claude-sonnet-4-5-20250929  (Claude Sonnet 4.5, recommended)
     #   - claude-opus-4-5-20251101    (Claude Opus 4.5, highest capability)
     #   - claude-sonnet-4-20250514    (Claude Sonnet 4)
-    #   - claude-3-5-sonnet-20241022  (Claude 3.5 Sonnet)
-    #   - claude-3-5-haiku-20241022   (Claude 3.5 Haiku, fast/economical)
-    #   - claude-3-opus-20240229      (Claude 3 Opus)
-    #   - claude-3-haiku-20240307     (Claude 3 Haiku)
     #
     # OPENAI MODELS:
     #   - gpt-4o                      (GPT-4o, recommended)
