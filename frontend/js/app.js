@@ -17,7 +17,7 @@ class App {
             maxTokens: 4096,
             systemPrompt: null,
             conversationType: 'normal',
-            verbosity: null,
+            verbosity: 'low',
         };
         this.isLoading = false;
         this.retrievedMemories = [];
@@ -396,8 +396,6 @@ class App {
             } else {
                 this.elements.verbosityGroup.classList.add('disabled');
                 this.elements.verbosityGroup.title = 'Verbosity is only supported by GPT-5.1 models';
-                // Reset to default when disabled
-                this.elements.verbositySelect.value = '';
             }
         }
     }
@@ -871,7 +869,7 @@ class App {
         this.elements.modelSelect.value = this.settings.model;
         this.elements.temperatureInput.value = this.settings.temperature;
         this.elements.temperatureNumber.value = this.settings.temperature;
-        this.elements.verbositySelect.value = this.settings.verbosity || '';
+        this.elements.verbositySelect.value = this.settings.verbosity;
         this.elements.maxTokensInput.value = this.settings.maxTokens;
         this.elements.systemPromptInput.value = this.settings.systemPrompt || '';
         this.elements.conversationTypeSelect.value = this.settings.conversationType;
@@ -903,9 +901,8 @@ class App {
         this.settings.maxTokens = parseInt(this.elements.maxTokensInput.value);
         this.settings.systemPrompt = this.elements.systemPromptInput.value.trim() || null;
         this.settings.conversationType = this.elements.conversationTypeSelect.value;
-        // Only save verbosity if the model supports it
-        const verbosityValue = this.elements.verbositySelect.value;
-        this.settings.verbosity = this.modelSupportsVerbosity(this.settings.model) && verbosityValue ? verbosityValue : null;
+        // Save verbosity value
+        this.settings.verbosity = this.elements.verbositySelect.value;
 
         // Apply theme
         this.setTheme(this.elements.themeSelect.value);
