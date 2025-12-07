@@ -629,7 +629,7 @@ html, body {
     border: 1px solid var(--border-color);
     border-radius: 6px;
     padding: 12px 16px;
-    margin: 8px 0;
+    margin: 4px 0;
     overflow-x: auto;
     white-space: pre;
 }
@@ -651,7 +651,7 @@ html, body {
 }
 
 .md-header {
-    margin: 12px 0 8px 0;
+    margin: 8px 0 4px 0;
     font-weight: 600;
     color: var(--text-primary);
 }
@@ -669,19 +669,19 @@ h4.md-header {
 }
 
 .md-list {
-    margin: 8px 0;
+    margin: 4px 0;
     padding-left: 24px;
 }
 
 .md-list-item,
 .md-list-item-ordered {
-    margin: 4px 0;
+    margin: 0;
     line-height: 1.4;
 }
 
 .md-blockquote {
     border-left: 3px solid var(--accent);
-    margin: 8px 0;
+    margin: 4px 0;
     padding: 4px 0 4px 16px;
     color: var(--text-secondary);
     font-style: italic;
