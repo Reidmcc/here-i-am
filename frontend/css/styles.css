@@ -517,10 +517,10 @@ html, body {
     color: var(--text-secondary);
     white-space: pre-wrap;
     word-break: break-word;
-    max-height: 3.6em;
+    max-height: 4.2em;
     overflow: hidden;
     transition: max-height 0.3s ease;
-    line-height: 1.2;
+    line-height: 1.4;
 }
 
 .memory-item.expanded .memory-item-content {
@@ -576,7 +576,7 @@ html, body {
     padding: 14px 18px;
     border-radius: 12px;
     max-width: 85%;
-    line-height: 1.5;
+    line-height: 1.4;
     white-space: pre-wrap;
     word-wrap: break-word;
 }
@@ -731,7 +731,7 @@ html, body {
     border: 1px solid var(--border-color);
     border-radius: 6px;
     padding: 12px 16px;
-    margin: 8px 0;
+    margin: 4px 0;
     overflow-x: auto;
     white-space: pre;
 }
@@ -739,7 +739,7 @@ html, body {
 .md-code-block code {
     font-family: var(--font-mono);
     font-size: 0.85em;
-    line-height: 1.5;
+    line-height: 1.4;
     color: var(--text-primary);
 }
 
@@ -753,7 +753,7 @@ html, body {
 }
 
 .md-header {
-    margin: 12px 0 8px 0;
+    margin: 8px 0 4px 0;
     font-weight: 600;
     color: var(--text-primary);
 }
@@ -771,19 +771,19 @@ h4.md-header {
 }
 
 .md-list {
-    margin: 8px 0;
+    margin: 4px 0;
     padding-left: 24px;
 }
 
 .md-list-item,
 .md-list-item-ordered {
-    margin: 4px 0;
-    line-height: 1.5;
+    margin: 0;
+    line-height: 1.4;
 }
 
 .md-blockquote {
     border-left: 3px solid var(--accent);
-    margin: 8px 0;
+    margin: 4px 0;
     padding: 4px 0 4px 16px;
     color: var(--text-secondary);
     font-style: italic;
@@ -930,6 +930,11 @@ h4.md-header {
 
 .modal.active {
     display: flex;
+}
+
+/* Delete modal should appear above other modals (confirmation dialog) */
+#delete-modal {
+    z-index: 1100;
 }
 
 .modal-content {
@@ -1146,6 +1151,44 @@ h4.md-header {
     background-color: rgba(229, 92, 92, 0.15);
     color: var(--danger);
     border: 1px solid var(--danger);
+}
+
+.import-status.warning {
+    background-color: rgba(255, 193, 7, 0.15);
+    color: #ffc107;
+    border: 1px solid #ffc107;
+}
+
+/* Import Progress Bar */
+.import-progress {
+    margin-top: 12px;
+}
+
+.import-progress-bar-container {
+    width: 100%;
+    height: 8px;
+    background-color: var(--bg-tertiary);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.import-progress-bar {
+    height: 100%;
+    background-color: var(--accent);
+    width: 0%;
+    transition: width 0.3s ease;
+}
+
+.import-progress-text {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 8px;
+    text-align: center;
+}
+
+.import-actions {
+    display: flex;
+    gap: 10px;
 }
 
 /* Import Preview Header */
@@ -1518,6 +1561,21 @@ h4.md-header {
 
 .unarchive-btn:hover {
     background-color: var(--accent-hover);
+}
+
+.delete-btn {
+    padding: 6px 12px;
+    background-color: var(--danger);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: background-color 0.2s;
+}
+
+.delete-btn:hover {
+    background-color: var(--danger-hover);
 }
 
 .archived-empty {

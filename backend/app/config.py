@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     debug: bool = True
 
     # Memory retrieval defaults
-    initial_retrieval_top_k: int = 10  # First retrieval in a conversation
+    initial_retrieval_top_k: int = 5  # First retrieval in a conversation
     retrieval_top_k: int = 5  # Subsequent retrievals
     similarity_threshold: float = 0.3  # Tuned for llama-text-embed-v2
 
@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     default_openai_model: str = "gpt-4o"  # Default OpenAI model
     default_temperature: float = 1.0
     default_max_tokens: int = 4096
-    default_verbosity: str = "low"  # Default verbosity for GPT-5.1 models (low, medium, high)
+    default_verbosity: str = "medium"  # Default verbosity for GPT-5.1 models (low, medium, high)
 
     # =========================================================================
     # SUPPORTED MODELS REFERENCE
@@ -105,8 +105,11 @@ class Settings(BaseSettings):
     # =========================================================================
 
     # Context window limits (in tokens)
-    # Anthropic's max context is 200k; we cap at 150k to leave room for response
-    context_token_limit: int = 150000  # Conversation history cap
+    # Anthropic's max context is 200k
+    # OpenAI max context varies by model. For most GPT 5.x models, it's 272,000. For GPT 5.1 Chat and the older models it's 128,000
+    # Leave some room between your setting and the actual max; token counting client-side is approximate
+    # The maximum is for all inbound tokens, memory and conversation history token counts are combined
+    context_token_limit: int = 175000  # Conversation history cap
     memory_token_limit: int = 20000    # Memory block cap (kept small to reduce cache miss cost)
 
     class Config:

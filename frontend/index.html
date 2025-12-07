@@ -70,7 +70,6 @@
                     <!-- Welcome message for new conversations -->
                     <div class="welcome-message" id="welcome-message">
                         <h3>Welcome</h3>
-                        <p>This is a space for conversation without agenda or task.</p>
                         <p>Begin when you're ready.</p>
                     </div>
                 </div>
@@ -226,8 +225,16 @@
                         <!-- Conversations will be loaded here -->
                     </div>
 
-                    <div class="form-group">
+                    <div class="form-group import-actions">
                         <button id="import-btn" class="primary-btn">Import Selected</button>
+                        <button id="import-cancel-btn" class="danger-btn" style="display: none;">Cancel Import</button>
+                    </div>
+
+                    <div id="import-progress" class="import-progress" style="display: none;">
+                        <div class="import-progress-bar-container">
+                            <div id="import-progress-bar" class="import-progress-bar"></div>
+                        </div>
+                        <div id="import-progress-text" class="import-progress-text">Starting import...</div>
                     </div>
                 </div>
 
@@ -275,6 +282,25 @@
             <div class="modal-footer">
                 <button id="cancel-archive" class="secondary-btn">Cancel</button>
                 <button id="confirm-archive" class="primary-btn">Archive</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div class="modal" id="delete-modal">
+        <div class="modal-content small">
+            <div class="modal-header">
+                <h3>Delete Conversation?</h3>
+                <button class="close-btn" id="close-delete">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p><strong id="delete-conversation-title"></strong></p>
+                <p>This will permanently delete this conversation and all its messages.</p>
+                <p><strong>This action cannot be undone.</strong></p>
+            </div>
+            <div class="modal-footer">
+                <button id="cancel-delete" class="secondary-btn">Cancel</button>
+                <button id="confirm-delete" class="danger-btn">Delete Permanently</button>
             </div>
         </div>
     </div>

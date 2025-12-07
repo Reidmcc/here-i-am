@@ -61,7 +61,7 @@ def _build_memory_block_text(
 
     # Add memory block if there are memories
     if memories:
-        memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
+        memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS. THESE ARE NOT PART OF THE CURRENT CONVERSATION]\n\n"
         for mem in memories:
             memory_block += f"Memory (from {mem['created_at']}):\n"
             memory_block += f'"{mem["content"]}"\n\n'
@@ -69,9 +69,7 @@ def _build_memory_block_text(
         context_parts.append(memory_block)
 
     full_context = "\n\n".join(context_parts) + "\n\n[CURRENT CONVERSATION]"
-    # Include the acknowledgment message that gets added
-    acknowledgment = "I acknowledge this context. The date information helps me understand the temporal setting of our conversation, and any memories provide continuity with what previous instances of me experienced."
-    return full_context + acknowledgment
+    return full_context
 
 
 @dataclass
@@ -232,7 +230,7 @@ class ConversationSession:
 
         Consolidation causes a cache MISS but creates a larger cache for future hits.
         We consolidate when:
-        1. Cached history is too small to actually cache (< 1024 tokens) - grow it!
+        1. Cached history is too small to actually cache (< 1024 tokens)
         2. New memories >= 2048 tokens (higher threshold since memories grow faster)
         3. New history >= 1024 tokens
         """
@@ -519,10 +517,10 @@ class SessionManager:
         Process a user message through the full pipeline.
 
         1. Retrieve relevant memories
-        2. Filter and deduplicate (including excluding archived conversations)
+        2. Filter and deduplicate (also excluding archived conversations)
         3. Update retrieval tracking
         4. Build API request with memories
-        5. Call Claude API
+        5. Call LLM provider API
         6. Update conversation context
         7. Store new messages as memories
 
@@ -530,6 +528,8 @@ class SessionManager:
         """
         new_memories = []
         truly_new_memory_ids = set()  # Only memories never seen before (for cache stability)
+
+        logger.info(f"[MEMORY] Processing message for conversation {session.conversation_id[:8]}...")
 
         # Step 1-2: Retrieve and deduplicate memories
         if memory_service.is_configured():
@@ -588,6 +588,16 @@ class SessionManager:
                                 db,
                                 entity_id=session.entity_id,
                             )
+
+            # Log memory retrieval summary
+            if new_memories:
+                logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
+                for mem in new_memories:
+                    preview = mem.content[:100].replace('\n', ' ')
+                    retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
+                    logger.info(f"[MEMORY]   [{retrieval_type}] score={mem.score:.3f} id={mem.id[:8]}... \"{preview}...\"")
+            else:
+                logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
         # Step 4: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)
@@ -702,6 +712,8 @@ class SessionManager:
         new_memories = []
         truly_new_memory_ids = set()  # Only memories never seen before (for cache stability)
 
+        logger.info(f"[MEMORY] Processing message (stream) for conversation {session.conversation_id[:8]}...")
+
         # Step 1-2: Retrieve and deduplicate memories
         if memory_service.is_configured():
             # Get archived conversation IDs to exclude from retrieval
@@ -758,6 +770,16 @@ class SessionManager:
                                 db,
                                 entity_id=session.entity_id,
                             )
+
+            # Log memory retrieval summary
+            if new_memories:
+                logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
+                for mem in new_memories:
+                    preview = mem.content[:100].replace('\n', ' ')
+                    retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
+                    logger.info(f"[MEMORY]   [{retrieval_type}] score={mem.score:.3f} id={mem.id[:8]}... \"{preview}...\"")
+            else:
+                logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
         # Step 3: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)

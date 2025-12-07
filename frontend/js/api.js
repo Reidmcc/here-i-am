@@ -101,6 +101,12 @@ class ApiClient {
         return this.request(url);
     }
 
+    async deleteConversation(id) {
+        return this.request(`/conversations/${id}`, {
+            method: 'DELETE',
+        });
+    }
+
     async exportConversation(id) {
         return this.request(`/conversations/${id}/export`);
     }
@@ -117,6 +123,101 @@ class ApiClient {
             method: 'POST',
             body: data,
         });
+    }
+
+    /**
+     * Import conversations with streaming progress updates.
+     * @param {Object} data - Import request data
+     * @param {Object} callbacks - Event callbacks
+     * @param {Function} callbacks.onStart - Called when import starts with total counts
+     * @param {Function} callbacks.onProgress - Called with progress updates
+     * @param {Function} callbacks.onDone - Called when import completes
+     * @param {Function} callbacks.onError - Called on error
+     * @param {Function} callbacks.onCancelled - Called when import is cancelled
+     * @param {AbortSignal} signal - Optional AbortSignal for cancellation
+     * @returns {Promise<void>}
+     */
+    async importExternalConversationsStream(data, callbacks = {}, signal = null) {
+        const url = `${API_BASE}/conversations/import-external/stream`;
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(data),
+            signal: signal,
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+            throw new Error(error.detail || `HTTP ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+
+                // Process complete SSE events in buffer
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                let eventType = null;
+                let eventData = null;
+
+                for (const line of lines) {
+                    if (line.startsWith('event: ')) {
+                        eventType = line.slice(7).trim();
+                    } else if (line.startsWith('data: ')) {
+                        eventData = line.slice(6);
+                    } else if (line === '' && eventType && eventData) {
+                        try {
+                            const parsedData = JSON.parse(eventData);
+                            this._handleImportStreamEvent(eventType, parsedData, callbacks);
+                        } catch (e) {
+                            console.error('Failed to parse SSE data:', e, eventData);
+                        }
+                        eventType = null;
+                        eventData = null;
+                    }
+                }
+            }
+        } catch (e) {
+            if (e.name === 'AbortError') {
+                if (callbacks.onCancelled) callbacks.onCancelled({ status: 'cancelled' });
+            } else {
+                throw e;
+            }
+        }
+    }
+
+    _handleImportStreamEvent(eventType, data, callbacks) {
+        switch (eventType) {
+            case 'start':
+                if (callbacks.onStart) callbacks.onStart(data);
+                break;
+            case 'progress':
+                if (callbacks.onProgress) callbacks.onProgress(data);
+                break;
+            case 'done':
+                if (callbacks.onDone) callbacks.onDone(data);
+                break;
+            case 'cancelled':
+                if (callbacks.onCancelled) callbacks.onCancelled(data);
+                break;
+            case 'error':
+                if (callbacks.onError) callbacks.onError(data);
+                break;
+            default:
+                console.warn('Unknown import SSE event type:', eventType);
+        }
     }
 
     async previewExternalConversations(data) {
