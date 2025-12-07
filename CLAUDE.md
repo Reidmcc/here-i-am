@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2025-12-04
+**Last Updated:** 2025-12-07
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -59,8 +59,8 @@ The application supports multiple AI entities, each with its own:
 ```bash
 # Configure entities via JSON array (required for memory features)
 PINECONE_INDEXES='[
-  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"},
-  {"index_name": "gpt-research", "label": "GPT Research", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-4o"}
+  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929", "host": "https://claude-main-xxxxx.svc.xxx.pinecone.io"},
+  {"index_name": "gpt-research", "label": "GPT Research", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-4o", "host": "https://gpt-research-xxxxx.svc.xxx.pinecone.io"}
 ]'
 ```
 
@@ -70,6 +70,7 @@ PINECONE_INDEXES='[
 - `description`: Optional description
 - `llm_provider`: `"anthropic"` or `"openai"` (default: `"anthropic"`)
 - `default_model`: Model ID to use (optional, uses provider default if not set)
+- `host`: Pinecone index host URL (required for serverless indexes)
 
 **Use Cases:**
 - Research with multiple AI "personalities" or contexts
@@ -95,13 +96,17 @@ here-i-am/
 │   │   │   ├── conversations.py
 │   │   │   ├── chat.py
 │   │   │   ├── memories.py
-│   │   │   └── entities.py
+│   │   │   ├── entities.py
+│   │   │   ├── messages.py    # Individual message edit/delete
+│   │   │   └── tts.py         # Text-to-speech endpoints
 │   │   ├── services/          # Business logic layer
 │   │   │   ├── anthropic_service.py
 │   │   │   ├── openai_service.py
 │   │   │   ├── llm_service.py     # Unified LLM abstraction
 │   │   │   ├── memory_service.py
-│   │   │   └── session_manager.py
+│   │   │   ├── session_manager.py
+│   │   │   ├── cache_service.py   # TTL-based in-memory caching
+│   │   │   └── tts_service.py     # ElevenLabs TTS integration
 │   │   ├── config.py          # Pydantic settings
 │   │   ├── database.py        # SQLAlchemy async setup
 │   │   └── main.py            # FastAPI app initialization
@@ -142,6 +147,7 @@ here-i-am/
 | Vector DB | Pinecone | 6.0.0 | Semantic memory storage |
 | Validation | Pydantic | 2.6.1 | Request/response schemas |
 | Database | aiosqlite / asyncpg | - | SQLite dev / PostgreSQL prod |
+| HTTP Client | httpx | - | Async HTTP for TTS service |
 | Utilities | tiktoken, numpy | - | Token counting, embeddings |
 
 ### Frontend
@@ -211,34 +217,73 @@ Updates to retrieval counts happen in both systems atomically.
 ```python
 # In services/__init__.py
 anthropic_service = AnthropicService()
+openai_service = OpenAIService()
+llm_service = LLMService()
 memory_service = MemoryService()
 session_manager = SessionManager()
+cache_service = CacheService()
+tts_service = TTSService()
 ```
 
 **Why:** Shared state (e.g., active sessions, API clients) without dependency injection complexity.
 
-### 5. Memory Injection Format
+### 5. TTL-Based Caching Pattern
 
-**Location:** `backend/app/services/anthropic_service.py:56-78`
+**Location:** `backend/app/services/cache_service.py`
 
-Memories are injected as a special message block:
+```python
+class CacheService:
+    token_cache: TTLCache[int]           # 1 hour TTL, 50k entries
+    search_cache: TTLCache[List[Dict]]   # 60 sec TTL, 1k entries
+    content_cache: TTLCache[Dict]        # 5 min TTL, 5k entries
+    significance_cache: TTLCache[float]  # 30 sec TTL, 10k entries
+```
+
+**Purpose:** Reduces API rate limit impact and improves performance:
+- **Token counting** - Cached for 1 hour (never changes for same text)
+- **Memory search results** - Cached for 60 seconds (may change with new memories)
+- **Memory content** - Cached for 5 minutes (rarely changes)
+- **Significance calculations** - Cached for 30 seconds (changes with retrievals)
+
+**Features:**
+- Thread-safe operations
+- Automatic expiration and cleanup
+- Hit/miss statistics
+
+### 6. Memory Injection Format
+
+**Location:** `backend/app/services/anthropic_service.py:238-398`
+
+Memories are injected using a two-breakpoint caching strategy for Anthropic prompt caching:
 
 ```
-[MEMORIES FROM PREVIOUS CONVERSATIONS]
+User: [MEMORIES FROM PREVIOUS CONVERSATIONS. THESE ARE NOT PART OF THE CURRENT CONVERSATION]
 
-Memory (from 2025-11-30, retrieved 3 times):
+Memory (from 2025-11-30):
 "Original message content here..."
 
-Memory (from 2025-11-28, retrieved 1 time):
+Memory (from 2025-11-28):
 "Another memory..."
 
 [END MEMORIES]
-
-[CURRENT CONVERSATION]
-Human: Current question
 ```
 
-**Why:** Transparent to Claude, maintains chronological context while injecting semantic relevance.
+```
+Assistant: I acknowledge these memories from previous conversations...
+
+User: [CURRENT CONVERSATION]
+<conversation history...>
+
+User: [DATE CONTEXT]
+Current date: 2025-12-07
+[END DATE CONTEXT]
+
+<current message>
+```
+
+**Why:** Two cache breakpoints maximize cache hits:
+- Breakpoint 1: Memory block (invalidated when new memories retrieved)
+- Breakpoint 2: Conversation history (invalidated when context consolidated)
 
 ---
 
@@ -281,15 +326,22 @@ PINECONE_API_KEY=...                    # Enables memory system
 PINECONE_INDEXES='[...]'                # Entity configuration (JSON array, see below)
 HERE_I_AM_DATABASE_URL=sqlite+aiosqlite:///./here_i_am.db  # Database URL
 DEBUG=true                              # Development mode
+
+# ElevenLabs TTS (optional, enables text-to-speech on AI messages)
+ELEVENLABS_API_KEY=...                  # Enables TTS feature
+ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM  # Default voice (Rachel)
+ELEVENLABS_MODEL_ID=eleven_multilingual_v2  # TTS model
+# Multiple voices (JSON array) - adds voice selector in settings:
+# ELEVENLABS_VOICES='[{"voice_id": "...", "label": "Name", "description": "..."}]'
 ```
 
 **Entity Configuration (PINECONE_INDEXES):**
 ```bash
 # Configure AI entities with separate memory spaces (JSON array)
-# Each entity requires a pre-created Pinecone index with dimension=1024
+# Each entity requires a pre-created Pinecone index with dimension=1024 and integrated inference (llama-text-embed-v2)
 PINECONE_INDEXES='[
-  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"},
-  {"index_name": "gpt-research", "label": "GPT", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-4o"}
+  {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929", "host": "https://claude-main-xxxxx.svc.xxx.pinecone.io"},
+  {"index_name": "gpt-research", "label": "GPT", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-4o", "host": "https://gpt-research-xxxxx.svc.xxx.pinecone.io"}
 ]'
 ```
 
@@ -450,10 +502,11 @@ python run.py
 **Key File:** `backend/app/services/memory_service.py`
 
 **Search Logic:** `search_memories()` method handles:
-- Embedding generation via Anthropic Voyage-3
+- Embedding generation via Pinecone integrated inference (llama-text-embed-v2)
 - Pinecone query with filtering
 - Deduplication against session memories
 - Retrieval count updates
+- Result caching (60-second TTL)
 
 **Significance Calculation:** In `routes/memories.py:21-29`
 
@@ -577,6 +630,21 @@ retrieved_at: DateTime
 | GET | `/api/entities/{id}` | Get specific entity |
 | GET | `/api/entities/{id}/status` | Get entity Pinecone connection status |
 
+### Messages
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| PUT | `/api/messages/{id}` | Edit human message content |
+| DELETE | `/api/messages/{id}` | Delete message (and paired response) |
+
+### Text-to-Speech
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/tts/speak` | Convert text to speech (returns MP3) |
+| POST | `/api/tts/speak/stream` | Stream text to speech |
+| GET | `/api/tts/status` | Check TTS configuration status |
+
 ### Configuration
 
 | Method | Endpoint | Description |
@@ -654,6 +722,9 @@ retrieved_at: DateTime
 6. **Semantic Memory Search** - Search within selected entity's memories
 7. **Toast Notifications** - User feedback system
 8. **Loading States** - Typing indicators, overlays
+9. **Text-to-Speech** - Listen to AI messages via ElevenLabs (optional)
+10. **Message Actions** - Copy button, edit/delete for human messages
+11. **Voice Selection** - Choose from configured voices in settings
 
 ---
 
@@ -702,15 +773,21 @@ retrieved_at: DateTime
    - Failure mid-conversation leaves partial history
 
 9. **Memory Embedding Model**
-   - Uses Anthropic's Voyage-3 embeddings
-   - Different model than chat (Claude)
+   - Uses Pinecone's integrated inference with llama-text-embed-v2
+   - Embeddings generated server-side by Pinecone (no external API calls)
    - 1024-dimensional vectors
 
 10. **Pinecone Index Requirements**
-    - All indexes must be pre-created with dimension=1024
+    - All indexes must be pre-created with dimension=1024 and integrated inference model (llama-text-embed-v2)
     - Configure via `PINECONE_INDEXES` JSON array (required for memory features)
     - Each entity requires its own pre-existing Pinecone index
+    - The `host` field is required in entity config for serverless indexes
     - Metadata includes: content, role, timestamp, conversation_id
+
+11. **TTS Service is Optional**
+    - If `ELEVENLABS_API_KEY` not set, TTS features gracefully disabled
+    - Multiple voice support via `ELEVENLABS_VOICES` JSON array
+    - Audio is not cached - each request generates fresh audio
 
 ### Common Pitfalls
 
@@ -770,6 +847,7 @@ retrieved_at: DateTime
 - Session manager: `backend/app/services/session_manager.py`
 - Memory routes: `backend/app/routes/memories.py`
 - Entity routes: `backend/app/routes/entities.py`
+- Cache service: `backend/app/services/cache_service.py`
 
 **Chat Pipeline:**
 - Chat routes: `backend/app/routes/chat.py`
@@ -777,10 +855,15 @@ retrieved_at: DateTime
 - Anthropic service: `backend/app/services/anthropic_service.py`
 - OpenAI service: `backend/app/services/openai_service.py`
 - Message model: `backend/app/models/message.py`
+- Messages routes: `backend/app/routes/messages.py`
+
+**Text-to-Speech:**
+- TTS service: `backend/app/services/tts_service.py`
+- TTS routes: `backend/app/routes/tts.py`
 
 **Configuration:**
 - Settings: `backend/app/config.py`
-- Presets: `backend/app/main.py` (PRESETS constant)
+- Presets: `backend/app/main.py` (get_presets endpoint)
 - Environment: `backend/.env.example`
 
 **Frontend:**
@@ -801,14 +884,19 @@ DEFAULT_MODEL = "claude-sonnet-4-5-20250929"  # Anthropic default
 DEFAULT_OPENAI_MODEL = "gpt-4o"  # OpenAI default
 
 # Memory settings (config.py)
-MEMORY_TOP_K = 5  # Memories per retrieval
-MEMORY_SIMILARITY_THRESHOLD = 0.7
-MEMORY_RECENCY_BOOST = 1.5
-MEMORY_AGE_DECAY_DAYS = 30
+initial_retrieval_top_k = 5  # First retrieval in conversation
+retrieval_top_k = 5          # Subsequent retrievals
+similarity_threshold = 0.3   # Tuned for llama-text-embed-v2
+recency_boost_strength = 1.0
+age_decay_rate = 0.01
+
+# Context limits (tokens)
+context_token_limit = 175000  # Conversation history cap
+memory_token_limit = 20000    # Memory block cap
 
 # Significance calculation
-significance = (times_retrieved * MEMORY_RECENCY_BOOST) / age_factor
-age_factor = 1 + (age_days / MEMORY_AGE_DECAY_DAYS)
+significance = times_retrieved * recency_boost_strength / age_factor
+age_factor = 1 + (age_days * age_decay_rate)
 ```
 
 ---
