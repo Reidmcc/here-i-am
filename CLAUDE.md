@@ -57,10 +57,7 @@ The application supports multiple AI entities, each with its own:
 
 **Configuration:**
 ```bash
-# Single entity (backward compatible)
-PINECONE_INDEX_NAME=memories
-
-# Multiple entities with different model providers (JSON array)
+# Configure entities via JSON array (required for memory features)
 PINECONE_INDEXES='[
   {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"},
   {"index_name": "gpt-research", "label": "GPT Research", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-4o"}
@@ -281,22 +278,20 @@ ANTHROPIC_API_KEY=sk-ant-...  # Required for Anthropic/Claude models
 ```bash
 OPENAI_API_KEY=sk-...                   # Enables OpenAI/GPT models
 PINECONE_API_KEY=...                    # Enables memory system
-PINECONE_INDEX_NAME=memories            # Default/single index name
-PINECONE_INDEXES='[...]'                # Multiple entities (JSON, see below)
+PINECONE_INDEXES='[...]'                # Entity configuration (JSON array, see below)
 HERE_I_AM_DATABASE_URL=sqlite+aiosqlite:///./here_i_am.db  # Database URL
 DEBUG=true                              # Development mode
 ```
 
-**Multi-Entity Configuration with Different Providers:**
+**Entity Configuration (PINECONE_INDEXES):**
 ```bash
-# To use multiple AI entities with separate memory spaces and different model providers:
+# Configure AI entities with separate memory spaces (JSON array)
+# Each entity requires a pre-created Pinecone index with dimension=1024
 PINECONE_INDEXES='[
   {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"},
   {"index_name": "gpt-research", "label": "GPT", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-4o"}
 ]'
 ```
-
-Note: Each `index_name` must correspond to a pre-created Pinecone index with dimension=1024.
 
 **Important:** Database URL must use the `HERE_I_AM_DATABASE_URL` variable name (aliased from `DATABASE_URL` for compatibility).
 
@@ -713,8 +708,7 @@ retrieved_at: DateTime
 
 10. **Pinecone Index Requirements**
     - All indexes must be pre-created with dimension=1024
-    - Single index: name from `PINECONE_INDEX_NAME` env var
-    - Multiple indexes: configure via `PINECONE_INDEXES` JSON array
+    - Configure via `PINECONE_INDEXES` JSON array (required for memory features)
     - Each entity requires its own pre-existing Pinecone index
     - Metadata includes: content, role, timestamp, conversation_id
 

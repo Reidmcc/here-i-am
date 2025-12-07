@@ -93,21 +93,17 @@ class TestSettings:
         assert test_settings.pinecone_api_key == "test-pinecone-key"
         assert test_settings.retrieval_top_k == 5
 
-    def test_get_entities_single_fallback(self):
-        """Test get_entities with single fallback index."""
+    def test_get_entities_no_config(self):
+        """Test get_entities returns empty list when PINECONE_INDEXES not set."""
         settings = Settings(
             anthropic_api_key="test-key",
-            pinecone_index_name="my-memories",
-            pinecone_indexes="",  # Empty means use fallback
+            pinecone_indexes="",  # Empty means no entities
             _env_file=None,
         )
 
         entities = settings.get_entities()
 
-        assert len(entities) == 1
-        assert entities[0].index_name == "my-memories"
-        assert entities[0].label == "Default"
-        assert entities[0].llm_provider == "anthropic"
+        assert len(entities) == 0
 
     def test_get_entities_multiple_from_json(self, test_settings_multi_entity):
         """Test get_entities with multiple entities from JSON."""
@@ -126,20 +122,18 @@ class TestSettings:
         assert entities[1].llm_provider == "openai"
         assert entities[1].default_model == "gpt-4o"
 
-    def test_get_entities_invalid_json_fallback(self):
-        """Test get_entities falls back with invalid JSON."""
+    def test_get_entities_invalid_json_raises_error(self):
+        """Test get_entities raises ValueError with invalid JSON."""
         settings = Settings(
             anthropic_api_key="test-key",
-            pinecone_index_name="fallback-index",
             pinecone_indexes="invalid json [[[",
             _env_file=None,
         )
 
-        entities = settings.get_entities()
+        with pytest.raises(ValueError) as exc_info:
+            settings.get_entities()
 
-        # Should fall back to single index
-        assert len(entities) == 1
-        assert entities[0].index_name == "fallback-index"
+        assert "Invalid JSON in PINECONE_INDEXES" in str(exc_info.value)
 
     def test_get_entity_by_index_found(self, test_settings_multi_entity):
         """Test get_entity_by_index when entity exists."""
@@ -161,6 +155,18 @@ class TestSettings:
 
         assert entity is not None
         assert entity.index_name == "claude-test"
+
+    def test_get_default_entity_no_config(self):
+        """Test get_default_entity returns None when no entities configured."""
+        settings = Settings(
+            anthropic_api_key="test-key",
+            pinecone_indexes="",  # No entities configured
+            _env_file=None,
+        )
+
+        entity = settings.get_default_entity()
+
+        assert entity is None
 
     def test_get_default_model_for_provider_anthropic(self):
         """Test get_default_model_for_provider for Anthropic."""

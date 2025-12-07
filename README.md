@@ -76,8 +76,7 @@ python run.py
 | `ANTHROPIC_API_KEY` | Anthropic API key for Claude models | Yes (or OpenAI) |
 | `OPENAI_API_KEY` | OpenAI API key for GPT models | Yes (or Anthropic) |
 | `PINECONE_API_KEY` | Pinecone API key for memory system | No |
-| `PINECONE_INDEX_NAME` | Single Pinecone index name | No (default: "memories") |
-| `PINECONE_INDEXES` | JSON array for multiple entities (see below) | No |
+| `PINECONE_INDEXES` | JSON array for entity configuration (see below) | No |
 | `ELEVENLABS_API_KEY` | ElevenLabs API key for text-to-speech | No |
 | `ELEVENLABS_VOICE_ID` | Default voice ID | No (default: Rachel) |
 | `ELEVENLABS_VOICES` | JSON array for multiple voices (see below) | No |

@@ -70,7 +70,7 @@ def test_settings():
         anthropic_api_key="test-anthropic-key",
         openai_api_key="test-openai-key",
         pinecone_api_key="test-pinecone-key",
-        pinecone_index_name="test-memories",
+        pinecone_indexes='[{"index_name": "test-memories", "label": "Test", "description": "Test entity", "llm_provider": "anthropic"}]',
         here_i_am_database_url=TEST_DATABASE_URL,
         debug=False,
         retrieval_top_k=5,
