@@ -10,15 +10,16 @@ However, the application is not locked into that specific use case. Here I Am gi
 
 ### Core Chat Application
 - Clean, minimal chat interface
-- Anthropic and OpenAI API integration with configurable parameters
+- Anthropic (Claude) and OpenAI (GPT) API integration with configurable parameters
 - Conversation storage and retrieval
-- No system prompt default 
+- No system prompt default
 - Seed conversation import capability
 - Configuration presets (Interaction Mode, Reflection Mode, etc.)
+- Optional text-to-speech via ElevenLabs (multiple voices supported)
 
 ### Memory System
-- Pinecone vector database integration for semantic memory
-- Memory storage for all messages with embeddings
+- Pinecone vector database with integrated inference (llama-text-embed-v2 embeddings)
+- Memory storage for all messages with automatic embedding generation
 - RAG retrieval per message
 - Session memory accumulator pattern (deduplication within conversations)
 - Dynamic memory significance system (intended to allow identity formation and fading of less important old memories)
@@ -30,8 +31,13 @@ However, the application is not locked into that specific use case. Here I Am gi
 ### Prerequisites
 - Python 3.10+
 - Node.js (optional, for development)
-- Anthropic or OpenAI API key
-- Pinecone API key (optional, for memory features)
+
+### Required API Keys
+- **Anthropic API key** and/or **OpenAI API key** - At least one is required for LLM chat functionality
+
+### Optional API Keys
+- **Pinecone API key** - Enables semantic memory features (uses integrated llama-text-embed-v2 for embeddings)
+- **ElevenLabs API key** - Enables text-to-speech for AI responses
 
 ### Installation
 
@@ -68,11 +74,37 @@ python run.py
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `ANTHROPIC_API_KEY` | Anthropic API key | Yes, and/or OpenAI API key |
-| `OPENAI_API_KEY` | Anthropic API key | Yes, and/or Anthropic API key |
-| `PINECONE_API_KEY` | Pinecone API key | No (memory features disabled without) |
-| `PINECONE_INDEX_NAME` | Pinecone index name | No (default: "memories") |
+| `ANTHROPIC_API_KEY` | Anthropic API key for Claude models | Yes (or OpenAI) |
+| `OPENAI_API_KEY` | OpenAI API key for GPT models | Yes (or Anthropic) |
+| `PINECONE_API_KEY` | Pinecone API key for memory system | No |
+| `PINECONE_INDEX_NAME` | Single Pinecone index name | No (default: "memories") |
+| `PINECONE_INDEXES` | JSON array for multiple entities (see below) | No |
+| `ELEVENLABS_API_KEY` | ElevenLabs API key for text-to-speech | No |
+| `ELEVENLABS_VOICE_ID` | Default voice ID | No (default: Rachel) |
+| `ELEVENLABS_VOICES` | JSON array for multiple voices (see below) | No |
 | `HERE_I_AM_DATABASE_URL` | Database connection URL | No (default: SQLite) |
+
+### Multi-Entity Configuration
+
+To run multiple AI entities with separate memory spaces:
+
+```bash
+PINECONE_INDEXES='[
+  {"index_name": "claude-main", "label": "Claude", "llm_provider": "anthropic"},
+  {"index_name": "gpt-research", "label": "GPT", "llm_provider": "openai"}
+]'
+```
+
+### Multiple TTS Voices
+
+To enable voice selection for text-to-speech:
+
+```bash
+ELEVENLABS_VOICES='[
+  {"voice_id": "21m00Tcm4TlvDq8ikWAM", "label": "Rachel", "description": "Calm female"},
+  {"voice_id": "ErXwobaYiN019PkySvjV", "label": "Antoni", "description": "Warm male"}
+]'
+```
 
 ### Presets
 
@@ -113,6 +145,11 @@ python run.py
 - `GET /api/entities/` - List all configured AI entities
 - `GET /api/entities/{id}` - Get specific entity
 - `GET /api/entities/{id}/status` - Get entity Pinecone connection status
+
+### Text-to-Speech
+- `POST /api/tts/speak` - Convert text to speech (returns MP3 audio)
+- `POST /api/tts/speak/stream` - Stream text-to-speech audio
+- `GET /api/tts/status` - Get TTS configuration status and available voices
 
 ## Memory System Architecture
 
