@@ -444,14 +444,19 @@ class ApiClient {
         return this.request('/tts/status');
     }
 
-    async textToSpeech(text) {
+    async textToSpeech(text, voiceId = null) {
         const url = `${API_BASE}/tts/speak`;
+        const body = { text };
+        if (voiceId) {
+            body.voice_id = voiceId;
+        }
+
         const response = await fetch(url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ text }),
+            body: JSON.stringify(body),
         });
 
         if (!response.ok) {

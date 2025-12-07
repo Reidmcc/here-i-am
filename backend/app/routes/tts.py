@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from app.services import tts_service
+from app.config import settings
 
 router = APIRouter(prefix="/api/tts", tags=["tts"])
 
@@ -97,8 +98,20 @@ async def text_to_speech_stream(data: TTSRequest):
 @router.get("/status")
 async def tts_status():
     """Check if TTS service is configured and available."""
+    if not tts_service.is_configured():
+        return {
+            "configured": False,
+            "voices": [],
+            "default_voice_id": None,
+            "model_id": None,
+        }
+
+    voices = settings.get_voices()
+    default_voice = settings.get_default_voice()
+
     return {
-        "configured": tts_service.is_configured(),
-        "voice_id": tts_service.voice_id if tts_service.is_configured() else None,
-        "model_id": tts_service.model_id if tts_service.is_configured() else None,
+        "configured": True,
+        "voices": [v.to_dict() for v in voices],
+        "default_voice_id": default_voice.voice_id,
+        "model_id": tts_service.model_id,
     }

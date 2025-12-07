@@ -4,6 +4,26 @@ from typing import Optional, List
 import json
 
 
+class VoiceConfig:
+    """Configuration for a TTS voice."""
+    def __init__(
+        self,
+        voice_id: str,
+        label: str,
+        description: str = "",
+    ):
+        self.voice_id = voice_id
+        self.label = label
+        self.description = description
+
+    def to_dict(self):
+        return {
+            "voice_id": self.voice_id,
+            "label": self.label,
+            "description": self.description,
+        }
+
+
 class EntityConfig:
     """Configuration for a single AI entity (Pinecone index)."""
     def __init__(
@@ -44,6 +64,9 @@ class Settings(BaseSettings):
     # ElevenLabs TTS settings
     elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # Default voice (Rachel)
     elevenlabs_model_id: str = "eleven_multilingual_v2"  # Default model
+    # Multiple voices (JSON array of objects with voice_id, label, description)
+    # Example: '[{"voice_id": "21m00Tcm4TlvDq8ikWAM", "label": "Rachel", "description": "Calm female voice"}]'
+    elevenlabs_voices: str = ""
 
     # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, llm_provider, default_model)
     # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'
@@ -177,6 +200,46 @@ class Settings(BaseSettings):
             index_name=self.pinecone_index_name,
             label="Default",
             description="Default AI entity",
+        )
+
+    def get_voices(self) -> List[VoiceConfig]:
+        """
+        Parse and return the list of configured TTS voices.
+
+        If ELEVENLABS_VOICES is set, parse it as JSON.
+        Otherwise, create a default voice from ELEVENLABS_VOICE_ID.
+        """
+        if self.elevenlabs_voices:
+            try:
+                voices_data = json.loads(self.elevenlabs_voices)
+                return [
+                    VoiceConfig(
+                        voice_id=v.get("voice_id"),
+                        label=v.get("label", v.get("voice_id", "Voice")),
+                        description=v.get("description", ""),
+                    )
+                    for v in voices_data
+                    if v.get("voice_id")
+                ]
+            except json.JSONDecodeError:
+                pass
+
+        # Fallback to single voice from elevenlabs_voice_id
+        return [
+            VoiceConfig(
+                voice_id=self.elevenlabs_voice_id,
+                label="Default",
+                description="Default voice",
+            )
+        ]
+
+    def get_default_voice(self) -> VoiceConfig:
+        """Get the first (default) voice."""
+        voices = self.get_voices()
+        return voices[0] if voices else VoiceConfig(
+            voice_id=self.elevenlabs_voice_id,
+            label="Default",
+            description="Default voice",
         )
 
 
