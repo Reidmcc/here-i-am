@@ -642,6 +642,43 @@ html, body {
     height: 14px;
 }
 
+/* TTS Speak Button States */
+.message-action-btn.speak-btn.loading {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+.message-action-btn.speak-btn.loading svg {
+    animation: pulse 1s ease-in-out infinite;
+}
+
+.message-action-btn.speak-btn.speaking {
+    color: var(--accent);
+    background-color: var(--accent-subtle);
+}
+
+.message-action-btn.speak-btn.speaking svg {
+    animation: pulse-speaking 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-speaking {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+@keyframes pulse {
+    0%, 100% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(0.9);
+    }
+}
+
 /* Message Edit Form */
 .message.editing .message-bubble {
     max-width: 100%;

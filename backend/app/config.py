@@ -38,7 +38,12 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     pinecone_api_key: str = ""
+    elevenlabs_api_key: str = ""
     pinecone_index_name: str = "memories"  # Default/fallback index
+
+    # ElevenLabs TTS settings
+    elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # Default voice (Rachel)
+    elevenlabs_model_id: str = "eleven_multilingual_v2"  # Default model
 
     # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, llm_provider, default_model)
     # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'

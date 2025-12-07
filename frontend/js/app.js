@@ -109,6 +109,11 @@ class App {
         this.isRecording = false;
         this.textBeforeDictation = '';
 
+        // TTS state
+        this.ttsEnabled = false;
+        this.currentAudio = null;
+        this.currentSpeakingBtn = null;
+
         this.init();
     }
 
@@ -119,7 +124,18 @@ class App {
         await this.loadEntities();
         await this.loadConversations();
         await this.loadConfig();
+        await this.checkTTSStatus();
         this.updateModelIndicator();
+    }
+
+    async checkTTSStatus() {
+        try {
+            const status = await api.getTTSStatus();
+            this.ttsEnabled = status.configured;
+        } catch (error) {
+            console.warn('TTS status check failed:', error);
+            this.ttsEnabled = false;
+        }
     }
 
     bindEvents() {
@@ -790,12 +806,22 @@ class App {
 
                         if (data.assistant_message_id) {
                             streamingMessage.element.dataset.messageId = data.assistant_message_id;
-                            // Add regenerate button to assistant message
+                            // Add action buttons to assistant message
                             const assistantMeta = streamingMessage.element.querySelector('.message-meta');
                             if (assistantMeta) {
                                 const actionsSpan = document.createElement('span');
                                 actionsSpan.className = 'message-actions';
+                                const speakBtnHtml = this.ttsEnabled ? `
+                                    <button class="message-action-btn speak-btn" title="Read aloud">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                                            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                                        </svg>
+                                    </button>
+                                ` : '';
                                 actionsSpan.innerHTML = `
+                                    ${speakBtnHtml}
                                     <button class="message-action-btn regenerate-btn" title="Regenerate response">
                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                             <path d="M23 4v6h-6"/>
@@ -810,6 +836,14 @@ class App {
                                     e.stopPropagation();
                                     this.regenerateMessage(data.assistant_message_id);
                                 });
+                                const speakBtn = actionsSpan.querySelector('.speak-btn');
+                                if (speakBtn) {
+                                    const messageContent = streamingMessage.getContent();
+                                    speakBtn.addEventListener('click', (e) => {
+                                        e.stopPropagation();
+                                        this.speakMessage(messageContent, speakBtn);
+                                    });
+                                }
                             }
                         }
 
@@ -877,7 +911,17 @@ class App {
                     </button>
                 `;
             } else if (role === 'assistant') {
+                const speakBtn = this.ttsEnabled ? `
+                    <button class="message-action-btn speak-btn" title="Read aloud">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                        </svg>
+                    </button>
+                ` : '';
                 actionButtons = `
+                    ${speakBtn}
                     <button class="message-action-btn regenerate-btn" title="Regenerate response">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M23 4v6h-6"/>
@@ -916,10 +960,122 @@ class App {
                     this.regenerateMessage(options.messageId);
                 });
             }
+
+            const speakBtn = message.querySelector('.speak-btn');
+            if (speakBtn) {
+                speakBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.speakMessage(content, speakBtn);
+                });
+            }
         }
 
         this.elements.messages.appendChild(message);
         return message;
+    }
+
+    /**
+     * Read a message aloud using text-to-speech.
+     * @param {string} content - The message content to speak
+     * @param {HTMLElement} btn - The speak button element
+     */
+    async speakMessage(content, btn) {
+        // If currently playing, stop it
+        if (this.currentAudio && this.currentSpeakingBtn === btn) {
+            this.stopSpeaking();
+            return;
+        }
+
+        // Stop any other playing audio
+        this.stopSpeaking();
+
+        // Update button state to loading
+        btn.classList.add('loading');
+        btn.title = 'Loading...';
+        this.currentSpeakingBtn = btn;
+
+        try {
+            // Strip markdown for cleaner speech
+            const textContent = this.stripMarkdown(content);
+
+            // Get audio from API
+            const audioBlob = await api.textToSpeech(textContent);
+            const audioUrl = URL.createObjectURL(audioBlob);
+
+            // Create and play audio
+            this.currentAudio = new Audio(audioUrl);
+
+            // Update button to playing state
+            btn.classList.remove('loading');
+            btn.classList.add('speaking');
+            btn.title = 'Stop';
+
+            // Handle audio end
+            this.currentAudio.onended = () => {
+                this.stopSpeaking();
+                URL.revokeObjectURL(audioUrl);
+            };
+
+            this.currentAudio.onerror = () => {
+                this.showToast('Failed to play audio', 'error');
+                this.stopSpeaking();
+                URL.revokeObjectURL(audioUrl);
+            };
+
+            await this.currentAudio.play();
+        } catch (error) {
+            console.error('TTS error:', error);
+            this.showToast('Failed to generate speech', 'error');
+            this.stopSpeaking();
+        }
+    }
+
+    /**
+     * Stop the currently playing audio.
+     */
+    stopSpeaking() {
+        if (this.currentAudio) {
+            this.currentAudio.pause();
+            this.currentAudio = null;
+        }
+        if (this.currentSpeakingBtn) {
+            this.currentSpeakingBtn.classList.remove('loading', 'speaking');
+            this.currentSpeakingBtn.title = 'Read aloud';
+            this.currentSpeakingBtn = null;
+        }
+    }
+
+    /**
+     * Strip markdown formatting from text for cleaner TTS.
+     * @param {string} text - Text with markdown
+     * @returns {string} - Plain text
+     */
+    stripMarkdown(text) {
+        if (!text) return '';
+        return text
+            // Remove code blocks
+            .replace(/```[\s\S]*?```/g, '')
+            // Remove inline code
+            .replace(/`[^`]+`/g, '')
+            // Remove headers
+            .replace(/^#{1,6}\s+/gm, '')
+            // Remove bold/italic
+            .replace(/\*\*([^*]+)\*\*/g, '$1')
+            .replace(/__([^_]+)__/g, '$1')
+            .replace(/\*([^*]+)\*/g, '$1')
+            .replace(/_([^_]+)_/g, '$1')
+            // Remove links, keep text
+            .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+            // Remove blockquotes
+            .replace(/^>\s+/gm, '')
+            // Remove list markers
+            .replace(/^[-*]\s+/gm, '')
+            .replace(/^\d+\.\s+/gm, '')
+            // Remove horizontal rules
+            .replace(/^[-*]{3,}$/gm, '')
+            // Clean up extra whitespace
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
     }
 
     /**
@@ -1243,12 +1399,22 @@ class App {
                         // Update the message element with the new ID
                         streamingMessage.element.dataset.messageId = data.assistant_message_id;
 
-                        // Add regenerate button to the new message
+                        // Add action buttons to the new message
                         const meta = streamingMessage.element.querySelector('.message-meta');
                         if (meta) {
                             const actionsSpan = document.createElement('span');
                             actionsSpan.className = 'message-actions';
+                            const speakBtnHtml = this.ttsEnabled ? `
+                                <button class="message-action-btn speak-btn" title="Read aloud">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                                    </svg>
+                                </button>
+                            ` : '';
                             actionsSpan.innerHTML = `
+                                ${speakBtnHtml}
                                 <button class="message-action-btn regenerate-btn" title="Regenerate response">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <path d="M23 4v6h-6"/>
@@ -1264,6 +1430,15 @@ class App {
                                 e.stopPropagation();
                                 this.regenerateMessage(data.assistant_message_id);
                             });
+
+                            const speakBtn = actionsSpan.querySelector('.speak-btn');
+                            if (speakBtn) {
+                                const messageContent = streamingMessage.getContent();
+                                speakBtn.addEventListener('click', (e) => {
+                                    e.stopPropagation();
+                                    this.speakMessage(messageContent, speakBtn);
+                                });
+                            }
                         }
 
                         this.showToast('Response regenerated', 'success');
