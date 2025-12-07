@@ -558,6 +558,7 @@ class App {
                 this.addMessage(msg.role, msg.content, {
                     timestamp: msg.created_at,
                     showTimestamp: true,
+                    messageId: msg.id,
                 });
             });
 
@@ -584,8 +585,8 @@ class App {
         this.elements.messageInput.value = '';
         this.elements.messageInput.style.height = 'auto';
 
-        // Add user message
-        this.addMessage('human', content);
+        // Add user message (without ID initially - will be updated when stored)
+        const userMessageEl = this.addMessage('human', content);
         this.scrollToBottom();
 
         // Create streaming message element
@@ -651,7 +652,56 @@ class App {
                         }
                     },
                     onStored: async (data) => {
-                        // Messages have been stored
+                        // Messages have been stored - update DOM with IDs and add action buttons
+                        if (data.human_message_id && userMessageEl) {
+                            userMessageEl.dataset.messageId = data.human_message_id;
+                            // Add edit button to user message
+                            const userMeta = userMessageEl.querySelector('.message-meta');
+                            if (userMeta) {
+                                const actionsSpan = document.createElement('span');
+                                actionsSpan.className = 'message-actions';
+                                actionsSpan.innerHTML = `
+                                    <button class="message-action-btn edit-btn" title="Edit message">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                        </svg>
+                                    </button>
+                                `;
+                                userMeta.appendChild(actionsSpan);
+                                const editBtn = actionsSpan.querySelector('.edit-btn');
+                                editBtn.addEventListener('click', (e) => {
+                                    e.stopPropagation();
+                                    this.startEditMessage(userMessageEl, data.human_message_id, content);
+                                });
+                            }
+                        }
+
+                        if (data.assistant_message_id) {
+                            streamingMessage.element.dataset.messageId = data.assistant_message_id;
+                            // Add regenerate button to assistant message
+                            const assistantMeta = streamingMessage.element.querySelector('.message-meta');
+                            if (assistantMeta) {
+                                const actionsSpan = document.createElement('span');
+                                actionsSpan.className = 'message-actions';
+                                actionsSpan.innerHTML = `
+                                    <button class="message-action-btn regenerate-btn" title="Regenerate response">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <path d="M23 4v6h-6"/>
+                                            <path d="M1 20v-6h6"/>
+                                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                                        </svg>
+                                    </button>
+                                `;
+                                assistantMeta.appendChild(actionsSpan);
+                                const regenerateBtn = actionsSpan.querySelector('.regenerate-btn');
+                                regenerateBtn.addEventListener('click', (e) => {
+                                    e.stopPropagation();
+                                    this.regenerateMessage(data.assistant_message_id);
+                                });
+                            }
+                        }
+
                         // Update conversation title if it's the first message
                         const conv = this.conversations.find(c => c.id === this.currentConversationId);
                         if (conv && !conv.title) {
@@ -694,17 +744,68 @@ class App {
         const message = document.createElement('div');
         message.className = `message ${role}`;
 
+        // Store message ID and role as data attributes
+        if (options.messageId) {
+            message.dataset.messageId = options.messageId;
+        }
+        message.dataset.role = role;
+
         const timestamp = options.timestamp ? new Date(options.timestamp) : new Date();
         const timeStr = timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        // Build action buttons based on role
+        let actionButtons = '';
+        if (options.messageId && !options.isError) {
+            if (role === 'human') {
+                actionButtons = `
+                    <button class="message-action-btn edit-btn" title="Edit message">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                        </svg>
+                    </button>
+                `;
+            } else if (role === 'assistant') {
+                actionButtons = `
+                    <button class="message-action-btn regenerate-btn" title="Regenerate response">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M23 4v6h-6"/>
+                            <path d="M1 20v-6h6"/>
+                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                        </svg>
+                    </button>
+                `;
+            }
+        }
 
         message.innerHTML = `
             <div class="message-bubble ${options.isError ? 'error' : ''}">${this.renderMarkdown(content)}</div>
             ${options.showTimestamp !== false ? `
                 <div class="message-meta">
                     <span>${timeStr}</span>
+                    <span class="message-actions">${actionButtons}</span>
                 </div>
             ` : ''}
         `;
+
+        // Bind action button events
+        if (options.messageId) {
+            const editBtn = message.querySelector('.edit-btn');
+            if (editBtn) {
+                editBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.startEditMessage(message, options.messageId, content);
+                });
+            }
+
+            const regenerateBtn = message.querySelector('.regenerate-btn');
+            if (regenerateBtn) {
+                regenerateBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.regenerateMessage(options.messageId);
+                });
+            }
+        }
 
         this.elements.messages.appendChild(message);
         return message;
@@ -785,6 +886,297 @@ class App {
         this.elements.messages.appendChild(indicator);
         this.scrollToBottom();
         return indicator;
+    }
+
+    /**
+     * Start editing a human message.
+     * @param {HTMLElement} messageElement - The message DOM element
+     * @param {string} messageId - The message ID
+     * @param {string} currentContent - Current message content
+     */
+    startEditMessage(messageElement, messageId, currentContent) {
+        if (this.isLoading) return;
+
+        // Check if already editing
+        if (messageElement.classList.contains('editing')) return;
+
+        messageElement.classList.add('editing');
+        const bubble = messageElement.querySelector('.message-bubble');
+        const originalContent = currentContent;
+
+        // Replace bubble content with edit form
+        bubble.innerHTML = `
+            <div class="message-edit-form">
+                <textarea class="message-edit-textarea">${this.escapeHtml(originalContent)}</textarea>
+                <div class="message-edit-actions">
+                    <button class="message-edit-btn cancel-edit">Cancel</button>
+                    <button class="message-edit-btn save-edit primary">Save & Regenerate</button>
+                </div>
+            </div>
+        `;
+
+        const textarea = bubble.querySelector('.message-edit-textarea');
+        const cancelBtn = bubble.querySelector('.cancel-edit');
+        const saveBtn = bubble.querySelector('.save-edit');
+
+        // Auto-resize textarea
+        textarea.style.height = 'auto';
+        textarea.style.height = Math.min(textarea.scrollHeight, 300) + 'px';
+        textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+        textarea.addEventListener('input', () => {
+            textarea.style.height = 'auto';
+            textarea.style.height = Math.min(textarea.scrollHeight, 300) + 'px';
+        });
+
+        // Cancel editing
+        cancelBtn.addEventListener('click', () => {
+            messageElement.classList.remove('editing');
+            bubble.innerHTML = this.renderMarkdown(originalContent);
+            // Re-add the action buttons
+            this.rebindMessageActions(messageElement, messageId, originalContent);
+        });
+
+        // Save and regenerate
+        saveBtn.addEventListener('click', async () => {
+            const newContent = textarea.value.trim();
+            if (!newContent) {
+                this.showToast('Message cannot be empty', 'error');
+                return;
+            }
+
+            if (newContent === originalContent) {
+                // No changes, just cancel
+                cancelBtn.click();
+                return;
+            }
+
+            await this.saveEditAndRegenerate(messageElement, messageId, newContent);
+        });
+
+        // Handle Escape key to cancel
+        textarea.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                cancelBtn.click();
+            }
+        });
+    }
+
+    /**
+     * Re-bind action buttons after canceling edit.
+     */
+    rebindMessageActions(messageElement, messageId, content) {
+        const editBtn = messageElement.querySelector('.edit-btn');
+        if (editBtn) {
+            editBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.startEditMessage(messageElement, messageId, content);
+            });
+        }
+    }
+
+    /**
+     * Save an edited message and regenerate the AI response.
+     */
+    async saveEditAndRegenerate(messageElement, messageId, newContent) {
+        this.isLoading = true;
+        this.elements.sendBtn.disabled = true;
+
+        try {
+            // Update the message on the server
+            const result = await api.updateMessage(messageId, newContent);
+
+            // Update the UI
+            messageElement.classList.remove('editing');
+            const bubble = messageElement.querySelector('.message-bubble');
+            bubble.innerHTML = this.renderMarkdown(newContent);
+
+            // Re-add the action buttons
+            const meta = messageElement.querySelector('.message-meta');
+            if (meta) {
+                const actionsSpan = meta.querySelector('.message-actions');
+                if (actionsSpan) {
+                    actionsSpan.innerHTML = `
+                        <button class="message-action-btn edit-btn" title="Edit message">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                            </svg>
+                        </button>
+                    `;
+                    const editBtn = actionsSpan.querySelector('.edit-btn');
+                    editBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.startEditMessage(messageElement, messageId, newContent);
+                    });
+                }
+            }
+
+            // Remove the old assistant message from UI if it was deleted
+            if (result.deleted_assistant_message_id) {
+                const assistantEl = this.elements.messages.querySelector(
+                    `[data-message-id="${result.deleted_assistant_message_id}"]`
+                );
+                if (assistantEl) {
+                    assistantEl.remove();
+                }
+            }
+
+            // Now regenerate the response
+            await this.regenerateMessage(messageId);
+
+        } catch (error) {
+            this.showToast('Failed to update message', 'error');
+            console.error('Failed to update message:', error);
+
+            // Restore original state
+            messageElement.classList.remove('editing');
+            const bubble = messageElement.querySelector('.message-bubble');
+            bubble.innerHTML = this.renderMarkdown(newContent);
+        } finally {
+            this.isLoading = false;
+            this.handleInputChange();
+        }
+    }
+
+    /**
+     * Regenerate an AI response for a given message.
+     * @param {string} messageId - ID of the message to regenerate from
+     */
+    async regenerateMessage(messageId) {
+        if (this.isLoading) {
+            this.showToast('Please wait for the current operation to complete', 'warning');
+            return;
+        }
+
+        this.isLoading = true;
+        this.elements.sendBtn.disabled = true;
+
+        // Find the assistant message element to replace
+        const messageEl = this.elements.messages.querySelector(`[data-message-id="${messageId}"]`);
+        let assistantEl = null;
+
+        if (messageEl && messageEl.dataset.role === 'assistant') {
+            // Clicked on assistant message directly
+            assistantEl = messageEl;
+        } else if (messageEl && messageEl.dataset.role === 'human') {
+            // Find the next assistant message
+            assistantEl = messageEl.nextElementSibling;
+            while (assistantEl && assistantEl.dataset.role !== 'assistant') {
+                assistantEl = assistantEl.nextElementSibling;
+            }
+        }
+
+        // Remove the old assistant message from UI
+        if (assistantEl) {
+            assistantEl.remove();
+        }
+
+        // Create streaming message element
+        const streamingMessage = this.createStreamingMessage('assistant');
+
+        try {
+            await api.regenerateStream(
+                {
+                    message_id: messageId,
+                    model: this.settings.model,
+                    temperature: this.settings.temperature,
+                    max_tokens: this.settings.maxTokens,
+                    system_prompt: this.settings.systemPrompt,
+                    verbosity: this.settings.verbosity,
+                },
+                {
+                    onMemories: (data) => {
+                        // Handle memory updates same as sendMessage
+                        let hasChanges = false;
+
+                        if (data.trimmed_memory_ids && data.trimmed_memory_ids.length > 0) {
+                            const trimmedSet = new Set(data.trimmed_memory_ids);
+                            this.retrievedMemories = this.retrievedMemories.filter(
+                                mem => !trimmedSet.has(mem.id)
+                            );
+                            hasChanges = true;
+                        }
+
+                        if (data.new_memories && data.new_memories.length > 0) {
+                            const existingIds = new Set(this.retrievedMemories.map(m => m.id));
+                            data.new_memories.forEach(mem => {
+                                if (!existingIds.has(mem.id)) {
+                                    this.retrievedMemories.push(mem);
+                                }
+                            });
+                            hasChanges = true;
+                        }
+
+                        if (hasChanges) {
+                            this.updateMemoriesPanel();
+                        }
+                    },
+                    onStart: (data) => {
+                        // Stream has started
+                    },
+                    onToken: (data) => {
+                        if (data.content) {
+                            streamingMessage.updateContent(data.content);
+                        }
+                    },
+                    onDone: (data) => {
+                        streamingMessage.finalize({ showTimestamp: true });
+
+                        if (data.usage) {
+                            this.elements.tokenCount.textContent = `Tokens: ${data.usage.input_tokens} in / ${data.usage.output_tokens} out`;
+                        }
+                    },
+                    onStored: (data) => {
+                        // Update the message element with the new ID
+                        streamingMessage.element.dataset.messageId = data.assistant_message_id;
+
+                        // Add regenerate button to the new message
+                        const meta = streamingMessage.element.querySelector('.message-meta');
+                        if (meta) {
+                            const actionsSpan = document.createElement('span');
+                            actionsSpan.className = 'message-actions';
+                            actionsSpan.innerHTML = `
+                                <button class="message-action-btn regenerate-btn" title="Regenerate response">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M23 4v6h-6"/>
+                                        <path d="M1 20v-6h6"/>
+                                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                                    </svg>
+                                </button>
+                            `;
+                            meta.appendChild(actionsSpan);
+
+                            const regenerateBtn = actionsSpan.querySelector('.regenerate-btn');
+                            regenerateBtn.addEventListener('click', (e) => {
+                                e.stopPropagation();
+                                this.regenerateMessage(data.assistant_message_id);
+                            });
+                        }
+
+                        this.showToast('Response regenerated', 'success');
+                    },
+                    onError: (data) => {
+                        streamingMessage.element.remove();
+                        this.addMessage('assistant', `Error: ${data.error}`, { isError: true });
+                        this.showToast('Failed to regenerate response', 'error');
+                        console.error('Regeneration error:', data.error);
+                    },
+                }
+            );
+
+            this.scrollToBottom();
+
+        } catch (error) {
+            streamingMessage.element.remove();
+            this.addMessage('assistant', `Error: ${error.message}`, { isError: true });
+            this.showToast('Failed to regenerate response', 'error');
+            console.error('Failed to regenerate:', error);
+        } finally {
+            this.isLoading = false;
+            this.handleInputChange();
+        }
     }
 
     clearMessages() {
