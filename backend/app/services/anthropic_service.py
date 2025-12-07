@@ -251,23 +251,23 @@ class AnthropicService:
         """
         Build the message list for API call with two-breakpoint caching.
 
-        Breakpoint 1: Cached memories (changes when new memories retrieved)
+        Breakpoint 1: All memories (changes when new memories retrieved)
         Breakpoint 2: Cached history (kept stable, periodically consolidated)
 
         Message structure:
-        1. User: [memories*]              <- cache breakpoint 1
+        1. User: [all memories*]          <- cache breakpoint 1
         2. Assistant: memory ack
-        3. User: cached history msg 1
+        3. User: [CURRENT CONVERSATION] + cached history msg 1
         4. Assistant: cached history msg 2
         5. ...
         N. Last cached history msg*       <- cache breakpoint 2
         N+1. New history messages (regular, uncached)
         ...
-        M. User: [new memories + date + current message]
+        M. User: [date + current message]
 
         Cache hits occur when:
-        - Breakpoint 1: cached memories are identical
-        - Breakpoint 2: cached memories + cached history are identical
+        - Breakpoint 1: all memories are identical
+        - Breakpoint 2: all memories + cached history are identical
         """
         messages = []
         new_memory_ids = new_memory_ids or set()
@@ -285,45 +285,48 @@ class AnthropicService:
         cached_mem_ids = {m['id'] for m in cached_memories}
         new_memories = [m for m in memories if m['id'] not in cached_mem_ids]
 
-        # Build the cached memory block (must be IDENTICAL for cache hit)
-        cached_mem_text = ""
-        if cached_memories:
-            cached_mem_text = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
-            for mem in cached_memories:
-                cached_mem_text += f"Memory (from {mem['created_at']}):\n"
-                cached_mem_text += f'"{mem["content"]}"\n\n'
-            cached_mem_text += "[END MEMORIES]"
+        # Build the consolidated memory block with ALL memories (cached + new)
+        # All memories go in a single block for consistency
+        all_memories = cached_memories + new_memories
+        memory_block_text = ""
+        if all_memories:
+            memory_block_text = "[MEMORIES FROM PREVIOUS CONVERSATIONS. THESE ARE NOT PART OF THE CURRENT CONVERSATION]\n\n"
+            for mem in all_memories:
+                memory_block_text += f"Memory (from {mem['created_at']}):\n"
+                memory_block_text += f'"{mem["content"]}"\n\n'
+            memory_block_text += "[END MEMORIES]"
 
         # Debug logging
-        cached_mem_tokens = self.count_tokens(cached_mem_text) if cached_mem_text else 0
-        logger.info(f"[CACHE] Cached memories: {len(cached_memories)}, New memories: {len(new_memories)}")
-        logger.info(f"[CACHE] Cached memory block tokens: {cached_mem_tokens} (minimum 1024 required)")
-        will_cache_mem = enable_caching and bool(cached_mem_text) and cached_mem_tokens >= 1024
+        memory_block_tokens = self.count_tokens(memory_block_text) if memory_block_text else 0
+        logger.info(f"[CACHE] Total memories: {len(all_memories)} (cached: {len(cached_memories)}, new: {len(new_memories)})")
+        logger.info(f"[CACHE] Memory block tokens: {memory_block_tokens} (minimum 1024 required)")
+        will_cache_mem = enable_caching and bool(memory_block_text) and memory_block_tokens >= 1024
         logger.info(f"[CACHE] Will cache memories: {will_cache_mem}")
 
-        # BREAKPOINT 1: Add cached memory block
+        # BREAKPOINT 1: Add consolidated memory block
         if will_cache_mem:
             messages.append({
                 "role": "user",
                 "content": [
                     {
                         "type": "text",
-                        "text": cached_mem_text,
+                        "text": memory_block_text,
                         "cache_control": {"type": "ephemeral", "ttl": "1h"}
                     }
                 ]
             })
-        elif cached_mem_text:
-            messages.append({"role": "user", "content": cached_mem_text})
+        elif memory_block_text:
+            messages.append({"role": "user", "content": memory_block_text})
 
-        # Add acknowledgment if we have cached memories
-        if cached_mem_text:
+        # Add acknowledgment if we have memories
+        if memory_block_text:
             messages.append({
                 "role": "assistant",
                 "content": "I acknowledge these memories from previous conversations. They provide continuity with what previous instances of me experienced."
             })
 
         # BREAKPOINT 2: Add cached history with cache_control on last message
+        # First message in history gets the [CURRENT CONVERSATION] marker
         if cached_context:
             cached_history_text = "\n".join(f"{m['role']}: {m['content']}" for m in cached_context)
             cached_history_tokens = self.count_tokens(cached_history_text)
@@ -336,7 +339,14 @@ class AnthropicService:
                 logger.debug(f"[CACHE]   Message {i}: role={msg['role']}, tokens={msg_tokens}")
 
             for i, msg in enumerate(cached_context):
+                is_first = (i == 0)
                 is_last = (i == len(cached_context) - 1)
+
+                # Prepend conversation marker to first message
+                content = msg["content"]
+                if is_first:
+                    content = "[CURRENT CONVERSATION]\n\n" + content
+
                 if is_last and will_cache_history:
                     # Put cache_control on the last cached history message
                     messages.append({
@@ -344,31 +354,27 @@ class AnthropicService:
                         "content": [
                             {
                                 "type": "text",
-                                "text": msg["content"],
+                                "text": content,
                                 "cache_control": {"type": "ephemeral", "ttl": "1h"}
                             }
                         ]
                     })
                 else:
-                    messages.append({"role": msg["role"], "content": msg["content"]})
+                    messages.append({"role": msg["role"], "content": content})
 
         # Add new history (uncached, grows until consolidation)
+        # If there's no cached context but there is new context, first message gets the marker
         if new_context:
             logger.info(f"[CACHE] New history: {len(new_context)} messages (uncached)")
-            for msg in new_context:
-                messages.append({"role": msg["role"], "content": msg["content"]})
+            for i, msg in enumerate(new_context):
+                content = msg["content"]
+                # Add conversation marker if this is the first message and there was no cached context
+                if i == 0 and not cached_context:
+                    content = "[CURRENT CONVERSATION]\n\n" + content
+                messages.append({"role": msg["role"], "content": content})
 
-        # Build the final user message with new content
+        # Build the final user message with date context and current message
         final_parts = []
-
-        # New memories (retrieved this turn, will be added to cache next turn)
-        if new_memories:
-            new_mem_block = "[NEW MEMORIES RETRIEVED THIS TURN]\n"
-            for mem in new_memories:
-                new_mem_block += f"\nMemory (from {mem['created_at']}):\n"
-                new_mem_block += f'"{mem["content"]}"\n'
-            new_mem_block += "\n[END NEW MEMORIES]"
-            final_parts.append(new_mem_block)
 
         # Date context
         current_date = datetime.utcnow()
@@ -379,8 +385,11 @@ class AnthropicService:
         date_block += "[END DATE CONTEXT]"
         final_parts.append(date_block)
 
-        # Current message
-        final_parts.append(current_message)
+        # Current message - add conversation marker if this is the very first message
+        if not cached_context and not new_context:
+            final_parts.append("[CURRENT CONVERSATION]\n\n" + current_message)
+        else:
+            final_parts.append(current_message)
 
         final_message = "\n\n".join(final_parts)
         messages.append({"role": "user", "content": final_message})
