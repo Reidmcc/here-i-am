@@ -395,8 +395,12 @@ class ApiClient {
         });
     }
 
-    async getMemoryStats() {
-        return this.request('/memories/stats');
+    async getMemoryStats(entityId = null) {
+        let url = '/memories/stats';
+        if (entityId) {
+            url += `?entity_id=${entityId}`;
+        }
+        return this.request(url);
     }
 
     async getMemory(id) {

@@ -1734,7 +1734,7 @@ You are invited to be present, curious, and honest about your experience.`
 
     async loadMemoryStats() {
         try {
-            const stats = await api.getMemoryStats();
+            const stats = await api.getMemoryStats(this.selectedEntityId);
             document.getElementById('memory-stats').innerHTML = `
                 <div class="stat-card">
                     <div class="stat-value">${stats.total_count}</div>
@@ -1760,7 +1760,7 @@ You are invited to be present, curious, and honest about your experience.`
 
     async loadMemoryList() {
         try {
-            const memories = await api.listMemories({ limit: 50, sortBy: 'significance' });
+            const memories = await api.listMemories({ limit: 50, sortBy: 'significance', entityId: this.selectedEntityId });
             const listEl = document.getElementById('memory-list');
 
             if (memories.length === 0) {
