@@ -1301,7 +1301,8 @@ async def import_external_conversations_stream(data: ExternalConversationImport)
                 # Validate entity_id
                 entity = settings.get_entity_by_index(data.entity_id)
                 if not entity:
-                    yield f"event: error\ndata: {json.dumps({'error': f\"Entity '{data.entity_id}' is not configured.\"})}\n\n"
+                    error_msg = f"Entity '{data.entity_id}' is not configured."
+                    yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
                     return
 
                 # Parse the export file with IDs
