@@ -14,7 +14,6 @@ However, the application is not locked into that specific use case. Here I Am gi
 - Conversation storage and retrieval
 - No system prompt default
 - Seed conversation import capability
-- Configuration presets (Interaction Mode, Reflection Mode, etc.)
 - Optional text-to-speech via ElevenLabs (multiple voices supported)
 
 ### Memory System
@@ -36,7 +35,7 @@ However, the application is not locked into that specific use case. Here I Am gi
 - **Anthropic API key** and/or **OpenAI API key** - At least one is required for LLM chat functionality
 
 ### Optional API Keys
-- **Pinecone API key** - Enables semantic memory features (uses integrated llama-text-embed-v2 for embeddings)
+- **Pinecone API key** - Enables semantic memory features (uses integrated llama-text-embed-v2 for embeddings. The Pincone index(s), set to the llama embeddings, must be pre-created via the Pinecone dashboard)
 - **ElevenLabs API key** - Enables text-to-speech for AI responses
 
 ### Installation
@@ -90,8 +89,8 @@ To run multiple AI entities with separate memory spaces:
 
 ```bash
 PINECONE_INDEXES='[
-  {"index_name": "claude-main", "label": "Claude", "llm_provider": "anthropic"},
-  {"index_name": "gpt-research", "label": "GPT", "llm_provider": "openai"}
+  {"index_name": "claude-main", "label": "Claude", "llm_provider": "anthropic", "host": "[Your Pincone index host url]", "default_model": "claude-sonnet-4-5-20250929"},
+  {"index_name": "gpt-research", "label": "GPT", "llm_provider": "openai", "host": "[Your Pincone index host url]", "default_model": "GPT-5.1"}
 ]'
 ```
 
@@ -105,14 +104,6 @@ ELEVENLABS_VOICES='[
   {"voice_id": "ErXwobaYiN019PkySvjV", "label": "Antoni", "description": "Warm male"}
 ]'
 ```
-
-### Presets
-
-- **Research Mode**: No system prompt, default parameters
-- **Reflection Mode**: Configured for reflection sessions
-- **Memory Aware**: Acknowledges memory continuity
-- **Research Context**: Establishes research framing
-- **Custom**: Full parameter control
 
 ## API Endpoints
 
@@ -200,14 +191,6 @@ python run.py
 ```
 
 The server runs with hot reload enabled.
-
-### Database
-
-SQLite is used by default. For production, configure PostgreSQL:
-
-```
-HERE_I_AM_DATABASE_URL=postgresql+asyncpg://user:password@localhost/here_i_am
-```
 
 ## License
 
