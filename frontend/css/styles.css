@@ -606,17 +606,22 @@ html, body {
     text-align: right;
 }
 
-/* Message Actions (Edit/Regenerate buttons) */
-.message-actions {
-    display: inline-flex;
-    gap: 4px;
-    margin-left: 8px;
-    opacity: 0;
-    transition: opacity 0.2s;
+/* Message Actions (inside bubble) */
+.message-bubble:has(.message-bubble-actions) {
+    padding-bottom: 8px;
 }
 
-.message:hover .message-actions {
-    opacity: 1;
+.message-bubble-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-color);
+    white-space: normal;
+}
+
+.message.human .message-bubble-actions {
+    border-top-color: var(--accent-subtle);
 }
 
 .message-action-btn {
@@ -624,11 +629,13 @@ html, body {
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    padding: 4px;
+    padding: 4px 6px;
     border-radius: 4px;
     display: flex;
     align-items: center;
     justify-content: center;
+    gap: 4px;
+    font-size: 0.75rem;
     transition: all 0.2s;
 }
 
@@ -640,6 +647,18 @@ html, body {
 .message-action-btn svg {
     width: 14px;
     height: 14px;
+}
+
+/* Copy button success state */
+.message-action-btn.copy-btn.copied {
+    color: var(--success, #4caf50);
+}
+
+/* Legacy message-actions in meta (for backwards compatibility) */
+.message-actions {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: 8px;
 }
 
 /* TTS Speak Button States */
