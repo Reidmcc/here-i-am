@@ -607,11 +607,14 @@ html, body {
 }
 
 /* Message Actions (inside bubble) */
+.message-bubble:has(.message-bubble-actions) {
+    padding-bottom: 8px;
+}
+
 .message-bubble-actions {
     display: flex;
     gap: 4px;
     margin-top: 10px;
-    margin-bottom: -6px;
     padding-top: 8px;
     border-top: 1px solid var(--border-color);
 }
