@@ -617,6 +617,7 @@ html, body {
     margin-top: 10px;
     padding-top: 8px;
     border-top: 1px solid var(--border-color);
+    white-space: normal;
 }
 
 .message.human .message-bubble-actions {
