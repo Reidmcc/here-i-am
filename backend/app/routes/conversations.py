@@ -1,12 +1,15 @@
 import logging
+import json
+import asyncio
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from pydantic import BaseModel
 
-from app.database import get_db
+from app.database import get_db, async_session_maker
 from app.models import Conversation, Message, ConversationType, MessageRole
 from app.config import settings
 
@@ -1273,3 +1276,254 @@ async def import_external_conversations(
         "memories_stored": total_memories,
         "entity_id": data.entity_id,
     }
+
+
+@router.post("/import-external/stream")
+async def import_external_conversations_stream(data: ExternalConversationImport):
+    """
+    Import conversations from external services with streaming progress updates.
+
+    Returns SSE stream with events:
+    - event: start - Import started with total counts
+    - event: progress - Progress update for each message
+    - event: done - Import completed with final stats
+    - event: error - Error occurred
+
+    The import can be cancelled by closing the connection.
+    """
+
+    async def generate_stream():
+        """Generate SSE stream from import processing."""
+        from app.services import memory_service
+
+        async with async_session_maker() as db:
+            try:
+                # Validate entity_id
+                entity = settings.get_entity_by_index(data.entity_id)
+                if not entity:
+                    yield f"event: error\ndata: {json.dumps({'error': f\"Entity '{data.entity_id}' is not configured.\"})}\n\n"
+                    return
+
+                # Parse the export file with IDs
+                try:
+                    conversations, detected_source = _detect_and_parse_export(data.content, data.source, include_ids=True)
+                except ValueError as e:
+                    yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+                    return
+
+                if not conversations:
+                    yield f"event: error\ndata: {json.dumps({'error': 'No conversations found in export file'})}\n\n"
+                    return
+
+                # Build selection map
+                selection_map = {}
+                if data.selected_conversations:
+                    for sel in data.selected_conversations:
+                        selection_map[sel["index"]] = {
+                            "import_as_memory": sel.get("import_as_memory", True),
+                            "import_to_history": sel.get("import_to_history", False),
+                        }
+
+                # Count total messages to import for progress calculation
+                total_messages_to_process = 0
+                conversations_to_import = []
+                for conv in conversations:
+                    conv_index = conv.get("index", 0)
+                    if data.selected_conversations is not None:
+                        if conv_index not in selection_map:
+                            continue
+                        selection = selection_map[conv_index]
+                        if not selection["import_as_memory"] and not selection["import_to_history"]:
+                            continue
+                    conversations_to_import.append(conv)
+                    total_messages_to_process += len(conv.get("messages", []))
+
+                # Get existing message IDs for deduplication
+                all_message_ids = []
+                for conv in conversations_to_import:
+                    for msg in conv.get("messages", []):
+                        if msg.get("id"):
+                            all_message_ids.append(msg["id"])
+
+                existing_ids = set()
+                global_existing_ids = set()
+                if all_message_ids:
+                    result = await db.execute(
+                        select(Message.id)
+                        .join(Conversation)
+                        .where(
+                            Message.id.in_(all_message_ids),
+                            Conversation.entity_id == data.entity_id
+                        )
+                    )
+                    existing_ids = {row[0] for row in result.fetchall()}
+
+                    result = await db.execute(
+                        select(Message.id).where(Message.id.in_(all_message_ids))
+                    )
+                    global_existing_ids = {row[0] for row in result.fetchall()}
+
+                # Send start event
+                yield f"event: start\ndata: {json.dumps({'total_conversations': len(conversations_to_import), 'total_messages': total_messages_to_process, 'source_format': detected_source})}\n\n"
+
+                # Allow the start event to be sent before processing
+                await asyncio.sleep(0)
+
+                # Import state
+                total_messages = 0
+                total_memories = 0
+                imported_conversations = 0
+                skipped_messages = 0
+                history_conversations = 0
+                batch_counter = 0
+                messages_processed = 0
+
+                for conv_idx, conv in enumerate(conversations_to_import):
+                    conv_index = conv.get("index", 0)
+
+                    # Get selection options
+                    if data.selected_conversations is not None:
+                        selection = selection_map[conv_index]
+                        import_as_memory = selection["import_as_memory"]
+                        import_to_history = selection["import_to_history"]
+                    else:
+                        import_as_memory = True
+                        import_to_history = False
+
+                    title = conv.get("title", f"Imported from {detected_source}")
+                    messages = conv.get("messages", [])
+
+                    if not messages:
+                        continue
+
+                    is_imported = not import_to_history
+
+                    # Create conversation
+                    conversation = Conversation(
+                        title=f"[Imported] {title}" if is_imported else title,
+                        conversation_type=ConversationType.NORMAL,
+                        llm_model_used="imported",
+                        entity_id=data.entity_id,
+                        is_imported=is_imported,
+                    )
+                    db.add(conversation)
+                    await db.flush()
+                    conv_id = conversation.id
+
+                    messages_added = 0
+
+                    for msg_idx, msg_data in enumerate(messages):
+                        msg_id = msg_data.get("id")
+                        role = MessageRole.HUMAN if msg_data["role"] == "human" else MessageRole.ASSISTANT
+                        content = msg_data["content"]
+
+                        # Skip duplicates
+                        if msg_id and msg_id in existing_ids:
+                            skipped_messages += 1
+                            messages_processed += 1
+                            continue
+
+                        # Determine message ID
+                        if msg_id and msg_id in global_existing_ids:
+                            use_id = None
+                        else:
+                            use_id = msg_id if msg_id else None
+
+                        # Parse timestamp
+                        created_at = None
+                        if msg_data.get("timestamp"):
+                            try:
+                                created_at = datetime.utcfromtimestamp(msg_data["timestamp"])
+                            except (ValueError, TypeError, OSError):
+                                pass
+                        elif msg_data.get("timestamp_str"):
+                            try:
+                                created_at = datetime.fromisoformat(msg_data["timestamp_str"].replace("Z", "+00:00"))
+                                if created_at.tzinfo is not None:
+                                    created_at = created_at.replace(tzinfo=None)
+                            except (ValueError, TypeError):
+                                pass
+
+                        message_kwargs = {
+                            "id": use_id,
+                            "conversation_id": conv_id,
+                            "role": role,
+                            "content": content,
+                            "times_retrieved": 0,
+                        }
+                        if created_at is not None:
+                            message_kwargs["created_at"] = created_at
+
+                        message = Message(**message_kwargs)
+                        db.add(message)
+                        await db.flush()
+                        total_messages += 1
+                        messages_added += 1
+                        messages_processed += 1
+
+                        message_id = message.id
+                        message_created_at = message.created_at
+
+                        # Store in vector database
+                        if import_as_memory and memory_service.is_configured():
+                            success = await memory_service.store_memory(
+                                message_id=message_id,
+                                conversation_id=conv_id,
+                                role=role.value,
+                                content=content,
+                                created_at=message_created_at,
+                                entity_id=data.entity_id,
+                            )
+                            if success:
+                                total_memories += 1
+
+                        # Batch commit
+                        batch_counter += 1
+                        if batch_counter >= IMPORT_BATCH_SIZE:
+                            await db.commit()
+                            await db.run_sync(lambda session: session.expunge_all())
+                            batch_counter = 0
+
+                        # Send progress every few messages
+                        if messages_processed % 5 == 0 or messages_processed == total_messages_to_process:
+                            progress_pct = round((messages_processed / total_messages_to_process) * 100) if total_messages_to_process > 0 else 100
+                            yield f"event: progress\ndata: {json.dumps({'messages_processed': messages_processed, 'total_messages': total_messages_to_process, 'progress_percent': progress_pct, 'current_conversation': title[:50]})}\n\n"
+                            await asyncio.sleep(0)
+
+                    # Handle empty conversation
+                    if messages_added == 0:
+                        result = await db.execute(
+                            select(Conversation).where(Conversation.id == conv_id)
+                        )
+                        conv_to_delete = result.scalar_one_or_none()
+                        if conv_to_delete:
+                            await db.delete(conv_to_delete)
+                    else:
+                        imported_conversations += 1
+                        if import_to_history:
+                            history_conversations += 1
+
+                await db.commit()
+
+                # Send done event
+                yield f"event: done\ndata: {json.dumps({'status': 'imported', 'source_format': detected_source, 'conversations_imported': imported_conversations, 'conversations_to_history': history_conversations, 'messages_imported': total_messages, 'messages_skipped': skipped_messages, 'memories_stored': total_memories, 'entity_id': data.entity_id})}\n\n"
+
+            except asyncio.CancelledError:
+                # Import was cancelled
+                logger.info("Import cancelled by client")
+                await db.rollback()
+                yield f"event: cancelled\ndata: {json.dumps({'status': 'cancelled', 'messages_imported': total_messages})}\n\n"
+            except Exception as e:
+                logger.exception("Error during streaming import")
+                await db.rollback()
+                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
