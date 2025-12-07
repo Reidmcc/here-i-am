@@ -709,12 +709,22 @@ class App {
             this.updateHeader(conversation);
             this.updateMemoriesPanel();
 
+            // Find the last assistant message index
+            let lastAssistantIndex = -1;
+            for (let i = messages.length - 1; i >= 0; i--) {
+                if (messages[i].role === 'assistant') {
+                    lastAssistantIndex = i;
+                    break;
+                }
+            }
+
             // Render messages
-            messages.forEach(msg => {
+            messages.forEach((msg, index) => {
                 this.addMessage(msg.role, msg.content, {
                     timestamp: msg.created_at,
                     showTimestamp: true,
                     messageId: msg.id,
+                    isLatestAssistant: msg.role === 'assistant' && index === lastAssistantIndex,
                 });
             });
 
@@ -846,6 +856,8 @@ class App {
 
                         if (data.assistant_message_id) {
                             streamingMessage.element.dataset.messageId = data.assistant_message_id;
+                            // Remove regenerate buttons from previous assistant messages
+                            this.removeRegenerateButtons();
                             // Add action buttons inside assistant message bubble
                             const assistantBubble = streamingMessage.element.querySelector('.message-bubble');
                             if (assistantBubble) {
@@ -958,7 +970,9 @@ class App {
                 actionButtons = `<div class="message-bubble-actions">${copyBtn}<button class="message-action-btn edit-btn" title="Edit message"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button></div>`;
             } else if (role === 'assistant') {
                 const speakBtn = this.ttsEnabled ? `<button class="message-action-btn speak-btn" title="Read aloud"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></button>` : '';
-                actionButtons = `<div class="message-bubble-actions">${copyBtn}${speakBtn}<button class="message-action-btn regenerate-btn" title="Regenerate response"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button></div>`;
+                // Only show regenerate button on the latest assistant message
+                const regenerateBtn = options.isLatestAssistant ? `<button class="message-action-btn regenerate-btn" title="Regenerate response"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>` : '';
+                actionButtons = `<div class="message-bubble-actions">${copyBtn}${speakBtn}${regenerateBtn}</div>`;
             }
         }
 
@@ -1118,6 +1132,15 @@ class App {
             this.currentSpeakingBtn.title = 'Read aloud';
             this.currentSpeakingBtn = null;
         }
+    }
+
+    /**
+     * Remove regenerate buttons from all existing assistant messages.
+     * Called before adding a new assistant message to ensure only the latest has the button.
+     */
+    removeRegenerateButtons() {
+        const regenerateBtns = this.elements.messages.querySelectorAll('.message.assistant .regenerate-btn');
+        regenerateBtns.forEach(btn => btn.remove());
     }
 
     /**
@@ -1503,6 +1526,9 @@ class App {
                     onStored: (data) => {
                         // Update the message element with the new ID
                         streamingMessage.element.dataset.messageId = data.assistant_message_id;
+
+                        // Remove regenerate buttons from any previous assistant messages
+                        this.removeRegenerateButtons();
 
                         // Add action buttons inside the message bubble
                         const bubble = streamingMessage.element.querySelector('.message-bubble');
