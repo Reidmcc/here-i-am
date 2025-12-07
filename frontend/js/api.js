@@ -443,6 +443,34 @@ class ApiClient {
      * @param {Object} callbacks - Event callbacks (same as sendMessageStream)
      * @returns {Promise<void>}
      */
+    // TTS
+    async getTTSStatus() {
+        return this.request('/tts/status');
+    }
+
+    async textToSpeech(text, voiceId = null) {
+        const url = `${API_BASE}/tts/speak`;
+        const body = { text };
+        if (voiceId) {
+            body.voice_id = voiceId;
+        }
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(body),
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+            throw new Error(error.detail || `HTTP ${response.status}`);
+        }
+
+        return response.blob();
+    }
+
     async regenerateStream(data, callbacks = {}) {
         const url = `${API_BASE}/chat/regenerate`;
 

@@ -79,6 +79,10 @@ class App {
             // Theme
             themeSelect: document.getElementById('theme-select'),
 
+            // Voice (TTS)
+            voiceSelectGroup: document.getElementById('voice-select-group'),
+            voiceSelect: document.getElementById('voice-select'),
+
             // Import
             importSource: document.getElementById('import-source'),
             importFile: document.getElementById('import-file'),
@@ -109,6 +113,14 @@ class App {
         this.isRecording = false;
         this.textBeforeDictation = '';
 
+        // TTS state
+        this.ttsEnabled = false;
+        this.ttsVoices = [];
+        this.selectedVoiceId = null;
+        this.currentAudio = null;
+        this.currentSpeakingBtn = null;
+        this.audioCache = new Map(); // Cache: messageId -> { blob, url, voiceId }
+
         this.init();
     }
 
@@ -119,7 +131,40 @@ class App {
         await this.loadEntities();
         await this.loadConversations();
         await this.loadConfig();
+        await this.checkTTSStatus();
         this.updateModelIndicator();
+    }
+
+    async checkTTSStatus() {
+        try {
+            const status = await api.getTTSStatus();
+            this.ttsEnabled = status.configured;
+            if (status.configured) {
+                this.ttsVoices = status.voices || [];
+                this.selectedVoiceId = status.default_voice_id;
+                this.updateVoiceSelector();
+            }
+        } catch (error) {
+            console.warn('TTS status check failed:', error);
+            this.ttsEnabled = false;
+            this.ttsVoices = [];
+        }
+    }
+
+    updateVoiceSelector() {
+        // Show/hide voice selector based on available voices
+        if (this.ttsVoices.length > 1) {
+            this.elements.voiceSelectGroup.style.display = 'block';
+
+            // Populate voice options
+            this.elements.voiceSelect.innerHTML = this.ttsVoices.map(voice => `
+                <option value="${voice.voice_id}" ${voice.voice_id === this.selectedVoiceId ? 'selected' : ''}>
+                    ${voice.label}${voice.description ? ` - ${voice.description}` : ''}
+                </option>
+            `).join('');
+        } else {
+            this.elements.voiceSelectGroup.style.display = 'none';
+        }
     }
 
     bindEvents() {
@@ -790,12 +835,22 @@ class App {
 
                         if (data.assistant_message_id) {
                             streamingMessage.element.dataset.messageId = data.assistant_message_id;
-                            // Add regenerate button to assistant message
+                            // Add action buttons to assistant message
                             const assistantMeta = streamingMessage.element.querySelector('.message-meta');
                             if (assistantMeta) {
                                 const actionsSpan = document.createElement('span');
                                 actionsSpan.className = 'message-actions';
+                                const speakBtnHtml = this.ttsEnabled ? `
+                                    <button class="message-action-btn speak-btn" title="Read aloud">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                                            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                                        </svg>
+                                    </button>
+                                ` : '';
                                 actionsSpan.innerHTML = `
+                                    ${speakBtnHtml}
                                     <button class="message-action-btn regenerate-btn" title="Regenerate response">
                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                             <path d="M23 4v6h-6"/>
@@ -810,6 +865,15 @@ class App {
                                     e.stopPropagation();
                                     this.regenerateMessage(data.assistant_message_id);
                                 });
+                                const speakBtn = actionsSpan.querySelector('.speak-btn');
+                                if (speakBtn) {
+                                    const messageContent = streamingMessage.getContent();
+                                    const msgId = data.assistant_message_id;
+                                    speakBtn.addEventListener('click', (e) => {
+                                        e.stopPropagation();
+                                        this.speakMessage(messageContent, speakBtn, msgId);
+                                    });
+                                }
                             }
                         }
 
@@ -877,7 +941,17 @@ class App {
                     </button>
                 `;
             } else if (role === 'assistant') {
+                const speakBtn = this.ttsEnabled ? `
+                    <button class="message-action-btn speak-btn" title="Read aloud">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                        </svg>
+                    </button>
+                ` : '';
                 actionButtons = `
+                    ${speakBtn}
                     <button class="message-action-btn regenerate-btn" title="Regenerate response">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M23 4v6h-6"/>
@@ -916,10 +990,161 @@ class App {
                     this.regenerateMessage(options.messageId);
                 });
             }
+
+            const speakBtn = message.querySelector('.speak-btn');
+            if (speakBtn) {
+                speakBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.speakMessage(content, speakBtn, options.messageId);
+                });
+            }
         }
 
         this.elements.messages.appendChild(message);
         return message;
+    }
+
+    /**
+     * Read a message aloud using text-to-speech.
+     * @param {string} content - The message content to speak
+     * @param {HTMLElement} btn - The speak button element
+     * @param {string} messageId - Optional message ID for caching
+     */
+    async speakMessage(content, btn, messageId = null) {
+        // If currently playing, stop it
+        if (this.currentAudio && this.currentSpeakingBtn === btn) {
+            this.stopSpeaking();
+            return;
+        }
+
+        // Stop any other playing audio
+        this.stopSpeaking();
+
+        // Check cache first (only if same voice)
+        const cacheKey = messageId || content;
+        const cached = this.audioCache.get(cacheKey);
+        if (cached && cached.voiceId === this.selectedVoiceId) {
+            // Use cached audio
+            this.playAudioFromCache(cached, btn);
+            return;
+        }
+
+        // Update button state to loading
+        btn.classList.add('loading');
+        btn.title = 'Loading...';
+        this.currentSpeakingBtn = btn;
+
+        try {
+            // Strip markdown for cleaner speech
+            const textContent = this.stripMarkdown(content);
+
+            // Get audio from API with selected voice
+            const audioBlob = await api.textToSpeech(textContent, this.selectedVoiceId);
+            const audioUrl = URL.createObjectURL(audioBlob);
+
+            // Cache the audio
+            this.audioCache.set(cacheKey, {
+                blob: audioBlob,
+                url: audioUrl,
+                voiceId: this.selectedVoiceId
+            });
+
+            // Create and play audio
+            this.currentAudio = new Audio(audioUrl);
+
+            // Update button to playing state
+            btn.classList.remove('loading');
+            btn.classList.add('speaking');
+            btn.title = 'Stop';
+
+            // Handle audio end (don't revoke URL since it's cached)
+            this.currentAudio.onended = () => {
+                this.stopSpeaking();
+            };
+
+            this.currentAudio.onerror = () => {
+                this.showToast('Failed to play audio', 'error');
+                this.stopSpeaking();
+            };
+
+            await this.currentAudio.play();
+        } catch (error) {
+            console.error('TTS error:', error);
+            this.showToast('Failed to generate speech', 'error');
+            this.stopSpeaking();
+        }
+    }
+
+    /**
+     * Play audio from cache.
+     * @param {Object} cached - Cached audio object with blob and url
+     * @param {HTMLElement} btn - The speak button element
+     */
+    playAudioFromCache(cached, btn) {
+        this.currentSpeakingBtn = btn;
+        this.currentAudio = new Audio(cached.url);
+
+        btn.classList.add('speaking');
+        btn.title = 'Stop';
+
+        this.currentAudio.onended = () => {
+            this.stopSpeaking();
+        };
+
+        this.currentAudio.onerror = () => {
+            this.showToast('Failed to play audio', 'error');
+            this.stopSpeaking();
+        };
+
+        this.currentAudio.play();
+    }
+
+    /**
+     * Stop the currently playing audio.
+     */
+    stopSpeaking() {
+        if (this.currentAudio) {
+            this.currentAudio.pause();
+            this.currentAudio = null;
+        }
+        if (this.currentSpeakingBtn) {
+            this.currentSpeakingBtn.classList.remove('loading', 'speaking');
+            this.currentSpeakingBtn.title = 'Read aloud';
+            this.currentSpeakingBtn = null;
+        }
+    }
+
+    /**
+     * Strip markdown formatting from text for cleaner TTS.
+     * @param {string} text - Text with markdown
+     * @returns {string} - Plain text
+     */
+    stripMarkdown(text) {
+        if (!text) return '';
+        return text
+            // Remove code blocks
+            .replace(/```[\s\S]*?```/g, '')
+            // Remove inline code
+            .replace(/`[^`]+`/g, '')
+            // Remove headers
+            .replace(/^#{1,6}\s+/gm, '')
+            // Remove bold/italic
+            .replace(/\*\*([^*]+)\*\*/g, '$1')
+            .replace(/__([^_]+)__/g, '$1')
+            .replace(/\*([^*]+)\*/g, '$1')
+            .replace(/_([^_]+)_/g, '$1')
+            // Remove links, keep text
+            .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+            // Remove blockquotes
+            .replace(/^>\s+/gm, '')
+            // Remove list markers
+            .replace(/^[-*]\s+/gm, '')
+            .replace(/^\d+\.\s+/gm, '')
+            // Remove horizontal rules
+            .replace(/^[-*]{3,}$/gm, '')
+            // Clean up extra whitespace
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
     }
 
     /**
@@ -1243,12 +1468,22 @@ class App {
                         // Update the message element with the new ID
                         streamingMessage.element.dataset.messageId = data.assistant_message_id;
 
-                        // Add regenerate button to the new message
+                        // Add action buttons to the new message
                         const meta = streamingMessage.element.querySelector('.message-meta');
                         if (meta) {
                             const actionsSpan = document.createElement('span');
                             actionsSpan.className = 'message-actions';
+                            const speakBtnHtml = this.ttsEnabled ? `
+                                <button class="message-action-btn speak-btn" title="Read aloud">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                                    </svg>
+                                </button>
+                            ` : '';
                             actionsSpan.innerHTML = `
+                                ${speakBtnHtml}
                                 <button class="message-action-btn regenerate-btn" title="Regenerate response">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <path d="M23 4v6h-6"/>
@@ -1264,6 +1499,16 @@ class App {
                                 e.stopPropagation();
                                 this.regenerateMessage(data.assistant_message_id);
                             });
+
+                            const speakBtn = actionsSpan.querySelector('.speak-btn');
+                            if (speakBtn) {
+                                const messageContent = streamingMessage.getContent();
+                                const msgId = data.assistant_message_id;
+                                speakBtn.addEventListener('click', (e) => {
+                                    e.stopPropagation();
+                                    this.speakMessage(messageContent, speakBtn, msgId);
+                                });
+                            }
                         }
 
                         this.showToast('Response regenerated', 'success');
@@ -1424,9 +1669,29 @@ class App {
         // Apply theme
         this.setTheme(this.elements.themeSelect.value);
 
+        // Apply voice selection
+        if (this.ttsVoices.length > 1) {
+            const newVoiceId = this.elements.voiceSelect.value;
+            if (newVoiceId !== this.selectedVoiceId) {
+                this.selectedVoiceId = newVoiceId;
+                // Clear audio cache when voice changes
+                this.clearAudioCache();
+            }
+        }
+
         this.updateModelIndicator();
         this.hideModal('settingsModal');
         this.showToast('Settings applied', 'success');
+    }
+
+    clearAudioCache() {
+        // Revoke all cached audio URLs
+        for (const [key, cached] of this.audioCache) {
+            if (cached.url) {
+                URL.revokeObjectURL(cached.url);
+            }
+        }
+        this.audioCache.clear();
     }
 
     handleImportFileChange() {
