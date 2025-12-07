@@ -830,6 +830,11 @@ h4.md-header {
     display: flex;
 }
 
+/* Delete modal should appear above other modals (confirmation dialog) */
+#delete-modal {
+    z-index: 1100;
+}
+
 .modal-content {
     background-color: var(--bg-secondary);
     border: 1px solid var(--border-color);
