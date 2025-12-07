@@ -211,7 +211,7 @@ class MemoryService:
                 exclude_conversation_id=exclude_conversation_id,
             )
             if cached_results is not None:
-                logger.debug("search_memories: CACHE HIT")
+                logger.info(f"[MEMORY] Cache HIT for entity={entity_id}")
                 # Apply exclude_ids filter to cached results
                 filtered = []
                 for mem in cached_results:
@@ -228,7 +228,7 @@ class MemoryService:
             # Query more than we need to allow for filtering by exclude_ids
             fetch_k = top_k * 2
 
-            logger.debug(f"search_memories: threshold={settings.similarity_threshold}, exclude_conv={exclude_conversation_id}")
+            logger.info(f"[MEMORY] Searching memories: threshold={settings.similarity_threshold}, top_k={top_k}, entity={entity_id}")
 
             # Build search query with optional metadata filter
             search_query = {
@@ -253,7 +253,7 @@ class MemoryService:
             # Pinecone inference search returns: results.result.hits
             # Each hit has: _id, _score, fields (metadata dict)
             hits = results.result.hits if hasattr(results, 'result') and hasattr(results.result, 'hits') else []
-            logger.debug(f"search_memories: got {len(hits)} hits from Pinecone")
+            logger.info(f"[MEMORY] Pinecone returned {len(hits)} candidate memories")
 
             for hit in hits:
                 # Get hit properties via to_dict()
@@ -305,7 +305,7 @@ class MemoryService:
                 if len(memories) >= top_k:
                     break
 
-            logger.debug(f"search_memories: returning {len(memories)} memories")
+            logger.info(f"[MEMORY] Search complete: returning {len(memories)} memories (filtered from {len(hits)} candidates)")
             return memories
         except Exception as e:
             logger.error(f"Error searching memories: {e}")
