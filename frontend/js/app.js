@@ -17,7 +17,7 @@ class App {
             maxTokens: 4096,
             systemPrompt: null,
             conversationType: 'normal',
-            verbosity: 'low',
+            verbosity: 'medium',
         };
         this.isLoading = false;
         this.retrievedMemories = [];
