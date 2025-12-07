@@ -226,8 +226,16 @@
                         <!-- Conversations will be loaded here -->
                     </div>
 
-                    <div class="form-group">
+                    <div class="form-group import-actions">
                         <button id="import-btn" class="primary-btn">Import Selected</button>
+                        <button id="import-cancel-btn" class="danger-btn" style="display: none;">Cancel Import</button>
+                    </div>
+
+                    <div id="import-progress" class="import-progress" style="display: none;">
+                        <div class="import-progress-bar-container">
+                            <div id="import-progress-bar" class="import-progress-bar"></div>
+                        </div>
+                        <div id="import-progress-text" class="import-progress-text">Starting import...</div>
                     </div>
                 </div>
 

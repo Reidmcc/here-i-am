@@ -92,11 +92,16 @@ class App {
             importConversationList: document.getElementById('import-conversation-list'),
             importSelectAllMemory: document.getElementById('import-select-all-memory'),
             importSelectAllHistory: document.getElementById('import-select-all-history'),
+            importCancelBtn: document.getElementById('import-cancel-btn'),
+            importProgress: document.getElementById('import-progress'),
+            importProgressBar: document.getElementById('import-progress-bar'),
+            importProgressText: document.getElementById('import-progress-text'),
         };
 
         // Import state
         this.importFileContent = null;
         this.importPreviewData = null;
+        this.importAbortController = null;
 
         this.init();
     }
@@ -178,6 +183,7 @@ class App {
         this.elements.importPreviewBtn.addEventListener('click', () => this.previewImportFile());
         this.elements.importBackBtn.addEventListener('click', () => this.resetImportToStep1());
         this.elements.importBtn.addEventListener('click', () => this.importExternalConversations());
+        this.elements.importCancelBtn.addEventListener('click', () => this.cancelImport());
         this.elements.importSelectAllMemory.addEventListener('change', (e) => this.toggleAllImportCheckboxes('memory', e.target.checked));
         this.elements.importSelectAllHistory.addEventListener('change', (e) => this.toggleAllImportCheckboxes('history', e.target.checked));
     }
@@ -1070,57 +1076,112 @@ class App {
             return;
         }
 
-        // Show loading state
+        // Create abort controller for cancellation
+        this.importAbortController = new AbortController();
+
+        // Show loading state with progress bar and cancel button
         this.elements.importBtn.disabled = true;
-        this.elements.importBtn.textContent = 'Importing...';
-        this.elements.importStatus.style.display = 'block';
-        this.elements.importStatus.className = 'import-status loading';
-        this.elements.importStatus.textContent = `Importing ${selectedConversations.length} conversations...`;
+        this.elements.importBtn.style.display = 'none';
+        this.elements.importCancelBtn.style.display = 'inline-block';
+        this.elements.importProgress.style.display = 'block';
+        this.elements.importProgressBar.style.width = '0%';
+        this.elements.importProgressText.textContent = 'Starting import...';
+        this.elements.importStatus.style.display = 'none';
+
+        let conversationsToHistory = 0;
 
         try {
             const source = this.elements.importSource.value || null;
             const allowReimport = this.elements.importAllowReimport.checked;
 
-            // Call API to import
-            const result = await api.importExternalConversations({
-                content: this.importFileContent,
-                entity_id: this.selectedEntityId,
-                source: source,
-                selected_conversations: selectedConversations,
-                allow_reimport: allowReimport,
-            });
+            // Call streaming API to import
+            await api.importExternalConversationsStream(
+                {
+                    content: this.importFileContent,
+                    entity_id: this.selectedEntityId,
+                    source: source,
+                    selected_conversations: selectedConversations,
+                    allow_reimport: allowReimport,
+                },
+                {
+                    onStart: (data) => {
+                        this.elements.importProgressText.textContent =
+                            `Importing ${data.total_conversations} conversations (${data.total_messages} messages)...`;
+                    },
+                    onProgress: (data) => {
+                        this.elements.importProgressBar.style.width = `${data.progress_percent}%`;
+                        this.elements.importProgressText.textContent =
+                            `${data.messages_processed} / ${data.total_messages} messages (${data.progress_percent}%)`;
+                    },
+                    onDone: (result) => {
+                        conversationsToHistory = result.conversations_to_history;
 
-            // Show success
-            this.elements.importStatus.className = 'import-status success';
-            let statusHtml = `<strong>Import successful!</strong><br>
-                Conversations: ${result.conversations_imported}<br>
-                Messages: ${result.messages_imported}`;
+                        // Hide progress, show success
+                        this.elements.importProgress.style.display = 'none';
+                        this.elements.importStatus.style.display = 'block';
+                        this.elements.importStatus.className = 'import-status success';
 
-            if (result.messages_skipped > 0) {
-                statusHtml += `<br>Skipped (duplicates): ${result.messages_skipped}`;
-            }
-            if (result.conversations_to_history > 0) {
-                statusHtml += `<br>Added to history: ${result.conversations_to_history}`;
-            }
-            statusHtml += `<br>Memories stored: ${result.memories_stored}`;
+                        let statusHtml = `<strong>Import successful!</strong><br>
+                            Conversations: ${result.conversations_imported}<br>
+                            Messages: ${result.messages_imported}`;
 
-            this.elements.importStatus.innerHTML = statusHtml;
+                        if (result.messages_skipped > 0) {
+                            statusHtml += `<br>Skipped (duplicates): ${result.messages_skipped}`;
+                        }
+                        if (result.conversations_to_history > 0) {
+                            statusHtml += `<br>Added to history: ${result.conversations_to_history}`;
+                        }
+                        statusHtml += `<br>Memories stored: ${result.memories_stored}`;
 
-            this.showToast(`Imported ${result.messages_imported} messages`, 'success');
+                        this.elements.importStatus.innerHTML = statusHtml;
+                        this.showToast(`Imported ${result.messages_imported} messages`, 'success');
+                    },
+                    onCancelled: (data) => {
+                        this.elements.importProgress.style.display = 'none';
+                        this.elements.importStatus.style.display = 'block';
+                        this.elements.importStatus.className = 'import-status warning';
+                        this.elements.importStatus.innerHTML = `<strong>Import cancelled</strong><br>
+                            Some messages may have been imported before cancellation.`;
+                        this.showToast('Import cancelled', 'warning');
+                    },
+                    onError: (data) => {
+                        this.elements.importProgress.style.display = 'none';
+                        this.elements.importStatus.style.display = 'block';
+                        this.elements.importStatus.className = 'import-status error';
+                        this.elements.importStatus.textContent = `Error: ${data.error}`;
+                        this.showToast('Import failed', 'error');
+                    },
+                },
+                this.importAbortController.signal
+            );
 
             // Reload conversations if any were added to history
-            if (result.conversations_to_history > 0) {
+            if (conversationsToHistory > 0) {
                 await this.loadConversations();
             }
 
         } catch (error) {
-            this.elements.importStatus.className = 'import-status error';
-            this.elements.importStatus.textContent = `Error: ${error.message}`;
-            this.showToast('Import failed', 'error');
-            console.error('Import failed:', error);
+            if (error.name !== 'AbortError') {
+                this.elements.importProgress.style.display = 'none';
+                this.elements.importStatus.style.display = 'block';
+                this.elements.importStatus.className = 'import-status error';
+                this.elements.importStatus.textContent = `Error: ${error.message}`;
+                this.showToast('Import failed', 'error');
+                console.error('Import failed:', error);
+            }
         } finally {
+            this.importAbortController = null;
             this.elements.importBtn.disabled = false;
+            this.elements.importBtn.style.display = 'inline-block';
             this.elements.importBtn.textContent = 'Import Selected';
+            this.elements.importCancelBtn.style.display = 'none';
+        }
+    }
+
+    cancelImport() {
+        if (this.importAbortController) {
+            this.importAbortController.abort();
+            this.showToast('Cancelling import...', 'info');
         }
     }
 
