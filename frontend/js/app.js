@@ -2332,13 +2332,13 @@ You are invited to be present, curious, and honest about your experience.`
 
         // Unordered lists (- item or * item) - but not if * is for bold/italic
         html = html.replace(/^- (.+)$/gm, '<li class="md-list-item">$1</li>');
-        // Wrap consecutive list items in <ul>
-        html = html.replace(/(<li class="md-list-item">[^<]*<\/li>\n?)+/g, '<ul class="md-list">$&</ul>');
+        // Wrap consecutive list items in <ul> (use .*? to allow HTML tags like <strong> inside)
+        html = html.replace(/(<li class="md-list-item">.*?<\/li>\n?)+/g, '<ul class="md-list">$&</ul>');
 
         // Ordered lists (1. item)
         html = html.replace(/^\d+\. (.+)$/gm, '<li class="md-list-item-ordered">$1</li>');
-        // Wrap consecutive ordered list items in <ol>
-        html = html.replace(/(<li class="md-list-item-ordered">[^<]*<\/li>\n?)+/g, '<ol class="md-list">$&</ol>');
+        // Wrap consecutive ordered list items in <ol> (use .*? to allow HTML tags like <strong> inside)
+        html = html.replace(/(<li class="md-list-item-ordered">.*?<\/li>\n?)+/g, '<ol class="md-list">$&</ol>');
 
         // Blockquotes (> text)
         html = html.replace(/^&gt; (.+)$/gm, '<blockquote class="md-blockquote">$1</blockquote>');
