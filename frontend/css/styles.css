@@ -772,12 +772,15 @@ h4.md-header {
 
 .md-list {
     margin: 4px 0;
-    padding-left: 24px;
+    padding-left: 0;
+    margin-left: 24px;
+    list-style-position: outside;
 }
 
 .md-list-item,
 .md-list-item-ordered {
     margin: 0;
+    padding-left: 4px;
     line-height: 1.4;
 }
 
