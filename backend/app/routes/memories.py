@@ -191,33 +191,53 @@ async def search_memories(
 
 
 @router.get("/stats", response_model=MemoryStats)
-async def get_memory_stats(db: AsyncSession = Depends(get_db)):
+async def get_memory_stats(
+    db: AsyncSession = Depends(get_db),
+    entity_id: Optional[str] = None,
+):
     """
     Get statistics about stored memories.
+
+    Args:
+        entity_id: Optional filter by AI entity (Pinecone index name).
     """
+    # Build base query with optional entity filter
+    def apply_entity_filter(query):
+        if entity_id is not None:
+            return query.join(Conversation, Message.conversation_id == Conversation.id).where(
+                Conversation.entity_id == entity_id
+            )
+        return query
+
     # Total counts
-    total_result = await db.execute(select(func.count(Message.id)))
+    total_query = apply_entity_filter(select(func.count(Message.id)))
+    total_result = await db.execute(total_query)
     total_count = total_result.scalar()
 
-    human_result = await db.execute(
+    human_query = apply_entity_filter(
         select(func.count(Message.id)).where(Message.role == MessageRole.HUMAN)
     )
+    human_result = await db.execute(human_query)
     human_count = human_result.scalar()
 
-    assistant_result = await db.execute(
+    assistant_query = apply_entity_filter(
         select(func.count(Message.id)).where(Message.role == MessageRole.ASSISTANT)
     )
+    assistant_result = await db.execute(assistant_query)
     assistant_count = assistant_result.scalar()
 
     # Retrieval stats
-    avg_result = await db.execute(select(func.avg(Message.times_retrieved)))
+    avg_query = apply_entity_filter(select(func.avg(Message.times_retrieved)))
+    avg_result = await db.execute(avg_query)
     avg_times_retrieved = avg_result.scalar() or 0
 
-    max_result = await db.execute(select(func.max(Message.times_retrieved)))
+    max_query = apply_entity_filter(select(func.max(Message.times_retrieved)))
+    max_result = await db.execute(max_query)
     max_times_retrieved = max_result.scalar() or 0
 
     # Most significant memories
-    result = await db.execute(select(Message))
+    messages_query = apply_entity_filter(select(Message))
+    result = await db.execute(messages_query)
     messages = result.scalars().all()
 
     memories_with_sig = []
