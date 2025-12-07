@@ -59,7 +59,6 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     pinecone_api_key: str = ""
     elevenlabs_api_key: str = ""
-    pinecone_index_name: str = "memories"  # Default/fallback index
 
     # ElevenLabs TTS settings
     elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # Default voice (Rachel)
@@ -148,36 +147,30 @@ class Settings(BaseSettings):
         """
         Parse and return the list of configured entities.
 
-        If PINECONE_INDEXES is set, parse it as JSON.
-        Otherwise, create a default entity from PINECONE_INDEX_NAME.
+        Requires PINECONE_INDEXES to be set as a JSON array.
+        Returns empty list if not configured.
+        Raises ValueError if PINECONE_INDEXES contains invalid JSON.
         """
-        if self.pinecone_indexes:
-            try:
-                indexes_data = json.loads(self.pinecone_indexes)
-                return [
-                    EntityConfig(
-                        index_name=idx.get("index_name", "memories"),
-                        label=idx.get("label", idx.get("index_name", "Default")),
-                        description=idx.get("description", ""),
-                        llm_provider=idx.get("llm_provider", "anthropic"),
-                        default_model=idx.get("default_model"),
-                        host=idx.get("host"),
-                    )
-                    for idx in indexes_data
-                ]
-            except json.JSONDecodeError:
-                pass
+        if not self.pinecone_indexes:
+            return []
 
-        # Fallback to single index from pinecone_index_name
-        return [
-            EntityConfig(
-                index_name=self.pinecone_index_name,
-                label="Default",
-                description="Default AI entity",
-                llm_provider="anthropic",
-                default_model=self.default_model,
+        try:
+            indexes_data = json.loads(self.pinecone_indexes)
+            return [
+                EntityConfig(
+                    index_name=idx.get("index_name", "memories"),
+                    label=idx.get("label", idx.get("index_name", "Default")),
+                    description=idx.get("description", ""),
+                    llm_provider=idx.get("llm_provider", "anthropic"),
+                    default_model=idx.get("default_model"),
+                    host=idx.get("host"),
+                )
+                for idx in indexes_data
+            ]
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Invalid JSON in PINECONE_INDEXES environment variable: {e}"
             )
-        ]
 
     def get_default_model_for_provider(self, provider: str) -> str:
         """Get the default model for a given provider."""
@@ -193,14 +186,10 @@ class Settings(BaseSettings):
                 return entity
         return None
 
-    def get_default_entity(self) -> EntityConfig:
-        """Get the first (default) entity."""
+    def get_default_entity(self) -> Optional[EntityConfig]:
+        """Get the first (default) entity, or None if no entities configured."""
         entities = self.get_entities()
-        return entities[0] if entities else EntityConfig(
-            index_name=self.pinecone_index_name,
-            label="Default",
-            description="Default AI entity",
-        )
+        return entities[0] if entities else None
 
     def get_voices(self) -> List[VoiceConfig]:
         """
