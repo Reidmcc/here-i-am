@@ -811,12 +811,18 @@ class App {
                         // Messages have been stored - update DOM with IDs and add action buttons
                         if (data.human_message_id && userMessageEl) {
                             userMessageEl.dataset.messageId = data.human_message_id;
-                            // Add edit button to user message
-                            const userMeta = userMessageEl.querySelector('.message-meta');
-                            if (userMeta) {
-                                const actionsSpan = document.createElement('span');
-                                actionsSpan.className = 'message-actions';
-                                actionsSpan.innerHTML = `
+                            // Add action buttons inside user message bubble
+                            const userBubble = userMessageEl.querySelector('.message-bubble');
+                            if (userBubble) {
+                                const actionsDiv = document.createElement('div');
+                                actionsDiv.className = 'message-bubble-actions';
+                                actionsDiv.innerHTML = `
+                                    <button class="message-action-btn copy-btn" title="Copy to clipboard">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                                        </svg>
+                                    </button>
                                     <button class="message-action-btn edit-btn" title="Edit message">
                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                             <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -824,8 +830,13 @@ class App {
                                         </svg>
                                     </button>
                                 `;
-                                userMeta.appendChild(actionsSpan);
-                                const editBtn = actionsSpan.querySelector('.edit-btn');
+                                userBubble.appendChild(actionsDiv);
+                                const copyBtn = actionsDiv.querySelector('.copy-btn');
+                                copyBtn.addEventListener('click', (e) => {
+                                    e.stopPropagation();
+                                    this.copyMessage(content, copyBtn);
+                                });
+                                const editBtn = actionsDiv.querySelector('.edit-btn');
                                 editBtn.addEventListener('click', (e) => {
                                     e.stopPropagation();
                                     this.startEditMessage(userMessageEl, data.human_message_id, content);
@@ -835,11 +846,11 @@ class App {
 
                         if (data.assistant_message_id) {
                             streamingMessage.element.dataset.messageId = data.assistant_message_id;
-                            // Add action buttons to assistant message
-                            const assistantMeta = streamingMessage.element.querySelector('.message-meta');
-                            if (assistantMeta) {
-                                const actionsSpan = document.createElement('span');
-                                actionsSpan.className = 'message-actions';
+                            // Add action buttons inside assistant message bubble
+                            const assistantBubble = streamingMessage.element.querySelector('.message-bubble');
+                            if (assistantBubble) {
+                                const actionsDiv = document.createElement('div');
+                                actionsDiv.className = 'message-bubble-actions';
                                 const speakBtnHtml = this.ttsEnabled ? `
                                     <button class="message-action-btn speak-btn" title="Read aloud">
                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -849,7 +860,13 @@ class App {
                                         </svg>
                                     </button>
                                 ` : '';
-                                actionsSpan.innerHTML = `
+                                actionsDiv.innerHTML = `
+                                    <button class="message-action-btn copy-btn" title="Copy to clipboard">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                                        </svg>
+                                    </button>
                                     ${speakBtnHtml}
                                     <button class="message-action-btn regenerate-btn" title="Regenerate response">
                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -859,16 +876,21 @@ class App {
                                         </svg>
                                     </button>
                                 `;
-                                assistantMeta.appendChild(actionsSpan);
-                                const regenerateBtn = actionsSpan.querySelector('.regenerate-btn');
+                                assistantBubble.appendChild(actionsDiv);
+                                const messageContent = streamingMessage.getContent();
+                                const msgId = data.assistant_message_id;
+                                const copyBtn = actionsDiv.querySelector('.copy-btn');
+                                copyBtn.addEventListener('click', (e) => {
+                                    e.stopPropagation();
+                                    this.copyMessage(messageContent, copyBtn);
+                                });
+                                const regenerateBtn = actionsDiv.querySelector('.regenerate-btn');
                                 regenerateBtn.addEventListener('click', (e) => {
                                     e.stopPropagation();
                                     this.regenerateMessage(data.assistant_message_id);
                                 });
-                                const speakBtn = actionsSpan.querySelector('.speak-btn');
+                                const speakBtn = actionsDiv.querySelector('.speak-btn');
                                 if (speakBtn) {
-                                    const messageContent = streamingMessage.getContent();
-                                    const msgId = data.assistant_message_id;
                                     speakBtn.addEventListener('click', (e) => {
                                         e.stopPropagation();
                                         this.speakMessage(messageContent, speakBtn, msgId);
@@ -928,17 +950,28 @@ class App {
         const timestamp = options.timestamp ? new Date(options.timestamp) : new Date();
         const timeStr = timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-        // Build action buttons based on role
+        // Build action buttons based on role (now inside the bubble)
         let actionButtons = '';
+        const copyBtn = `
+            <button class="message-action-btn copy-btn" title="Copy to clipboard">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+            </button>
+        `;
         if (options.messageId && !options.isError) {
             if (role === 'human') {
                 actionButtons = `
-                    <button class="message-action-btn edit-btn" title="Edit message">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                        </svg>
-                    </button>
+                    <div class="message-bubble-actions">
+                        ${copyBtn}
+                        <button class="message-action-btn edit-btn" title="Edit message">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                            </svg>
+                        </button>
+                    </div>
                 `;
             } else if (role === 'assistant') {
                 const speakBtn = this.ttsEnabled ? `
@@ -951,30 +984,40 @@ class App {
                     </button>
                 ` : '';
                 actionButtons = `
-                    ${speakBtn}
-                    <button class="message-action-btn regenerate-btn" title="Regenerate response">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M23 4v6h-6"/>
-                            <path d="M1 20v-6h6"/>
-                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                        </svg>
-                    </button>
+                    <div class="message-bubble-actions">
+                        ${copyBtn}
+                        ${speakBtn}
+                        <button class="message-action-btn regenerate-btn" title="Regenerate response">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M23 4v6h-6"/>
+                                <path d="M1 20v-6h6"/>
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                            </svg>
+                        </button>
+                    </div>
                 `;
             }
         }
 
         message.innerHTML = `
-            <div class="message-bubble ${options.isError ? 'error' : ''}">${this.renderMarkdown(content)}</div>
+            <div class="message-bubble ${options.isError ? 'error' : ''}">${this.renderMarkdown(content)}${actionButtons}</div>
             ${options.showTimestamp !== false ? `
                 <div class="message-meta">
                     <span>${timeStr}</span>
-                    <span class="message-actions">${actionButtons}</span>
                 </div>
             ` : ''}
         `;
 
         // Bind action button events
         if (options.messageId) {
+            const copyBtn = message.querySelector('.copy-btn');
+            if (copyBtn) {
+                copyBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.copyMessage(content, copyBtn);
+                });
+            }
+
             const editBtn = message.querySelector('.edit-btn');
             if (editBtn) {
                 editBtn.addEventListener('click', (e) => {
@@ -1111,6 +1154,36 @@ class App {
             this.currentSpeakingBtn.classList.remove('loading', 'speaking');
             this.currentSpeakingBtn.title = 'Read aloud';
             this.currentSpeakingBtn = null;
+        }
+    }
+
+    /**
+     * Copy message content to clipboard.
+     * @param {string} content - The message content to copy
+     * @param {HTMLElement} btn - The copy button element
+     */
+    async copyMessage(content, btn) {
+        try {
+            await navigator.clipboard.writeText(content);
+            btn.classList.add('copied');
+            btn.title = 'Copied!';
+
+            // Update icon to checkmark temporarily
+            const originalSvg = btn.innerHTML;
+            btn.innerHTML = `
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="20 6 9 17 4 12"/>
+                </svg>
+            `;
+
+            setTimeout(() => {
+                btn.classList.remove('copied');
+                btn.title = 'Copy to clipboard';
+                btn.innerHTML = originalSvg;
+            }, 2000);
+        } catch (error) {
+            console.error('Failed to copy:', error);
+            this.showToast('Failed to copy to clipboard', 'error');
         }
     }
 
@@ -1468,11 +1541,11 @@ class App {
                         // Update the message element with the new ID
                         streamingMessage.element.dataset.messageId = data.assistant_message_id;
 
-                        // Add action buttons to the new message
-                        const meta = streamingMessage.element.querySelector('.message-meta');
-                        if (meta) {
-                            const actionsSpan = document.createElement('span');
-                            actionsSpan.className = 'message-actions';
+                        // Add action buttons inside the message bubble
+                        const bubble = streamingMessage.element.querySelector('.message-bubble');
+                        if (bubble) {
+                            const actionsDiv = document.createElement('div');
+                            actionsDiv.className = 'message-bubble-actions';
                             const speakBtnHtml = this.ttsEnabled ? `
                                 <button class="message-action-btn speak-btn" title="Read aloud">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1482,7 +1555,13 @@ class App {
                                     </svg>
                                 </button>
                             ` : '';
-                            actionsSpan.innerHTML = `
+                            actionsDiv.innerHTML = `
+                                <button class="message-action-btn copy-btn" title="Copy to clipboard">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                                    </svg>
+                                </button>
                                 ${speakBtnHtml}
                                 <button class="message-action-btn regenerate-btn" title="Regenerate response">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1492,18 +1571,25 @@ class App {
                                     </svg>
                                 </button>
                             `;
-                            meta.appendChild(actionsSpan);
+                            bubble.appendChild(actionsDiv);
 
-                            const regenerateBtn = actionsSpan.querySelector('.regenerate-btn');
+                            const messageContent = streamingMessage.getContent();
+                            const msgId = data.assistant_message_id;
+
+                            const copyBtn = actionsDiv.querySelector('.copy-btn');
+                            copyBtn.addEventListener('click', (e) => {
+                                e.stopPropagation();
+                                this.copyMessage(messageContent, copyBtn);
+                            });
+
+                            const regenerateBtn = actionsDiv.querySelector('.regenerate-btn');
                             regenerateBtn.addEventListener('click', (e) => {
                                 e.stopPropagation();
                                 this.regenerateMessage(data.assistant_message_id);
                             });
 
-                            const speakBtn = actionsSpan.querySelector('.speak-btn');
+                            const speakBtn = actionsDiv.querySelector('.speak-btn');
                             if (speakBtn) {
-                                const messageContent = streamingMessage.getContent();
-                                const msgId = data.assistant_message_id;
                                 speakBtn.addEventListener('click', (e) => {
                                     e.stopPropagation();
                                     this.speakMessage(messageContent, speakBtn, msgId);
