@@ -470,6 +470,73 @@ async def unarchive_conversation(
     return {"status": "unarchived", "id": conversation_id}
 
 
+@router.delete("/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Permanently delete a conversation and all its messages.
+
+    This action cannot be undone. The conversation must be archived first
+    to prevent accidental deletion of active conversations.
+
+    Also deletes associated memories from the vector database.
+    """
+    from app.services import memory_service
+
+    result = await db.execute(
+        select(Conversation).where(Conversation.id == conversation_id)
+    )
+    conversation = result.scalar_one_or_none()
+
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if not conversation.is_archived:
+        raise HTTPException(
+            status_code=400,
+            detail="Conversation must be archived before deletion. Archive it first."
+        )
+
+    entity_id = conversation.entity_id
+
+    # Get all message IDs for this conversation (to delete from vector store)
+    msg_result = await db.execute(
+        select(Message.id).where(Message.conversation_id == conversation_id)
+    )
+    message_ids = [row[0] for row in msg_result.fetchall()]
+
+    # Delete from vector database first
+    deleted_memories = 0
+    if memory_service.is_configured() and message_ids:
+        for msg_id in message_ids:
+            success = await memory_service.delete_memory(msg_id, entity_id)
+            if success:
+                deleted_memories += 1
+
+    # Delete messages from SQL (cascade would handle this, but let's be explicit)
+    await db.execute(
+        delete(Message).where(Message.conversation_id == conversation_id)
+    )
+
+    # Delete the conversation
+    await db.delete(conversation)
+    await db.commit()
+
+    logger.info(
+        f"Deleted conversation {conversation_id}: "
+        f"{len(message_ids)} messages, {deleted_memories} memories removed from vector store"
+    )
+
+    return {
+        "status": "deleted",
+        "id": conversation_id,
+        "messages_deleted": len(message_ids),
+        "memories_deleted": deleted_memories,
+    }
+
+
 @router.get("/{conversation_id}/export", response_model=ConversationExport)
 async def export_conversation(
     conversation_id: str,

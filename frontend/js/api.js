@@ -101,6 +101,12 @@ class ApiClient {
         return this.request(url);
     }
 
+    async deleteConversation(id) {
+        return this.request(`/conversations/${id}`, {
+            method: 'DELETE',
+        });
+    }
+
     async exportConversation(id) {
         return this.request(`/conversations/${id}/export`);
     }

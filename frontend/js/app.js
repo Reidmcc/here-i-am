@@ -52,6 +52,8 @@ class App {
             settingsModal: document.getElementById('settings-modal'),
             memoriesModal: document.getElementById('memories-modal'),
             archiveModal: document.getElementById('archive-modal'),
+            deleteModal: document.getElementById('delete-modal'),
+            deleteConversationTitle: document.getElementById('delete-conversation-title'),
             archivedModal: document.getElementById('archived-modal'),
             archivedList: document.getElementById('archived-list'),
 
@@ -165,6 +167,11 @@ class App {
 
         // Archived modal
         document.getElementById('close-archived').addEventListener('click', () => this.hideModal('archivedModal'));
+
+        // Delete modal
+        document.getElementById('close-delete').addEventListener('click', () => this.hideModal('deleteModal'));
+        document.getElementById('cancel-delete').addEventListener('click', () => this.hideModal('deleteModal'));
+        document.getElementById('confirm-delete').addEventListener('click', () => this.deleteConversation());
 
         // Import functionality
         this.elements.importFile.addEventListener('change', () => this.handleImportFileChange());
@@ -1322,6 +1329,7 @@ You are invited to be present, curious, and honest about your experience.`
                     </div>
                     <div class="archived-item-actions">
                         <button class="unarchive-btn" onclick="app.unarchiveConversation('${conv.id}')">Restore</button>
+                        <button class="delete-btn" onclick="app.showDeleteModal('${conv.id}', '${this.escapeHtml(conv.title || 'Untitled').replace(/'/g, "\\'")}')">Delete</button>
                     </div>
                 </div>
             `).join('');
@@ -1344,6 +1352,28 @@ You are invited to be present, curious, and honest about your experience.`
         } catch (error) {
             this.showToast('Failed to restore conversation', 'error');
             console.error('Failed to unarchive conversation:', error);
+        }
+    }
+
+    showDeleteModal(conversationId, conversationTitle) {
+        this.pendingDeleteId = conversationId;
+        this.elements.deleteConversationTitle.textContent = conversationTitle;
+        this.showModal('deleteModal');
+    }
+
+    async deleteConversation() {
+        const conversationId = this.pendingDeleteId;
+        if (!conversationId) return;
+
+        try {
+            await api.deleteConversation(conversationId);
+            await this.loadArchivedConversations();
+            this.hideModal('deleteModal');
+            this.pendingDeleteId = null;
+            this.showToast('Conversation permanently deleted', 'success');
+        } catch (error) {
+            this.showToast('Failed to delete conversation', 'error');
+            console.error('Failed to delete conversation:', error);
         }
     }
 

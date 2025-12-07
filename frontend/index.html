@@ -279,6 +279,25 @@
         </div>
     </div>
 
+    <!-- Delete Confirmation Modal -->
+    <div class="modal" id="delete-modal">
+        <div class="modal-content small">
+            <div class="modal-header">
+                <h3>Delete Conversation?</h3>
+                <button class="close-btn" id="close-delete">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p><strong id="delete-conversation-title"></strong></p>
+                <p>This will permanently delete this conversation and all its messages.</p>
+                <p><strong>This action cannot be undone.</strong></p>
+            </div>
+            <div class="modal-footer">
+                <button id="cancel-delete" class="secondary-btn">Cancel</button>
+                <button id="confirm-delete" class="danger-btn">Delete Permanently</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Archived Conversations Modal -->
     <div class="modal" id="archived-modal">
         <div class="modal-content wide">
