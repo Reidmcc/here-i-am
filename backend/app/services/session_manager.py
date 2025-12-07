@@ -531,6 +531,8 @@ class SessionManager:
         new_memories = []
         truly_new_memory_ids = set()  # Only memories never seen before (for cache stability)
 
+        logger.info(f"[MEMORY] Processing message for conversation {session.conversation_id[:8]}...")
+
         # Step 1-2: Retrieve and deduplicate memories
         if memory_service.is_configured():
             # Get archived conversation IDs to exclude from retrieval
@@ -588,6 +590,16 @@ class SessionManager:
                                 db,
                                 entity_id=session.entity_id,
                             )
+
+            # Log memory retrieval summary
+            if new_memories:
+                logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
+                for mem in new_memories:
+                    preview = mem.content[:100].replace('\n', ' ')
+                    retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
+                    logger.info(f"[MEMORY]   [{retrieval_type}] score={mem.score:.3f} id={mem.id[:8]}... \"{preview}...\"")
+            else:
+                logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
         # Step 4: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)
@@ -702,6 +714,8 @@ class SessionManager:
         new_memories = []
         truly_new_memory_ids = set()  # Only memories never seen before (for cache stability)
 
+        logger.info(f"[MEMORY] Processing message (stream) for conversation {session.conversation_id[:8]}...")
+
         # Step 1-2: Retrieve and deduplicate memories
         if memory_service.is_configured():
             # Get archived conversation IDs to exclude from retrieval
@@ -758,6 +772,16 @@ class SessionManager:
                                 db,
                                 entity_id=session.entity_id,
                             )
+
+            # Log memory retrieval summary
+            if new_memories:
+                logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
+                for mem in new_memories:
+                    preview = mem.content[:100].replace('\n', ' ')
+                    retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
+                    logger.info(f"[MEMORY]   [{retrieval_type}] score={mem.score:.3f} id={mem.id[:8]}... \"{preview}...\"")
+            else:
+                logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
         # Step 3: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)
