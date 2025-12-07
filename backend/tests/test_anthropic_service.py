@@ -181,12 +181,15 @@ class TestAnthropicService:
 
         # With caching enabled but no memories:
         # - History is regular alternating messages (not cached)
+        # - First message gets [CURRENT CONVERSATION] marker
         # - Final message with date + current
         assert len(messages) == 3
 
         # First two messages: conversation history as regular messages
+        # First message gets [CURRENT CONVERSATION] marker
         assert messages[0]["role"] == "user"
-        assert messages[0]["content"] == "Hi"
+        assert "[CURRENT CONVERSATION]" in messages[0]["content"]
+        assert "Hi" in messages[0]["content"]
         assert messages[1]["role"] == "assistant"
         assert messages[1]["content"] == "Hello!"
 
@@ -212,10 +215,12 @@ class TestAnthropicService:
         )
 
         # With caching disabled, context is passed through individually
+        # First message gets [CURRENT CONVERSATION] marker
         # + final message with date
         assert len(messages) == 3
         assert messages[0]["role"] == "user"
-        assert messages[0]["content"] == "Hi"
+        assert "[CURRENT CONVERSATION]" in messages[0]["content"]
+        assert "Hi" in messages[0]["content"]
         assert messages[1]["role"] == "assistant"
         assert messages[1]["content"] == "Hello!"
         assert messages[2]["role"] == "user"
@@ -270,7 +275,7 @@ class TestAnthropicService:
         # New structure:
         # 1. memory block (cached)
         # 2. memory acknowledgment
-        # 3. user: "Hello!" (regular message)
+        # 3. user: [CURRENT CONVERSATION] + "Hello!" (regular message with marker)
         # 4. assistant: "Hi there!" (regular message)
         # 5. final message (date + current)
         assert len(messages) == 5
@@ -279,15 +284,16 @@ class TestAnthropicService:
         first_content = messages[0]["content"]
         if isinstance(first_content, list):
             first_content = first_content[0]["text"]
-        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in first_content
+        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS" in first_content
 
         # Verify memory acknowledgment
         assert messages[1]["role"] == "assistant"
         assert "acknowledge" in messages[1]["content"].lower()
 
-        # Verify history is regular alternating messages (not cached block)
+        # Verify history - first message has [CURRENT CONVERSATION] marker
         assert messages[2]["role"] == "user"
-        assert messages[2]["content"] == "Hello!"
+        assert "[CURRENT CONVERSATION]" in messages[2]["content"]
+        assert "Hello!" in messages[2]["content"]
         assert messages[3]["role"] == "assistant"
         assert messages[3]["content"] == "Hi there!"
 
@@ -334,8 +340,8 @@ class TestAnthropicService:
         assert "cache_control" in first_msg["content"][0]
         assert first_msg["content"][0]["cache_control"]["type"] == "ephemeral"
 
-    def test_build_messages_new_memories_not_cached(self):
-        """Test that new memories go to the uncached final message."""
+    def test_build_messages_all_memories_consolidated(self):
+        """Test that all memories (old and new) are consolidated into one block."""
         service = AnthropicService()
 
         # Mock encoder and cache
@@ -357,14 +363,17 @@ class TestAnthropicService:
             memories, [], "Test", new_memory_ids=new_memory_ids
         )
 
-        # Old memory should be in the cached block
+        # All memories (old and new) should be in the consolidated memory block
         first_content = messages[0]["content"]
         if isinstance(first_content, list):
             first_content = first_content[0]["text"]
+        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS. THESE ARE NOT PART OF THE CURRENT CONVERSATION]" in first_content
         assert "Old memory" in first_content
-        assert "New memory" not in first_content
+        assert "New memory" in first_content
+        assert "[END MEMORIES]" in first_content
 
-        # New memory should be in the final uncached message
+        # Final message should NOT have a separate new memories block
         final_content = messages[-1]["content"]
-        assert "[NEW MEMORIES RETRIEVED THIS TURN]" in final_content
-        assert "New memory" in final_content
+        assert "[NEW MEMORIES RETRIEVED THIS TURN]" not in final_content
+        assert "[DATE CONTEXT]" in final_content
+        assert "Test" in final_content
