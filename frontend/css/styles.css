@@ -905,6 +905,62 @@ h4.md-header {
     cursor: not-allowed;
 }
 
+/* Voice Dictation Button */
+.voice-btn {
+    padding: 10px 14px;
+    background-color: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.voice-btn:hover:not(:disabled) {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+
+.voice-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.voice-btn.recording {
+    background-color: var(--danger);
+    border-color: var(--danger);
+    color: white;
+    animation: pulse-recording 1.5s ease-in-out infinite;
+}
+
+.voice-btn.recording:hover {
+    background-color: var(--danger-hover);
+    border-color: var(--danger-hover);
+}
+
+.voice-btn.unsupported {
+    display: none;
+}
+
+@keyframes pulse-recording {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(229, 92, 92, 0.4);
+    }
+    50% {
+        box-shadow: 0 0 0 8px rgba(229, 92, 92, 0);
+    }
+}
+
+/* Interim transcription styling */
+#message-input.transcribing {
+    border-color: var(--danger);
+    box-shadow: 0 0 0 2px rgba(229, 92, 92, 0.2);
+}
+
 .input-meta {
     max-width: 800px;
     margin: 8px auto 0;

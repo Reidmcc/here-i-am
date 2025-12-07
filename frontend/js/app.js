@@ -29,6 +29,7 @@ class App {
             messages: document.getElementById('messages'),
             messagesContainer: document.getElementById('messages-container'),
             messageInput: document.getElementById('message-input'),
+            voiceBtn: document.getElementById('voice-btn'),
             sendBtn: document.getElementById('send-btn'),
             newConversationBtn: document.getElementById('new-conversation-btn'),
             conversationTitle: document.getElementById('conversation-title'),
@@ -103,12 +104,18 @@ class App {
         this.importPreviewData = null;
         this.importAbortController = null;
 
+        // Voice dictation state
+        this.recognition = null;
+        this.isRecording = false;
+        this.textBeforeDictation = '';
+
         this.init();
     }
 
     async init() {
         this.loadTheme();
         this.bindEvents();
+        this.initVoiceDictation();
         await this.loadEntities();
         await this.loadConversations();
         await this.loadConfig();
@@ -123,6 +130,7 @@ class App {
         this.elements.messageInput.addEventListener('input', () => this.handleInputChange());
         this.elements.messageInput.addEventListener('keydown', (e) => this.handleKeyDown(e));
         this.elements.sendBtn.addEventListener('click', () => this.sendMessage());
+        this.elements.voiceBtn.addEventListener('click', () => this.toggleVoiceDictation());
 
         // Conversation management
         this.elements.newConversationBtn.addEventListener('click', () => this.createNewConversation());
@@ -202,6 +210,109 @@ class App {
             e.preventDefault();
             if (!this.elements.sendBtn.disabled) {
                 this.sendMessage();
+            }
+        }
+    }
+
+    /**
+     * Initialize Web Speech API for voice dictation.
+     * Hides the voice button if the browser doesn't support it.
+     */
+    initVoiceDictation() {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+        if (!SpeechRecognition) {
+            console.warn('Speech recognition not supported in this browser');
+            this.elements.voiceBtn.classList.add('unsupported');
+            return;
+        }
+
+        this.recognition = new SpeechRecognition();
+        this.recognition.continuous = true;
+        this.recognition.interimResults = true;
+        this.recognition.lang = 'en-US';
+
+        this.recognition.onstart = () => {
+            this.isRecording = true;
+            this.elements.voiceBtn.classList.add('recording');
+            this.elements.voiceBtn.title = 'Stop dictation';
+            this.elements.messageInput.classList.add('transcribing');
+            // Save the text that was in the input before we started dictating
+            this.textBeforeDictation = this.elements.messageInput.value;
+        };
+
+        this.recognition.onend = () => {
+            this.isRecording = false;
+            this.elements.voiceBtn.classList.remove('recording');
+            this.elements.voiceBtn.title = 'Voice dictation';
+            this.elements.messageInput.classList.remove('transcribing');
+            this.handleInputChange();
+        };
+
+        this.recognition.onresult = (event) => {
+            let interimTranscript = '';
+            let finalTranscript = '';
+
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcript = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    finalTranscript += transcript;
+                } else {
+                    interimTranscript += transcript;
+                }
+            }
+
+            // Combine: text before dictation + final results so far + current interim
+            // Build the complete final transcript from all final results
+            let allFinalTranscripts = '';
+            for (let i = 0; i < event.results.length; i++) {
+                if (event.results[i].isFinal) {
+                    allFinalTranscripts += event.results[i][0].transcript;
+                }
+            }
+
+            // Construct the full text: previous text + final transcripts + interim
+            const separator = this.textBeforeDictation && !this.textBeforeDictation.endsWith(' ') ? ' ' : '';
+            const newText = this.textBeforeDictation + separator + allFinalTranscripts + interimTranscript;
+
+            this.elements.messageInput.value = newText;
+            this.handleInputChange();
+        };
+
+        this.recognition.onerror = (event) => {
+            console.error('Speech recognition error:', event.error);
+
+            if (event.error === 'not-allowed') {
+                this.showToast('Microphone access denied. Please allow microphone access.', 'error');
+            } else if (event.error === 'no-speech') {
+                this.showToast('No speech detected. Try again.', 'warning');
+            } else if (event.error !== 'aborted') {
+                this.showToast(`Voice dictation error: ${event.error}`, 'error');
+            }
+
+            this.isRecording = false;
+            this.elements.voiceBtn.classList.remove('recording');
+            this.elements.messageInput.classList.remove('transcribing');
+        };
+    }
+
+    /**
+     * Toggle voice dictation on/off.
+     */
+    toggleVoiceDictation() {
+        if (!this.recognition) {
+            this.showToast('Voice dictation is not supported in this browser', 'warning');
+            return;
+        }
+
+        if (this.isRecording) {
+            this.recognition.stop();
+        } else {
+            try {
+                this.recognition.start();
+            } catch (e) {
+                // May throw if already started
+                console.error('Failed to start recognition:', e);
             }
         }
     }
