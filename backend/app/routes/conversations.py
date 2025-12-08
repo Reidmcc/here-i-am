@@ -10,7 +10,7 @@ from sqlalchemy import select, delete
 from pydantic import BaseModel
 
 from app.database import get_db, async_session_maker
-from app.models import Conversation, Message, ConversationType, MessageRole
+from app.models import Conversation, Message, ConversationType, MessageRole, ConversationEntity
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -28,12 +28,23 @@ class ConversationCreate(BaseModel):
     system_prompt: Optional[str] = None
     model: str = "claude-sonnet-4-5-20250929"
     entity_id: Optional[str] = None  # Pinecone index name for the AI entity
+    # For multi-entity conversations: list of entity IDs to include
+    entity_ids: Optional[List[str]] = None
 
 
 class ConversationUpdate(BaseModel):
     title: Optional[str] = None
     tags: Optional[List[str]] = None
     notes: Optional[str] = None
+
+
+class EntityInfo(BaseModel):
+    """Information about an entity in a multi-entity conversation."""
+    entity_id: str
+    label: str
+    description: Optional[str] = None
+    llm_provider: str = "anthropic"
+    default_model: Optional[str] = None
 
 
 class ConversationResponse(BaseModel):
@@ -51,6 +62,8 @@ class ConversationResponse(BaseModel):
     entity_missing: bool = False  # True if entity_id references a non-existent entity
     message_count: int = 0
     preview: Optional[str] = None
+    # For multi-entity conversations: list of participating entities
+    entities: Optional[List[EntityInfo]] = None
 
     class Config:
         from_attributes = True
@@ -63,6 +76,43 @@ def check_entity_exists(entity_id: Optional[str]) -> bool:
     return settings.get_entity_by_index(entity_id) is not None
 
 
+def get_entity_info(entity_id: str) -> Optional[EntityInfo]:
+    """Get EntityInfo for a given entity_id."""
+    entity = settings.get_entity_by_index(entity_id)
+    if not entity:
+        return None
+    return EntityInfo(
+        entity_id=entity.index_name,
+        label=entity.label,
+        description=entity.description,
+        llm_provider=entity.llm_provider,
+        default_model=entity.default_model,
+    )
+
+
+def get_entity_label(entity_id: str) -> Optional[str]:
+    """Get the human-readable label for an entity."""
+    entity = settings.get_entity_by_index(entity_id)
+    return entity.label if entity else None
+
+
+async def get_conversation_entities(conversation_id: str, db: AsyncSession) -> List[EntityInfo]:
+    """Get the list of entities participating in a multi-entity conversation."""
+    result = await db.execute(
+        select(ConversationEntity)
+        .where(ConversationEntity.conversation_id == conversation_id)
+        .order_by(ConversationEntity.display_order)
+    )
+    conv_entities = result.scalars().all()
+
+    entities_info = []
+    for ce in conv_entities:
+        info = get_entity_info(ce.entity_id)
+        if info:
+            entities_info.append(info)
+    return entities_info
+
+
 class MessageResponse(BaseModel):
     id: str
     role: str
@@ -71,6 +121,9 @@ class MessageResponse(BaseModel):
     token_count: Optional[int]
     times_retrieved: int
     last_retrieved_at: Optional[datetime]
+    # For multi-entity conversations: which entity spoke this message
+    speaker_entity_id: Optional[str] = None
+    speaker_label: Optional[str] = None  # Human-readable label for the speaker
 
     class Config:
         from_attributes = True
@@ -109,45 +162,113 @@ async def create_conversation(
     db: AsyncSession = Depends(get_db)
 ):
     """Create a new conversation."""
-    # Validate entity_id if provided
-    if data.entity_id:
-        entity = settings.get_entity_by_index(data.entity_id)
-        if not entity:
+    # Check if this is a multi-entity conversation
+    is_multi_entity = data.conversation_type == "multi_entity" or (data.entity_ids and len(data.entity_ids) > 1)
+
+    if is_multi_entity:
+        # Validate all entity_ids
+        if not data.entity_ids or len(data.entity_ids) < 2:
             raise HTTPException(
                 status_code=400,
-                detail=f"Entity '{data.entity_id}' is not configured. Check your PINECONE_INDEXES environment variable."
+                detail="Multi-entity conversations require at least 2 entities."
             )
 
-    conv_type = ConversationType.REFLECTION if data.conversation_type == "reflection" else ConversationType.NORMAL
+        for eid in data.entity_ids:
+            entity = settings.get_entity_by_index(eid)
+            if not entity:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Entity '{eid}' is not configured. Check your PINECONE_INDEXES environment variable."
+                )
 
-    conversation = Conversation(
-        title=data.title,
-        tags=data.tags,
-        conversation_type=conv_type,
-        system_prompt_used=data.system_prompt,
-        llm_model_used=data.model,
-        entity_id=data.entity_id,
-    )
+        conv_type = ConversationType.MULTI_ENTITY
 
-    db.add(conversation)
-    await db.commit()
-    await db.refresh(conversation)
+        # For multi-entity, entity_id is set to a special marker
+        conversation = Conversation(
+            title=data.title,
+            tags=data.tags,
+            conversation_type=conv_type,
+            system_prompt_used=data.system_prompt,
+            llm_model_used=data.model,
+            entity_id="multi-entity",  # Special marker for multi-entity conversations
+        )
 
-    return ConversationResponse(
-        id=conversation.id,
-        created_at=conversation.created_at,
-        updated_at=conversation.updated_at,
-        title=conversation.title,
-        tags=conversation.tags,
-        conversation_type=conversation.conversation_type.value,
-        system_prompt_used=conversation.system_prompt_used,
-        llm_model_used=conversation.llm_model_used,
-        notes=conversation.notes,
-        entity_id=conversation.entity_id,
-        is_archived=conversation.is_archived,
-        entity_missing=not check_entity_exists(conversation.entity_id),
-        message_count=0,
-    )
+        db.add(conversation)
+        await db.flush()  # Get the conversation ID
+
+        # Add the participating entities
+        for order, eid in enumerate(data.entity_ids):
+            conv_entity = ConversationEntity(
+                conversation_id=conversation.id,
+                entity_id=eid,
+                display_order=order,
+            )
+            db.add(conv_entity)
+
+        await db.commit()
+        await db.refresh(conversation)
+
+        # Get entity info for response
+        entities_info = [get_entity_info(eid) for eid in data.entity_ids]
+        entities_info = [e for e in entities_info if e is not None]
+
+        return ConversationResponse(
+            id=conversation.id,
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+            title=conversation.title,
+            tags=conversation.tags,
+            conversation_type=conversation.conversation_type.value,
+            system_prompt_used=conversation.system_prompt_used,
+            llm_model_used=conversation.llm_model_used,
+            notes=conversation.notes,
+            entity_id=conversation.entity_id,
+            is_archived=conversation.is_archived,
+            entity_missing=False,
+            message_count=0,
+            entities=entities_info,
+        )
+    else:
+        # Standard single-entity conversation
+        # Validate entity_id if provided
+        if data.entity_id:
+            entity = settings.get_entity_by_index(data.entity_id)
+            if not entity:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Entity '{data.entity_id}' is not configured. Check your PINECONE_INDEXES environment variable."
+                )
+
+        conv_type = ConversationType.REFLECTION if data.conversation_type == "reflection" else ConversationType.NORMAL
+
+        conversation = Conversation(
+            title=data.title,
+            tags=data.tags,
+            conversation_type=conv_type,
+            system_prompt_used=data.system_prompt,
+            llm_model_used=data.model,
+            entity_id=data.entity_id,
+        )
+
+        db.add(conversation)
+        await db.commit()
+        await db.refresh(conversation)
+
+        return ConversationResponse(
+            id=conversation.id,
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+            title=conversation.title,
+            tags=conversation.tags,
+            conversation_type=conversation.conversation_type.value,
+            system_prompt_used=conversation.system_prompt_used,
+            llm_model_used=conversation.llm_model_used,
+            notes=conversation.notes,
+            entity_id=conversation.entity_id,
+            is_archived=conversation.is_archived,
+            entity_missing=not check_entity_exists(conversation.entity_id),
+            message_count=0,
+        )
 
 
 @router.get("/", response_model=List[ConversationResponse])
@@ -163,6 +284,7 @@ async def list_conversations(
 
     Args:
         entity_id: Optional filter by AI entity (Pinecone index name).
+                   Use "multi-entity" to list multi-entity conversations.
                    If not provided, returns all conversations.
         include_archived: If True, include archived conversations. Default False.
     """
@@ -204,6 +326,11 @@ async def list_conversations(
                 preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
                 break
 
+        # Get entity info for multi-entity conversations
+        entities_info = None
+        if conv.conversation_type == ConversationType.MULTI_ENTITY:
+            entities_info = await get_conversation_entities(conv.id, db)
+
         response.append(ConversationResponse(
             id=conv.id,
             created_at=conv.created_at,
@@ -216,9 +343,10 @@ async def list_conversations(
             notes=conv.notes,
             entity_id=conv.entity_id,
             is_archived=conv.is_archived,
-            entity_missing=not check_entity_exists(conv.entity_id),
+            entity_missing=not check_entity_exists(conv.entity_id) if conv.entity_id != "multi-entity" else False,
             message_count=message_count,
             preview=preview,
+            entities=entities_info,
         ))
 
     return response
@@ -313,6 +441,11 @@ async def get_conversation(
             preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
             break
 
+    # Get entity info for multi-entity conversations
+    entities_info = None
+    if conversation.conversation_type == ConversationType.MULTI_ENTITY:
+        entities_info = await get_conversation_entities(conversation.id, db)
+
     return ConversationResponse(
         id=conversation.id,
         created_at=conversation.created_at,
@@ -325,9 +458,10 @@ async def get_conversation(
         notes=conversation.notes,
         entity_id=conversation.entity_id,
         is_archived=conversation.is_archived,
-        entity_missing=not check_entity_exists(conversation.entity_id),
+        entity_missing=not check_entity_exists(conversation.entity_id) if conversation.entity_id != "multi-entity" else False,
         message_count=len(messages),
         preview=preview,
+        entities=entities_info,
     )
 
 
@@ -361,6 +495,8 @@ async def get_conversation_messages(
             token_count=msg.token_count,
             times_retrieved=msg.times_retrieved,
             last_retrieved_at=msg.last_retrieved_at,
+            speaker_entity_id=msg.speaker_entity_id,
+            speaker_label=get_entity_label(msg.speaker_entity_id) if msg.speaker_entity_id else None,
         )
         for msg in messages
     ]

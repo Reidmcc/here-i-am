@@ -2255,3 +2255,157 @@ h4.md-header {
         max-width: 95%;
     }
 }
+
+/* ==================== Multi-Entity Conversations ==================== */
+
+/* Multi-entity list in modal */
+.multi-entity-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 16px 0;
+}
+
+.multi-entity-item {
+    display: flex;
+    align-items: center;
+    padding: 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.multi-entity-item:hover {
+    background: var(--bg-elevated);
+    border-color: var(--accent);
+}
+
+.multi-entity-item.selected {
+    background: var(--accent-subtle);
+    border-color: var(--accent);
+}
+
+.multi-entity-item input[type="checkbox"] {
+    margin-right: 12px;
+    width: 18px;
+    height: 18px;
+}
+
+.multi-entity-item-info {
+    flex: 1;
+}
+
+.multi-entity-item-label {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.multi-entity-item-description {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.multi-entity-item-model {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+/* Entity responder selector */
+.entity-responder-selector {
+    position: fixed;
+    bottom: 120px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-elevated);
+    padding: 12px 20px;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px var(--shadow-lg);
+    z-index: 50;
+    text-align: center;
+    border: 1px solid var(--border-color);
+}
+
+.entity-responder-selector label {
+    display: block;
+    color: var(--text-secondary);
+    font-size: 12px;
+    margin-bottom: 8px;
+}
+
+.entity-responder-buttons {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+}
+
+.entity-responder-btn {
+    padding: 8px 16px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.15s ease;
+}
+
+.entity-responder-btn:hover {
+    background: var(--accent-subtle);
+    border-color: var(--accent);
+}
+
+.entity-responder-btn:active {
+    transform: scale(0.98);
+}
+
+/* Speaker label on messages */
+.message-speaker-label {
+    font-size: 11px;
+    color: var(--accent);
+    font-weight: 500;
+    margin-bottom: 4px;
+    display: block;
+}
+
+/* Multi-entity option in entity selector */
+.entity-option-divider {
+    border-top: 1px solid var(--border-color);
+    margin: 4px 0;
+}
+
+/* Conversation list indicator for multi-entity */
+.conversation-item.multi-entity::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: linear-gradient(to bottom, var(--accent), var(--success));
+    border-radius: 3px 0 0 3px;
+}
+
+.conversation-item.multi-entity {
+    position: relative;
+    padding-left: 12px;
+}
+
+/* Multi-entity badge on conversation list */
+.multi-entity-badge {
+    font-size: 10px;
+    padding: 2px 6px;
+    background: var(--accent-subtle);
+    color: var(--accent);
+    border-radius: 4px;
+    margin-left: 6px;
+}
+
+/* Entity selector - multi-entity option styling */
+#entity-select option[value="multi-entity"] {
+    font-style: italic;
+    border-top: 1px solid var(--border-color);
+}

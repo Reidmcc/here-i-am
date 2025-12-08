@@ -498,6 +498,37 @@
         </div>
     </div>
 
+    <!-- Multi-Entity Selection Modal -->
+    <div class="modal" id="multi-entity-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Select Entities for Conversation</h3>
+                <button class="close-btn" id="close-multi-entity">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-description">
+                    Select at least 2 entities to include in this multi-entity conversation.
+                    Each entity will use its own model and have memories stored to its own index.
+                </p>
+                <div class="multi-entity-list" id="multi-entity-list">
+                    <!-- Entity checkboxes will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="cancel-multi-entity" class="secondary-btn">Cancel</button>
+                <button id="confirm-multi-entity" class="primary-btn" disabled>Create Conversation</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Entity Responder Selector (for multi-entity conversations) -->
+    <div class="entity-responder-selector" id="entity-responder-selector" style="display: none;">
+        <label>Who should respond?</label>
+        <div class="entity-responder-buttons" id="entity-responder-buttons">
+            <!-- Entity buttons will be populated dynamically -->
+        </div>
+    </div>
+
     <!-- Loading Overlay -->
     <div class="loading-overlay" id="loading-overlay">
         <div class="loading-spinner"></div>

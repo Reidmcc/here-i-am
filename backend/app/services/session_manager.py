@@ -487,11 +487,18 @@ class SessionManager:
     async def load_session_from_db(
         self,
         conversation_id: str,
-        db: AsyncSession
+        db: AsyncSession,
+        responding_entity_id: Optional[str] = None,
     ) -> Optional[ConversationSession]:
         """
         Load a session from the database, including conversation history
         and previously retrieved memories.
+
+        Args:
+            conversation_id: The conversation to load
+            db: Database session
+            responding_entity_id: For multi-entity conversations, the entity that will respond.
+                                  This determines which entity's model/provider to use.
         """
         # Get conversation
         result = await db.execute(
@@ -502,12 +509,22 @@ class SessionManager:
         if not conversation:
             return None
 
+        # Determine entity_id and model for the session
+        entity_id = responding_entity_id if responding_entity_id else conversation.entity_id
+        model = conversation.llm_model_used
+
+        # For multi-entity conversations with a responding entity, use that entity's model
+        if responding_entity_id:
+            entity = settings.get_entity_by_index(responding_entity_id)
+            if entity:
+                model = entity.default_model or settings.get_default_model_for_provider(entity.llm_provider)
+
         # Create session with conversation settings
         session = self.create_session(
             conversation_id=conversation_id,
-            model=conversation.llm_model_used,
+            model=model,
             system_prompt=conversation.system_prompt_used,
-            entity_id=conversation.entity_id,
+            entity_id=entity_id,
             conversation_start_date=conversation.created_at,
         )
 

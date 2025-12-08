@@ -10,6 +10,7 @@ import enum
 class ConversationType(str, enum.Enum):
     NORMAL = "normal"
     REFLECTION = "reflection"
+    MULTI_ENTITY = "multi_entity"
 
 
 class Conversation(Base):
@@ -42,4 +43,10 @@ class Conversation(Base):
         back_populates="conversation",
         cascade="all, delete-orphan",
         foreign_keys="ConversationMemoryLink.conversation_id"
+    )
+    # For multi-entity conversations: tracks which entities participate
+    entities: Mapped[List["ConversationEntity"]] = relationship(
+        "ConversationEntity",
+        back_populates="conversation",
+        cascade="all, delete-orphan"
     )
