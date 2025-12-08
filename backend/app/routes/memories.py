@@ -281,73 +281,6 @@ async def get_memory_stats(
     )
 
 
-@router.get("/{memory_id}", response_model=MemoryResponse)
-async def get_memory(
-    memory_id: str,
-    db: AsyncSession = Depends(get_db)
-):
-    """Get a specific memory by ID."""
-    result = await db.execute(
-        select(Message).where(Message.id == memory_id)
-    )
-    message = result.scalar_one_or_none()
-
-    if not message:
-        raise HTTPException(status_code=404, detail="Memory not found")
-
-    significance = calculate_significance(
-        message.times_retrieved,
-        message.created_at,
-        message.last_retrieved_at
-    )
-
-    return MemoryResponse(
-        id=message.id,
-        conversation_id=message.conversation_id,
-        role=message.role.value,
-        content=message.content,
-        content_preview=message.content[:200] if len(message.content) > 200 else message.content,
-        created_at=message.created_at,
-        times_retrieved=message.times_retrieved,
-        last_retrieved_at=message.last_retrieved_at,
-        significance=significance,
-    )
-
-
-@router.delete("/{memory_id}")
-async def delete_memory(
-    memory_id: str,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Delete a specific memory.
-
-    This removes the memory from both the SQL database and vector store.
-    """
-    # Get message with its conversation to determine entity_id
-    result = await db.execute(
-        select(Message, Conversation)
-        .join(Conversation, Message.conversation_id == Conversation.id)
-        .where(Message.id == memory_id)
-    )
-    row = result.first()
-
-    if not row:
-        raise HTTPException(status_code=404, detail="Memory not found")
-
-    message, conversation = row
-
-    # Delete from vector store for the correct entity
-    if memory_service.is_configured():
-        await memory_service.delete_memory(memory_id, entity_id=conversation.entity_id)
-
-    # Delete from SQL
-    await db.delete(message)
-    await db.commit()
-
-    return {"status": "deleted", "id": memory_id}
-
-
 @router.get("/status/health")
 async def memory_health():
     """Check memory system health including entity information."""
@@ -451,3 +384,73 @@ async def cleanup_orphaned_records(
     )
 
     return CleanupResponse(**result)
+
+
+# NOTE: Parameterized routes must come AFTER static routes to avoid matching
+# e.g., /orphans being interpreted as /{memory_id}
+
+@router.get("/{memory_id}", response_model=MemoryResponse)
+async def get_memory(
+    memory_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get a specific memory by ID."""
+    result = await db.execute(
+        select(Message).where(Message.id == memory_id)
+    )
+    message = result.scalar_one_or_none()
+
+    if not message:
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+    significance = calculate_significance(
+        message.times_retrieved,
+        message.created_at,
+        message.last_retrieved_at
+    )
+
+    return MemoryResponse(
+        id=message.id,
+        conversation_id=message.conversation_id,
+        role=message.role.value,
+        content=message.content,
+        content_preview=message.content[:200] if len(message.content) > 200 else message.content,
+        created_at=message.created_at,
+        times_retrieved=message.times_retrieved,
+        last_retrieved_at=message.last_retrieved_at,
+        significance=significance,
+    )
+
+
+@router.delete("/{memory_id}")
+async def delete_memory(
+    memory_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Delete a specific memory.
+
+    This removes the memory from both the SQL database and vector store.
+    """
+    # Get message with its conversation to determine entity_id
+    result = await db.execute(
+        select(Message, Conversation)
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(Message.id == memory_id)
+    )
+    row = result.first()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+    message, conversation = row
+
+    # Delete from vector store for the correct entity
+    if memory_service.is_configured():
+        await memory_service.delete_memory(memory_id, entity_id=conversation.entity_id)
+
+    # Delete from SQL
+    await db.delete(message)
+    await db.commit()
+
+    return {"status": "deleted", "id": memory_id}
