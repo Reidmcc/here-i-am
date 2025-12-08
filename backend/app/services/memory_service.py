@@ -514,15 +514,43 @@ class MemoryService:
 
         all_ids = []
         try:
-            # Use list() with pagination to get all IDs
-            # Pinecone returns a paginated iterator
-            for ids_batch in index.list(namespace=""):
-                all_ids.extend(ids_batch)
+            # Use list_paginated() for explicit pagination control
+            # This works better with serverless indexes using integrated inference
+            pagination_token = None
+
+            while True:
+                if pagination_token:
+                    response = index.list_paginated(
+                        namespace="",
+                        limit=100,
+                        pagination_token=pagination_token
+                    )
+                else:
+                    response = index.list_paginated(
+                        namespace="",
+                        limit=100
+                    )
+
+                # Extract IDs from the response
+                if hasattr(response, 'vectors') and response.vectors:
+                    for v in response.vectors:
+                        if hasattr(v, 'id'):
+                            all_ids.append(v.id)
+                        elif isinstance(v, str):
+                            all_ids.append(v)
+
+                # Check for more pages
+                if hasattr(response, 'pagination') and response.pagination and response.pagination.next:
+                    pagination_token = response.pagination.next
+                else:
+                    break
 
             logger.info(f"[MEMORY] Listed {len(all_ids)} records from Pinecone entity={entity_id}")
             return all_ids
         except Exception as e:
             logger.error(f"Error listing Pinecone IDs for entity={entity_id}: {e}")
+            import traceback
+            logger.error(f"[MEMORY] Traceback: {traceback.format_exc()}")
             return []
 
     async def find_orphaned_records(
