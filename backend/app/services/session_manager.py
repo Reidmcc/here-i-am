@@ -853,6 +853,7 @@ class SessionManager:
 
             # Step 2: Get full content and calculate combined scores for re-ranking
             enriched_candidates = []
+            now = datetime.utcnow()
             for candidate in candidates:
                 # Skip memories from archived conversations
                 if candidate.get("conversation_id") in archived_ids:
@@ -868,11 +869,27 @@ class SessionManager:
                     # Combined score: similarity boosted by significance
                     combined_score = candidate["score"] * (1 + significance)
 
+                    # Calculate days since creation and last retrieval for logging
+                    created_at = mem_data["created_at"]
+                    if isinstance(created_at, str):
+                        created_at = datetime.fromisoformat(created_at)
+                    days_since_creation = (now - created_at).total_seconds() / 86400
+
+                    last_retrieved_at = mem_data["last_retrieved_at"]
+                    if last_retrieved_at:
+                        if isinstance(last_retrieved_at, str):
+                            last_retrieved_at = datetime.fromisoformat(last_retrieved_at)
+                        days_since_retrieval = (now - last_retrieved_at).total_seconds() / 86400
+                    else:
+                        days_since_retrieval = -1  # Never retrieved
+
                     enriched_candidates.append({
                         "candidate": candidate,
                         "mem_data": mem_data,
                         "significance": significance,
                         "combined_score": combined_score,
+                        "days_since_creation": days_since_creation,
+                        "days_since_retrieval": days_since_retrieval,
                     })
 
             # Re-rank by combined score and keep top_k
