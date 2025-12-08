@@ -2409,3 +2409,15 @@ h4.md-header {
     font-style: italic;
     border-top: 1px solid var(--border-color);
 }
+
+/* Continue button for multi-entity conversations */
+.icon-btn.multi-entity-action {
+    background-color: var(--accent-subtle);
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.icon-btn.multi-entity-action:hover {
+    background-color: var(--accent);
+    color: white;
+}

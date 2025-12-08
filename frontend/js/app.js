@@ -82,6 +82,7 @@ class App {
             settingsBtn: document.getElementById('settings-btn'),
             memoriesBtn: document.getElementById('memories-btn'),
             archivedBtn: document.getElementById('archived-btn'),
+            continueBtn: document.getElementById('continue-btn'),
             exportBtn: document.getElementById('export-btn'),
             archiveBtn: document.getElementById('archive-btn'),
 
@@ -326,6 +327,7 @@ class App {
         this.elements.newConversationBtn.addEventListener('click', () => this.createNewConversation());
 
         // Header buttons
+        this.elements.continueBtn.addEventListener('click', () => this.continueMultiEntityConversation());
         this.elements.exportBtn.addEventListener('click', () => this.exportConversation());
         this.elements.archiveBtn.addEventListener('click', () => this.showArchiveModal());
 
@@ -643,6 +645,10 @@ class App {
             this.updateMemoriesPanel();
             this.updateEntityDescription();
             this.hideEntityResponderSelector();
+            // Hide continue button when no conversation is selected
+            if (this.elements.continueBtn) {
+                this.elements.continueBtn.style.display = 'none';
+            }
 
             // Load multi-entity conversations
             this.loadConversations();
@@ -655,6 +661,10 @@ class App {
         this.currentConversationEntities = [];
         this.selectedEntityId = entityId;
         this.updateEntityDescription();
+        // Hide continue button when switching to single-entity mode
+        if (this.elements.continueBtn) {
+            this.elements.continueBtn.style.display = 'none';
+        }
 
         // Update model to match entity's default
         const entity = this.entities.find(e => e.index_name === entityId);
@@ -815,6 +825,10 @@ class App {
         this.elements.conversationMeta.textContent = '';
         this.updateMemoriesPanel();
         this.updateEntityDescription();
+        // Hide continue button when no conversation is selected
+        if (this.elements.continueBtn) {
+            this.elements.continueBtn.style.display = 'none';
+        }
 
         // Load conversations for multi-entity view
         this.loadConversations();
@@ -868,6 +882,29 @@ class App {
 
     hideEntityResponderSelector() {
         this.elements.entityResponderSelector.style.display = 'none';
+    }
+
+    /**
+     * Continue a multi-entity conversation by prompting for which entity should respond.
+     * Called when user clicks the "Continue" button in the header.
+     */
+    continueMultiEntityConversation() {
+        if (!this.isMultiEntityMode || !this.currentConversationId) {
+            this.showToast('No multi-entity conversation loaded', 'error');
+            return;
+        }
+
+        if (this.currentConversationEntities.length === 0) {
+            this.showToast('No entities found for this conversation', 'error');
+            return;
+        }
+
+        // Clear any pending message state (continuation doesn't have a message)
+        this.pendingMessageContent = null;
+        this.pendingUserMessageEl = null;
+
+        // Show the responder selector in continuation mode
+        this.showEntityResponderSelector(true);
     }
 
     async sendMessageWithResponder() {
@@ -2327,11 +2364,13 @@ class App {
 
         const date = new Date(conversation.created_at);
         let meta = '';
+        let isMultiEntity = false;
 
         // Handle multi-entity conversations
         if (conversation.conversation_type === 'multi_entity' && conversation.entities) {
             const entityLabels = conversation.entities.map(e => e.label).join(' & ');
             meta = `multi-entity · ${entityLabels}`;
+            isMultiEntity = true;
         } else {
             meta = `${conversation.conversation_type} · ${conversation.llm_model_used}`;
 
@@ -2343,6 +2382,11 @@ class App {
         }
 
         this.elements.conversationMeta.textContent = meta;
+
+        // Show/hide Continue button based on conversation type
+        if (this.elements.continueBtn) {
+            this.elements.continueBtn.style.display = isMultiEntity ? 'inline-block' : 'none';
+        }
     }
 
     updateMemoriesPanel() {
