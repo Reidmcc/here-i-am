@@ -671,7 +671,7 @@ class SessionManager:
                 logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
                 for mem in new_memories:
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
-                    logger.info(f"[MEMORY]   [{retrieval_type}] similarity={mem.score:.3f} significance={mem.significance:.3f} id={mem.id[:8]}...")
+                    logger.info(f"[MEMORY]   [{retrieval_type}] similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved}")
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
@@ -885,7 +885,7 @@ class SessionManager:
                 logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
                 for mem in new_memories:
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
-                    logger.info(f"[MEMORY]   [{retrieval_type}] similarity={mem.score:.3f} significance={mem.significance:.3f} id={mem.id[:8]}...")
+                    logger.info(f"[MEMORY]   [{retrieval_type}] similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved}")
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
