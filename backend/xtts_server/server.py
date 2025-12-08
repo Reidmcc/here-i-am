@@ -170,11 +170,8 @@ def get_model():
             # Load the model
             _tts_model = TTS(_model_name).to(device)
 
-            # Apply FP16 precision and reduce-overhead optimizations for GPU
+            # Apply reduce-overhead optimization for GPU (staying in FP32 for stability)
             if device == "cuda":
-                logger.info("Applying FP16 precision...")
-                _tts_model.synthesizer.tts_model.half()
-
                 logger.info("Applying torch.compile with reduce-overhead mode...")
                 _tts_model.synthesizer.tts_model = torch.compile(
                     _tts_model.synthesizer.tts_model,
@@ -449,6 +446,7 @@ def synthesize_with_cached_latents(
         logger.info(f"Split text into {len(chunks)} chunk(s)")
 
         audio_arrays = []
+
         for i, chunk in enumerate(chunks):
             logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
 
