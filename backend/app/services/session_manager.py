@@ -45,30 +45,43 @@ def _build_memory_query(
 
 def _calculate_significance(
     times_retrieved: int,
+    created_at: Optional[datetime],
     last_retrieved_at: Optional[datetime],
 ) -> float:
     """
     Calculate memory significance based on retrieval patterns.
 
-    significance = times_retrieved * recency_factor
+    significance = times_retrieved * recency_factor * half_life_modifier
 
-    Where recency_factor boosts recently-retrieved memories.
+    Where:
+    - recency_factor boosts recently-retrieved memories
+    - half_life_modifier decays significance based on memory age
     """
     now = datetime.utcnow()
+
+    # Handle string dates from database
+    if isinstance(created_at, str):
+        created_at = datetime.fromisoformat(created_at)
+    if isinstance(last_retrieved_at, str):
+        last_retrieved_at = datetime.fromisoformat(last_retrieved_at)
+
+    # Half-life modifier - older memories decay in significance
+    # Starts at 1.0 and halves every significance_half_life_days
+    half_life_modifier = 1.0
+    if created_at:
+        days_since_creation = (now - created_at).days
+        half_life_modifier = 0.5 ** (days_since_creation / settings.significance_half_life_days)
 
     # Recency factor - boosts recently retrieved memories
     recency_factor = 1.0
     if last_retrieved_at:
-        # Handle string dates from database
-        if isinstance(last_retrieved_at, str):
-            last_retrieved_at = datetime.fromisoformat(last_retrieved_at)
         days_since_retrieval = (now - last_retrieved_at).days
         if days_since_retrieval > 0:
             recency_factor = 1.0 + min(1.0 / days_since_retrieval, settings.recency_boost_strength)
         else:
             recency_factor = 1.0 + settings.recency_boost_strength
 
-    significance = times_retrieved * recency_factor
+    significance = times_retrieved * recency_factor * half_life_modifier
     return max(significance, settings.significance_floor)
 
 
@@ -601,6 +614,7 @@ class SessionManager:
                     # Calculate significance for re-ranking
                     significance = _calculate_significance(
                         mem_data["times_retrieved"],
+                        mem_data["created_at"],
                         mem_data["last_retrieved_at"],
                     )
                     # Combined score: similarity boosted by significance
@@ -815,6 +829,7 @@ class SessionManager:
                     # Calculate significance for re-ranking
                     significance = _calculate_significance(
                         mem_data["times_retrieved"],
+                        mem_data["created_at"],
                         mem_data["last_retrieved_at"],
                     )
                     # Combined score: similarity boosted by significance

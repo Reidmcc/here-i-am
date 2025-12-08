@@ -48,18 +48,25 @@ class MemoryStats(BaseModel):
 
 def calculate_significance(
     times_retrieved: int,
+    created_at: datetime,
     last_retrieved_at: Optional[datetime]
 ) -> float:
     """
     Calculate dynamic significance based on retrieval patterns.
 
-    significance = times_retrieved * recency_factor
+    significance = times_retrieved * recency_factor * half_life_modifier
 
     Where:
     - times_retrieved: How many times this memory has been retrieved
     - recency_factor: Boost based on how recently retrieved (decays over time)
+    - half_life_modifier: Decay based on memory age (halves every N days)
     """
     now = datetime.utcnow()
+
+    # Half-life modifier - older memories decay in significance
+    # Starts at 1.0 and halves every significance_half_life_days
+    days_since_creation = (now - created_at).days
+    half_life_modifier = 0.5 ** (days_since_creation / settings.significance_half_life_days)
 
     # Recency factor - boosts recently retrieved memories
     recency_factor = 1.0
@@ -71,7 +78,7 @@ def calculate_significance(
             recency_factor = 1.0 + settings.recency_boost_strength
 
     # Calculate significance
-    significance = times_retrieved * recency_factor
+    significance = times_retrieved * recency_factor * half_life_modifier
 
     # Apply floor
     return max(significance, settings.significance_floor)
@@ -111,6 +118,7 @@ async def list_memories(
     for msg in messages:
         significance = calculate_significance(
             msg.times_retrieved,
+            msg.created_at,
             msg.last_retrieved_at
         )
         memories.append({
@@ -171,6 +179,7 @@ async def search_memories(
             if full_data:
                 significance = calculate_significance(
                     full_data["times_retrieved"],
+                    datetime.fromisoformat(full_data["created_at"]),
                     datetime.fromisoformat(full_data["last_retrieved_at"]) if full_data["last_retrieved_at"] else None
                 )
                 enriched.append({
@@ -235,7 +244,7 @@ async def get_memory_stats(
 
     memories_with_sig = []
     for msg in messages:
-        sig = calculate_significance(msg.times_retrieved, msg.last_retrieved_at)
+        sig = calculate_significance(msg.times_retrieved, msg.created_at, msg.last_retrieved_at)
         memories_with_sig.append({
             "id": msg.id,
             "content_preview": msg.content[:100],
@@ -288,6 +297,7 @@ async def get_memory(
 
     significance = calculate_significance(
         message.times_retrieved,
+        message.created_at,
         message.last_retrieved_at
     )
 
