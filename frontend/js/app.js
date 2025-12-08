@@ -774,7 +774,15 @@ class App {
     }
 
     showEntityResponderSelector(isContinuation = false) {
+        console.log('[MULTI-ENTITY] showEntityResponderSelector called:', {
+            isContinuation,
+            isMultiEntityMode: this.isMultiEntityMode,
+            entitiesCount: this.currentConversationEntities?.length,
+            entities: this.currentConversationEntities
+        });
+
         if (!this.isMultiEntityMode || this.currentConversationEntities.length === 0) {
+            console.log('[MULTI-ENTITY] Selector not shown - conditions not met');
             return;
         }
 
