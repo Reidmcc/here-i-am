@@ -139,8 +139,8 @@ class Settings(BaseSettings):
     retrieval_candidate_multiplier: int = 2  # Fetch this many times top_k, then re-rank by significance
 
     # Significance calculation
-    recency_boost_strength: float = 1.0
-    significance_floor: float = 0.0
+    recency_boost_strength: float = 1.2
+    significance_floor: float = 0.5
     significance_half_life_days: int = 60  # Significance halves every N days since memory creation
 
     # Reflection mode
