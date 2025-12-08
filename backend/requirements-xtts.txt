@@ -1,0 +1,21 @@
+# XTTS Server Dependencies
+# Install these in addition to the main requirements.txt to run the local XTTS server
+# Note: This requires significant disk space (~2GB for model) and a capable GPU is recommended
+
+# TTS library with XTTS v2 support
+TTS>=0.22.0
+
+# PyTorch (install appropriate version for your system)
+# For CUDA: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# For CPU only: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# Additional dependencies
+numpy>=1.22.0
+scipy>=1.10.0
+
+# Server dependencies (should already be installed from main requirements)
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
