@@ -620,15 +620,34 @@ class App {
     handleEntityChange(entityId) {
         // Check if multi-entity was selected
         if (entityId === 'multi-entity') {
-            // Don't show modal during browser form restoration (happens within ~100ms of page load)
+            // Don't process during browser form restoration (happens within ~100ms of page load)
             const timeSinceConstruction = Date.now() - this.constructedAt;
             if (timeSinceConstruction < 500) {
                 console.log('[DEBUG] Ignoring multi-entity selection during page load (browser form restoration)');
                 this.elements.entitySelect.value = this.selectedEntityId || this.entities[0]?.index_name;
                 return;
             }
-            console.log('[DEBUG] showMultiEntityModal triggered by: handleEntityChange');
-            this.showMultiEntityModal();
+
+            // Switch to multi-entity view mode (don't show modal yet - that happens on New Conversation)
+            this.isMultiEntityMode = true;
+            this.selectedEntityId = 'multi-entity';
+            this.currentConversationEntities = [];  // Will be set when creating new conversation
+
+            // Clear current conversation
+            this.currentConversationId = null;
+            this.retrievedMemories = [];
+            this.expandedMemoryIds.clear();
+            this.clearMessages();
+            this.elements.conversationTitle.textContent = 'Select a conversation';
+            this.elements.conversationMeta.textContent = '';
+            this.updateMemoriesPanel();
+            this.updateEntityDescription();
+            this.hideEntityResponderSelector();
+
+            // Load multi-entity conversations
+            this.loadConversations();
+
+            this.showToast('Switched to Multi-Entity view', 'success');
             return;
         }
 
@@ -1187,9 +1206,9 @@ class App {
     }
 
     async createNewConversation() {
-        // If there are 2+ entities available, show entity selection modal first
-        if (this.entities.length >= 2 && !this.isMultiEntityMode) {
-            console.log('[DEBUG] showMultiEntityModal triggered by: createNewConversation');
+        // In multi-entity mode, show entity selection modal if entities not yet selected
+        if (this.isMultiEntityMode && this.currentConversationEntities.length < 2) {
+            console.log('[DEBUG] showMultiEntityModal triggered by: createNewConversation (multi-entity mode, no entities selected)');
             this.pendingActionAfterEntitySelection = 'createConversation';
             this.showMultiEntityModal();
             return;
@@ -1321,8 +1340,8 @@ class App {
         const content = this.elements.messageInput.value.trim();
         if (!content || this.isLoading) return;
 
-        // If no conversation and 2+ entities available, show entity selection modal first
-        if (!this.currentConversationId && this.entities.length >= 2 && !this.isMultiEntityMode) {
+        // In multi-entity mode without entities selected, show modal first
+        if (!this.currentConversationId && this.isMultiEntityMode && this.currentConversationEntities.length < 2) {
             this.pendingActionAfterEntitySelection = 'sendMessage';
             this.pendingMessageForEntitySelection = content;
             this.showMultiEntityModal();
