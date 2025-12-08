@@ -675,6 +675,13 @@ class SessionManager:
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
+            # Log candidates that were not selected after re-ranking
+            unselected_candidates = enriched_candidates[top_k:]
+            if unselected_candidates:
+                logger.info(f"[MEMORY] {len(unselected_candidates)} candidates not selected after re-ranking:")
+                for item in unselected_candidates:
+                    logger.info(f"[MEMORY]   [NOT SELECTED] similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']}")
+
         # Step 4: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)
         trimmed_memory_ids = session.trim_memories_to_limit(
@@ -888,6 +895,13 @@ class SessionManager:
                     logger.info(f"[MEMORY]   [{retrieval_type}] similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved}")
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
+
+            # Log candidates that were not selected after re-ranking
+            unselected_candidates = enriched_candidates[top_k:]
+            if unselected_candidates:
+                logger.info(f"[MEMORY] {len(unselected_candidates)} candidates not selected after re-ranking:")
+                for item in unselected_candidates:
+                    logger.info(f"[MEMORY]   [NOT SELECTED] similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']}")
 
         # Step 3: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)
