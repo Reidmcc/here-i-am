@@ -123,7 +123,11 @@ class MemoryEntry:
     content: str
     created_at: str
     times_retrieved: int
-    score: float = 0.0
+    score: float = 0.0  # Similarity score from vector search
+    significance: float = 0.0  # Significance score based on retrieval patterns
+    combined_score: float = 0.0  # Combined score used for ranking
+    days_since_creation: float = 0.0  # Age of the memory in days
+    days_since_retrieval: float = 0.0  # Days since last retrieval (None if never retrieved)
 
 
 @dataclass
@@ -604,6 +608,7 @@ class SessionManager:
 
             # Step 2: Get full content and calculate combined scores for re-ranking
             enriched_candidates = []
+            now = datetime.utcnow()
             for candidate in candidates:
                 # Skip memories from archived conversations
                 if candidate.get("conversation_id") in archived_ids:
@@ -621,11 +626,27 @@ class SessionManager:
                     # Memories with higher significance get priority among similar matches
                     combined_score = candidate["score"] * (1 + significance)
 
+                    # Calculate days since creation and last retrieval for logging
+                    created_at = mem_data["created_at"]
+                    if isinstance(created_at, str):
+                        created_at = datetime.fromisoformat(created_at)
+                    days_since_creation = (now - created_at).total_seconds() / 86400
+
+                    last_retrieved_at = mem_data["last_retrieved_at"]
+                    if last_retrieved_at:
+                        if isinstance(last_retrieved_at, str):
+                            last_retrieved_at = datetime.fromisoformat(last_retrieved_at)
+                        days_since_retrieval = (now - last_retrieved_at).total_seconds() / 86400
+                    else:
+                        days_since_retrieval = -1  # Never retrieved
+
                     enriched_candidates.append({
                         "candidate": candidate,
                         "mem_data": mem_data,
                         "significance": significance,
                         "combined_score": combined_score,
+                        "days_since_creation": days_since_creation,
+                        "days_since_retrieval": days_since_retrieval,
                     })
 
             # Re-rank by combined score and keep top_k
@@ -647,6 +668,10 @@ class SessionManager:
                     created_at=mem_data["created_at"],
                     times_retrieved=mem_data["times_retrieved"],
                     score=candidate["score"],
+                    significance=item["significance"],
+                    combined_score=item["combined_score"],
+                    days_since_creation=item["days_since_creation"],
+                    days_since_retrieval=item["days_since_retrieval"],
                 )
 
                 added, is_new_retrieval = session.add_memory(memory)
@@ -668,11 +693,19 @@ class SessionManager:
             if new_memories:
                 logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
                 for mem in new_memories:
-                    preview = mem.content[:100].replace('\n', ' ')
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
-                    logger.info(f"[MEMORY]   [{retrieval_type}] score={mem.score:.3f} id={mem.id[:8]}... \"{preview}...\"")
+                    recency_str = f"{mem.days_since_retrieval:.1f}" if mem.days_since_retrieval >= 0 else "never"
+                    logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str}")
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
+
+            # Log candidates that were not selected after re-ranking
+            unselected_candidates = enriched_candidates[top_k:]
+            if unselected_candidates:
+                logger.info(f"[MEMORY] {len(unselected_candidates)} candidates not selected after re-ranking:")
+                for item in unselected_candidates:
+                    recency_str = f"{item['days_since_retrieval']:.1f}" if item['days_since_retrieval'] >= 0 else "never"
+                    logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str}")
 
         # Step 4: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)
@@ -697,6 +730,11 @@ class SessionManager:
         # Breakpoint 2: history (kept stable, consolidated periodically)
         memories_for_injection = session.get_memories_for_injection()
         cache_content = session.get_cache_aware_content()
+
+        # Debug logging for memory injection
+        logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
+        logger.info(f"[MEMORY] Cache content: {len(cache_content['cached_memories'])} cached memories, {len(cache_content['new_memories'])} new memories")
+
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
@@ -820,6 +858,7 @@ class SessionManager:
 
             # Step 2: Get full content and calculate combined scores for re-ranking
             enriched_candidates = []
+            now = datetime.utcnow()
             for candidate in candidates:
                 # Skip memories from archived conversations
                 if candidate.get("conversation_id") in archived_ids:
@@ -835,11 +874,27 @@ class SessionManager:
                     # Combined score: similarity boosted by significance
                     combined_score = candidate["score"] * (1 + significance)
 
+                    # Calculate days since creation and last retrieval for logging
+                    created_at = mem_data["created_at"]
+                    if isinstance(created_at, str):
+                        created_at = datetime.fromisoformat(created_at)
+                    days_since_creation = (now - created_at).total_seconds() / 86400
+
+                    last_retrieved_at = mem_data["last_retrieved_at"]
+                    if last_retrieved_at:
+                        if isinstance(last_retrieved_at, str):
+                            last_retrieved_at = datetime.fromisoformat(last_retrieved_at)
+                        days_since_retrieval = (now - last_retrieved_at).total_seconds() / 86400
+                    else:
+                        days_since_retrieval = -1  # Never retrieved
+
                     enriched_candidates.append({
                         "candidate": candidate,
                         "mem_data": mem_data,
                         "significance": significance,
                         "combined_score": combined_score,
+                        "days_since_creation": days_since_creation,
+                        "days_since_retrieval": days_since_retrieval,
                     })
 
             # Re-rank by combined score and keep top_k
@@ -861,6 +916,10 @@ class SessionManager:
                     created_at=mem_data["created_at"],
                     times_retrieved=mem_data["times_retrieved"],
                     score=candidate["score"],
+                    significance=item["significance"],
+                    combined_score=item["combined_score"],
+                    days_since_creation=item["days_since_creation"],
+                    days_since_retrieval=item["days_since_retrieval"],
                 )
 
                 added, is_new_retrieval = session.add_memory(memory)
@@ -882,11 +941,19 @@ class SessionManager:
             if new_memories:
                 logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
                 for mem in new_memories:
-                    preview = mem.content[:100].replace('\n', ' ')
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
-                    logger.info(f"[MEMORY]   [{retrieval_type}] score={mem.score:.3f} id={mem.id[:8]}... \"{preview}...\"")
+                    recency_str = f"{mem.days_since_retrieval:.1f}" if mem.days_since_retrieval >= 0 else "never"
+                    logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str}")
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
+
+            # Log candidates that were not selected after re-ranking
+            unselected_candidates = enriched_candidates[top_k:]
+            if unselected_candidates:
+                logger.info(f"[MEMORY] {len(unselected_candidates)} candidates not selected after re-ranking:")
+                for item in unselected_candidates:
+                    recency_str = f"{item['days_since_retrieval']:.1f}" if item['days_since_retrieval'] >= 0 else "never"
+                    logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str}")
 
         # Step 3: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)
@@ -928,6 +995,11 @@ class SessionManager:
         # Step 5: Build API messages with two-breakpoint caching
         memories_for_injection = session.get_memories_for_injection()
         cache_content = session.get_cache_aware_content()
+
+        # Debug logging for memory injection
+        logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
+        logger.info(f"[MEMORY] Cache content: {len(cache_content['cached_memories'])} cached memories, {len(cache_content['new_memories'])} new memories")
+
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
