@@ -429,12 +429,15 @@ class MemoryService:
         """
         Get all message IDs that have been retrieved in a conversation.
         Used for session deduplication.
+
+        Note: Returns string IDs to match Pinecone's string ID format.
         """
         result = await db.execute(
             select(ConversationMemoryLink.message_id)
             .where(ConversationMemoryLink.conversation_id == conversation_id)
         )
-        return set(row[0] for row in result.fetchall())
+        # Convert to strings to match Pinecone's string ID format
+        return set(str(row[0]) for row in result.fetchall())
 
     async def get_archived_conversation_ids(
         self,

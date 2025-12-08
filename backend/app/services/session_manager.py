@@ -526,6 +526,7 @@ class SessionManager:
                 session.conversation_context.append({"role": "assistant", "content": msg.content})
 
         # Load already-retrieved memory IDs for deduplication
+        # Note: get_retrieved_ids_for_conversation returns string IDs to match Pinecone
         retrieved_ids = await memory_service.get_retrieved_ids_for_conversation(
             conversation_id, db
         )
@@ -536,15 +537,17 @@ class SessionManager:
         for mem_id in retrieved_ids:
             mem_data = await memory_service.get_full_memory_content(mem_id, db)
             if mem_data:
-                session.session_memories[mem_id] = MemoryEntry(
-                    id=mem_data["id"],
+                # Use the string ID from mem_data to ensure consistency
+                str_id = mem_data["id"]
+                session.session_memories[str_id] = MemoryEntry(
+                    id=str_id,
                     conversation_id=mem_data["conversation_id"],
                     role=mem_data["role"],
                     content=mem_data["content"],
                     created_at=mem_data["created_at"],
                     times_retrieved=mem_data["times_retrieved"],
                 )
-                session.in_context_ids.add(mem_id)
+                session.in_context_ids.add(str_id)
 
         # Bootstrap cache state: all existing content should be in the "cached" portion
         # This ensures cache_control markers are placed correctly for cache hits
@@ -578,7 +581,8 @@ class SessionManager:
         logger.info(f"[MEMORY] Processing message for conversation {session.conversation_id[:8]}...")
 
         # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
-        if memory_service.is_configured():
+        # Validate both that Pinecone is configured AND the entity_id is valid
+        if memory_service.is_configured(entity_id=session.entity_id):
             # Get archived conversation IDs to exclude from retrieval
             archived_ids = await memory_service.get_archived_conversation_ids(
                 db, entity_id=session.entity_id
@@ -610,12 +614,16 @@ class SessionManager:
             enriched_candidates = []
             now = datetime.utcnow()
             for candidate in candidates:
-                # Skip memories from archived conversations
-                if candidate.get("conversation_id") in archived_ids:
-                    continue
-                # Get full content from database
-                mem_data = await memory_service.get_full_memory_content(candidate["id"], db)
-                if mem_data:
+                try:
+                    # Skip memories from archived conversations
+                    if candidate.get("conversation_id") in archived_ids:
+                        continue
+                    # Get full content from database
+                    mem_data = await memory_service.get_full_memory_content(candidate["id"], db)
+                    if not mem_data:
+                        logger.warning(f"[MEMORY] Could not load memory content for ID {candidate['id'][:8]}...")
+                        continue
+
                     # Calculate significance for re-ranking
                     significance = _calculate_significance(
                         mem_data["times_retrieved"],
@@ -648,6 +656,9 @@ class SessionManager:
                         "days_since_creation": days_since_creation,
                         "days_since_retrieval": days_since_retrieval,
                     })
+                except Exception as e:
+                    logger.error(f"[MEMORY] Error processing candidate {candidate.get('id', 'unknown')}: {e}")
+                    continue
 
             # Re-rank by combined score and keep top_k
             enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
@@ -706,6 +717,14 @@ class SessionManager:
                 for item in unselected_candidates:
                     recency_str = f"{item['days_since_retrieval']:.1f}" if item['days_since_retrieval'] >= 0 else "never"
                     logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str}")
+        else:
+            # Memory retrieval skipped - log reason
+            if not settings.pinecone_api_key:
+                logger.info(f"[MEMORY] Memory retrieval skipped: Pinecone not configured (no API key)")
+            elif session.entity_id and not settings.get_entity_by_index(session.entity_id):
+                logger.warning(f"[MEMORY] Memory retrieval skipped: Invalid entity_id '{session.entity_id}' not found in configuration")
+            else:
+                logger.info(f"[MEMORY] Memory retrieval skipped: entity_id={session.entity_id}")
 
         # Step 4: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)
@@ -828,7 +847,8 @@ class SessionManager:
         logger.info(f"[MEMORY] Processing message (stream) for conversation {session.conversation_id[:8]}...")
 
         # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
-        if memory_service.is_configured():
+        # Validate both that Pinecone is configured AND the entity_id is valid
+        if memory_service.is_configured(entity_id=session.entity_id):
             # Get archived conversation IDs to exclude from retrieval
             archived_ids = await memory_service.get_archived_conversation_ids(
                 db, entity_id=session.entity_id
@@ -860,11 +880,15 @@ class SessionManager:
             enriched_candidates = []
             now = datetime.utcnow()
             for candidate in candidates:
-                # Skip memories from archived conversations
-                if candidate.get("conversation_id") in archived_ids:
-                    continue
-                mem_data = await memory_service.get_full_memory_content(candidate["id"], db)
-                if mem_data:
+                try:
+                    # Skip memories from archived conversations
+                    if candidate.get("conversation_id") in archived_ids:
+                        continue
+                    mem_data = await memory_service.get_full_memory_content(candidate["id"], db)
+                    if not mem_data:
+                        logger.warning(f"[MEMORY] Could not load memory content for ID {candidate['id'][:8]}...")
+                        continue
+
                     # Calculate significance for re-ranking
                     significance = _calculate_significance(
                         mem_data["times_retrieved"],
@@ -896,6 +920,9 @@ class SessionManager:
                         "days_since_creation": days_since_creation,
                         "days_since_retrieval": days_since_retrieval,
                     })
+                except Exception as e:
+                    logger.error(f"[MEMORY] Error processing candidate {candidate.get('id', 'unknown')}: {e}")
+                    continue
 
             # Re-rank by combined score and keep top_k
             enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
@@ -954,6 +981,14 @@ class SessionManager:
                 for item in unselected_candidates:
                     recency_str = f"{item['days_since_retrieval']:.1f}" if item['days_since_retrieval'] >= 0 else "never"
                     logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str}")
+        else:
+            # Memory retrieval skipped - log reason
+            if not settings.pinecone_api_key:
+                logger.info(f"[MEMORY] Memory retrieval skipped: Pinecone not configured (no API key)")
+            elif session.entity_id and not settings.get_entity_by_index(session.entity_id):
+                logger.warning(f"[MEMORY] Memory retrieval skipped: Invalid entity_id '{session.entity_id}' not found in configuration")
+            else:
+                logger.info(f"[MEMORY] Memory retrieval skipped: entity_id={session.entity_id}")
 
         # Step 3: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)
