@@ -188,15 +188,17 @@ class ConversationSession:
 
 ### 2. Significance Through Retrieval
 
-**Location:** `backend/app/routes/memories.py:21-29`
+**Location:** `backend/app/routes/memories.py:49-77`
 
 ```python
-significance = (
-    memory.times_retrieved * settings.MEMORY_RECENCY_BOOST
-) / age_factor
+significance = times_retrieved * recency_factor
 ```
 
+Where `recency_factor` boosts recently-retrieved memories (decays over time based on `last_retrieved_at`).
+
 **Philosophy:** Memories aren't pre-tagged as important. Significance emerges from retrieval patterns. Memories that keep being retrieved across many conversations become more significant.
+
+**Re-ranking:** During retrieval, the system fetches more candidates than needed (controlled by `retrieval_candidate_multiplier`), calculates significance for each, and re-ranks by `combined_score = similarity * (1 + significance)` before keeping the top results.
 
 ### 3. Dual Storage Strategy
 
@@ -236,14 +238,12 @@ class CacheService:
     token_cache: TTLCache[int]           # 1 hour TTL, 50k entries
     search_cache: TTLCache[List[Dict]]   # 60 sec TTL, 1k entries
     content_cache: TTLCache[Dict]        # 5 min TTL, 5k entries
-    significance_cache: TTLCache[float]  # 30 sec TTL, 10k entries
 ```
 
 **Purpose:** Reduces API rate limit impact and improves performance:
 - **Token counting** - Cached for 1 hour (never changes for same text)
 - **Memory search results** - Cached for 60 seconds (may change with new memories)
 - **Memory content** - Cached for 5 minutes (rarely changes)
-- **Significance calculations** - Cached for 30 seconds (changes with retrievals)
 
 **Features:**
 - Thread-safe operations
@@ -887,16 +887,16 @@ DEFAULT_OPENAI_MODEL = "gpt-4o"  # OpenAI default
 initial_retrieval_top_k = 5  # First retrieval in conversation
 retrieval_top_k = 5          # Subsequent retrievals
 similarity_threshold = 0.3   # Tuned for llama-text-embed-v2
+retrieval_candidate_multiplier = 2  # Fetch 2x candidates, re-rank by significance
 recency_boost_strength = 1.0
-age_decay_rate = 0.01
 
 # Context limits (tokens)
 context_token_limit = 175000  # Conversation history cap
 memory_token_limit = 20000    # Memory block cap
 
 # Significance calculation
-significance = times_retrieved * recency_boost_strength / age_factor
-age_factor = 1 + (age_days * age_decay_rate)
+significance = times_retrieved * recency_factor
+# recency_factor = 1.0 + min(1/days_since_retrieval, recency_boost_strength)
 ```
 
 ---

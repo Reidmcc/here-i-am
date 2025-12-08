@@ -43,6 +43,35 @@ def _build_memory_query(
         return current_message
 
 
+def _calculate_significance(
+    times_retrieved: int,
+    last_retrieved_at: Optional[datetime],
+) -> float:
+    """
+    Calculate memory significance based on retrieval patterns.
+
+    significance = times_retrieved * recency_factor
+
+    Where recency_factor boosts recently-retrieved memories.
+    """
+    now = datetime.utcnow()
+
+    # Recency factor - boosts recently retrieved memories
+    recency_factor = 1.0
+    if last_retrieved_at:
+        # Handle string dates from database
+        if isinstance(last_retrieved_at, str):
+            last_retrieved_at = datetime.fromisoformat(last_retrieved_at)
+        days_since_retrieval = (now - last_retrieved_at).days
+        if days_since_retrieval > 0:
+            recency_factor = 1.0 + min(1.0 / days_since_retrieval, settings.recency_boost_strength)
+        else:
+            recency_factor = 1.0 + settings.recency_boost_strength
+
+    significance = times_retrieved * recency_factor
+    return max(significance, settings.significance_floor)
+
+
 def _build_memory_block_text(
     memories: List[Dict[str, Any]],
     conversation_start_date: Optional[datetime] = None,
@@ -531,7 +560,7 @@ class SessionManager:
 
         logger.info(f"[MEMORY] Processing message for conversation {session.conversation_id[:8]}...")
 
-        # Step 1-2: Retrieve and deduplicate memories
+        # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
         if memory_service.is_configured():
             # Get archived conversation IDs to exclude from retrieval
             archived_ids = await memory_service.get_archived_conversation_ids(
@@ -548,15 +577,20 @@ class SessionManager:
             is_first_retrieval = len(session.retrieved_ids) == 0
             top_k = settings.initial_retrieval_top_k if is_first_retrieval else settings.retrieval_top_k
 
+            # Fetch more candidates than needed for significance-based re-ranking
+            fetch_k = top_k * settings.retrieval_candidate_multiplier
+
             # Exclude memories already in context (not all retrieved - allows trimmed ones to return)
             candidates = await memory_service.search_memories(
                 query=memory_query,
-                top_k=top_k,
+                top_k=fetch_k,
                 exclude_conversation_id=session.conversation_id,
                 exclude_ids=session.in_context_ids,
                 entity_id=session.entity_id,
             )
 
+            # Step 2: Get full content and calculate combined scores for re-ranking
+            enriched_candidates = []
             for candidate in candidates:
                 # Skip memories from archived conversations
                 if candidate.get("conversation_id") in archived_ids:
@@ -564,30 +598,57 @@ class SessionManager:
                 # Get full content from database
                 mem_data = await memory_service.get_full_memory_content(candidate["id"], db)
                 if mem_data:
-                    memory = MemoryEntry(
-                        id=mem_data["id"],
-                        conversation_id=mem_data["conversation_id"],
-                        role=mem_data["role"],
-                        content=mem_data["content"],
-                        created_at=mem_data["created_at"],
-                        times_retrieved=mem_data["times_retrieved"],
-                        score=candidate["score"],
+                    # Calculate significance for re-ranking
+                    significance = _calculate_significance(
+                        mem_data["times_retrieved"],
+                        mem_data["last_retrieved_at"],
                     )
+                    # Combined score: similarity boosted by significance
+                    # Memories with higher significance get priority among similar matches
+                    combined_score = candidate["score"] * (1 + significance)
 
-                    added, is_new_retrieval = session.add_memory(memory)
-                    if added:
-                        new_memories.append(memory)
-                        # Track truly new memories separately for cache stability
-                        # Restored memories (trimmed then re-retrieved) should be treated as "old"
-                        if is_new_retrieval:
-                            truly_new_memory_ids.add(memory.id)
-                            # Step 3: Update retrieval tracking only for truly new retrievals
-                            await memory_service.update_retrieval_count(
-                                memory.id,
-                                session.conversation_id,
-                                db,
-                                entity_id=session.entity_id,
-                            )
+                    enriched_candidates.append({
+                        "candidate": candidate,
+                        "mem_data": mem_data,
+                        "significance": significance,
+                        "combined_score": combined_score,
+                    })
+
+            # Re-rank by combined score and keep top_k
+            enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
+            top_candidates = enriched_candidates[:top_k]
+
+            logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)}")
+
+            # Step 3: Process top candidates
+            for item in top_candidates:
+                candidate = item["candidate"]
+                mem_data = item["mem_data"]
+
+                memory = MemoryEntry(
+                    id=mem_data["id"],
+                    conversation_id=mem_data["conversation_id"],
+                    role=mem_data["role"],
+                    content=mem_data["content"],
+                    created_at=mem_data["created_at"],
+                    times_retrieved=mem_data["times_retrieved"],
+                    score=candidate["score"],
+                )
+
+                added, is_new_retrieval = session.add_memory(memory)
+                if added:
+                    new_memories.append(memory)
+                    # Track truly new memories separately for cache stability
+                    # Restored memories (trimmed then re-retrieved) should be treated as "old"
+                    if is_new_retrieval:
+                        truly_new_memory_ids.add(memory.id)
+                        # Update retrieval tracking only for truly new retrievals
+                        await memory_service.update_retrieval_count(
+                            memory.id,
+                            session.conversation_id,
+                            db,
+                            entity_id=session.entity_id,
+                        )
 
             # Log memory retrieval summary
             if new_memories:
@@ -714,7 +775,7 @@ class SessionManager:
 
         logger.info(f"[MEMORY] Processing message (stream) for conversation {session.conversation_id[:8]}...")
 
-        # Step 1-2: Retrieve and deduplicate memories
+        # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
         if memory_service.is_configured():
             # Get archived conversation IDs to exclude from retrieval
             archived_ids = await memory_service.get_archived_conversation_ids(
@@ -731,45 +792,76 @@ class SessionManager:
             is_first_retrieval = len(session.retrieved_ids) == 0
             top_k = settings.initial_retrieval_top_k if is_first_retrieval else settings.retrieval_top_k
 
+            # Fetch more candidates than needed for significance-based re-ranking
+            fetch_k = top_k * settings.retrieval_candidate_multiplier
+
             # Exclude memories already in context (not all retrieved - allows trimmed ones to return)
             candidates = await memory_service.search_memories(
                 query=memory_query,
-                top_k=top_k,
+                top_k=fetch_k,
                 exclude_conversation_id=session.conversation_id,
                 exclude_ids=session.in_context_ids,
                 entity_id=session.entity_id,
             )
 
+            # Step 2: Get full content and calculate combined scores for re-ranking
+            enriched_candidates = []
             for candidate in candidates:
                 # Skip memories from archived conversations
                 if candidate.get("conversation_id") in archived_ids:
                     continue
                 mem_data = await memory_service.get_full_memory_content(candidate["id"], db)
                 if mem_data:
-                    memory = MemoryEntry(
-                        id=mem_data["id"],
-                        conversation_id=mem_data["conversation_id"],
-                        role=mem_data["role"],
-                        content=mem_data["content"],
-                        created_at=mem_data["created_at"],
-                        times_retrieved=mem_data["times_retrieved"],
-                        score=candidate["score"],
+                    # Calculate significance for re-ranking
+                    significance = _calculate_significance(
+                        mem_data["times_retrieved"],
+                        mem_data["last_retrieved_at"],
                     )
+                    # Combined score: similarity boosted by significance
+                    combined_score = candidate["score"] * (1 + significance)
 
-                    added, is_new_retrieval = session.add_memory(memory)
-                    if added:
-                        new_memories.append(memory)
-                        # Track truly new memories separately for cache stability
-                        # Restored memories (trimmed then re-retrieved) should be treated as "old"
-                        if is_new_retrieval:
-                            truly_new_memory_ids.add(memory.id)
-                            # Only update retrieval count for truly new retrievals
-                            await memory_service.update_retrieval_count(
-                                memory.id,
-                                session.conversation_id,
-                                db,
-                                entity_id=session.entity_id,
-                            )
+                    enriched_candidates.append({
+                        "candidate": candidate,
+                        "mem_data": mem_data,
+                        "significance": significance,
+                        "combined_score": combined_score,
+                    })
+
+            # Re-rank by combined score and keep top_k
+            enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
+            top_candidates = enriched_candidates[:top_k]
+
+            logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)}")
+
+            # Step 3: Process top candidates
+            for item in top_candidates:
+                candidate = item["candidate"]
+                mem_data = item["mem_data"]
+
+                memory = MemoryEntry(
+                    id=mem_data["id"],
+                    conversation_id=mem_data["conversation_id"],
+                    role=mem_data["role"],
+                    content=mem_data["content"],
+                    created_at=mem_data["created_at"],
+                    times_retrieved=mem_data["times_retrieved"],
+                    score=candidate["score"],
+                )
+
+                added, is_new_retrieval = session.add_memory(memory)
+                if added:
+                    new_memories.append(memory)
+                    # Track truly new memories separately for cache stability
+                    # Restored memories (trimmed then re-retrieved) should be treated as "old"
+                    if is_new_retrieval:
+                        truly_new_memory_ids.add(memory.id)
+                        # Only update retrieval count for truly new retrievals
+                        await memory_service.update_retrieval_count(
+                            memory.id,
+                            session.conversation_id,
+                            db,
+                            entity_id=session.entity_id,
+                        )
 
             # Log memory retrieval summary
             if new_memories:

@@ -136,10 +136,10 @@ class Settings(BaseSettings):
     initial_retrieval_top_k: int = 5  # First retrieval in a conversation
     retrieval_top_k: int = 5  # Subsequent retrievals
     similarity_threshold: float = 0.3  # Tuned for llama-text-embed-v2
+    retrieval_candidate_multiplier: int = 2  # Fetch this many times top_k, then re-rank by significance
 
     # Significance calculation
     recency_boost_strength: float = 1.0
-    age_decay_rate: float = 0.01
     significance_floor: float = 0.0
 
     # Reflection mode
