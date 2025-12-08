@@ -704,6 +704,7 @@ class App {
     // ==================== Multi-Entity Methods ====================
 
     showMultiEntityModal() {
+        console.log('[DEBUG] showMultiEntityModal called from:', new Error().stack);
         // Populate the entity list with checkboxes
         this.elements.multiEntityList.innerHTML = this.entities.map(entity => `
             <label class="multi-entity-item">
