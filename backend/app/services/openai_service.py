@@ -117,8 +117,12 @@ class OpenAIService:
         # Map message roles (OpenAI uses 'user' and 'assistant')
         for msg in messages:
             role = msg["role"]
-            # OpenAI accepts 'user' and 'assistant' directly
-            api_messages.append({"role": role, "content": msg["content"]})
+            content = msg["content"]
+            # Handle Anthropic array format (with cache_control) - extract text
+            if isinstance(content, list):
+                content = content[0]["text"] if content else ""
+                logger.warning(f"[OPENAI] Converted array content to string for role={role} (len={len(content)})")
+            api_messages.append({"role": role, "content": content})
 
         # Build API parameters based on model capabilities
         api_params = {
@@ -199,7 +203,15 @@ class OpenAIService:
             api_messages.append({"role": "system", "content": system_prompt})
 
         for msg in messages:
-            api_messages.append({"role": msg["role"], "content": msg["content"]})
+            content = msg["content"]
+            # Handle Anthropic array format (with cache_control) - extract text
+            if isinstance(content, list):
+                # Array format: [{"type": "text", "text": "...", ...}]
+                content = content[0]["text"] if content else ""
+                logger.warning(f"[OPENAI] Converted array content to string for role={msg['role']} (len={len(content)})")
+            api_messages.append({"role": msg["role"], "content": content})
+
+        logger.info(f"[OPENAI] Sending {len(api_messages)} messages to API")
 
         try:
             # Yield start event
