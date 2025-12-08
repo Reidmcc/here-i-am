@@ -177,14 +177,8 @@ def get_model():
             # Load the model
             _tts_model = TTS(_model_name).to(device)
 
-            # Apply reduce-overhead optimization for GPU (FP16 handled via autocast at inference time)
-            if device == "cuda":
-                logger.info("Applying torch.compile with reduce-overhead mode...")
-                _tts_model.synthesizer.tts_model = torch.compile(
-                    _tts_model.synthesizer.tts_model,
-                    mode="reduce-overhead"
-                )
-                logger.info("Model optimizations applied successfully")
+            # Note: FP16 is handled via torch.autocast at inference time
+            # torch.compile removed due to compatibility issues with autocast
 
             logger.info("XTTS v2 model loaded successfully")
 
