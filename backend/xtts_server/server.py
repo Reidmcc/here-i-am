@@ -170,8 +170,14 @@ def get_model():
             # Load the model
             _tts_model = TTS(_model_name).to(device)
 
-            # Note: Running in default FP32 mode for stability
-            # FP16/autocast and torch.compile caused CUDA assertion errors with XTTS
+            # Apply reduce-overhead optimization for GPU (staying in FP32 for stability)
+            if device == "cuda":
+                logger.info("Applying torch.compile with reduce-overhead mode...")
+                _tts_model.synthesizer.tts_model = torch.compile(
+                    _tts_model.synthesizer.tts_model,
+                    mode="reduce-overhead"
+                )
+                logger.info("Model optimizations applied successfully")
 
             logger.info("XTTS v2 model loaded successfully")
 
