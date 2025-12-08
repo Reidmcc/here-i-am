@@ -8,22 +8,40 @@ from sqlalchemy import select
 from pydantic import BaseModel
 
 from app.database import get_db, async_session_maker
-from app.models import Conversation, Message, MessageRole
+from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity
 from app.services import session_manager, memory_service, llm_service
 from app.config import settings
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
+async def get_multi_entity_ids(conversation_id: str, db: AsyncSession) -> List[str]:
+    """Get the list of entity IDs participating in a multi-entity conversation."""
+    result = await db.execute(
+        select(ConversationEntity.entity_id)
+        .where(ConversationEntity.conversation_id == conversation_id)
+        .order_by(ConversationEntity.display_order)
+    )
+    return [row[0] for row in result.fetchall()]
+
+
+def get_entity_label(entity_id: str) -> Optional[str]:
+    """Get the human-readable label for an entity."""
+    entity = settings.get_entity_by_index(entity_id)
+    return entity.label if entity else None
+
+
 class ChatRequest(BaseModel):
     conversation_id: str
-    message: str
+    message: Optional[str] = None  # Optional for multi-entity continuation
     # Optional overrides
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     system_prompt: Optional[str] = None  # None means use conversation default
     verbosity: Optional[str] = None  # Verbosity level for gpt-5.1 models (low, medium, high)
+    # For multi-entity conversations: which entity should respond
+    responding_entity_id: Optional[str] = None
 
 
 class MemoryInfo(BaseModel):
@@ -43,6 +61,10 @@ class ChatResponse(BaseModel):
     new_memories_retrieved: List[MemoryInfo]
     total_memories_in_context: int
     message_id: str
+    human_message_id: Optional[str] = None
+    # For multi-entity conversations
+    speaker_entity_id: Optional[str] = None
+    speaker_label: Optional[str] = None
 
 
 class QuickChatRequest(BaseModel):
@@ -79,19 +101,71 @@ async def send_message(
     2. Deduplicate against session memories
     3. Update retrieval counts
     4. Build context with memories
-    5. Call Claude API
+    5. Call LLM API
     6. Store messages as new memories
+
+    For multi-entity conversations:
+    - responding_entity_id must be provided to specify which entity responds
+    - Memories are retrieved only from the responding entity's index
+    - Messages are stored to ALL participating entities' indexes
     """
+    # Get conversation to check if it's multi-entity
+    result = await db.execute(
+        select(Conversation).where(Conversation.id == data.conversation_id)
+    )
+    conversation = result.scalar_one_or_none()
+
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    is_multi_entity = conversation.conversation_type == ConversationType.MULTI_ENTITY
+    responding_entity_id = data.responding_entity_id
+    multi_entity_ids = []
+
+    if is_multi_entity:
+        # Get participating entities
+        multi_entity_ids = await get_multi_entity_ids(data.conversation_id, db)
+
+        if not multi_entity_ids:
+            raise HTTPException(status_code=400, detail="Multi-entity conversation has no entities")
+
+        # Validate responding_entity_id
+        if not responding_entity_id:
+            raise HTTPException(
+                status_code=400,
+                detail="responding_entity_id is required for multi-entity conversations"
+            )
+
+        if responding_entity_id not in multi_entity_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Entity '{responding_entity_id}' is not part of this conversation"
+            )
+
     # Get or create session
+    # For multi-entity, we use the responding entity's session
     session = session_manager.get_session(data.conversation_id)
 
     if not session:
         # Try to load from database
-        session = await session_manager.load_session_from_db(data.conversation_id, db)
+        session = await session_manager.load_session_from_db(
+            data.conversation_id,
+            db,
+            responding_entity_id=responding_entity_id if is_multi_entity else None,
+        )
 
         if not session:
-            # Conversation doesn't exist
-            raise HTTPException(status_code=404, detail="Conversation not found")
+            raise HTTPException(status_code=404, detail="Failed to load conversation session")
+
+    # For multi-entity, update session's entity_id to the responding entity
+    if is_multi_entity and responding_entity_id:
+        session.entity_id = responding_entity_id
+        # Update model to use the responding entity's default model
+        entity = settings.get_entity_by_index(responding_entity_id)
+        if entity and entity.default_model:
+            session.model = entity.default_model
+        elif entity:
+            session.model = settings.get_default_model_for_provider(entity.llm_provider)
 
     # Apply any overrides
     if data.model:
@@ -122,44 +196,79 @@ async def send_message(
     )
     db.add(human_msg)
 
-    # Assistant message
+    # Assistant message (with speaker_entity_id for multi-entity)
     assistant_msg = Message(
         conversation_id=data.conversation_id,
         role=MessageRole.ASSISTANT,
         content=response["content"],
         token_count=llm_service.count_tokens(response["content"]),
+        speaker_entity_id=responding_entity_id if is_multi_entity else None,
     )
     db.add(assistant_msg)
 
-    # Update conversation timestamp
-    result = await db.execute(
-        select(Conversation).where(Conversation.id == data.conversation_id)
-    )
-    conversation = result.scalar_one()
     conversation.updated_at = datetime.utcnow()
 
     await db.commit()
     await db.refresh(human_msg)
     await db.refresh(assistant_msg)
 
-    # Store messages as memories in vector database for the session's entity
+    # Store messages as memories in vector database
     if memory_service.is_configured():
-        await memory_service.store_memory(
-            message_id=human_msg.id,
-            conversation_id=data.conversation_id,
-            role="human",
-            content=data.message,
-            created_at=human_msg.created_at,
-            entity_id=session.entity_id,
-        )
-        await memory_service.store_memory(
-            message_id=assistant_msg.id,
-            conversation_id=data.conversation_id,
-            role="assistant",
-            content=response["content"],
-            created_at=assistant_msg.created_at,
-            entity_id=session.entity_id,
-        )
+        if is_multi_entity:
+            # For multi-entity conversations, store to ALL participating entities
+            responding_label = get_entity_label(responding_entity_id)
+            for entity_id in multi_entity_ids:
+                entity_label = get_entity_label(entity_id)
+
+                # For human messages: role is "human" for all entities
+                await memory_service.store_memory(
+                    message_id=human_msg.id,
+                    conversation_id=data.conversation_id,
+                    role="human",
+                    content=data.message,
+                    created_at=human_msg.created_at,
+                    entity_id=entity_id,
+                )
+
+                # For assistant messages:
+                # - For the responding entity: role is "assistant"
+                # - For other entities: role is the responding entity's label
+                if entity_id == responding_entity_id:
+                    await memory_service.store_memory(
+                        message_id=assistant_msg.id,
+                        conversation_id=data.conversation_id,
+                        role="assistant",
+                        content=response["content"],
+                        created_at=assistant_msg.created_at,
+                        entity_id=entity_id,
+                    )
+                else:
+                    await memory_service.store_memory(
+                        message_id=assistant_msg.id,
+                        conversation_id=data.conversation_id,
+                        role=responding_label or "other_entity",
+                        content=response["content"],
+                        created_at=assistant_msg.created_at,
+                        entity_id=entity_id,
+                    )
+        else:
+            # Standard single-entity conversation
+            await memory_service.store_memory(
+                message_id=human_msg.id,
+                conversation_id=data.conversation_id,
+                role="human",
+                content=data.message,
+                created_at=human_msg.created_at,
+                entity_id=session.entity_id,
+            )
+            await memory_service.store_memory(
+                message_id=assistant_msg.id,
+                conversation_id=data.conversation_id,
+                role="assistant",
+                content=response["content"],
+                created_at=assistant_msg.created_at,
+                entity_id=session.entity_id,
+            )
 
     return ChatResponse(
         content=response["content"],
@@ -171,6 +280,9 @@ async def send_message(
         ],
         total_memories_in_context=response["total_memories_in_context"],
         message_id=assistant_msg.id,
+        human_message_id=human_msg.id,
+        speaker_entity_id=responding_entity_id if is_multi_entity else None,
+        speaker_label=get_entity_label(responding_entity_id) if is_multi_entity and responding_entity_id else None,
     )
 
 
@@ -187,6 +299,11 @@ async def stream_message(data: ChatRequest):
     - event: stored - Message IDs after storage
     - event: error - Error occurred
 
+    For multi-entity conversations:
+    - responding_entity_id must be provided to specify which entity responds
+    - Memories are retrieved only from the responding entity's index
+    - Messages are stored to ALL participating entities' indexes
+
     Note: Database session is managed inside the generator to avoid
     connection lifecycle issues with streaming responses.
     """
@@ -196,17 +313,74 @@ async def stream_message(data: ChatRequest):
         # This avoids issues with FastAPI closing the session before the stream completes
         async with async_session_maker() as db:
             try:
+                # Get conversation to check if it's multi-entity
+                result = await db.execute(
+                    select(Conversation).where(Conversation.id == data.conversation_id)
+                )
+                conversation = result.scalar_one_or_none()
+
+                if not conversation:
+                    yield f"event: error\ndata: {json.dumps({'error': 'Conversation not found'})}\n\n"
+                    return
+
+                is_multi_entity = conversation.conversation_type == ConversationType.MULTI_ENTITY
+                responding_entity_id = data.responding_entity_id
+                multi_entity_ids = []
+
+                # Determine if this is a continuation (no human message)
+                is_continuation = not data.message
+
+                # Continuation requires multi-entity mode
+                if is_continuation and not is_multi_entity:
+                    yield f"event: error\ndata: {json.dumps({'error': 'Continuation without message requires multi-entity conversation'})}\n\n"
+                    return
+
+                if is_multi_entity:
+                    # Get participating entities
+                    multi_entity_ids = await get_multi_entity_ids(data.conversation_id, db)
+
+                    if not multi_entity_ids:
+                        yield f"event: error\ndata: {json.dumps({'error': 'Multi-entity conversation has no entities'})}\n\n"
+                        return
+
+                    # Validate responding_entity_id
+                    if not responding_entity_id:
+                        yield f"event: error\ndata: {json.dumps({'error': 'responding_entity_id is required for multi-entity conversations'})}\n\n"
+                        return
+
+                    if responding_entity_id not in multi_entity_ids:
+                        error_msg = f"Entity '{responding_entity_id}' is not part of this conversation"
+                        yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
+                        return
+
                 # Get or create session
                 session = session_manager.get_session(data.conversation_id)
 
                 if not session:
-                    session = await session_manager.load_session_from_db(data.conversation_id, db)
+                    session = await session_manager.load_session_from_db(
+                        data.conversation_id,
+                        db,
+                        responding_entity_id=responding_entity_id if is_multi_entity else None,
+                    )
                     if not session:
                         yield f"event: error\ndata: {json.dumps({'error': 'Conversation not found'})}\n\n"
                         return
 
+                # For multi-entity, update session's entity_id to the responding entity
+                if is_multi_entity and responding_entity_id:
+                    session.entity_id = responding_entity_id
+                    # Update model to use the responding entity's default model
+                    entity = settings.get_entity_by_index(responding_entity_id)
+                    if entity and entity.default_model:
+                        session.model = entity.default_model
+                        print(f"[MULTI-ENTITY] Set entity={responding_entity_id}, model={entity.default_model} (from entity config)")
+                    elif entity:
+                        session.model = settings.get_default_model_for_provider(entity.llm_provider)
+                        print(f"[MULTI-ENTITY] Set entity={responding_entity_id}, model={session.model} (from provider default)")
+
                 # Apply any overrides
                 if data.model:
+                    print(f"[MULTI-ENTITY] WARNING: Model override from request: {data.model}")
                     session.model = data.model
                 if data.temperature is not None:
                     session.temperature = data.temperature
@@ -248,54 +422,101 @@ async def stream_message(data: ChatRequest):
                         return
 
                 # Store messages in database after streaming completes
-                human_msg = Message(
-                    conversation_id=data.conversation_id,
-                    role=MessageRole.HUMAN,
-                    content=data.message,
-                    token_count=llm_service.count_tokens(data.message),
-                )
-                db.add(human_msg)
+                human_msg = None
+                if not is_continuation:
+                    # Only create human message if this is not a continuation
+                    human_msg = Message(
+                        conversation_id=data.conversation_id,
+                        role=MessageRole.HUMAN,
+                        content=data.message,
+                        token_count=llm_service.count_tokens(data.message),
+                    )
+                    db.add(human_msg)
 
                 assistant_msg = Message(
                     conversation_id=data.conversation_id,
                     role=MessageRole.ASSISTANT,
                     content=full_content,
                     token_count=llm_service.count_tokens(full_content),
+                    speaker_entity_id=responding_entity_id if is_multi_entity else None,
                 )
                 db.add(assistant_msg)
 
-                # Update conversation timestamp
-                result = await db.execute(
-                    select(Conversation).where(Conversation.id == data.conversation_id)
-                )
-                conversation = result.scalar_one()
                 conversation.updated_at = datetime.utcnow()
 
                 await db.commit()
-                await db.refresh(human_msg)
+                if human_msg:
+                    await db.refresh(human_msg)
                 await db.refresh(assistant_msg)
 
                 # Store messages as memories in vector database
                 if memory_service.is_configured():
-                    await memory_service.store_memory(
-                        message_id=human_msg.id,
-                        conversation_id=data.conversation_id,
-                        role="human",
-                        content=data.message,
-                        created_at=human_msg.created_at,
-                        entity_id=session.entity_id,
-                    )
-                    await memory_service.store_memory(
-                        message_id=assistant_msg.id,
-                        conversation_id=data.conversation_id,
-                        role="assistant",
-                        content=full_content,
-                        created_at=assistant_msg.created_at,
-                        entity_id=session.entity_id,
-                    )
+                    if is_multi_entity:
+                        # For multi-entity conversations, store to ALL participating entities
+                        responding_label = get_entity_label(responding_entity_id)
+                        for entity_id in multi_entity_ids:
+                            # For human messages: role is "human" for all entities (skip for continuation)
+                            if human_msg:
+                                await memory_service.store_memory(
+                                    message_id=human_msg.id,
+                                    conversation_id=data.conversation_id,
+                                    role="human",
+                                    content=data.message,
+                                    created_at=human_msg.created_at,
+                                    entity_id=entity_id,
+                                )
+
+                            # For assistant messages:
+                            # - For the responding entity: role is "assistant"
+                            # - For other entities: role is the responding entity's label
+                            if entity_id == responding_entity_id:
+                                await memory_service.store_memory(
+                                    message_id=assistant_msg.id,
+                                    conversation_id=data.conversation_id,
+                                    role="assistant",
+                                    content=full_content,
+                                    created_at=assistant_msg.created_at,
+                                    entity_id=entity_id,
+                                )
+                            else:
+                                await memory_service.store_memory(
+                                    message_id=assistant_msg.id,
+                                    conversation_id=data.conversation_id,
+                                    role=responding_label or "other_entity",
+                                    content=full_content,
+                                    created_at=assistant_msg.created_at,
+                                    entity_id=entity_id,
+                                )
+                    else:
+                        # Standard single-entity conversation (always has human message)
+                        await memory_service.store_memory(
+                            message_id=human_msg.id,
+                            conversation_id=data.conversation_id,
+                            role="human",
+                            content=data.message,
+                            created_at=human_msg.created_at,
+                            entity_id=session.entity_id,
+                        )
+                        await memory_service.store_memory(
+                            message_id=assistant_msg.id,
+                            conversation_id=data.conversation_id,
+                            role="assistant",
+                            content=full_content,
+                            created_at=assistant_msg.created_at,
+                            entity_id=session.entity_id,
+                        )
 
                 # Send stored event with message IDs
-                yield f"event: stored\ndata: {json.dumps({'human_message_id': str(human_msg.id), 'assistant_message_id': str(assistant_msg.id)})}\n\n"
+                stored_data = {
+                    'assistant_message_id': str(assistant_msg.id),
+                }
+                if human_msg:
+                    stored_data['human_message_id'] = str(human_msg.id)
+                if is_multi_entity:
+                    stored_data['speaker_entity_id'] = responding_entity_id
+                    stored_data['speaker_label'] = get_entity_label(responding_entity_id)
+                print(f"[STREAM] Sending stored event: {stored_data}")
+                yield f"event: stored\ndata: {json.dumps(stored_data)}\n\n"
 
             except Exception as e:
                 yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"

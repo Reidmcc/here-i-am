@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 def _build_memory_query(
     conversation_context: List[Dict[str, str]],
-    current_message: str,
+    current_message: Optional[str],
 ) -> str:
     """
     Build the query text for memory similarity search.
@@ -24,7 +24,7 @@ def _build_memory_query(
 
     Args:
         conversation_context: The conversation history
-        current_message: The current human message
+        current_message: The current human message (can be None for continuations)
 
     Returns:
         Combined query string for memory search
@@ -35,6 +35,16 @@ def _build_memory_query(
         if msg.get("role") == "assistant":
             last_assistant_content = msg.get("content", "")
             break
+
+    # Handle continuation (no current message) - use last assistant message only
+    if not current_message:
+        if last_assistant_content:
+            return last_assistant_content
+        # Fallback to last user message if no assistant message
+        for msg in reversed(conversation_context):
+            if msg.get("role") == "user":
+                return msg.get("content", "")
+        return ""
 
     # Combine with current message for better semantic matching
     if last_assistant_content:
@@ -219,9 +229,13 @@ class ConversationSession:
             for m in memories
         ]
 
-    def add_exchange(self, human_message: str, assistant_response: str):
-        """Add a human/assistant exchange to the conversation context."""
-        self.conversation_context.append({"role": "user", "content": human_message})
+    def add_exchange(self, human_message: Optional[str], assistant_response: str):
+        """Add a human/assistant exchange to the conversation context.
+
+        If human_message is None (continuation), only the assistant response is added.
+        """
+        if human_message:
+            self.conversation_context.append({"role": "user", "content": human_message})
         self.conversation_context.append({"role": "assistant", "content": assistant_response})
 
     def get_cache_aware_content(self) -> Dict[str, Any]:
@@ -487,11 +501,18 @@ class SessionManager:
     async def load_session_from_db(
         self,
         conversation_id: str,
-        db: AsyncSession
+        db: AsyncSession,
+        responding_entity_id: Optional[str] = None,
     ) -> Optional[ConversationSession]:
         """
         Load a session from the database, including conversation history
         and previously retrieved memories.
+
+        Args:
+            conversation_id: The conversation to load
+            db: Database session
+            responding_entity_id: For multi-entity conversations, the entity that will respond.
+                                  This determines which entity's model/provider to use.
         """
         # Get conversation
         result = await db.execute(
@@ -502,12 +523,22 @@ class SessionManager:
         if not conversation:
             return None
 
+        # Determine entity_id and model for the session
+        entity_id = responding_entity_id if responding_entity_id else conversation.entity_id
+        model = conversation.llm_model_used
+
+        # For multi-entity conversations with a responding entity, use that entity's model
+        if responding_entity_id:
+            entity = settings.get_entity_by_index(responding_entity_id)
+            if entity:
+                model = entity.default_model or settings.get_default_model_for_provider(entity.llm_provider)
+
         # Create session with conversation settings
         session = self.create_session(
             conversation_id=conversation_id,
-            model=conversation.llm_model_used,
+            model=model,
             system_prompt=conversation.system_prompt_used,
-            entity_id=conversation.entity_id,
+            entity_id=entity_id,
             conversation_start_date=conversation.created_at,
         )
 
@@ -827,13 +858,16 @@ class SessionManager:
     async def process_message_stream(
         self,
         session: ConversationSession,
-        user_message: str,
+        user_message: Optional[str],
         db: AsyncSession,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Process a user message through the full pipeline with streaming response.
 
         This performs memory retrieval first, then streams the LLM response.
+
+        If user_message is None (multi-entity continuation), the entity responds
+        based on existing conversation context without a new human message.
 
         Yields events:
         - {"type": "memories", "new_memories": [...], "total_in_context": int}
@@ -845,7 +879,7 @@ class SessionManager:
         new_memories = []
         truly_new_memory_ids = set()  # Only memories never seen before (for cache stability)
 
-        logger.info(f"[MEMORY] Processing message (stream) for conversation {session.conversation_id[:8]}...")
+        logger.info(f"[MEMORY] Processing message (stream) for conversation {session.conversation_id[:8]}... entity_id={session.entity_id}, model={session.model}")
 
         # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
         # Validate both that Pinecone is configured AND the entity_id is valid

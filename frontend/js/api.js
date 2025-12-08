@@ -325,6 +325,7 @@ class ApiClient {
     }
 
     _handleStreamEvent(eventType, data, callbacks) {
+        console.log('[API] SSE event received:', eventType, data);
         switch (eventType) {
             case 'memories':
                 if (callbacks.onMemories) callbacks.onMemories(data);
@@ -339,6 +340,7 @@ class ApiClient {
                 if (callbacks.onDone) callbacks.onDone(data);
                 break;
             case 'stored':
+                console.log('[API] Stored event - calling onStored callback');
                 if (callbacks.onStored) callbacks.onStored(data);
                 break;
             case 'error':

@@ -239,7 +239,7 @@ class AnthropicService:
         self,
         memories: List[Dict[str, Any]],
         conversation_context: List[Dict[str, str]],
-        current_message: str,
+        current_message: Optional[str],
         conversation_start_date: Optional[datetime] = None,
         enable_caching: bool = True,
         new_memory_ids: Optional[Set[str]] = None,
@@ -264,6 +264,9 @@ class AnthropicService:
         N+1. New history messages (regular, uncached)
         ...
         M. User: [date + current message]
+
+        If current_message is None (multi-entity continuation), the entity is prompted
+        to continue the conversation without a new human message.
 
         Cache hits occur when:
         - Breakpoint 1: all memories are identical
@@ -389,11 +392,22 @@ class AnthropicService:
         date_block += "[END DATE CONTEXT]"
         final_parts.append(date_block)
 
-        # Current message - add conversation marker if this is the very first message
-        if not cached_context and not new_context:
-            final_parts.append("[CURRENT CONVERSATION]\n\n" + current_message)
+        # Handle current message or continuation prompt
+        if current_message:
+            # Current message - add conversation marker if this is the very first message
+            if not cached_context and not new_context:
+                final_parts.append("[CURRENT CONVERSATION]\n\n" + current_message)
+            else:
+                final_parts.append(current_message)
         else:
-            final_parts.append(current_message)
+            # Continuation without new human message (multi-entity)
+            # Add a continuation prompt to let the entity respond
+            continuation_prompt = "[CONTINUATION]\nPlease continue the conversation by responding to what was said above."
+            if not cached_context and not new_context:
+                # This shouldn't happen (continuation with no context), but handle it
+                final_parts.append("[CURRENT CONVERSATION]\n\n" + continuation_prompt)
+            else:
+                final_parts.append(continuation_prompt)
 
         final_message = "\n\n".join(final_parts)
         messages.append({"role": "user", "content": final_message})

@@ -27,4 +27,9 @@ class Message(Base):
     times_retrieved: Mapped[int] = mapped_column(Integer, default=0)
     last_retrieved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # For multi-entity conversations: tracks which entity spoke this message
+    # NULL for single-entity conversations or human messages in multi-entity
+    # For AI responses in multi-entity, this is the entity that generated the response
+    speaker_entity_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")

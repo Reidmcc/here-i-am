@@ -1,6 +1,7 @@
 /**
  * Here I Am - Main Application
  */
+console.log('[HERE-I-AM] App.js loaded - version with multi-entity debug logging');
 
 class App {
     constructor() {
@@ -22,6 +23,11 @@ class App {
         this.isLoading = false;
         this.retrievedMemories = [];
         this.expandedMemoryIds = new Set();
+
+        // Multi-entity state
+        this.isMultiEntityMode = false;
+        this.currentConversationEntities = [];  // Entities in current conversation
+        this.pendingResponderId = null;  // Entity selected to respond next
 
         // Cache DOM elements
         this.elements = {
@@ -134,6 +140,15 @@ class App {
             importProgress: document.getElementById('import-progress'),
             importProgressBar: document.getElementById('import-progress-bar'),
             importProgressText: document.getElementById('import-progress-text'),
+
+            // Multi-entity
+            multiEntityModal: document.getElementById('multi-entity-modal'),
+            multiEntityList: document.getElementById('multi-entity-list'),
+            confirmMultiEntityBtn: document.getElementById('confirm-multi-entity'),
+            cancelMultiEntityBtn: document.getElementById('cancel-multi-entity'),
+            closeMultiEntityBtn: document.getElementById('close-multi-entity'),
+            entityResponderSelector: document.getElementById('entity-responder-selector'),
+            entityResponderButtons: document.getElementById('entity-responder-buttons'),
         };
 
         // Import state
@@ -369,6 +384,11 @@ class App {
         this.elements.importSelectAllMemory.addEventListener('change', (e) => this.toggleAllImportCheckboxes('memory', e.target.checked));
         this.elements.importSelectAllHistory.addEventListener('change', (e) => this.toggleAllImportCheckboxes('history', e.target.checked));
 
+        // Multi-entity modal
+        this.elements.closeMultiEntityBtn.addEventListener('click', () => this.hideMultiEntityModal());
+        this.elements.cancelMultiEntityBtn.addEventListener('click', () => this.hideMultiEntityModal());
+        this.elements.confirmMultiEntityBtn.addEventListener('click', () => this.confirmMultiEntitySelection());
+
         // Voice cloning modal
         this.elements.openVoiceCloneBtn.addEventListener('click', () => this.showVoiceCloneModal());
         document.getElementById('close-voice-clone').addEventListener('click', () => this.hideVoiceCloneModal());
@@ -563,12 +583,22 @@ class App {
             const response = await api.listEntities();
             this.entities = response.entities;
 
-            // Render entity selector
-            this.elements.entitySelect.innerHTML = this.entities.map(entity => `
+            // Render entity selector with multi-entity option at bottom
+            let options = this.entities.map(entity => `
                 <option value="${entity.index_name}" ${entity.is_default ? 'selected' : ''}>
                     ${this.escapeHtml(entity.label)}
                 </option>
             `).join('');
+
+            // Add multi-entity option if there are at least 2 entities
+            if (this.entities.length >= 2) {
+                options += `
+                    <option disabled>───────────────</option>
+                    <option value="multi-entity">Multi-Entity Conversation</option>
+                `;
+            }
+
+            this.elements.entitySelect.innerHTML = options;
 
             // Set default entity
             this.selectedEntityId = response.default_entity;
@@ -585,6 +615,14 @@ class App {
     }
 
     handleEntityChange(entityId) {
+        // Check if multi-entity was selected
+        if (entityId === 'multi-entity') {
+            this.showMultiEntityModal();
+            return;
+        }
+
+        this.isMultiEntityMode = false;
+        this.currentConversationEntities = [];
         this.selectedEntityId = entityId;
         this.updateEntityDescription();
 
@@ -612,6 +650,7 @@ class App {
         this.elements.conversationTitle.textContent = 'Select a conversation';
         this.elements.conversationMeta.textContent = '';
         this.updateMemoriesPanel();
+        this.hideEntityResponderSelector();
 
         // Reload conversations for the new entity
         this.loadConversations();
@@ -620,6 +659,14 @@ class App {
     }
 
     updateEntityDescription() {
+        // Handle multi-entity mode
+        if (this.isMultiEntityMode && this.currentConversationEntities.length > 0) {
+            const labels = this.currentConversationEntities.map(e => e.label).join(', ');
+            this.elements.entityDescription.textContent = `Multi-entity: ${labels}`;
+            this.elements.entityDescription.style.display = 'block';
+            return;
+        }
+
         const entity = this.entities.find(e => e.index_name === this.selectedEntityId);
         if (entity) {
             // Build description with model info
@@ -645,8 +692,299 @@ class App {
     }
 
     getEntityLabel(entityId) {
+        if (entityId === 'multi-entity') {
+            return 'Multi-Entity';
+        }
         const entity = this.entities.find(e => e.index_name === entityId);
         return entity ? entity.label : entityId;
+    }
+
+    // ==================== Multi-Entity Methods ====================
+
+    showMultiEntityModal() {
+        // Populate the entity list with checkboxes
+        this.elements.multiEntityList.innerHTML = this.entities.map(entity => `
+            <label class="multi-entity-item">
+                <input type="checkbox" value="${entity.index_name}">
+                <div class="multi-entity-item-info">
+                    <div class="multi-entity-item-label">${this.escapeHtml(entity.label)}</div>
+                    ${entity.description ? `<div class="multi-entity-item-description">${this.escapeHtml(entity.description)}</div>` : ''}
+                    <div class="multi-entity-item-model">
+                        ${entity.llm_provider === 'openai' ? 'OpenAI' : 'Anthropic'}: ${entity.default_model || 'default'}
+                    </div>
+                </div>
+            </label>
+        `).join('');
+
+        // Add event listeners to update confirm button state
+        this.elements.multiEntityList.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+            cb.addEventListener('change', () => this.updateMultiEntityConfirmButton());
+        });
+
+        this.elements.confirmMultiEntityBtn.disabled = true;
+        this.elements.multiEntityModal.classList.add('active');
+    }
+
+    hideMultiEntityModal() {
+        this.elements.multiEntityModal.classList.remove('active');
+        // Reset entity selector to previous value if nothing was selected
+        if (!this.isMultiEntityMode) {
+            this.elements.entitySelect.value = this.selectedEntityId || this.entities[0]?.index_name;
+        }
+    }
+
+    updateMultiEntityConfirmButton() {
+        const checkedCount = this.elements.multiEntityList.querySelectorAll('input[type="checkbox"]:checked').length;
+        this.elements.confirmMultiEntityBtn.disabled = checkedCount < 2;
+    }
+
+    confirmMultiEntitySelection() {
+        const selectedEntityIds = Array.from(
+            this.elements.multiEntityList.querySelectorAll('input[type="checkbox"]:checked')
+        ).map(cb => cb.value);
+
+        if (selectedEntityIds.length < 2) {
+            this.showToast('Please select at least 2 entities', 'error');
+            return;
+        }
+
+        // Set multi-entity mode
+        this.isMultiEntityMode = true;
+        this.selectedEntityId = 'multi-entity';
+        this.currentConversationEntities = selectedEntityIds.map(id =>
+            this.entities.find(e => e.index_name === id)
+        ).filter(Boolean);
+
+        this.hideMultiEntityModal();
+
+        // Clear current conversation
+        this.currentConversationId = null;
+        this.retrievedMemories = [];
+        this.expandedMemoryIds.clear();
+        this.clearMessages();
+        this.elements.conversationTitle.textContent = 'New Multi-Entity Conversation';
+        this.elements.conversationMeta.textContent = '';
+        this.updateMemoriesPanel();
+        this.updateEntityDescription();
+
+        // Load conversations for multi-entity view
+        this.loadConversations();
+
+        const labels = this.currentConversationEntities.map(e => e.label).join(' & ');
+        this.showToast(`Multi-entity mode: ${labels}`, 'success');
+    }
+
+    showEntityResponderSelector(isContinuation = false) {
+        console.log('[MULTI-ENTITY] showEntityResponderSelector called:', {
+            isContinuation,
+            isMultiEntityMode: this.isMultiEntityMode,
+            entitiesCount: this.currentConversationEntities?.length,
+            entities: this.currentConversationEntities
+        });
+
+        if (!this.isMultiEntityMode || this.currentConversationEntities.length === 0) {
+            console.log('[MULTI-ENTITY] Selector not shown - conditions not met');
+            return;
+        }
+
+        // Store whether this is continuation mode (can also be determined by !pendingMessageContent)
+        this.responderSelectorContinuationMode = isContinuation;
+
+        // Update prompt text based on mode
+        const promptEl = this.elements.entityResponderSelector.querySelector('.responder-prompt');
+        if (promptEl) {
+            promptEl.textContent = isContinuation
+                ? 'Select an entity to continue the conversation:'
+                : 'Select which entity should respond:';
+        }
+
+        // Populate responder buttons
+        this.elements.entityResponderButtons.innerHTML = this.currentConversationEntities.map(entity => `
+            <button class="entity-responder-btn" data-entity-id="${entity.index_name}">
+                ${this.escapeHtml(entity.label)}
+            </button>
+        `).join('');
+
+        // Add click handlers
+        this.elements.entityResponderButtons.querySelectorAll('.entity-responder-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.pendingResponderId = btn.dataset.entityId;
+                this.hideEntityResponderSelector();
+                this.sendMessageWithResponder();
+            });
+        });
+
+        this.elements.entityResponderSelector.style.display = 'block';
+    }
+
+    hideEntityResponderSelector() {
+        this.elements.entityResponderSelector.style.display = 'none';
+    }
+
+    async sendMessageWithResponder() {
+        if (!this.pendingResponderId) {
+            this.showToast('No entity selected', 'error');
+            return;
+        }
+
+        // Content can be null for continuation mode
+        const content = this.pendingMessageContent;
+        const responderId = this.pendingResponderId;
+        const userMessageEl = this.pendingUserMessageEl;
+        const isContinuation = !content;
+
+        // Clear pending state
+        this.pendingMessageContent = null;
+        this.pendingResponderId = null;
+        this.pendingUserMessageEl = null;
+
+        this.isLoading = true;
+        this.elements.sendBtn.disabled = true;
+
+        // Get the responding entity's label
+        const responderEntity = this.currentConversationEntities.find(e => e.index_name === responderId);
+        const responderLabel = responderEntity?.label || responderId;
+
+        // Create streaming message element with speaker label
+        const streamingMessage = this.createStreamingMessage('assistant', responderLabel);
+        let usageData = null;
+
+        try {
+            // Build request - don't send model override in multi-entity mode
+            // so each entity uses its own configured model
+            const request = {
+                conversation_id: this.currentConversationId,
+                message: content,
+                temperature: this.settings.temperature,
+                max_tokens: this.settings.maxTokens,
+                system_prompt: this.settings.systemPrompt,
+                verbosity: this.settings.verbosity,
+                responding_entity_id: responderId,
+            };
+            // Only include model override if NOT in multi-entity mode
+            if (!this.isMultiEntityMode) {
+                request.model = this.settings.model;
+            }
+
+            await api.sendMessageStream(
+                request,
+                {
+                    onMemories: (data) => {
+                        let hasChanges = false;
+
+                        if (data.trimmed_memory_ids && data.trimmed_memory_ids.length > 0) {
+                            const trimmedSet = new Set(data.trimmed_memory_ids);
+                            this.retrievedMemories = this.retrievedMemories.filter(
+                                mem => !trimmedSet.has(mem.id)
+                            );
+                            hasChanges = true;
+                        }
+
+                        if (data.new_memories && data.new_memories.length > 0) {
+                            const existingIds = new Set(this.retrievedMemories.map(m => m.id));
+                            data.new_memories.forEach(mem => {
+                                if (!existingIds.has(mem.id)) {
+                                    this.retrievedMemories.push(mem);
+                                }
+                            });
+                            hasChanges = true;
+                        }
+
+                        if (hasChanges) {
+                            this.updateMemoriesPanel();
+                        }
+                    },
+                    onStart: (data) => {
+                        // Stream has started
+                    },
+                    onToken: (data) => {
+                        if (data.content) {
+                            streamingMessage.updateContent(data.content);
+                        }
+                    },
+                    onDone: (data) => {
+                        streamingMessage.finalize({
+                            showTimestamp: true,
+                            speakerLabel: responderLabel,
+                        });
+                        usageData = data.usage;
+
+                        if (usageData) {
+                            this.elements.tokenCount.textContent = `Tokens: ${usageData.input_tokens} in / ${usageData.output_tokens} out`;
+                        }
+                    },
+                    onStored: async (data) => {
+                        console.log('[MULTI-ENTITY] onStored callback triggered:', data);
+
+                        // Update user message with ID
+                        if (data.human_message_id && userMessageEl) {
+                            userMessageEl.dataset.messageId = data.human_message_id;
+                            const userBubble = userMessageEl.querySelector('.message-bubble');
+                            if (userBubble) {
+                                const actionsDiv = document.createElement('div');
+                                actionsDiv.className = 'message-bubble-actions';
+                                actionsDiv.innerHTML = `
+                                    <button class="message-action-btn copy-btn" title="Copy to clipboard">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                                        </svg>
+                                    </button>
+                                    <button class="message-action-btn edit-btn" title="Edit message">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                        </svg>
+                                    </button>
+                                `;
+                                userBubble.appendChild(actionsDiv);
+                            }
+                        }
+
+                        // Update assistant message with ID and speaker info
+                        if (data.assistant_message_id) {
+                            streamingMessage.element.dataset.messageId = data.assistant_message_id;
+                            streamingMessage.element.dataset.speakerEntityId = responderId;
+                            this.updateAssistantMessageActions(streamingMessage.element, data.assistant_message_id, streamingMessage.getContent());
+                        }
+
+                        // Auto-generate title for new conversations
+                        const conv = this.conversations.find(c => c.id === this.currentConversationId);
+                        if (conv && !conv.title && content) {
+                            const autoTitle = content.slice(0, 50) + (content.length > 50 ? '...' : '');
+                            try {
+                                await api.updateConversation(this.currentConversationId, { title: autoTitle });
+                                conv.title = autoTitle;
+                                this.renderConversationList();
+                                this.elements.conversationTitle.textContent = autoTitle;
+                            } catch (e) {
+                                console.error('Failed to auto-set title:', e);
+                            }
+                        }
+
+                        // Show responder selector for next turn (continuation mode since no new human message)
+                        this.showEntityResponderSelector(true);
+                    },
+                    onError: (data) => {
+                        streamingMessage.element.remove();
+                        this.addMessage('assistant', `Error: ${data.error}`, { isError: true });
+                        this.showToast('Failed to send message', 'error');
+                        console.error('Streaming error:', data.error);
+                    },
+                }
+            );
+
+            this.scrollToBottom();
+
+        } catch (error) {
+            streamingMessage.element.remove();
+            this.addMessage('assistant', `Error: ${error.message}`, { isError: true });
+            this.showToast('Failed to send message', 'error');
+            console.error('Failed to send message:', error);
+        } finally {
+            this.isLoading = false;
+            this.handleInputChange();
+        }
     }
 
     getMaxTemperatureForCurrentEntity() {
@@ -738,17 +1076,30 @@ class App {
         }
 
         this.conversations.forEach(conv => {
+            const isMulti = conv.conversation_type === 'multi_entity';
             const item = document.createElement('div');
-            item.className = `conversation-item${conv.id === this.currentConversationId ? ' active' : ''}`;
+            item.className = `conversation-item${conv.id === this.currentConversationId ? ' active' : ''}${isMulti ? ' multi-entity' : ''}`;
             item.dataset.id = conv.id;
 
             const date = new Date(conv.created_at);
             const dateStr = date.toLocaleDateString();
 
+            // Build entity labels for multi-entity conversations
+            let entityLabels = '';
+            if (isMulti && conv.entities && conv.entities.length > 0) {
+                entityLabels = conv.entities.map(e => e.label).join(' & ');
+            }
+
             item.innerHTML = `
                 <div class="conversation-item-content">
-                    <div class="conversation-item-title">${conv.title || 'Untitled'}</div>
-                    <div class="conversation-item-meta">${dateStr} · ${conv.message_count} messages</div>
+                    <div class="conversation-item-title">
+                        ${conv.title || 'Untitled'}
+                        ${isMulti ? '<span class="multi-entity-badge">Multi</span>' : ''}
+                    </div>
+                    <div class="conversation-item-meta">
+                        ${dateStr} · ${conv.message_count} messages
+                        ${entityLabels ? ` · ${this.escapeHtml(entityLabels)}` : ''}
+                    </div>
                     ${conv.preview ? `<div class="conversation-item-preview">${this.escapeHtml(conv.preview)}</div>` : ''}
                 </div>
                 <div class="conversation-item-menu">
@@ -807,17 +1158,43 @@ class App {
 
     async createNewConversation() {
         try {
-            const conversation = await api.createConversation({
-                model: this.settings.model,
-                system_prompt: this.settings.systemPrompt,
-                conversation_type: this.settings.conversationType,
-                entity_id: this.selectedEntityId,
-            });
+            let conversationData;
+
+            if (this.isMultiEntityMode && this.currentConversationEntities.length >= 2) {
+                // Create multi-entity conversation
+                conversationData = {
+                    model: this.settings.model,
+                    system_prompt: this.settings.systemPrompt,
+                    conversation_type: 'multi_entity',
+                    entity_ids: this.currentConversationEntities.map(e => e.index_name),
+                };
+            } else {
+                // Create standard conversation
+                conversationData = {
+                    model: this.settings.model,
+                    system_prompt: this.settings.systemPrompt,
+                    conversation_type: this.settings.conversationType,
+                    entity_id: this.selectedEntityId,
+                };
+            }
+
+            const conversation = await api.createConversation(conversationData);
 
             this.conversations.unshift(conversation);
             this.currentConversationId = conversation.id;
             this.retrievedMemories = [];
             this.expandedMemoryIds.clear();
+
+            // Update entities if this is a multi-entity conversation
+            if (conversation.entities && conversation.entities.length > 0) {
+                this.currentConversationEntities = conversation.entities.map(e => ({
+                    index_name: e.entity_id,
+                    label: e.label,
+                    description: e.description,
+                    llm_provider: e.llm_provider,
+                    default_model: e.default_model,
+                }));
+            }
 
             this.renderConversationList();
             this.clearMessages();
@@ -846,10 +1223,28 @@ class App {
             this.retrievedMemories = sessionInfo?.memories || [];
             this.expandedMemoryIds.clear();
 
+            // Handle multi-entity conversation
+            if (conversation.conversation_type === 'multi_entity' && conversation.entities) {
+                this.isMultiEntityMode = true;
+                this.currentConversationEntities = conversation.entities.map(e => ({
+                    index_name: e.entity_id,
+                    label: e.label,
+                    description: e.description,
+                    llm_provider: e.llm_provider,
+                    default_model: e.default_model,
+                }));
+                this.selectedEntityId = 'multi-entity';
+                this.elements.entitySelect.value = 'multi-entity';
+            } else {
+                this.isMultiEntityMode = false;
+                this.currentConversationEntities = [];
+            }
+
             this.renderConversationList();
             this.clearMessages();
             this.updateHeader(conversation);
             this.updateMemoriesPanel();
+            this.updateEntityDescription();
 
             // Find the last assistant message index
             let lastAssistantIndex = -1;
@@ -867,10 +1262,18 @@ class App {
                     showTimestamp: true,
                     messageId: msg.id,
                     isLatestAssistant: msg.role === 'assistant' && index === lastAssistantIndex,
+                    speakerEntityId: msg.speaker_entity_id,
+                    speakerLabel: msg.speaker_label,
                 });
             });
 
             this.scrollToBottom();
+
+            // Show responder selector if multi-entity and conversation has messages
+            // This is continuation mode since we're resuming an existing conversation
+            if (this.isMultiEntityMode && messages.length > 0) {
+                this.showEntityResponderSelector(true);
+            }
         } catch (error) {
             this.showToast('Failed to load conversation', 'error');
             console.error('Failed to load conversation:', error);
@@ -888,6 +1291,22 @@ class App {
             await this.createNewConversation();
         }
 
+        // In multi-entity mode, store message and show responder selector
+        if (this.isMultiEntityMode) {
+            this.pendingMessageContent = content;
+            this.elements.messageInput.value = '';
+            this.elements.messageInput.style.height = 'auto';
+
+            // Add user message visually immediately
+            this.pendingUserMessageEl = this.addMessage('human', content);
+            this.scrollToBottom();
+
+            // Show responder selector
+            this.showEntityResponderSelector();
+            return;
+        }
+
+        // Standard single-entity flow
         this.isLoading = true;
         this.elements.sendBtn.disabled = true;
         this.elements.messageInput.value = '';
@@ -1101,8 +1520,19 @@ class App {
         }
         message.dataset.role = role;
 
+        // Store speaker entity info for multi-entity conversations
+        if (options.speakerEntityId) {
+            message.dataset.speakerEntityId = options.speakerEntityId;
+        }
+
         const timestamp = options.timestamp ? new Date(options.timestamp) : new Date();
         const timeStr = timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        // Build speaker label for multi-entity assistant messages
+        let speakerLabelHtml = '';
+        if (role === 'assistant' && options.speakerLabel) {
+            speakerLabelHtml = `<span class="message-speaker-label">${this.escapeHtml(options.speakerLabel)}</span>`;
+        }
 
         // Build action buttons based on role (now inside the bubble)
         let actionButtons = '';
@@ -1119,7 +1549,7 @@ class App {
         }
 
         message.innerHTML = `
-            <div class="message-bubble ${options.isError ? 'error' : ''}">${this.renderMarkdown(content)}${actionButtons}</div>
+            <div class="message-bubble ${options.isError ? 'error' : ''}">${speakerLabelHtml}${this.renderMarkdown(content)}${actionButtons}</div>
             ${options.showTimestamp !== false ? `
                 <div class="message-meta">
                     <span>${timeStr}</span>
@@ -1353,7 +1783,7 @@ class App {
      * @param {string} role - Message role (assistant)
      * @returns {Object} - Object with element, updateContent, and finalize methods
      */
-    createStreamingMessage(role) {
+    createStreamingMessage(role, speakerLabel = null) {
         // Hide welcome message
         if (this.elements.welcomeMessage) {
             this.elements.welcomeMessage.style.display = 'none';
@@ -1364,6 +1794,14 @@ class App {
 
         const bubble = document.createElement('div');
         bubble.className = 'message-bubble streaming';
+
+        // Add speaker label for multi-entity conversations
+        if (speakerLabel && role === 'assistant') {
+            const labelSpan = document.createElement('span');
+            labelSpan.className = 'message-speaker-label';
+            labelSpan.textContent = speakerLabel;
+            bubble.appendChild(labelSpan);
+        }
 
         const contentSpan = document.createElement('span');
         contentSpan.className = 'message-content';
@@ -1510,6 +1948,66 @@ class App {
                 e.stopPropagation();
                 this.startEditMessage(messageElement, messageId, content);
             });
+        }
+    }
+
+    /**
+     * Add action buttons (copy, speak, regenerate) to an assistant message.
+     * Used in multi-entity mode after message is stored.
+     */
+    updateAssistantMessageActions(messageElement, messageId, messageContent) {
+        // Remove regenerate buttons from previous assistant messages
+        this.removeRegenerateButtons();
+
+        // Add action buttons inside assistant message bubble
+        const assistantBubble = messageElement.querySelector('.message-bubble');
+        if (assistantBubble) {
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'message-bubble-actions';
+            const speakBtnHtml = this.ttsEnabled ? `
+                <button class="message-action-btn speak-btn" title="Read aloud">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                    </svg>
+                </button>
+            ` : '';
+            actionsDiv.innerHTML = `
+                <button class="message-action-btn copy-btn" title="Copy to clipboard">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                </button>
+                ${speakBtnHtml}
+                <button class="message-action-btn regenerate-btn" title="Regenerate response">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 4v6h-6"/>
+                        <path d="M1 20v-6h6"/>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                </button>
+            `;
+            assistantBubble.appendChild(actionsDiv);
+
+            const copyBtn = actionsDiv.querySelector('.copy-btn');
+            copyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.copyMessage(messageContent, copyBtn);
+            });
+            const regenerateBtn = actionsDiv.querySelector('.regenerate-btn');
+            regenerateBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.regenerateMessage(messageId);
+            });
+            const speakBtn = actionsDiv.querySelector('.speak-btn');
+            if (speakBtn) {
+                speakBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.speakMessage(messageContent, speakBtn, messageId);
+                });
+            }
         }
     }
 
@@ -1764,12 +2262,20 @@ class App {
         this.elements.conversationTitle.textContent = conversation.title || 'Untitled Conversation';
 
         const date = new Date(conversation.created_at);
-        let meta = `${conversation.conversation_type} · ${conversation.llm_model_used}`;
+        let meta = '';
 
-        // Add entity label if multiple entities exist
-        if (this.entities.length > 1 && conversation.entity_id) {
-            const entityLabel = this.getEntityLabel(conversation.entity_id);
-            meta += ` · ${entityLabel}`;
+        // Handle multi-entity conversations
+        if (conversation.conversation_type === 'multi_entity' && conversation.entities) {
+            const entityLabels = conversation.entities.map(e => e.label).join(' & ');
+            meta = `multi-entity · ${entityLabels}`;
+        } else {
+            meta = `${conversation.conversation_type} · ${conversation.llm_model_used}`;
+
+            // Add entity label if multiple entities exist
+            if (this.entities.length > 1 && conversation.entity_id) {
+                const entityLabel = this.getEntityLabel(conversation.entity_id);
+                meta += ` · ${entityLabel}`;
+            }
         }
 
         this.elements.conversationMeta.textContent = meta;
