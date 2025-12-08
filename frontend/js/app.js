@@ -841,17 +841,24 @@ class App {
         let usageData = null;
 
         try {
+            // Build request - don't send model override in multi-entity mode
+            // so each entity uses its own configured model
+            const request = {
+                conversation_id: this.currentConversationId,
+                message: content,
+                temperature: this.settings.temperature,
+                max_tokens: this.settings.maxTokens,
+                system_prompt: this.settings.systemPrompt,
+                verbosity: this.settings.verbosity,
+                responding_entity_id: responderId,
+            };
+            // Only include model override if NOT in multi-entity mode
+            if (!this.isMultiEntityMode) {
+                request.model = this.settings.model;
+            }
+
             await api.sendMessageStream(
-                {
-                    conversation_id: this.currentConversationId,
-                    message: content,
-                    model: this.settings.model,
-                    temperature: this.settings.temperature,
-                    max_tokens: this.settings.maxTokens,
-                    system_prompt: this.settings.systemPrompt,
-                    verbosity: this.settings.verbosity,
-                    responding_entity_id: responderId,
-                },
+                request,
                 {
                     onMemories: (data) => {
                         let hasChanges = false;
