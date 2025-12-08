@@ -373,11 +373,14 @@ async def stream_message(data: ChatRequest):
                     entity = settings.get_entity_by_index(responding_entity_id)
                     if entity and entity.default_model:
                         session.model = entity.default_model
+                        print(f"[MULTI-ENTITY] Set entity={responding_entity_id}, model={entity.default_model} (from entity config)")
                     elif entity:
                         session.model = settings.get_default_model_for_provider(entity.llm_provider)
+                        print(f"[MULTI-ENTITY] Set entity={responding_entity_id}, model={session.model} (from provider default)")
 
                 # Apply any overrides
                 if data.model:
+                    print(f"[MULTI-ENTITY] WARNING: Model override from request: {data.model}")
                     session.model = data.model
                 if data.temperature is not None:
                     session.temperature = data.temperature

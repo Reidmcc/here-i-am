@@ -879,7 +879,7 @@ class SessionManager:
         new_memories = []
         truly_new_memory_ids = set()  # Only memories never seen before (for cache stability)
 
-        logger.info(f"[MEMORY] Processing message (stream) for conversation {session.conversation_id[:8]}...")
+        logger.info(f"[MEMORY] Processing message (stream) for conversation {session.conversation_id[:8]}... entity_id={session.entity_id}, model={session.model}")
 
         # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
         # Validate both that Pinecone is configured AND the entity_id is valid
