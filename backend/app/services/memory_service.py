@@ -331,6 +331,9 @@ class MemoryService:
         Returns:
             Dict with memory content or None if not found
         """
+        # Normalize ID to string
+        message_id = str(message_id)
+
         # Check cache first
         if use_cache:
             cached_content = self.cache.get_memory_content(message_id)
@@ -356,6 +359,9 @@ class MemoryService:
             if use_cache:
                 self.cache.set_memory_content(message_id, content_dict)
             return content_dict
+        else:
+            # Log details for debugging orphaned Pinecone records
+            logger.warning(f"[MEMORY] Message ID '{message_id}' not found in SQL database (may be orphaned in Pinecone)")
         return None
 
     async def update_retrieval_count(
@@ -429,12 +435,15 @@ class MemoryService:
         """
         Get all message IDs that have been retrieved in a conversation.
         Used for session deduplication.
+
+        Note: Returns string IDs to match Pinecone's string ID format.
         """
         result = await db.execute(
             select(ConversationMemoryLink.message_id)
             .where(ConversationMemoryLink.conversation_id == conversation_id)
         )
-        return set(row[0] for row in result.fetchall())
+        # Convert to strings to match Pinecone's string ID format
+        return set(str(row[0]) for row in result.fetchall())
 
     async def get_archived_conversation_ids(
         self,
@@ -480,6 +489,201 @@ class MemoryService:
         except Exception as e:
             logger.error(f"Error deleting memory: {e}")
             return False
+
+    async def list_all_pinecone_ids(
+        self,
+        entity_id: Optional[str] = None,
+    ) -> List[str]:
+        """
+        List all record IDs stored in a Pinecone index.
+
+        Uses pagination to handle large indexes.
+
+        Args:
+            entity_id: The Pinecone index name. If None, uses default entity.
+
+        Returns:
+            List of all record IDs in the index.
+        """
+        if not self.is_configured():
+            return []
+
+        index = self.get_index(entity_id)
+        if index is None:
+            return []
+
+        all_ids = []
+        try:
+            # Use list_paginated() for explicit pagination control
+            # This works better with serverless indexes using integrated inference
+            pagination_token = None
+
+            while True:
+                if pagination_token:
+                    response = index.list_paginated(
+                        namespace="",
+                        limit=100,
+                        pagination_token=pagination_token
+                    )
+                else:
+                    response = index.list_paginated(
+                        namespace="",
+                        limit=100
+                    )
+
+                # Extract IDs from the response
+                if hasattr(response, 'vectors') and response.vectors:
+                    for v in response.vectors:
+                        if hasattr(v, 'id'):
+                            all_ids.append(v.id)
+                        elif isinstance(v, str):
+                            all_ids.append(v)
+
+                # Check for more pages
+                if hasattr(response, 'pagination') and response.pagination and response.pagination.next:
+                    pagination_token = response.pagination.next
+                else:
+                    break
+
+            logger.info(f"[MEMORY] Listed {len(all_ids)} records from Pinecone entity={entity_id}")
+            return all_ids
+        except Exception as e:
+            logger.error(f"Error listing Pinecone IDs for entity={entity_id}: {e}")
+            import traceback
+            logger.error(f"[MEMORY] Traceback: {traceback.format_exc()}")
+            return []
+
+    async def find_orphaned_records(
+        self,
+        db: AsyncSession,
+        entity_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Find records that exist in Pinecone but not in the SQL database.
+
+        These orphans typically occur when:
+        - A conversation or message was deleted but Pinecone deletion failed
+        - Database was restored from an older backup
+        - Records were created during development/testing
+
+        Args:
+            db: Database session
+            entity_id: The Pinecone index name. If None, uses default entity.
+
+        Returns:
+            List of dicts with orphaned record info (id, metadata if available)
+        """
+        if not self.is_configured():
+            return []
+
+        index = self.get_index(entity_id)
+        if index is None:
+            return []
+
+        # Get all IDs from Pinecone
+        pinecone_ids = await self.list_all_pinecone_ids(entity_id)
+        if not pinecone_ids:
+            return []
+
+        # Get all message IDs from SQL
+        result = await db.execute(select(Message.id))
+        sql_ids = set(str(row[0]) for row in result.fetchall())
+
+        # Find orphans (in Pinecone but not in SQL)
+        orphan_ids = [pid for pid in pinecone_ids if pid not in sql_ids]
+        logger.info(f"[MEMORY] Found {len(orphan_ids)} orphaned records (Pinecone: {len(pinecone_ids)}, SQL: {len(sql_ids)})")
+
+        # Fetch metadata for orphans if there aren't too many
+        orphans = []
+        if orphan_ids:
+            try:
+                # Fetch in batches of 100 to get metadata
+                for i in range(0, len(orphan_ids), 100):
+                    batch_ids = orphan_ids[i:i+100]
+                    fetch_result = index.fetch(ids=batch_ids)
+
+                    for oid in batch_ids:
+                        orphan_info = {"id": oid, "metadata": None}
+                        if oid in fetch_result.vectors:
+                            metadata = fetch_result.vectors[oid].metadata
+                            orphan_info["metadata"] = {
+                                "conversation_id": metadata.get("conversation_id"),
+                                "role": metadata.get("role"),
+                                "created_at": metadata.get("created_at"),
+                                "content_preview": metadata.get("content_preview", "")[:100],
+                            }
+                        orphans.append(orphan_info)
+            except Exception as e:
+                logger.warning(f"Could not fetch metadata for orphans: {e}")
+                # Fall back to just IDs
+                orphans = [{"id": oid, "metadata": None} for oid in orphan_ids]
+
+        return orphans
+
+    async def cleanup_orphaned_records(
+        self,
+        db: AsyncSession,
+        entity_id: Optional[str] = None,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Clean up orphaned Pinecone records that don't exist in SQL.
+
+        Args:
+            db: Database session
+            entity_id: The Pinecone index name. If None, uses default entity.
+            dry_run: If True, only report what would be deleted. If False, actually delete.
+
+        Returns:
+            Dict with cleanup results: found, deleted, errors
+        """
+        result = {
+            "entity_id": entity_id,
+            "dry_run": dry_run,
+            "orphans_found": 0,
+            "orphans_deleted": 0,
+            "errors": [],
+            "orphan_ids": [],
+        }
+
+        if not self.is_configured():
+            result["errors"].append("Pinecone not configured")
+            return result
+
+        index = self.get_index(entity_id)
+        if index is None:
+            result["errors"].append(f"Could not connect to index for entity={entity_id}")
+            return result
+
+        # Find orphaned records
+        orphans = await self.find_orphaned_records(db, entity_id)
+        result["orphans_found"] = len(orphans)
+        result["orphan_ids"] = [o["id"] for o in orphans]
+
+        if not orphans:
+            logger.info(f"[MEMORY] No orphaned records found for entity={entity_id}")
+            return result
+
+        if dry_run:
+            logger.info(f"[MEMORY] Dry run: would delete {len(orphans)} orphaned records")
+            return result
+
+        # Actually delete the orphans
+        orphan_ids = [o["id"] for o in orphans]
+        try:
+            # Delete in batches of 100
+            for i in range(0, len(orphan_ids), 100):
+                batch_ids = orphan_ids[i:i+100]
+                index.delete(ids=batch_ids)
+                result["orphans_deleted"] += len(batch_ids)
+
+            logger.info(f"[MEMORY] Deleted {result['orphans_deleted']} orphaned records from entity={entity_id}")
+        except Exception as e:
+            error_msg = f"Error deleting orphans: {e}"
+            logger.error(f"[MEMORY] {error_msg}")
+            result["errors"].append(error_msg)
+
+        return result
 
     def test_connection(self) -> Dict[str, Any]:
         """

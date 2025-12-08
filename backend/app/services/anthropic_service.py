@@ -315,8 +315,12 @@ class AnthropicService:
                     }
                 ]
             })
+            logger.info(f"[CACHE] Added memory block WITH cache_control ({memory_block_tokens} tokens)")
         elif memory_block_text:
             messages.append({"role": "user", "content": memory_block_text})
+            logger.info(f"[CACHE] Added memory block WITHOUT cache_control ({memory_block_tokens} tokens)")
+        else:
+            logger.info(f"[CACHE] No memory block to add (all_memories={len(all_memories)})")
 
         # Add acknowledgment if we have memories
         if memory_block_text:
@@ -393,6 +397,10 @@ class AnthropicService:
 
         final_message = "\n\n".join(final_parts)
         messages.append({"role": "user", "content": final_message})
+
+        # Log final message structure for debugging
+        msg_summary = [f"{m['role']}:{len(m['content']) if isinstance(m['content'], str) else 'array'}" for m in messages]
+        logger.info(f"[CACHE] Final message structure: {len(messages)} messages [{', '.join(msg_summary)}]")
 
         return messages
 

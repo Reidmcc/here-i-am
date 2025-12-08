@@ -417,6 +417,24 @@ class ApiClient {
         return this.request('/memories/status/health');
     }
 
+    async listOrphanedRecords(entityId = null) {
+        let url = '/memories/orphans';
+        if (entityId) {
+            url += `?entity_id=${entityId}`;
+        }
+        return this.request(url);
+    }
+
+    async cleanupOrphanedRecords(entityId = null, dryRun = true) {
+        return this.request('/memories/orphans/cleanup', {
+            method: 'POST',
+            body: {
+                entity_id: entityId,
+                dry_run: dryRun,
+            },
+        });
+    }
+
     // Presets
     async getPresets() {
         return this.request('/config/presets');
