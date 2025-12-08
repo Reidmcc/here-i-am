@@ -35,11 +35,20 @@ class XTTSVoiceConfig:
         label: str,
         description: str = "",
         sample_path: str = "",
+        temperature: float = 0.75,
+        length_penalty: float = 1.0,
+        repetition_penalty: float = 5.0,
+        speed: float = 1.0,
     ):
         self.voice_id = voice_id
         self.label = label
         self.description = description
         self.sample_path = sample_path
+        # XTTS synthesis parameters
+        self.temperature = temperature
+        self.length_penalty = length_penalty
+        self.repetition_penalty = repetition_penalty
+        self.speed = speed
 
     def to_dict(self):
         return {
@@ -48,6 +57,10 @@ class XTTSVoiceConfig:
             "description": self.description,
             "sample_path": self.sample_path,
             "provider": "xtts",
+            "temperature": self.temperature,
+            "length_penalty": self.length_penalty,
+            "repetition_penalty": self.repetition_penalty,
+            "speed": self.speed,
         }
 
 

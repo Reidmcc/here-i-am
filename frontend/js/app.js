@@ -95,9 +95,26 @@ class App {
             voiceCloneFile: document.getElementById('voice-clone-file'),
             voiceCloneName: document.getElementById('voice-clone-name'),
             voiceCloneDescription: document.getElementById('voice-clone-description'),
+            voiceCloneTemperature: document.getElementById('voice-clone-temperature'),
+            voiceCloneSpeed: document.getElementById('voice-clone-speed'),
+            voiceCloneLengthPenalty: document.getElementById('voice-clone-length-penalty'),
+            voiceCloneRepetitionPenalty: document.getElementById('voice-clone-repetition-penalty'),
             voiceCloneStatus: document.getElementById('voice-clone-status'),
             createVoiceCloneBtn: document.getElementById('create-voice-clone'),
             cancelVoiceCloneBtn: document.getElementById('cancel-voice-clone'),
+
+            // Voice Edit Modal
+            voiceEditModal: document.getElementById('voice-edit-modal'),
+            voiceEditId: document.getElementById('voice-edit-id'),
+            voiceEditName: document.getElementById('voice-edit-name'),
+            voiceEditDescription: document.getElementById('voice-edit-description'),
+            voiceEditTemperature: document.getElementById('voice-edit-temperature'),
+            voiceEditSpeed: document.getElementById('voice-edit-speed'),
+            voiceEditLengthPenalty: document.getElementById('voice-edit-length-penalty'),
+            voiceEditRepetitionPenalty: document.getElementById('voice-edit-repetition-penalty'),
+            voiceEditStatus: document.getElementById('voice-edit-status'),
+            saveVoiceEditBtn: document.getElementById('save-voice-edit'),
+            cancelVoiceEditBtn: document.getElementById('cancel-voice-edit'),
 
             // Import
             importSource: document.getElementById('import-source'),
@@ -252,8 +269,10 @@ class App {
                 <div class="voice-item-info">
                     <span class="voice-item-name">${voice.label}</span>
                     ${voice.description ? `<span class="voice-item-description">${voice.description}</span>` : ''}
+                    <span class="voice-item-params">T:${voice.temperature ?? 0.75} S:${voice.speed ?? 1.0}</span>
                 </div>
                 <div class="voice-item-actions">
+                    <button class="voice-item-btn settings" title="Edit voice settings" data-action="edit">Edit</button>
                     <button class="voice-item-btn delete" title="Delete voice" data-action="delete">Delete</button>
                 </div>
             </div>
@@ -264,6 +283,13 @@ class App {
             btn.addEventListener('click', (e) => {
                 const voiceId = e.target.closest('.voice-item').dataset.voiceId;
                 this.deleteVoice(voiceId);
+            });
+        });
+
+        this.elements.voiceList.querySelectorAll('.voice-item-btn[data-action="edit"]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const voiceId = e.target.closest('.voice-item').dataset.voiceId;
+                this.showVoiceEditModal(voiceId);
             });
         });
     }
@@ -348,6 +374,11 @@ class App {
         this.elements.createVoiceCloneBtn.addEventListener('click', () => this.createVoiceClone());
         this.elements.voiceCloneFile.addEventListener('change', () => this.updateVoiceCloneButton());
         this.elements.voiceCloneName.addEventListener('input', () => this.updateVoiceCloneButton());
+
+        // Voice edit modal
+        document.getElementById('close-voice-edit').addEventListener('click', () => this.hideVoiceEditModal());
+        this.elements.cancelVoiceEditBtn.addEventListener('click', () => this.hideVoiceEditModal());
+        this.elements.saveVoiceEditBtn.addEventListener('click', () => this.saveVoiceEdit());
     }
 
     handleInputChange() {
@@ -2273,6 +2304,11 @@ You are invited to be present, curious, and honest about your experience.`
         this.elements.voiceCloneFile.value = '';
         this.elements.voiceCloneName.value = '';
         this.elements.voiceCloneDescription.value = '';
+        // Reset voice parameters to defaults
+        this.elements.voiceCloneTemperature.value = '0.75';
+        this.elements.voiceCloneSpeed.value = '1.0';
+        this.elements.voiceCloneLengthPenalty.value = '1.0';
+        this.elements.voiceCloneRepetitionPenalty.value = '5.0';
         this.elements.voiceCloneStatus.style.display = 'none';
         this.elements.voiceCloneStatus.className = 'voice-clone-status';
         this.elements.createVoiceCloneBtn.disabled = true;
@@ -2299,6 +2335,14 @@ You are invited to be present, curious, and honest about your experience.`
             return;
         }
 
+        // Get voice synthesis parameters
+        const options = {
+            temperature: parseFloat(this.elements.voiceCloneTemperature.value) || 0.75,
+            length_penalty: parseFloat(this.elements.voiceCloneLengthPenalty.value) || 1.0,
+            repetition_penalty: parseFloat(this.elements.voiceCloneRepetitionPenalty.value) || 5.0,
+            speed: parseFloat(this.elements.voiceCloneSpeed.value) || 1.0,
+        };
+
         // Show loading status
         this.elements.voiceCloneStatus.textContent = 'Creating voice... This may take a moment.';
         this.elements.voiceCloneStatus.className = 'voice-clone-status loading';
@@ -2306,7 +2350,7 @@ You are invited to be present, curious, and honest about your experience.`
         this.elements.createVoiceCloneBtn.disabled = true;
 
         try {
-            const result = await api.cloneVoice(file, name, description);
+            const result = await api.cloneVoice(file, name, description, options);
 
             if (result.success) {
                 // Show success
@@ -2349,6 +2393,78 @@ You are invited to be present, curious, and honest about your experience.`
         } catch (error) {
             console.error('Failed to delete voice:', error);
             this.showToast('Failed to delete voice', 'error');
+        }
+    }
+
+    showVoiceEditModal(voiceId) {
+        const voice = this.ttsVoices.find(v => v.voice_id === voiceId);
+        if (!voice) {
+            this.showToast('Voice not found', 'error');
+            return;
+        }
+
+        // Populate form with current values
+        this.elements.voiceEditId.value = voice.voice_id;
+        this.elements.voiceEditName.value = voice.label || '';
+        this.elements.voiceEditDescription.value = voice.description || '';
+        this.elements.voiceEditTemperature.value = voice.temperature ?? 0.75;
+        this.elements.voiceEditSpeed.value = voice.speed ?? 1.0;
+        this.elements.voiceEditLengthPenalty.value = voice.length_penalty ?? 1.0;
+        this.elements.voiceEditRepetitionPenalty.value = voice.repetition_penalty ?? 5.0;
+
+        // Reset status
+        this.elements.voiceEditStatus.style.display = 'none';
+        this.elements.voiceEditStatus.className = 'voice-clone-status';
+        this.elements.saveVoiceEditBtn.disabled = false;
+
+        this.elements.voiceEditModal.classList.add('active');
+    }
+
+    hideVoiceEditModal() {
+        this.elements.voiceEditModal.classList.remove('active');
+    }
+
+    async saveVoiceEdit() {
+        const voiceId = this.elements.voiceEditId.value;
+        if (!voiceId) return;
+
+        const updates = {
+            label: this.elements.voiceEditName.value.trim() || null,
+            description: this.elements.voiceEditDescription.value.trim() || null,
+            temperature: parseFloat(this.elements.voiceEditTemperature.value) || null,
+            speed: parseFloat(this.elements.voiceEditSpeed.value) || null,
+            length_penalty: parseFloat(this.elements.voiceEditLengthPenalty.value) || null,
+            repetition_penalty: parseFloat(this.elements.voiceEditRepetitionPenalty.value) || null,
+        };
+
+        // Show loading status
+        this.elements.voiceEditStatus.textContent = 'Saving changes...';
+        this.elements.voiceEditStatus.className = 'voice-clone-status loading';
+        this.elements.voiceEditStatus.style.display = 'block';
+        this.elements.saveVoiceEditBtn.disabled = true;
+
+        try {
+            const result = await api.updateVoice(voiceId, updates);
+
+            if (result.success) {
+                this.elements.voiceEditStatus.textContent = 'Voice updated successfully!';
+                this.elements.voiceEditStatus.className = 'voice-clone-status success';
+
+                // Refresh TTS status
+                await this.checkTTSStatus();
+
+                setTimeout(() => {
+                    this.hideVoiceEditModal();
+                    this.showToast('Voice settings updated', 'success');
+                }, 1000);
+            } else {
+                throw new Error(result.message || 'Failed to update voice');
+            }
+        } catch (error) {
+            console.error('Failed to update voice:', error);
+            this.elements.voiceEditStatus.textContent = error.message || 'Failed to update voice. Please try again.';
+            this.elements.voiceEditStatus.className = 'voice-clone-status error';
+            this.elements.saveVoiceEditBtn.disabled = false;
         }
     }
 
