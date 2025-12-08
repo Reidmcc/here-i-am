@@ -208,3 +208,10 @@ __marimo__/
 
 # Databases
 *.db
+
+# Audio
+*.ogg
+*.wav
+
+# App generated files
+voices.json

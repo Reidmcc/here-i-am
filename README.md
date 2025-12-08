@@ -113,7 +113,8 @@ ELEVENLABS_VOICES='[
 
 ### Local XTTS v2 Setup (Optional)
 
-XTTS v2 provides local, GPU-accelerated text-to-speech with voice cloning. It runs as a separate server.
+XTTS v2 provides local, GPU-accelerated text-to-speech with voice cloning. 
+It runs as a separate server, in a separate terminal session from the main application server.
 
 **Prerequisites:**
 - NVIDIA GPU with CUDA (recommended) or CPU (slower)
