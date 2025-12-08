@@ -30,7 +30,7 @@ class App {
         this.pendingResponderId = null;  // Entity selected to respond next
         this.pendingActionAfterEntitySelection = null;  // 'createConversation' or 'sendMessage'
         this.pendingMessageForEntitySelection = null;  // Message to send after entity selection
-        this.isInitialized = false;  // Prevents modal during page load
+        this.constructedAt = Date.now();  // Used to detect browser form restoration
 
         // Cache DOM elements
         this.elements = {
@@ -186,7 +186,6 @@ class App {
         await this.loadConfig();
         await this.checkTTSStatus();
         this.updateModelIndicator();
-        this.isInitialized = true;  // Mark initialization complete
     }
 
     async checkTTSStatus() {
@@ -621,9 +620,10 @@ class App {
     handleEntityChange(entityId) {
         // Check if multi-entity was selected
         if (entityId === 'multi-entity') {
-            // Don't show modal during page initialization (browser form restoration)
-            if (!this.isInitialized) {
-                console.log('[DEBUG] Ignoring multi-entity selection during initialization');
+            // Don't show modal during browser form restoration (happens within ~100ms of page load)
+            const timeSinceConstruction = Date.now() - this.constructedAt;
+            if (timeSinceConstruction < 500) {
+                console.log('[DEBUG] Ignoring multi-entity selection during page load (browser form restoration)');
                 this.elements.entitySelect.value = this.selectedEntityId || this.entities[0]?.index_name;
                 return;
             }
