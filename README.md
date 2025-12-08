@@ -14,7 +14,7 @@ However, the application is not locked into that specific use case. Here I Am gi
 - Conversation storage and retrieval
 - No system prompt default
 - Seed conversation import capability
-- Optional text-to-speech via ElevenLabs (multiple voices supported)
+- Optional text-to-speech via ElevenLabs (cloud) or XTTS v2 (local with voice cloning)
 
 ### Memory System
 - Pinecone vector database with integrated inference (llama-text-embed-v2 embeddings)
@@ -36,7 +36,10 @@ However, the application is not locked into that specific use case. Here I Am gi
 
 ### Optional API Keys
 - **Pinecone API key** - Enables semantic memory features (uses integrated llama-text-embed-v2 for embeddings. The Pincone index(s), set to the llama embeddings, must be pre-created via the Pinecone dashboard)
-- **ElevenLabs API key** - Enables text-to-speech for AI responses
+- **ElevenLabs API key** - Enables cloud text-to-speech for AI responses
+
+### Optional Local Services
+- **XTTS v2** - Local GPU-accelerated text-to-speech with voice cloning (no API key required, runs locally)
 
 ### Installation
 
@@ -77,9 +80,13 @@ python run.py
 | `OPENAI_API_KEY` | OpenAI API key for GPT models | Yes (or Anthropic) |
 | `PINECONE_API_KEY` | Pinecone API key for memory system | No |
 | `PINECONE_INDEXES` | JSON array for entity configuration (see below) | No |
-| `ELEVENLABS_API_KEY` | ElevenLabs API key for text-to-speech | No |
-| `ELEVENLABS_VOICE_ID` | Default voice ID | No (default: Rachel) |
-| `ELEVENLABS_VOICES` | JSON array for multiple voices (see below) | No |
+| `ELEVENLABS_API_KEY` | ElevenLabs API key for cloud TTS | No |
+| `ELEVENLABS_VOICE_ID` | Default ElevenLabs voice ID | No (default: Rachel) |
+| `ELEVENLABS_VOICES` | JSON array for multiple ElevenLabs voices | No |
+| `XTTS_ENABLED` | Enable local XTTS TTS (true/false) | No (default: false) |
+| `XTTS_API_URL` | XTTS server URL | No (default: http://localhost:8020) |
+| `XTTS_LANGUAGE` | Default language for XTTS | No (default: en) |
+| `XTTS_VOICES_DIR` | Directory for cloned voice samples | No (default: ./xtts_voices) |
 | `HERE_I_AM_DATABASE_URL` | Database connection URL | No (default: SQLite) |
 
 ### Multi-Entity Configuration
@@ -93,9 +100,9 @@ PINECONE_INDEXES='[
 ]'
 ```
 
-### Multiple TTS Voices
+### Multiple ElevenLabs Voices
 
-To enable voice selection for text-to-speech:
+To enable voice selection for ElevenLabs text-to-speech:
 
 ```bash
 ELEVENLABS_VOICES='[
@@ -103,6 +110,47 @@ ELEVENLABS_VOICES='[
   {"voice_id": "ErXwobaYiN019PkySvjV", "label": "Antoni", "description": "Warm male"}
 ]'
 ```
+
+### Local XTTS v2 Setup (Optional)
+
+XTTS v2 provides local, GPU-accelerated text-to-speech with voice cloning. 
+It runs as a separate server, in a separate terminal session from the main application server.
+
+**Prerequisites:**
+- NVIDIA GPU with CUDA (recommended) or CPU (slower)
+- Python 3.9-3.11
+- ~2GB disk space for model
+
+**Installation:**
+```bash
+cd backend
+
+# Install PyTorch (GPU version)
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+# Or for CPU only:
+# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Install XTTS dependencies
+pip install -r requirements-xtts.txt
+```
+
+**Running the XTTS Server:**
+```bash
+cd backend
+python run_xtts.py
+```
+
+The server downloads the XTTS model (~2GB) on first run and starts on port 8020.
+
+**Configure the main app:**
+```bash
+# In .env
+XTTS_ENABLED=true
+XTTS_API_URL=http://localhost:8020
+```
+
+**Voice Cloning:**
+Upload a 6-30 second WAV file via `/api/tts/voices/clone` or through the UI to create custom voices. XTTS supports 17 languages including English, Spanish, French, German, Japanese, Chinese, and more.
 
 ## API Endpoints
 
@@ -137,9 +185,14 @@ ELEVENLABS_VOICES='[
 - `GET /api/entities/{id}/status` - Get entity Pinecone connection status
 
 ### Text-to-Speech
-- `POST /api/tts/speak` - Convert text to speech (returns MP3 audio)
+- `POST /api/tts/speak` - Convert text to speech (MP3 for ElevenLabs, WAV for XTTS)
 - `POST /api/tts/speak/stream` - Stream text-to-speech audio
 - `GET /api/tts/status` - Get TTS configuration status and available voices
+- `GET /api/tts/voices` - List available voices
+- `POST /api/tts/voices/clone` - Clone voice from audio sample (XTTS only)
+- `PUT /api/tts/voices/{id}` - Update voice settings (XTTS only)
+- `DELETE /api/tts/voices/{id}` - Delete cloned voice (XTTS only)
+- `GET /api/tts/xtts/health` - Check XTTS server health
 
 ## Memory System Architecture
 
@@ -167,12 +220,16 @@ here-i-am/
 │   ├── app/
 │   │   ├── models/          # SQLAlchemy models
 │   │   ├── routes/          # API endpoints
-│   │   ├── services/        # Business logic
+│   │   ├── services/        # Business logic (includes tts_service.py, xtts_service.py)
 │   │   ├── config.py        # Configuration
 │   │   ├── database.py      # Database setup
 │   │   └── main.py          # FastAPI app
+│   ├── xtts_server/         # Local XTTS v2 server
+│   │   └── server.py        # FastAPI XTTS server
 │   ├── requirements.txt
-│   └── run.py
+│   ├── requirements-xtts.txt  # XTTS dependencies
+│   ├── run.py               # Main app entry point
+│   └── run_xtts.py          # XTTS server entry point
 ├── frontend/
 │   ├── css/
 │   ├── js/
