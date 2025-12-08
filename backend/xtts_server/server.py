@@ -19,6 +19,7 @@ import numpy as np
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -361,35 +362,45 @@ def synthesize_with_cached_latents(
     Returns:
         WAV audio bytes
     """
-    # Get cached (or compute) speaker latents
-    gpt_cond_latent, speaker_embedding = get_speaker_latents(speaker_wav_path)
+    try:
+        # Get cached (or compute) speaker latents
+        logger.debug(f"Getting speaker latents for {speaker_wav_path}")
+        gpt_cond_latent, speaker_embedding = get_speaker_latents(speaker_wav_path)
 
-    # Get the model
-    tts = get_model()
-    xtts_model = tts.synthesizer.tts_model
+        # Get the model
+        tts = get_model()
+        xtts_model = tts.synthesizer.tts_model
 
-    # Synthesize using cached latents
-    # The XTTS model's inference method accepts pre-computed latents
-    audio_output = xtts_model.inference(
-        text=text,
-        language=language,
-        gpt_cond_latent=gpt_cond_latent,
-        speaker_embedding=speaker_embedding,
-    )
+        # Synthesize using cached latents
+        # The XTTS model's inference method accepts pre-computed latents
+        logger.debug(f"Running inference for text: {text[:50]}...")
+        audio_output = xtts_model.inference(
+            text=text,
+            language=language,
+            gpt_cond_latent=gpt_cond_latent,
+            speaker_embedding=speaker_embedding,
+        )
 
-    # Get the audio waveform from output dict
-    audio_array = audio_output.get("wav")
-    if audio_array is None:
-        raise RuntimeError("XTTS model did not return audio")
+        # Get the audio waveform from output dict
+        audio_array = audio_output.get("wav")
+        if audio_array is None:
+            logger.error(f"XTTS model returned: {audio_output.keys() if isinstance(audio_output, dict) else type(audio_output)}")
+            raise RuntimeError("XTTS model did not return audio")
 
-    # Convert to numpy array if it's a tensor
-    if hasattr(audio_array, "cpu"):
-        audio_array = audio_array.cpu().numpy()
+        # Convert to numpy array if it's a tensor
+        if hasattr(audio_array, "cpu"):
+            audio_array = audio_array.cpu().numpy()
 
-    # XTTS outputs at 24kHz
-    sample_rate = 24000
+        # XTTS outputs at 24kHz
+        sample_rate = 24000
 
-    return numpy_to_wav_bytes(audio_array, sample_rate)
+        return numpy_to_wav_bytes(audio_array, sample_rate)
+
+    except Exception as e:
+        logger.error(f"synthesize_with_cached_latents failed: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise
 
 
 @app.post("/tts_to_audio")
@@ -461,16 +472,17 @@ async def tts_to_audio(
                 pass
 
 
-@app.post("/tts")
-async def tts_json(
-    text: str = Form(...),
-    speaker_wav: str = Form(..., description="Path to speaker WAV file"),
-    language: str = Form("en"),
-):
-    """
-    Alternative TTS endpoint accepting speaker_wav as a file path.
+class TTSRequest(BaseModel):
+    """JSON request body for TTS endpoint."""
+    text: str
+    speaker_wav: str
+    language: str = "en"
 
-    This endpoint is for when the speaker file is already on the server.
+
+async def _tts_with_path(text: str, speaker_wav: str, language: str) -> Response:
+    """
+    Internal TTS function using a speaker file path.
+
     Speaker latents are cached for maximum performance with server-side voices.
     """
     if not text or not text.strip():
@@ -502,6 +514,32 @@ async def tts_json(
     except Exception as e:
         logger.error(f"TTS generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
+
+
+@app.post("/tts")
+async def tts_json(request: TTSRequest):
+    """
+    TTS endpoint accepting JSON body with speaker_wav as a file path.
+
+    This endpoint is for when the speaker file is already on the server.
+    Speaker latents are cached for maximum performance with server-side voices.
+    """
+    return await _tts_with_path(request.text, request.speaker_wav, request.language)
+
+
+@app.post("/tts_form")
+async def tts_form(
+    text: str = Form(...),
+    speaker_wav: str = Form(..., description="Path to speaker WAV file"),
+    language: str = Form("en"),
+):
+    """
+    TTS endpoint accepting Form data with speaker_wav as a file path.
+
+    This endpoint is for when the speaker file is already on the server.
+    Speaker latents are cached for maximum performance with server-side voices.
+    """
+    return await _tts_with_path(text, speaker_wav, language)
 
 
 @app.post("/tts_stream")
