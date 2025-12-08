@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 def _build_memory_query(
     conversation_context: List[Dict[str, str]],
-    current_message: str,
+    current_message: Optional[str],
 ) -> str:
     """
     Build the query text for memory similarity search.
@@ -24,7 +24,7 @@ def _build_memory_query(
 
     Args:
         conversation_context: The conversation history
-        current_message: The current human message
+        current_message: The current human message (can be None for continuations)
 
     Returns:
         Combined query string for memory search
@@ -35,6 +35,16 @@ def _build_memory_query(
         if msg.get("role") == "assistant":
             last_assistant_content = msg.get("content", "")
             break
+
+    # Handle continuation (no current message) - use last assistant message only
+    if not current_message:
+        if last_assistant_content:
+            return last_assistant_content
+        # Fallback to last user message if no assistant message
+        for msg in reversed(conversation_context):
+            if msg.get("role") == "user":
+                return msg.get("content", "")
+        return ""
 
     # Combine with current message for better semantic matching
     if last_assistant_content:
@@ -219,9 +229,13 @@ class ConversationSession:
             for m in memories
         ]
 
-    def add_exchange(self, human_message: str, assistant_response: str):
-        """Add a human/assistant exchange to the conversation context."""
-        self.conversation_context.append({"role": "user", "content": human_message})
+    def add_exchange(self, human_message: Optional[str], assistant_response: str):
+        """Add a human/assistant exchange to the conversation context.
+
+        If human_message is None (continuation), only the assistant response is added.
+        """
+        if human_message:
+            self.conversation_context.append({"role": "user", "content": human_message})
         self.conversation_context.append({"role": "assistant", "content": assistant_response})
 
     def get_cache_aware_content(self) -> Dict[str, Any]:
@@ -844,13 +858,16 @@ class SessionManager:
     async def process_message_stream(
         self,
         session: ConversationSession,
-        user_message: str,
+        user_message: Optional[str],
         db: AsyncSession,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Process a user message through the full pipeline with streaming response.
 
         This performs memory retrieval first, then streams the LLM response.
+
+        If user_message is None (multi-entity continuation), the entity responds
+        based on existing conversation context without a new human message.
 
         Yields events:
         - {"type": "memories", "new_memories": [...], "total_in_context": int}

@@ -33,7 +33,7 @@ def get_entity_label(entity_id: str) -> Optional[str]:
 
 class ChatRequest(BaseModel):
     conversation_id: str
-    message: str
+    message: Optional[str] = None  # Optional for multi-entity continuation
     # Optional overrides
     model: Optional[str] = None
     temperature: Optional[float] = None
@@ -327,6 +327,14 @@ async def stream_message(data: ChatRequest):
                 responding_entity_id = data.responding_entity_id
                 multi_entity_ids = []
 
+                # Determine if this is a continuation (no human message)
+                is_continuation = not data.message
+
+                # Continuation requires multi-entity mode
+                if is_continuation and not is_multi_entity:
+                    yield f"event: error\ndata: {json.dumps({'error': 'Continuation without message requires multi-entity conversation'})}\n\n"
+                    return
+
                 if is_multi_entity:
                     # Get participating entities
                     multi_entity_ids = await get_multi_entity_ids(data.conversation_id, db)
@@ -411,13 +419,16 @@ async def stream_message(data: ChatRequest):
                         return
 
                 # Store messages in database after streaming completes
-                human_msg = Message(
-                    conversation_id=data.conversation_id,
-                    role=MessageRole.HUMAN,
-                    content=data.message,
-                    token_count=llm_service.count_tokens(data.message),
-                )
-                db.add(human_msg)
+                human_msg = None
+                if not is_continuation:
+                    # Only create human message if this is not a continuation
+                    human_msg = Message(
+                        conversation_id=data.conversation_id,
+                        role=MessageRole.HUMAN,
+                        content=data.message,
+                        token_count=llm_service.count_tokens(data.message),
+                    )
+                    db.add(human_msg)
 
                 assistant_msg = Message(
                     conversation_id=data.conversation_id,
@@ -431,7 +442,8 @@ async def stream_message(data: ChatRequest):
                 conversation.updated_at = datetime.utcnow()
 
                 await db.commit()
-                await db.refresh(human_msg)
+                if human_msg:
+                    await db.refresh(human_msg)
                 await db.refresh(assistant_msg)
 
                 # Store messages as memories in vector database
@@ -440,15 +452,16 @@ async def stream_message(data: ChatRequest):
                         # For multi-entity conversations, store to ALL participating entities
                         responding_label = get_entity_label(responding_entity_id)
                         for entity_id in multi_entity_ids:
-                            # For human messages: role is "human" for all entities
-                            await memory_service.store_memory(
-                                message_id=human_msg.id,
-                                conversation_id=data.conversation_id,
-                                role="human",
-                                content=data.message,
-                                created_at=human_msg.created_at,
-                                entity_id=entity_id,
-                            )
+                            # For human messages: role is "human" for all entities (skip for continuation)
+                            if human_msg:
+                                await memory_service.store_memory(
+                                    message_id=human_msg.id,
+                                    conversation_id=data.conversation_id,
+                                    role="human",
+                                    content=data.message,
+                                    created_at=human_msg.created_at,
+                                    entity_id=entity_id,
+                                )
 
                             # For assistant messages:
                             # - For the responding entity: role is "assistant"
@@ -472,7 +485,7 @@ async def stream_message(data: ChatRequest):
                                     entity_id=entity_id,
                                 )
                     else:
-                        # Standard single-entity conversation
+                        # Standard single-entity conversation (always has human message)
                         await memory_service.store_memory(
                             message_id=human_msg.id,
                             conversation_id=data.conversation_id,
@@ -492,9 +505,10 @@ async def stream_message(data: ChatRequest):
 
                 # Send stored event with message IDs
                 stored_data = {
-                    'human_message_id': str(human_msg.id),
                     'assistant_message_id': str(assistant_msg.id),
                 }
+                if human_msg:
+                    stored_data['human_message_id'] = str(human_msg.id)
                 if is_multi_entity:
                     stored_data['speaker_entity_id'] = responding_entity_id
                     stored_data['speaker_label'] = get_entity_label(responding_entity_id)

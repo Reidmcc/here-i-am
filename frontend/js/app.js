@@ -773,9 +773,20 @@ class App {
         this.showToast(`Multi-entity mode: ${labels}`, 'success');
     }
 
-    showEntityResponderSelector() {
+    showEntityResponderSelector(isContinuation = false) {
         if (!this.isMultiEntityMode || this.currentConversationEntities.length === 0) {
             return;
+        }
+
+        // Store whether this is continuation mode (can also be determined by !pendingMessageContent)
+        this.responderSelectorContinuationMode = isContinuation;
+
+        // Update prompt text based on mode
+        const promptEl = this.elements.entityResponderSelector.querySelector('.responder-prompt');
+        if (promptEl) {
+            promptEl.textContent = isContinuation
+                ? 'Select an entity to continue the conversation:'
+                : 'Select which entity should respond:';
         }
 
         // Populate responder buttons
@@ -802,14 +813,16 @@ class App {
     }
 
     async sendMessageWithResponder() {
-        if (!this.pendingResponderId || !this.pendingMessageContent) {
-            this.showToast('No entity selected or no message pending', 'error');
+        if (!this.pendingResponderId) {
+            this.showToast('No entity selected', 'error');
             return;
         }
 
+        // Content can be null for continuation mode
         const content = this.pendingMessageContent;
         const responderId = this.pendingResponderId;
         const userMessageEl = this.pendingUserMessageEl;
+        const isContinuation = !content;
 
         // Clear pending state
         this.pendingMessageContent = null;
@@ -931,8 +944,8 @@ class App {
                             }
                         }
 
-                        // Show responder selector for next turn
-                        this.showEntityResponderSelector();
+                        // Show responder selector for next turn (continuation mode since no new human message)
+                        this.showEntityResponderSelector(true);
                     },
                     onError: (data) => {
                         streamingMessage.element.remove();
@@ -1239,8 +1252,9 @@ class App {
             this.scrollToBottom();
 
             // Show responder selector if multi-entity and conversation has messages
+            // This is continuation mode since we're resuming an existing conversation
             if (this.isMultiEntityMode && messages.length > 0) {
-                this.showEntityResponderSelector();
+                this.showEntityResponderSelector(true);
             }
         } catch (error) {
             this.showToast('Failed to load conversation', 'error');

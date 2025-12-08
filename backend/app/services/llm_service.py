@@ -273,7 +273,7 @@ class LLMService:
         self,
         memories: List[Dict[str, Any]],
         conversation_context: List[Dict[str, str]],
-        current_message: str,
+        current_message: Optional[str],
         model: Optional[str] = None,
         conversation_start_date: Optional[datetime] = None,
         enable_caching: bool = True,
@@ -297,7 +297,7 @@ class LLMService:
         Args:
             memories: List of memory dicts to inject
             conversation_context: Previous messages in conversation
-            current_message: The current user message
+            current_message: The current user message (None for multi-entity continuation)
             model: Model ID (used to determine provider)
             conversation_start_date: When the conversation started
             enable_caching: Enable Anthropic prompt caching (default True)
