@@ -341,7 +341,8 @@ async def stream_message(data: ChatRequest):
                         return
 
                     if responding_entity_id not in multi_entity_ids:
-                        yield f"event: error\ndata: {json.dumps({'error': f\"Entity '{responding_entity_id}' is not part of this conversation\"})}\n\n"
+                        error_msg = f"Entity '{responding_entity_id}' is not part of this conversation"
+                        yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
                         return
 
                 # Get or create session
