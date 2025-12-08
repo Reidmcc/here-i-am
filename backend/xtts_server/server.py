@@ -169,6 +169,19 @@ def get_model():
 
             # Load the model
             _tts_model = TTS(_model_name).to(device)
+
+            # Apply FP16 precision and reduce-overhead optimizations for GPU
+            if device == "cuda":
+                logger.info("Applying FP16 precision...")
+                _tts_model.synthesizer.tts_model.half()
+
+                logger.info("Applying torch.compile with reduce-overhead mode...")
+                _tts_model.synthesizer.tts_model = torch.compile(
+                    _tts_model.synthesizer.tts_model,
+                    mode="reduce-overhead"
+                )
+                logger.info("Model optimizations applied successfully")
+
             logger.info("XTTS v2 model loaded successfully")
 
         except Exception as e:
