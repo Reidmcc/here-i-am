@@ -28,6 +28,8 @@ class App {
         this.isMultiEntityMode = false;
         this.currentConversationEntities = [];  // Entities in current conversation
         this.pendingResponderId = null;  // Entity selected to respond next
+        this.pendingActionAfterEntitySelection = null;  // 'createConversation' or 'sendMessage'
+        this.pendingMessageForEntitySelection = null;  // Message to send after entity selection
 
         // Cache DOM elements
         this.elements = {
@@ -727,6 +729,9 @@ class App {
 
     hideMultiEntityModal() {
         this.elements.multiEntityModal.classList.remove('active');
+        // Clear any pending actions when modal is closed
+        this.pendingActionAfterEntitySelection = null;
+        this.pendingMessageForEntitySelection = null;
         // Reset entity selector to previous value if nothing was selected
         if (!this.isMultiEntityMode) {
             this.elements.entitySelect.value = this.selectedEntityId || this.entities[0]?.index_name;
@@ -755,9 +760,24 @@ class App {
             this.entities.find(e => e.index_name === id)
         ).filter(Boolean);
 
+        // Read pending action BEFORE hiding modal (hideMultiEntityModal clears these)
+        const pendingAction = this.pendingActionAfterEntitySelection;
+        const pendingMessage = this.pendingMessageForEntitySelection;
+
         this.hideMultiEntityModal();
 
-        // Clear current conversation
+        if (pendingAction === 'createConversation') {
+            // Continue with conversation creation
+            this.createNewConversation();
+            return;
+        } else if (pendingAction === 'sendMessage' && pendingMessage) {
+            // Restore message and continue with send
+            this.elements.messageInput.value = pendingMessage;
+            this.sendMessage();
+            return;
+        }
+
+        // Default behavior: clear current conversation and show ready state
         this.currentConversationId = null;
         this.retrievedMemories = [];
         this.expandedMemoryIds.clear();
@@ -1157,6 +1177,13 @@ class App {
     }
 
     async createNewConversation() {
+        // If there are 2+ entities available, show entity selection modal first
+        if (this.entities.length >= 2 && !this.isMultiEntityMode) {
+            this.pendingActionAfterEntitySelection = 'createConversation';
+            this.showMultiEntityModal();
+            return;
+        }
+
         try {
             let conversationData;
 
@@ -1269,11 +1296,8 @@ class App {
 
             this.scrollToBottom();
 
-            // Show responder selector if multi-entity and conversation has messages
-            // This is continuation mode since we're resuming an existing conversation
-            if (this.isMultiEntityMode && messages.length > 0) {
-                this.showEntityResponderSelector(true);
-            }
+            // Don't auto-show responder selector when loading conversation
+            // User should click "New Conversation" or type a message to trigger entity selection
         } catch (error) {
             this.showToast('Failed to load conversation', 'error');
             console.error('Failed to load conversation:', error);
@@ -1285,6 +1309,14 @@ class App {
     async sendMessage() {
         const content = this.elements.messageInput.value.trim();
         if (!content || this.isLoading) return;
+
+        // If no conversation and 2+ entities available, show entity selection modal first
+        if (!this.currentConversationId && this.entities.length >= 2 && !this.isMultiEntityMode) {
+            this.pendingActionAfterEntitySelection = 'sendMessage';
+            this.pendingMessageForEntitySelection = content;
+            this.showMultiEntityModal();
+            return;
+        }
 
         // Ensure we have a conversation
         if (!this.currentConversationId) {
