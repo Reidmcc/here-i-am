@@ -84,10 +84,10 @@ def get_speaker_latents(speaker_wav_path: str) -> Tuple[Any, Any]:
 
     # Check cache
     if file_hash in _speaker_latent_cache:
-        logger.debug(f"Speaker latent cache HIT for {speaker_wav_path}")
+        logger.info(f"Speaker latent cache HIT for hash {file_hash}")
         return _speaker_latent_cache[file_hash]
 
-    logger.info(f"Speaker latent cache MISS for {speaker_wav_path}, computing...")
+    logger.info(f"Speaker latent cache MISS for {speaker_wav_path} (hash: {file_hash}), computing...")
 
     # Get the model and compute latents
     tts = get_model()
