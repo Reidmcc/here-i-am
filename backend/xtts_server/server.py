@@ -96,16 +96,9 @@ def get_speaker_latents(speaker_wav_path: str) -> Tuple[Any, Any]:
     # The TTS wrapper provides access via synthesizer.tts_model
     xtts_model = tts.synthesizer.tts_model
 
-    # Use autocast for FP16 mixed precision on CUDA
-    if torch.cuda.is_available():
-        with torch.autocast(device_type="cuda", dtype=torch.float16):
-            gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
-                audio_path=speaker_wav_path
-            )
-    else:
-        gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
-            audio_path=speaker_wav_path
-        )
+    gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
+        audio_path=speaker_wav_path
+    )
 
     # Cache the result
     _speaker_latent_cache[file_hash] = (gpt_cond_latent, speaker_embedding)
@@ -177,8 +170,8 @@ def get_model():
             # Load the model
             _tts_model = TTS(_model_name).to(device)
 
-            # Note: FP16 is handled via torch.autocast at inference time
-            # torch.compile removed due to compatibility issues with autocast
+            # Note: Running in default FP32 mode for stability
+            # FP16/autocast and torch.compile caused CUDA assertion errors with XTTS
 
             logger.info("XTTS v2 model loaded successfully")
 
@@ -447,27 +440,17 @@ def synthesize_with_cached_latents(
         logger.info(f"Split text into {len(chunks)} chunk(s)")
 
         audio_arrays = []
-        use_autocast = torch.cuda.is_available()
 
         for i, chunk in enumerate(chunks):
             logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
 
-            # Synthesize using cached latents with FP16 autocast on CUDA
-            if use_autocast:
-                with torch.autocast(device_type="cuda", dtype=torch.float16):
-                    audio_output = xtts_model.inference(
-                        text=chunk,
-                        language=language,
-                        gpt_cond_latent=gpt_cond_latent,
-                        speaker_embedding=speaker_embedding,
-                    )
-            else:
-                audio_output = xtts_model.inference(
-                    text=chunk,
-                    language=language,
-                    gpt_cond_latent=gpt_cond_latent,
-                    speaker_embedding=speaker_embedding,
-                )
+            # Synthesize using cached latents
+            audio_output = xtts_model.inference(
+                text=chunk,
+                language=language,
+                gpt_cond_latent=gpt_cond_latent,
+                speaker_embedding=speaker_embedding,
+            )
 
             # Get the audio waveform from output dict
             audio_array = audio_output.get("wav")
