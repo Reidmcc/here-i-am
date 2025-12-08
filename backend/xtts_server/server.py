@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -346,6 +347,63 @@ def numpy_to_wav_bytes(audio_array: np.ndarray, sample_rate: int = 24000) -> byt
     return buffer.read()
 
 
+# XTTS has a 400 token limit. We use ~250 chars as a safe limit since
+# tokenization varies and we want to leave room for language-specific expansion.
+MAX_CHUNK_CHARS = 250
+
+
+def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
+    """
+    Split text into chunks suitable for XTTS processing.
+
+    Splits at sentence boundaries (., !, ?) when possible, otherwise at
+    word boundaries. Each chunk will be under max_chars.
+
+    Args:
+        text: The text to split
+        max_chars: Maximum characters per chunk
+
+    Returns:
+        List of text chunks
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    # Split into sentences first (keeping the punctuation)
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+
+    current_chunk = ""
+    for sentence in sentences:
+        # If adding this sentence would exceed limit
+        if len(current_chunk) + len(sentence) + 1 > max_chars:
+            # Save current chunk if not empty
+            if current_chunk.strip():
+                chunks.append(current_chunk.strip())
+                current_chunk = ""
+
+            # If single sentence is too long, split by words
+            if len(sentence) > max_chars:
+                words = sentence.split()
+                for word in words:
+                    if len(current_chunk) + len(word) + 1 > max_chars:
+                        if current_chunk.strip():
+                            chunks.append(current_chunk.strip())
+                        current_chunk = word + " "
+                    else:
+                        current_chunk += word + " "
+            else:
+                current_chunk = sentence + " "
+        else:
+            current_chunk += sentence + " "
+
+    # Don't forget the last chunk
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+
+    return chunks
+
+
 def synthesize_with_cached_latents(
     text: str,
     speaker_wav_path: str,
@@ -353,6 +411,8 @@ def synthesize_with_cached_latents(
 ) -> bytes:
     """
     Synthesize speech using cached speaker latents for better performance.
+
+    Automatically chunks long text to stay within XTTS's 400 token limit.
 
     Args:
         text: Text to synthesize
@@ -371,30 +431,44 @@ def synthesize_with_cached_latents(
         tts = get_model()
         xtts_model = tts.synthesizer.tts_model
 
-        # Synthesize using cached latents
-        # The XTTS model's inference method accepts pre-computed latents
-        logger.debug(f"Running inference for text: {text[:50]}...")
-        audio_output = xtts_model.inference(
-            text=text,
-            language=language,
-            gpt_cond_latent=gpt_cond_latent,
-            speaker_embedding=speaker_embedding,
-        )
+        # Split text into chunks to avoid XTTS 400 token limit
+        chunks = split_text_into_chunks(text)
+        logger.info(f"Split text into {len(chunks)} chunk(s)")
 
-        # Get the audio waveform from output dict
-        audio_array = audio_output.get("wav")
-        if audio_array is None:
-            logger.error(f"XTTS model returned: {audio_output.keys() if isinstance(audio_output, dict) else type(audio_output)}")
-            raise RuntimeError("XTTS model did not return audio")
+        audio_arrays = []
+        for i, chunk in enumerate(chunks):
+            logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
 
-        # Convert to numpy array if it's a tensor
-        if hasattr(audio_array, "cpu"):
-            audio_array = audio_array.cpu().numpy()
+            # Synthesize using cached latents
+            audio_output = xtts_model.inference(
+                text=chunk,
+                language=language,
+                gpt_cond_latent=gpt_cond_latent,
+                speaker_embedding=speaker_embedding,
+            )
+
+            # Get the audio waveform from output dict
+            audio_array = audio_output.get("wav")
+            if audio_array is None:
+                logger.error(f"XTTS model returned: {audio_output.keys() if isinstance(audio_output, dict) else type(audio_output)}")
+                raise RuntimeError("XTTS model did not return audio")
+
+            # Convert to numpy array if it's a tensor
+            if hasattr(audio_array, "cpu"):
+                audio_array = audio_array.cpu().numpy()
+
+            audio_arrays.append(audio_array)
+
+        # Concatenate all audio chunks
+        if len(audio_arrays) == 1:
+            combined_audio = audio_arrays[0]
+        else:
+            combined_audio = np.concatenate(audio_arrays)
 
         # XTTS outputs at 24kHz
         sample_rate = 24000
 
-        return numpy_to_wav_bytes(audio_array, sample_rate)
+        return numpy_to_wav_bytes(combined_audio, sample_rate)
 
     except Exception as e:
         logger.error(f"synthesize_with_cached_latents failed: {type(e).__name__}: {e}")
