@@ -5,7 +5,6 @@ Provides TTL-based in-memory caching for:
 - Token counting results
 - Memory search results
 - Full memory content lookups
-- Significance calculations
 
 Caches are designed to reduce redundant API calls and database queries
 during multi-turn conversations and rapid message exchanges.
@@ -185,7 +184,6 @@ class CacheService:
     - token_cache: For token counting results (long TTL, rarely changes)
     - search_cache: For memory search results (short TTL, may change)
     - content_cache: For full memory content (medium TTL)
-    - significance_cache: For significance calculations (short TTL)
     """
 
     def __init__(self):
@@ -208,13 +206,6 @@ class CacheService:
         self.content_cache: TTLCache[Dict[str, Any]] = TTLCache(
             default_ttl_seconds=300,  # 5 minutes
             max_size=5000,
-        )
-
-        # Significance calculation cache
-        # Short TTL since it depends on times_retrieved which can change
-        self.significance_cache: TTLCache[float] = TTLCache(
-            default_ttl_seconds=30,  # 30 seconds
-            max_size=10000,
         )
 
     # Token counting helpers
@@ -275,26 +266,6 @@ class CacheService:
         key = f"mem:{message_id}"
         return self.content_cache.delete(key)
 
-    # Significance cache helpers
-    def get_significance(
-        self,
-        message_id: str,
-        times_retrieved: int,
-    ) -> Optional[float]:
-        """Get cached significance. Key includes times_retrieved for auto-invalidation."""
-        key = f"sig:{message_id}:{times_retrieved}"
-        return self.significance_cache.get(key)
-
-    def set_significance(
-        self,
-        message_id: str,
-        times_retrieved: int,
-        significance: float,
-    ) -> None:
-        """Cache significance calculation."""
-        key = f"sig:{message_id}:{times_retrieved}"
-        self.significance_cache.set(key, significance)
-
     # Utility methods
     def clear_all(self) -> Dict[str, int]:
         """Clear all caches. Returns count of entries cleared per cache."""
@@ -302,7 +273,6 @@ class CacheService:
             "token_cache": self.token_cache.clear(),
             "search_cache": self.search_cache.clear(),
             "content_cache": self.content_cache.clear(),
-            "significance_cache": self.significance_cache.clear(),
         }
 
     def get_all_stats(self) -> Dict[str, Dict[str, Any]]:
@@ -311,7 +281,6 @@ class CacheService:
             "token_cache": self.token_cache.get_stats(),
             "search_cache": self.search_cache.get_stats(),
             "content_cache": self.content_cache.get_stats(),
-            "significance_cache": self.significance_cache.get_stats(),
         }
 
 

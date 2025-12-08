@@ -211,7 +211,6 @@ class TestSettings:
         )
 
         assert settings.recency_boost_strength == 1.0
-        assert settings.age_decay_rate == 0.01
         assert settings.significance_floor == 0.0
 
     def test_settings_reflection_defaults(self):

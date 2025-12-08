@@ -54,19 +54,21 @@ def calculate_significance(
     """
     Calculate dynamic significance based on retrieval patterns.
 
-    significance = times_retrieved * recency_factor / age_factor
+    significance = times_retrieved * recency_factor * half_life_modifier
 
     Where:
-    - recency_factor: Boost based on how recently retrieved
-    - age_factor: Penalty based on age
+    - times_retrieved: How many times this memory has been retrieved
+    - recency_factor: Boost based on how recently retrieved (decays over time)
+    - half_life_modifier: Decay based on memory age (halves every N days)
     """
     now = datetime.utcnow()
 
-    # Age factor
+    # Half-life modifier - older memories decay in significance
+    # Starts at 1.0 and halves every significance_half_life_days
     days_since_creation = (now - created_at).days
-    age_factor = 1.0 + (days_since_creation * settings.age_decay_rate)
+    half_life_modifier = 0.5 ** (days_since_creation / settings.significance_half_life_days)
 
-    # Recency factor
+    # Recency factor - boosts recently retrieved memories
     recency_factor = 1.0
     if last_retrieved_at:
         days_since_retrieval = (now - last_retrieved_at).days
@@ -76,7 +78,7 @@ def calculate_significance(
             recency_factor = 1.0 + settings.recency_boost_strength
 
     # Calculate significance
-    significance = (times_retrieved * recency_factor) / age_factor
+    significance = times_retrieved * recency_factor * half_life_modifier
 
     # Apply floor
     return max(significance, settings.significance_floor)
@@ -359,5 +361,4 @@ async def memory_health():
         "retrieval_top_k": settings.retrieval_top_k,
         "similarity_threshold": settings.similarity_threshold,
         "recency_boost_strength": settings.recency_boost_strength,
-        "age_decay_rate": settings.age_decay_rate,
     }
