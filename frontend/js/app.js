@@ -913,6 +913,8 @@ class App {
                         }
                     },
                     onStored: async (data) => {
+                        console.log('[MULTI-ENTITY] onStored callback triggered:', data);
+
                         // Update user message with ID
                         if (data.human_message_id && userMessageEl) {
                             userMessageEl.dataset.messageId = data.human_message_id;
@@ -958,6 +960,8 @@ class App {
                                 console.error('Failed to auto-set title:', e);
                             }
                         }
+
+                        console.log('[MULTI-ENTITY] About to show responder selector. isMultiEntityMode:', this.isMultiEntityMode, 'entities:', this.currentConversationEntities);
 
                         // Show responder selector for next turn (continuation mode since no new human message)
                         this.showEntityResponderSelector(true);
