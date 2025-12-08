@@ -796,13 +796,13 @@ class App {
         this.hideMultiEntityModal();
 
         if (pendingAction === 'createConversation') {
-            // Continue with conversation creation
-            this.createNewConversation();
+            // Continue with conversation creation (skip modal since we just selected entities)
+            this.createNewConversation(true);
             return;
         } else if (pendingAction === 'sendMessage' && pendingMessage) {
-            // Restore message and continue with send
+            // Restore message and continue with send (skip modal since we just selected entities)
             this.elements.messageInput.value = pendingMessage;
-            this.sendMessage();
+            this.sendMessage(true);
             return;
         }
 
@@ -1205,10 +1205,11 @@ class App {
         allDropdowns.forEach(dropdown => dropdown.classList.remove('open'));
     }
 
-    async createNewConversation() {
-        // In multi-entity mode, show entity selection modal if entities not yet selected
-        if (this.isMultiEntityMode && this.currentConversationEntities.length < 2) {
-            console.log('[DEBUG] showMultiEntityModal triggered by: createNewConversation (multi-entity mode, no entities selected)');
+    async createNewConversation(skipEntityModal = false) {
+        // In multi-entity mode, show entity selection modal for new conversations
+        // (unless we just came from the modal confirmation)
+        if (this.isMultiEntityMode && !skipEntityModal) {
+            console.log('[DEBUG] showMultiEntityModal triggered by: createNewConversation (multi-entity mode)');
             this.pendingActionAfterEntitySelection = 'createConversation';
             this.showMultiEntityModal();
             return;
@@ -1226,7 +1227,7 @@ class App {
                     entity_ids: this.currentConversationEntities.map(e => e.index_name),
                 };
             } else {
-                // Create standard conversation
+                // Standard single-entity conversation
                 conversationData = {
                     model: this.settings.model,
                     system_prompt: this.settings.systemPrompt,
@@ -1336,12 +1337,13 @@ class App {
         }
     }
 
-    async sendMessage() {
+    async sendMessage(skipEntityModal = false) {
         const content = this.elements.messageInput.value.trim();
         if (!content || this.isLoading) return;
 
-        // In multi-entity mode without entities selected, show modal first
-        if (!this.currentConversationId && this.isMultiEntityMode && this.currentConversationEntities.length < 2) {
+        // In multi-entity mode without a conversation, show entity selection modal
+        // (unless we just came from the modal confirmation)
+        if (!this.currentConversationId && this.isMultiEntityMode && !skipEntityModal) {
             this.pendingActionAfterEntitySelection = 'sendMessage';
             this.pendingMessageForEntitySelection = content;
             this.showMultiEntityModal();
@@ -1350,7 +1352,7 @@ class App {
 
         // Ensure we have a conversation
         if (!this.currentConversationId) {
-            await this.createNewConversation();
+            await this.createNewConversation(true);  // Skip modal since we already selected entities
         }
 
         // In multi-entity mode, store message and show responder selector
