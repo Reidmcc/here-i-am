@@ -1,6 +1,7 @@
 /**
  * Here I Am - Main Application
  */
+console.log('[HERE-I-AM] App.js loaded - version with multi-entity debug logging');
 
 class App {
     constructor() {
