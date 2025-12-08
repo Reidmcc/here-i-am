@@ -730,6 +730,11 @@ class SessionManager:
         # Breakpoint 2: history (kept stable, consolidated periodically)
         memories_for_injection = session.get_memories_for_injection()
         cache_content = session.get_cache_aware_content()
+
+        # Debug logging for memory injection
+        logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
+        logger.info(f"[MEMORY] Cache content: {len(cache_content['cached_memories'])} cached memories, {len(cache_content['new_memories'])} new memories")
+
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
@@ -990,6 +995,11 @@ class SessionManager:
         # Step 5: Build API messages with two-breakpoint caching
         memories_for_injection = session.get_memories_for_injection()
         cache_content = session.get_cache_aware_content()
+
+        # Debug logging for memory injection
+        logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
+        logger.info(f"[MEMORY] Cache content: {len(cache_content['cached_memories'])} cached memories, {len(cache_content['new_memories'])} new memories")
+
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
