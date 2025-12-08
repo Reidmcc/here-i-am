@@ -123,7 +123,8 @@ class MemoryEntry:
     content: str
     created_at: str
     times_retrieved: int
-    score: float = 0.0
+    score: float = 0.0  # Similarity score from vector search
+    significance: float = 0.0  # Significance score based on retrieval patterns
 
 
 @dataclass
@@ -647,6 +648,7 @@ class SessionManager:
                     created_at=mem_data["created_at"],
                     times_retrieved=mem_data["times_retrieved"],
                     score=candidate["score"],
+                    significance=item["significance"],
                 )
 
                 added, is_new_retrieval = session.add_memory(memory)
@@ -668,9 +670,8 @@ class SessionManager:
             if new_memories:
                 logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
                 for mem in new_memories:
-                    preview = mem.content[:100].replace('\n', ' ')
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
-                    logger.info(f"[MEMORY]   [{retrieval_type}] score={mem.score:.3f} id={mem.id[:8]}... \"{preview}...\"")
+                    logger.info(f"[MEMORY]   [{retrieval_type}] similarity={mem.score:.3f} significance={mem.significance:.3f} id={mem.id[:8]}...")
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
@@ -861,6 +862,7 @@ class SessionManager:
                     created_at=mem_data["created_at"],
                     times_retrieved=mem_data["times_retrieved"],
                     score=candidate["score"],
+                    significance=item["significance"],
                 )
 
                 added, is_new_retrieval = session.add_memory(memory)
@@ -882,9 +884,8 @@ class SessionManager:
             if new_memories:
                 logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
                 for mem in new_memories:
-                    preview = mem.content[:100].replace('\n', ' ')
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
-                    logger.info(f"[MEMORY]   [{retrieval_type}] score={mem.score:.3f} id={mem.id[:8]}... \"{preview}...\"")
+                    logger.info(f"[MEMORY]   [{retrieval_type}] similarity={mem.score:.3f} significance={mem.significance:.3f} id={mem.id[:8]}...")
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
