@@ -125,6 +125,7 @@ class MemoryEntry:
     times_retrieved: int
     score: float = 0.0  # Similarity score from vector search
     significance: float = 0.0  # Significance score based on retrieval patterns
+    combined_score: float = 0.0  # Combined score used for ranking
 
 
 @dataclass
@@ -649,6 +650,7 @@ class SessionManager:
                     times_retrieved=mem_data["times_retrieved"],
                     score=candidate["score"],
                     significance=item["significance"],
+                    combined_score=item["combined_score"],
                 )
 
                 added, is_new_retrieval = session.add_memory(memory)
@@ -671,7 +673,7 @@ class SessionManager:
                 logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
                 for mem in new_memories:
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
-                    logger.info(f"[MEMORY]   [{retrieval_type}] similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved}")
+                    logger.info(f"[MEMORY]   [{retrieval_type}] similarity={mem.score:.3f} significance={mem.significance:.3f} combined={mem.combined_score:.3f} times_retrieved={mem.times_retrieved}")
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
@@ -680,7 +682,7 @@ class SessionManager:
             if unselected_candidates:
                 logger.info(f"[MEMORY] {len(unselected_candidates)} candidates not selected after re-ranking:")
                 for item in unselected_candidates:
-                    logger.info(f"[MEMORY]   [NOT SELECTED] similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']}")
+                    logger.info(f"[MEMORY]   [NOT SELECTED] similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} combined={item['combined_score']:.3f} times_retrieved={item['mem_data']['times_retrieved']}")
 
         # Step 4: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)
@@ -870,6 +872,7 @@ class SessionManager:
                     times_retrieved=mem_data["times_retrieved"],
                     score=candidate["score"],
                     significance=item["significance"],
+                    combined_score=item["combined_score"],
                 )
 
                 added, is_new_retrieval = session.add_memory(memory)
@@ -892,7 +895,7 @@ class SessionManager:
                 logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
                 for mem in new_memories:
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
-                    logger.info(f"[MEMORY]   [{retrieval_type}] similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved}")
+                    logger.info(f"[MEMORY]   [{retrieval_type}] similarity={mem.score:.3f} significance={mem.significance:.3f} combined={mem.combined_score:.3f} times_retrieved={mem.times_retrieved}")
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
@@ -901,7 +904,7 @@ class SessionManager:
             if unselected_candidates:
                 logger.info(f"[MEMORY] {len(unselected_candidates)} candidates not selected after re-ranking:")
                 for item in unselected_candidates:
-                    logger.info(f"[MEMORY]   [NOT SELECTED] similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']}")
+                    logger.info(f"[MEMORY]   [NOT SELECTED] similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} combined={item['combined_score']:.3f} times_retrieved={item['mem_data']['times_retrieved']}")
 
         # Step 3: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)
