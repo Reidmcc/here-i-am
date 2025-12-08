@@ -5,6 +5,7 @@ from app.services.memory_service import MemoryService, memory_service
 from app.services.session_manager import ConversationSession, SessionManager, session_manager
 from app.services.cache_service import CacheService, TTLCache, cache_service
 from app.services.tts_service import TTSService, tts_service
+from app.services.xtts_service import XTTSService, xtts_service
 
 __all__ = [
     # Classes
@@ -17,6 +18,7 @@ __all__ = [
     "CacheService",
     "TTLCache",
     "TTSService",
+    "XTTSService",
     # Singleton instances
     "anthropic_service",
     "openai_service",
@@ -25,4 +27,5 @@ __all__ = [
     "session_manager",
     "cache_service",
     "tts_service",
+    "xtts_service",
 ]

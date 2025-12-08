@@ -471,6 +471,40 @@ class ApiClient {
         return response.blob();
     }
 
+    async listTTSVoices() {
+        return this.request('/tts/voices');
+    }
+
+    async cloneVoice(audioFile, label, description = '') {
+        const url = `${API_BASE}/tts/voices/clone`;
+        const formData = new FormData();
+        formData.append('audio_file', audioFile);
+        formData.append('label', label);
+        formData.append('description', description);
+
+        const response = await fetch(url, {
+            method: 'POST',
+            body: formData,
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+            throw new Error(error.detail || `HTTP ${response.status}`);
+        }
+
+        return response.json();
+    }
+
+    async deleteTTSVoice(voiceId) {
+        return this.request(`/tts/voices/${voiceId}`, {
+            method: 'DELETE',
+        });
+    }
+
+    async getXTTSHealth() {
+        return this.request('/tts/xtts/health');
+    }
+
     async regenerateStream(data, callbacks = {}) {
         const url = `${API_BASE}/chat/regenerate`;
 
