@@ -945,7 +945,7 @@ class App {
                         if (data.assistant_message_id) {
                             streamingMessage.element.dataset.messageId = data.assistant_message_id;
                             streamingMessage.element.dataset.speakerEntityId = responderId;
-                            this.updateAssistantMessageActions(streamingMessage.element, data.assistant_message_id);
+                            this.updateAssistantMessageActions(streamingMessage.element, data.assistant_message_id, streamingMessage.getContent());
                         }
 
                         // Auto-generate title for new conversations
@@ -961,9 +961,6 @@ class App {
                                 console.error('Failed to auto-set title:', e);
                             }
                         }
-
-                        // DEBUG: Use alert to confirm this code runs
-                        alert(`onStored called! isMultiEntityMode=${this.isMultiEntityMode}, entities=${this.currentConversationEntities?.length}`);
 
                         // Show responder selector for next turn (continuation mode since no new human message)
                         this.showEntityResponderSelector(true);
@@ -1951,6 +1948,66 @@ class App {
                 e.stopPropagation();
                 this.startEditMessage(messageElement, messageId, content);
             });
+        }
+    }
+
+    /**
+     * Add action buttons (copy, speak, regenerate) to an assistant message.
+     * Used in multi-entity mode after message is stored.
+     */
+    updateAssistantMessageActions(messageElement, messageId, messageContent) {
+        // Remove regenerate buttons from previous assistant messages
+        this.removeRegenerateButtons();
+
+        // Add action buttons inside assistant message bubble
+        const assistantBubble = messageElement.querySelector('.message-bubble');
+        if (assistantBubble) {
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'message-bubble-actions';
+            const speakBtnHtml = this.ttsEnabled ? `
+                <button class="message-action-btn speak-btn" title="Read aloud">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                    </svg>
+                </button>
+            ` : '';
+            actionsDiv.innerHTML = `
+                <button class="message-action-btn copy-btn" title="Copy to clipboard">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                </button>
+                ${speakBtnHtml}
+                <button class="message-action-btn regenerate-btn" title="Regenerate response">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 4v6h-6"/>
+                        <path d="M1 20v-6h6"/>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                </button>
+            `;
+            assistantBubble.appendChild(actionsDiv);
+
+            const copyBtn = actionsDiv.querySelector('.copy-btn');
+            copyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.copyMessage(messageContent, copyBtn);
+            });
+            const regenerateBtn = actionsDiv.querySelector('.regenerate-btn');
+            regenerateBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.regenerateMessage(messageId);
+            });
+            const speakBtn = actionsDiv.querySelector('.speak-btn');
+            if (speakBtn) {
+                speakBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.speakMessage(messageContent, speakBtn, messageId);
+                });
+            }
         }
     }
 
