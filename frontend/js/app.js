@@ -645,6 +645,10 @@ class App {
             this.updateMemoriesPanel();
             this.updateEntityDescription();
             this.hideEntityResponderSelector();
+            // Clear pending state from any previous conversation
+            this.pendingMessageContent = null;
+            this.pendingResponderId = null;
+            this.pendingUserMessageEl = null;
             // Hide continue button when no conversation is selected
             if (this.elements.continueBtn) {
                 this.elements.continueBtn.style.display = 'none';
@@ -691,6 +695,10 @@ class App {
         this.elements.conversationMeta.textContent = '';
         this.updateMemoriesPanel();
         this.hideEntityResponderSelector();
+        // Clear pending state from any previous conversation
+        this.pendingMessageContent = null;
+        this.pendingResponderId = null;
+        this.pendingUserMessageEl = null;
 
         // Reload conversations for the new entity
         this.loadConversations();
@@ -1243,6 +1251,12 @@ class App {
     }
 
     async createNewConversation(skipEntityModal = false) {
+        // Hide responder selector and clear pending state
+        this.hideEntityResponderSelector();
+        this.pendingMessageContent = null;
+        this.pendingResponderId = null;
+        this.pendingUserMessageEl = null;
+
         // In multi-entity mode, show entity selection modal for new conversations
         // (unless we just came from the modal confirmation)
         if (this.isMultiEntityMode && !skipEntityModal) {
@@ -1306,6 +1320,12 @@ class App {
 
     async loadConversation(id) {
         this.showLoading(true);
+
+        // Hide responder selector and clear pending state from previous conversation
+        this.hideEntityResponderSelector();
+        this.pendingMessageContent = null;
+        this.pendingResponderId = null;
+        this.pendingUserMessageEl = null;
 
         try {
             const [conversation, messages, sessionInfo] = await Promise.all([
