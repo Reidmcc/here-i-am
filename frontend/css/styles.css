@@ -964,6 +964,24 @@ h4.md-header {
     cursor: not-allowed;
 }
 
+/* Continue Button (for multi-entity conversations) */
+.continue-btn {
+    padding: 12px 24px;
+    background-color: var(--accent-subtle);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.95rem;
+    font-weight: 500;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.continue-btn:hover {
+    background-color: var(--accent);
+    color: white;
+}
+
 /* Voice Dictation Button */
 .voice-btn {
     padding: 10px 14px;
