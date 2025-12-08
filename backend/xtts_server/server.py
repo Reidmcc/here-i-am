@@ -100,6 +100,11 @@ def get_speaker_latents(speaker_wav_path: str) -> Tuple[Any, Any]:
         audio_path=speaker_wav_path
     )
 
+    # Convert latents to FP16 if model is on CUDA to match model weights
+    if torch.cuda.is_available():
+        gpt_cond_latent = gpt_cond_latent.half()
+        speaker_embedding = speaker_embedding.half()
+
     # Cache the result
     _speaker_latent_cache[file_hash] = (gpt_cond_latent, speaker_embedding)
     logger.info(f"Cached speaker latents for {speaker_wav_path} (hash: {file_hash})")
