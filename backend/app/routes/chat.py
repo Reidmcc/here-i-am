@@ -515,6 +515,7 @@ async def stream_message(data: ChatRequest):
                 if is_multi_entity:
                     stored_data['speaker_entity_id'] = responding_entity_id
                     stored_data['speaker_label'] = get_entity_label(responding_entity_id)
+                print(f"[STREAM] Sending stored event: {stored_data}")
                 yield f"event: stored\ndata: {json.dumps(stored_data)}\n\n"
 
             except Exception as e:
