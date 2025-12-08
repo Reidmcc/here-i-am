@@ -362,3 +362,92 @@ async def memory_health():
         "similarity_threshold": settings.similarity_threshold,
         "recency_boost_strength": settings.recency_boost_strength,
     }
+
+
+class OrphanedRecord(BaseModel):
+    id: str
+    metadata: Optional[dict] = None
+
+
+class OrphanedRecordsResponse(BaseModel):
+    entity_id: Optional[str]
+    orphans_found: int
+    orphans: List[OrphanedRecord]
+
+
+class CleanupRequest(BaseModel):
+    entity_id: Optional[str] = None
+    dry_run: bool = True  # Default to dry run for safety
+
+
+class CleanupResponse(BaseModel):
+    entity_id: Optional[str]
+    dry_run: bool
+    orphans_found: int
+    orphans_deleted: int
+    errors: List[str]
+    orphan_ids: List[str]
+
+
+@router.get("/orphans", response_model=OrphanedRecordsResponse)
+async def list_orphaned_records(
+    db: AsyncSession = Depends(get_db),
+    entity_id: Optional[str] = None,
+):
+    """
+    List orphaned Pinecone records that don't exist in SQL database.
+
+    Orphans typically occur when:
+    - A conversation or message was deleted but Pinecone deletion failed
+    - Database was restored from an older backup
+    - Records were created during development/testing
+
+    Args:
+        entity_id: Optional filter by AI entity (Pinecone index name).
+                   If not specified, uses the default entity.
+    """
+    if not memory_service.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Memory system not configured. Set PINECONE_API_KEY in environment."
+        )
+
+    orphans = await memory_service.find_orphaned_records(db, entity_id)
+
+    return OrphanedRecordsResponse(
+        entity_id=entity_id,
+        orphans_found=len(orphans),
+        orphans=[OrphanedRecord(id=o["id"], metadata=o["metadata"]) for o in orphans],
+    )
+
+
+@router.post("/orphans/cleanup", response_model=CleanupResponse)
+async def cleanup_orphaned_records(
+    data: CleanupRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Clean up orphaned Pinecone records that don't exist in SQL database.
+
+    By default runs in dry_run mode which only reports what would be deleted.
+    Set dry_run=false to actually delete the orphaned records.
+
+    Args:
+        entity_id: Optional filter by AI entity (Pinecone index name).
+                   If not specified, uses the default entity.
+        dry_run: If true (default), only report what would be deleted.
+                 If false, actually delete the orphaned records.
+    """
+    if not memory_service.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Memory system not configured. Set PINECONE_API_KEY in environment."
+        )
+
+    result = await memory_service.cleanup_orphaned_records(
+        db=db,
+        entity_id=data.entity_id,
+        dry_run=data.dry_run,
+    )
+
+    return CleanupResponse(**result)
