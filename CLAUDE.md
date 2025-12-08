@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2025-12-07
+**Last Updated:** 2025-12-08
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -106,12 +106,19 @@ here-i-am/
 │   │   │   ├── memory_service.py
 │   │   │   ├── session_manager.py
 │   │   │   ├── cache_service.py   # TTL-based in-memory caching
-│   │   │   └── tts_service.py     # ElevenLabs TTS integration
+│   │   │   ├── tts_service.py     # Unified TTS (ElevenLabs/XTTS)
+│   │   │   └── xtts_service.py    # Local XTTS v2 client service
 │   │   ├── config.py          # Pydantic settings
 │   │   ├── database.py        # SQLAlchemy async setup
 │   │   └── main.py            # FastAPI app initialization
+│   ├── xtts_server/           # Local XTTS v2 TTS server
+│   │   ├── __init__.py
+│   │   ├── __main__.py        # CLI entry point
+│   │   └── server.py          # FastAPI XTTS server
 │   ├── requirements.txt
+│   ├── requirements-xtts.txt  # XTTS-specific dependencies
 │   ├── run.py                 # Application entry point
+│   ├── run_xtts.py            # XTTS server entry point
 │   └── .env.example
 ├── frontend/                   # Vanilla JavaScript SPA
 │   ├── css/styles.css
@@ -148,7 +155,8 @@ here-i-am/
 | Validation | Pydantic | 2.6.1 | Request/response schemas |
 | Database | aiosqlite / asyncpg | - | SQLite dev / PostgreSQL prod |
 | HTTP Client | httpx | - | Async HTTP for TTS service |
-| Utilities | tiktoken, numpy | - | Token counting, embeddings |
+| Local TTS | Coqui TTS (coqui-tts) | - | XTTS v2 voice cloning (optional) |
+| Utilities | tiktoken, numpy, scipy | - | Token counting, embeddings, audio |
 
 ### Frontend
 
@@ -329,12 +337,20 @@ PINECONE_INDEXES='[...]'                # Entity configuration (JSON array, see 
 HERE_I_AM_DATABASE_URL=sqlite+aiosqlite:///./here_i_am.db  # Database URL
 DEBUG=true                              # Development mode
 
-# ElevenLabs TTS (optional, enables text-to-speech on AI messages)
+# ElevenLabs TTS (optional, cloud-based text-to-speech)
 ELEVENLABS_API_KEY=...                  # Enables TTS feature
 ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM  # Default voice (Rachel)
 ELEVENLABS_MODEL_ID=eleven_multilingual_v2  # TTS model
 # Multiple voices (JSON array) - adds voice selector in settings:
 # ELEVENLABS_VOICES='[{"voice_id": "...", "label": "Name", "description": "..."}]'
+
+# XTTS v2 Local TTS (optional, local GPU-accelerated text-to-speech with voice cloning)
+# Requires running the XTTS server separately (see "Running XTTS Server" below)
+# XTTS_ENABLED=true                     # Enable local XTTS (takes priority over ElevenLabs)
+# XTTS_API_URL=http://localhost:8020    # XTTS server URL
+# XTTS_LANGUAGE=en                      # Default language for synthesis
+# XTTS_VOICES_DIR=./xtts_voices         # Directory for cloned voice samples
+# XTTS_DEFAULT_SPEAKER=/path/to/sample.wav  # Default speaker sample (optional)
 ```
 
 **Entity Configuration (PINECONE_INDEXES):**
@@ -360,6 +376,69 @@ HERE_I_AM_DATABASE_URL=postgresql+asyncpg://user:password@localhost/here_i_am
 ```bash
 # In production, use proper ASGI server configuration
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+### Running XTTS Server (Optional Local TTS)
+
+XTTS v2 provides local, GPU-accelerated text-to-speech with voice cloning capabilities. It runs as a separate server process.
+
+**Prerequisites:**
+- NVIDIA GPU with CUDA support (recommended) or CPU (slower)
+- Python 3.9-3.11 (Python 3.12+ may have compatibility issues)
+- ~2GB disk space for model download on first run
+
+**Installation:**
+```bash
+cd backend
+
+# Step 1: Install PyTorch (choose one based on your hardware)
+# For NVIDIA GPU with CUDA:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+# For CPU only:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Step 2: Install XTTS dependencies
+pip install -r requirements-xtts.txt
+```
+
+**Running the XTTS Server:**
+```bash
+cd backend
+python run_xtts.py
+# Or with custom port:
+python run_xtts.py --port 8020
+```
+
+The server will:
+1. Download the XTTS v2 model on first run (~2GB)
+2. Start on port 8020 (default)
+3. Apply GPU optimizations if CUDA is available
+
+**Configure Main App to Use XTTS:**
+```bash
+# In .env
+XTTS_ENABLED=true
+XTTS_API_URL=http://localhost:8020
+XTTS_LANGUAGE=en
+XTTS_VOICES_DIR=./xtts_voices
+```
+
+**Voice Cloning:**
+XTTS supports voice cloning from audio samples. Upload a 6-30 second WAV file of clear speech via the `/api/tts/voices/clone` endpoint or through the UI. Cloned voices are stored in `XTTS_VOICES_DIR` and persisted in `voices.json`.
+
+**XTTS Voice Parameters:**
+- `temperature` (0.0-1.0): Controls randomness in generation (default: 0.75)
+- `length_penalty` (0.1-10.0): Affects output length (default: 1.0)
+- `repetition_penalty` (0.1-20.0): Reduces repetitive speech (default: 5.0)
+- `speed` (0.1-3.0): Speech speed multiplier (default: 1.0)
+
+**Supported Languages:**
+en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh-cn, ja, hu, ko, hi
+
+**Speaker Latent Caching:**
+The XTTS server caches speaker conditioning latents (computed from reference audio) based on file content hash. This dramatically speeds up repeat TTS requests for the same voice. Pre-load voices on startup via:
+```bash
+XTTS_PRELOAD_SPEAKERS=/path/to/voice1.wav,/path/to/voice2.wav
 ```
 
 ### Development Commands
@@ -643,9 +722,15 @@ retrieved_at: DateTime
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/tts/speak` | Convert text to speech (returns MP3) |
+| POST | `/api/tts/speak` | Convert text to speech (MP3 for ElevenLabs, WAV for XTTS) |
 | POST | `/api/tts/speak/stream` | Stream text to speech |
 | GET | `/api/tts/status` | Check TTS configuration status |
+| GET | `/api/tts/voices` | List available voices for current provider |
+| GET | `/api/tts/voices/{id}` | Get specific voice details |
+| POST | `/api/tts/voices/clone` | Clone voice from audio sample (XTTS only) |
+| PUT | `/api/tts/voices/{id}` | Update voice settings (XTTS only) |
+| DELETE | `/api/tts/voices/{id}` | Delete cloned voice (XTTS only) |
+| GET | `/api/tts/xtts/health` | Check XTTS server health |
 
 ### Configuration
 
@@ -724,9 +809,10 @@ retrieved_at: DateTime
 6. **Semantic Memory Search** - Search within selected entity's memories
 7. **Toast Notifications** - User feedback system
 8. **Loading States** - Typing indicators, overlays
-9. **Text-to-Speech** - Listen to AI messages via ElevenLabs (optional)
+9. **Text-to-Speech** - Listen to AI messages via ElevenLabs or local XTTS (optional)
 10. **Message Actions** - Copy button, edit/delete for human messages
-11. **Voice Selection** - Choose from configured voices in settings
+11. **Voice Selection** - Choose from configured or cloned voices in settings
+12. **Voice Cloning** - Clone custom voices from audio samples (XTTS only)
 
 ---
 
@@ -786,10 +872,18 @@ retrieved_at: DateTime
     - The `host` field is required in entity config for serverless indexes
     - Metadata includes: content, role, timestamp, conversation_id
 
-11. **TTS Service is Optional**
-    - If `ELEVENLABS_API_KEY` not set, TTS features gracefully disabled
-    - Multiple voice support via `ELEVENLABS_VOICES` JSON array
+11. **TTS Service is Optional (Two Providers)**
+    - **ElevenLabs (cloud):** Set `ELEVENLABS_API_KEY` to enable
+    - **XTTS v2 (local):** Set `XTTS_ENABLED=true` and run the XTTS server
+    - XTTS takes priority over ElevenLabs if both are configured
     - Audio is not cached - each request generates fresh audio
+
+12. **XTTS Server is Separate Process**
+    - XTTS runs as a standalone FastAPI server on port 8020
+    - Requires PyTorch and ~2GB for model download on first run
+    - GPU (CUDA) strongly recommended for acceptable performance
+    - Speaker latents are cached for repeat voice requests
+    - Long text is automatically chunked (XTTS has 400 token limit)
 
 ### Common Pitfalls
 
@@ -814,6 +908,7 @@ retrieved_at: DateTime
 2. **Vector Search** - Fast (< 100ms) but limited by top_k setting
 3. **Database Queries** - No pagination on messages (load all)
 4. **Frontend Rendering** - No virtualization (performance degrades with 1000+ messages)
+5. **XTTS Synthesis** - First request per voice is slow (computes speaker latents), subsequent requests are faster due to caching. GPU recommended for acceptable latency (~2-5s per response with GPU, much slower on CPU).
 
 ### Security Notes
 
@@ -860,8 +955,12 @@ retrieved_at: DateTime
 - Messages routes: `backend/app/routes/messages.py`
 
 **Text-to-Speech:**
-- TTS service: `backend/app/services/tts_service.py`
+- TTS service (unified): `backend/app/services/tts_service.py`
+- XTTS client service: `backend/app/services/xtts_service.py`
 - TTS routes: `backend/app/routes/tts.py`
+- XTTS server: `backend/xtts_server/server.py`
+- XTTS entry point: `backend/run_xtts.py`
+- XTTS dependencies: `backend/requirements-xtts.txt`
 
 **Configuration:**
 - Settings: `backend/app/config.py`
@@ -901,6 +1000,20 @@ memory_token_limit = 20000    # Memory block cap
 significance = times_retrieved * recency_factor * half_life_modifier
 # recency_factor = 1.0 + min(1/days_since_retrieval, recency_boost_strength)
 # half_life_modifier = 0.5 ^ (days_since_creation / significance_half_life_days)
+significance = times_retrieved * recency_boost_strength / age_factor
+age_factor = 1 + (age_days * age_decay_rate)
+
+# XTTS defaults (config.py)
+xtts_enabled = False              # Must be explicitly enabled
+xtts_api_url = "http://localhost:8020"
+xtts_language = "en"
+xtts_voices_dir = "./xtts_voices"
+
+# XTTS voice synthesis defaults (xtts_service.py)
+temperature = 0.75                # Sampling randomness
+length_penalty = 1.0              # Output length control
+repetition_penalty = 5.0          # Reduces repetitive speech
+speed = 1.0                       # Speech speed multiplier
 ```
 
 ---

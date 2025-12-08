@@ -149,7 +149,7 @@ class Settings(BaseSettings):
 
     # API defaults
     default_model: str = "claude-sonnet-4-5-20250929"  # Default Anthropic model
-    default_openai_model: str = "gpt-4o"  # Default OpenAI model
+    default_openai_model: str = "gpt-5.1"  # Default OpenAI model
     default_temperature: float = 1.0
     default_max_tokens: int = 4096
     default_verbosity: str = "medium"  # Default verbosity for GPT-5.1 models (low, medium, high)
