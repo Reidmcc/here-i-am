@@ -119,6 +119,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# Middleware to disable caching for static files (development)
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+class NoCacheMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        # Add no-cache headers for HTML, JS, and CSS files
+        path = request.url.path
+        if path.endswith(('.html', '.js', '.css')) or path == '/':
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
+app.add_middleware(NoCacheMiddleware)
+
+
 # API routes
 app.include_router(conversations_router)
 app.include_router(chat_router)
