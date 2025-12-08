@@ -16,6 +16,8 @@ router = APIRouter(prefix="/api/tts", tags=["tts"])
 
 class TTSRequest(BaseModel):
     """Request body for text-to-speech conversion."""
+    model_config = {"protected_namespaces": ()}
+
     text: str
     voice_id: Optional[str] = None
     model_id: Optional[str] = None
