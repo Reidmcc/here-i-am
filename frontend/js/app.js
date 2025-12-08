@@ -962,7 +962,8 @@ class App {
                             }
                         }
 
-                        console.log('[MULTI-ENTITY] About to show responder selector. isMultiEntityMode:', this.isMultiEntityMode, 'entities:', this.currentConversationEntities);
+                        // DEBUG: Use alert to confirm this code runs
+                        alert(`onStored called! isMultiEntityMode=${this.isMultiEntityMode}, entities=${this.currentConversationEntities?.length}`);
 
                         // Show responder selector for next turn (continuation mode since no new human message)
                         this.showEntityResponderSelector(true);
