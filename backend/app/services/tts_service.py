@@ -1,16 +1,17 @@
 """
-Text-to-Speech service using ElevenLabs API.
+Unified Text-to-Speech service supporting ElevenLabs API and local XTTS v2.
 """
 import logging
-from typing import Optional, AsyncIterator
+from typing import Optional, AsyncIterator, List, Dict, Any
+
 import httpx
 
-from app.config import settings
+from app.config import settings, VoiceConfig
 
 logger = logging.getLogger(__name__)
 
 
-class TTSService:
+class ElevenLabsService:
     """Service for converting text to speech using ElevenLabs API."""
 
     def __init__(self):
@@ -22,6 +23,10 @@ class TTSService:
     def is_configured(self) -> bool:
         """Check if ElevenLabs API is configured."""
         return bool(self.api_key)
+
+    def get_voices(self) -> List[VoiceConfig]:
+        """Get configured ElevenLabs voices."""
+        return settings.get_voices()
 
     async def text_to_speech(
         self,
@@ -122,6 +127,185 @@ class TTSService:
 
                 async for chunk in response.aiter_bytes():
                     yield chunk
+
+
+class TTSService:
+    """
+    Unified TTS service that delegates to the appropriate provider.
+
+    This service checks configuration to determine whether to use
+    ElevenLabs (cloud) or XTTS (local) for text-to-speech conversion.
+    """
+
+    def __init__(self):
+        self._elevenlabs = ElevenLabsService()
+        self._xtts = None  # Lazy loaded to avoid circular imports
+
+    @property
+    def xtts(self):
+        """Lazy load XTTS service to avoid circular imports."""
+        if self._xtts is None:
+            from app.services.xtts_service import xtts_service
+            self._xtts = xtts_service
+        return self._xtts
+
+    def get_provider(self) -> str:
+        """Get the current TTS provider name."""
+        return settings.get_tts_provider()
+
+    def is_configured(self) -> bool:
+        """Check if any TTS provider is configured."""
+        provider = self.get_provider()
+        if provider == "xtts":
+            return self.xtts.is_configured()
+        elif provider == "elevenlabs":
+            return self._elevenlabs.is_configured()
+        return False
+
+    def get_voices(self) -> List[Dict[str, Any]]:
+        """
+        Get all available voices from the active provider.
+
+        Returns a list of voice dicts with provider information.
+        """
+        provider = self.get_provider()
+        voices = []
+
+        if provider == "xtts":
+            # XTTS voices are loaded synchronously here for compatibility
+            xtts_voices = self.xtts._load_voices_sync()
+            voices = [v.to_dict() for v in xtts_voices]
+        elif provider == "elevenlabs":
+            el_voices = self._elevenlabs.get_voices()
+            voices = [v.to_dict() for v in el_voices]
+
+        return voices
+
+    async def get_voices_async(self) -> List[Dict[str, Any]]:
+        """
+        Get all available voices from the active provider (async version).
+
+        Returns a list of voice dicts with provider information.
+        """
+        provider = self.get_provider()
+        voices = []
+
+        if provider == "xtts":
+            xtts_voices = await self.xtts.get_voices()
+            voices = [v.to_dict() for v in xtts_voices]
+        elif provider == "elevenlabs":
+            el_voices = self._elevenlabs.get_voices()
+            voices = [v.to_dict() for v in el_voices]
+
+        return voices
+
+    def get_default_voice_id(self) -> Optional[str]:
+        """Get the default voice ID for the active provider."""
+        provider = self.get_provider()
+
+        if provider == "xtts":
+            voices = self.xtts._load_voices_sync()
+            if voices:
+                return voices[0].voice_id
+            return None
+        elif provider == "elevenlabs":
+            return settings.elevenlabs_voice_id
+
+        return None
+
+    async def text_to_speech(
+        self,
+        text: str,
+        voice_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+    ) -> bytes:
+        """
+        Convert text to speech using the active provider.
+
+        Args:
+            text: The text to convert to speech
+            voice_id: Optional voice ID override
+            model_id: Optional model ID override (ElevenLabs only)
+
+        Returns:
+            Audio bytes (MP3 for ElevenLabs, WAV for XTTS)
+        """
+        provider = self.get_provider()
+
+        if provider == "xtts":
+            return await self.xtts.text_to_speech(text, voice_id)
+        elif provider == "elevenlabs":
+            return await self._elevenlabs.text_to_speech(text, voice_id, model_id)
+        else:
+            raise ValueError("No TTS provider is configured")
+
+    async def text_to_speech_stream(
+        self,
+        text: str,
+        voice_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+    ) -> AsyncIterator[bytes]:
+        """
+        Convert text to speech and stream audio bytes.
+
+        Args:
+            text: The text to convert to speech
+            voice_id: Optional voice ID override
+            model_id: Optional model ID override (ElevenLabs only)
+
+        Yields:
+            Audio bytes chunks
+        """
+        provider = self.get_provider()
+
+        if provider == "xtts":
+            async for chunk in self.xtts.text_to_speech_stream(text, voice_id):
+                yield chunk
+        elif provider == "elevenlabs":
+            async for chunk in self._elevenlabs.text_to_speech_stream(text, voice_id, model_id):
+                yield chunk
+        else:
+            raise ValueError("No TTS provider is configured")
+
+    async def get_status(self) -> Dict[str, Any]:
+        """
+        Get comprehensive TTS status including provider info.
+
+        Returns:
+            Dict with provider, configuration status, and available voices
+        """
+        provider = self.get_provider()
+
+        if provider == "none":
+            return {
+                "configured": False,
+                "provider": "none",
+                "voices": [],
+                "default_voice_id": None,
+                "model_id": None,
+            }
+
+        voices = await self.get_voices_async()
+        default_voice_id = self.get_default_voice_id()
+
+        status = {
+            "configured": True,
+            "provider": provider,
+            "voices": voices,
+            "default_voice_id": default_voice_id,
+        }
+
+        if provider == "elevenlabs":
+            status["model_id"] = self._elevenlabs.model_id
+        elif provider == "xtts":
+            # Check XTTS server health
+            health = await self.xtts.check_server_health()
+            status["server_healthy"] = health.get("healthy", False)
+            status["server_url"] = settings.xtts_api_url
+            if not health.get("healthy"):
+                status["server_error"] = health.get("error", "Unknown error")
+
+        return status
 
 
 # Singleton instance

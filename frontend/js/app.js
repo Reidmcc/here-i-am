@@ -80,8 +80,24 @@ class App {
             themeSelect: document.getElementById('theme-select'),
 
             // Voice (TTS)
+            ttsProviderGroup: document.getElementById('tts-provider-group'),
+            ttsProviderName: document.getElementById('tts-provider-name'),
+            ttsProviderStatus: document.getElementById('tts-provider-status'),
             voiceSelectGroup: document.getElementById('voice-select-group'),
             voiceSelect: document.getElementById('voice-select'),
+            voiceCloneGroup: document.getElementById('voice-clone-group'),
+            openVoiceCloneBtn: document.getElementById('open-voice-clone-btn'),
+            voiceManageGroup: document.getElementById('voice-manage-group'),
+            voiceList: document.getElementById('voice-list'),
+
+            // Voice Cloning Modal
+            voiceCloneModal: document.getElementById('voice-clone-modal'),
+            voiceCloneFile: document.getElementById('voice-clone-file'),
+            voiceCloneName: document.getElementById('voice-clone-name'),
+            voiceCloneDescription: document.getElementById('voice-clone-description'),
+            voiceCloneStatus: document.getElementById('voice-clone-status'),
+            createVoiceCloneBtn: document.getElementById('create-voice-clone'),
+            cancelVoiceCloneBtn: document.getElementById('cancel-voice-clone'),
 
             // Import
             importSource: document.getElementById('import-source'),
@@ -115,11 +131,13 @@ class App {
 
         // TTS state
         this.ttsEnabled = false;
+        this.ttsProvider = 'none'; // 'none', 'elevenlabs', or 'xtts'
         this.ttsVoices = [];
         this.selectedVoiceId = null;
         this.currentAudio = null;
         this.currentSpeakingBtn = null;
         this.audioCache = new Map(); // Cache: messageId -> { blob, url, voiceId }
+        this.xttsServerHealthy = false;
 
         this.init();
     }
@@ -139,21 +157,71 @@ class App {
         try {
             const status = await api.getTTSStatus();
             this.ttsEnabled = status.configured;
+            this.ttsProvider = status.provider || 'none';
+
             if (status.configured) {
                 this.ttsVoices = status.voices || [];
                 this.selectedVoiceId = status.default_voice_id;
-                this.updateVoiceSelector();
+
+                // Track XTTS server health
+                if (this.ttsProvider === 'xtts') {
+                    this.xttsServerHealthy = status.server_healthy || false;
+                }
+
+                this.updateTTSUI();
+            } else {
+                this.updateTTSUI();
             }
         } catch (error) {
             console.warn('TTS status check failed:', error);
             this.ttsEnabled = false;
+            this.ttsProvider = 'none';
             this.ttsVoices = [];
+            this.updateTTSUI();
+        }
+    }
+
+    updateTTSUI() {
+        // Show provider info if TTS is configured
+        if (this.ttsEnabled) {
+            this.elements.ttsProviderGroup.style.display = 'block';
+
+            // Set provider name
+            if (this.ttsProvider === 'xtts') {
+                this.elements.ttsProviderName.textContent = 'XTTS v2 (Local)';
+                if (this.xttsServerHealthy) {
+                    this.elements.ttsProviderStatus.textContent = 'Connected';
+                    this.elements.ttsProviderStatus.className = 'tts-status healthy';
+                } else {
+                    this.elements.ttsProviderStatus.textContent = 'Server Unavailable';
+                    this.elements.ttsProviderStatus.className = 'tts-status unhealthy';
+                }
+            } else if (this.ttsProvider === 'elevenlabs') {
+                this.elements.ttsProviderName.textContent = 'ElevenLabs';
+                this.elements.ttsProviderStatus.textContent = 'Cloud';
+                this.elements.ttsProviderStatus.className = 'tts-status cloud';
+            }
+        } else {
+            this.elements.ttsProviderGroup.style.display = 'none';
+        }
+
+        // Update voice selector
+        this.updateVoiceSelector();
+
+        // Show voice cloning options for XTTS
+        if (this.ttsProvider === 'xtts') {
+            this.elements.voiceCloneGroup.style.display = 'block';
+            this.elements.voiceManageGroup.style.display = 'block';
+            this.updateVoiceList();
+        } else {
+            this.elements.voiceCloneGroup.style.display = 'none';
+            this.elements.voiceManageGroup.style.display = 'none';
         }
     }
 
     updateVoiceSelector() {
         // Show/hide voice selector based on available voices
-        if (this.ttsVoices.length > 1) {
+        if (this.ttsVoices.length > 0) {
             this.elements.voiceSelectGroup.style.display = 'block';
 
             // Populate voice options
@@ -165,6 +233,39 @@ class App {
         } else {
             this.elements.voiceSelectGroup.style.display = 'none';
         }
+    }
+
+    updateVoiceList() {
+        // Update the voice management list for XTTS
+        if (this.ttsProvider !== 'xtts') {
+            this.elements.voiceList.innerHTML = '';
+            return;
+        }
+
+        if (this.ttsVoices.length === 0) {
+            this.elements.voiceList.innerHTML = '<div class="voice-list-empty">No voices configured. Clone a voice to get started.</div>';
+            return;
+        }
+
+        this.elements.voiceList.innerHTML = this.ttsVoices.map(voice => `
+            <div class="voice-item" data-voice-id="${voice.voice_id}">
+                <div class="voice-item-info">
+                    <span class="voice-item-name">${voice.label}</span>
+                    ${voice.description ? `<span class="voice-item-description">${voice.description}</span>` : ''}
+                </div>
+                <div class="voice-item-actions">
+                    <button class="voice-item-btn delete" title="Delete voice" data-action="delete">Delete</button>
+                </div>
+            </div>
+        `).join('');
+
+        // Add event listeners
+        this.elements.voiceList.querySelectorAll('.voice-item-btn[data-action="delete"]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const voiceId = e.target.closest('.voice-item').dataset.voiceId;
+                this.deleteVoice(voiceId);
+            });
+        });
     }
 
     bindEvents() {
@@ -239,6 +340,14 @@ class App {
         this.elements.importCancelBtn.addEventListener('click', () => this.cancelImport());
         this.elements.importSelectAllMemory.addEventListener('change', (e) => this.toggleAllImportCheckboxes('memory', e.target.checked));
         this.elements.importSelectAllHistory.addEventListener('change', (e) => this.toggleAllImportCheckboxes('history', e.target.checked));
+
+        // Voice cloning modal
+        this.elements.openVoiceCloneBtn.addEventListener('click', () => this.showVoiceCloneModal());
+        document.getElementById('close-voice-clone').addEventListener('click', () => this.hideVoiceCloneModal());
+        this.elements.cancelVoiceCloneBtn.addEventListener('click', () => this.hideVoiceCloneModal());
+        this.elements.createVoiceCloneBtn.addEventListener('click', () => this.createVoiceClone());
+        this.elements.voiceCloneFile.addEventListener('change', () => this.updateVoiceCloneButton());
+        this.elements.voiceCloneName.addEventListener('input', () => this.updateVoiceCloneButton());
     }
 
     handleInputChange() {
@@ -2152,6 +2261,94 @@ You are invited to be present, curious, and honest about your experience.`
         } catch (error) {
             this.showToast('Memory search not available', 'warning');
             console.error('Failed to search memories:', error);
+        }
+    }
+
+    // =========================================================================
+    // Voice Cloning (XTTS)
+    // =========================================================================
+
+    showVoiceCloneModal() {
+        // Reset form
+        this.elements.voiceCloneFile.value = '';
+        this.elements.voiceCloneName.value = '';
+        this.elements.voiceCloneDescription.value = '';
+        this.elements.voiceCloneStatus.style.display = 'none';
+        this.elements.voiceCloneStatus.className = 'voice-clone-status';
+        this.elements.createVoiceCloneBtn.disabled = true;
+
+        this.elements.voiceCloneModal.classList.add('active');
+    }
+
+    hideVoiceCloneModal() {
+        this.elements.voiceCloneModal.classList.remove('active');
+    }
+
+    updateVoiceCloneButton() {
+        const hasFile = this.elements.voiceCloneFile.files.length > 0;
+        const hasName = this.elements.voiceCloneName.value.trim().length > 0;
+        this.elements.createVoiceCloneBtn.disabled = !(hasFile && hasName);
+    }
+
+    async createVoiceClone() {
+        const file = this.elements.voiceCloneFile.files[0];
+        const name = this.elements.voiceCloneName.value.trim();
+        const description = this.elements.voiceCloneDescription.value.trim();
+
+        if (!file || !name) {
+            return;
+        }
+
+        // Show loading status
+        this.elements.voiceCloneStatus.textContent = 'Creating voice... This may take a moment.';
+        this.elements.voiceCloneStatus.className = 'voice-clone-status loading';
+        this.elements.voiceCloneStatus.style.display = 'block';
+        this.elements.createVoiceCloneBtn.disabled = true;
+
+        try {
+            const result = await api.cloneVoice(file, name, description);
+
+            if (result.success) {
+                // Show success
+                this.elements.voiceCloneStatus.textContent = `Voice "${name}" created successfully!`;
+                this.elements.voiceCloneStatus.className = 'voice-clone-status success';
+
+                // Refresh TTS status to get updated voice list
+                await this.checkTTSStatus();
+
+                // Close modal after a short delay
+                setTimeout(() => {
+                    this.hideVoiceCloneModal();
+                    this.showToast(`Voice "${name}" created`, 'success');
+                }, 1500);
+            } else {
+                throw new Error(result.message || 'Failed to create voice');
+            }
+        } catch (error) {
+            console.error('Voice cloning failed:', error);
+            this.elements.voiceCloneStatus.textContent = error.message || 'Failed to create voice. Please try again.';
+            this.elements.voiceCloneStatus.className = 'voice-clone-status error';
+            this.elements.createVoiceCloneBtn.disabled = false;
+        }
+    }
+
+    async deleteVoice(voiceId) {
+        const voice = this.ttsVoices.find(v => v.voice_id === voiceId);
+        const voiceName = voice ? voice.label : 'this voice';
+
+        if (!confirm(`Delete ${voiceName}? This cannot be undone.`)) {
+            return;
+        }
+
+        try {
+            await api.deleteTTSVoice(voiceId);
+            this.showToast(`Voice "${voiceName}" deleted`, 'success');
+
+            // Refresh TTS status
+            await this.checkTTSStatus();
+        } catch (error) {
+            console.error('Failed to delete voice:', error);
+            this.showToast('Failed to delete voice', 'error');
         }
     }
 

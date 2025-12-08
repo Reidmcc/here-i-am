@@ -1,0 +1,33 @@
+# XTTS Server Dependencies
+# ========================
+#
+# IMPORTANT: Install PyTorch FIRST before installing TTS!
+# The TTS package requires PyTorch to be pre-installed.
+#
+# Step 1: Install PyTorch (choose one based on your system)
+# ---------------------------------------------------------
+# For CUDA (NVIDIA GPU):
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+#
+# For CPU only:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#
+# Step 2: Install this requirements file
+# ---------------------------------------------------------
+#   pip install -r requirements-xtts.txt
+#
+# Note: Requires Python 3.9-3.11. Python 3.12+ may have compatibility issues.
+# Note: On Windows, you may need Visual Studio Build Tools installed.
+
+# Coqui TTS library (install after PyTorch)
+# If this fails, try: pip install TTS --no-build-isolation
+coqui-tts
+
+# Additional dependencies
+numpy>=1.22.0,<2.0.0
+scipy>=1.10.0
+
+# Server dependencies (should already be installed from main requirements)
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9

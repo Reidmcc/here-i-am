@@ -11,16 +11,43 @@ class VoiceConfig:
         voice_id: str,
         label: str,
         description: str = "",
+        provider: str = "elevenlabs",
     ):
         self.voice_id = voice_id
         self.label = label
         self.description = description
+        self.provider = provider
 
     def to_dict(self):
         return {
             "voice_id": self.voice_id,
             "label": self.label,
             "description": self.description,
+            "provider": self.provider,
+        }
+
+
+class XTTSVoiceConfig:
+    """Configuration for an XTTS cloned voice."""
+    def __init__(
+        self,
+        voice_id: str,
+        label: str,
+        description: str = "",
+        sample_path: str = "",
+    ):
+        self.voice_id = voice_id
+        self.label = label
+        self.description = description
+        self.sample_path = sample_path
+
+    def to_dict(self):
+        return {
+            "voice_id": self.voice_id,
+            "label": self.label,
+            "description": self.description,
+            "sample_path": self.sample_path,
+            "provider": "xtts",
         }
 
 
@@ -66,6 +93,18 @@ class Settings(BaseSettings):
     # Multiple voices (JSON array of objects with voice_id, label, description)
     # Example: '[{"voice_id": "21m00Tcm4TlvDq8ikWAM", "label": "Rachel", "description": "Calm female voice"}]'
     elevenlabs_voices: str = ""
+
+    # XTTS Local TTS settings
+    # Set XTTS_ENABLED=true to use local XTTS v2 instead of ElevenLabs
+    xtts_enabled: bool = False
+    # URL of the XTTS API server (xtts-api-server or similar)
+    xtts_api_url: str = "http://localhost:8020"
+    # Default speaker wav file path or speaker name for XTTS
+    xtts_default_speaker: str = ""
+    # Language for XTTS synthesis
+    xtts_language: str = "en"
+    # Directory to store cloned voice samples
+    xtts_voices_dir: str = "./xtts_voices"
 
     # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, llm_provider, default_model)
     # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'
@@ -230,6 +269,19 @@ class Settings(BaseSettings):
             label="Default",
             description="Default voice",
         )
+
+    def get_tts_provider(self) -> str:
+        """
+        Get the current TTS provider.
+
+        Returns "xtts" if XTTS is enabled, "elevenlabs" if ElevenLabs API key is set,
+        or "none" if no TTS is configured.
+        """
+        if self.xtts_enabled:
+            return "xtts"
+        elif self.elevenlabs_api_key:
+            return "elevenlabs"
+        return "none"
 
 
 settings = Settings()
