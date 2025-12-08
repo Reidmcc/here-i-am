@@ -1570,6 +1570,145 @@ h4.md-header {
     line-height: 1.4;
 }
 
+/* Memory Maintenance / Orphan Cleanup */
+.memory-maintenance {
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-color);
+}
+
+.maintenance-section {
+    background-color: var(--bg-tertiary);
+    border-radius: 8px;
+    padding: 0;
+}
+
+.maintenance-section summary {
+    padding: 12px 16px;
+    cursor: pointer;
+    font-weight: 500;
+    color: var(--text-secondary);
+    list-style: none;
+}
+
+.maintenance-section summary::-webkit-details-marker {
+    display: none;
+}
+
+.maintenance-section summary::before {
+    content: '▶';
+    display: inline-block;
+    margin-right: 8px;
+    font-size: 0.7em;
+    transition: transform 0.2s;
+}
+
+.maintenance-section[open] summary::before {
+    transform: rotate(90deg);
+}
+
+.maintenance-section summary:hover {
+    color: var(--text-primary);
+}
+
+.maintenance-content {
+    padding: 0 16px 16px 16px;
+}
+
+.maintenance-description {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+    line-height: 1.5;
+}
+
+.orphan-status {
+    padding: 12px;
+    background-color: var(--bg-primary);
+    border-radius: 6px;
+    margin-bottom: 12px;
+}
+
+.orphan-count {
+    font-size: 0.9rem;
+}
+
+.orphan-ok {
+    color: #4ade80;
+}
+
+.orphan-warning {
+    color: #fbbf24;
+}
+
+.orphan-error {
+    color: #f87171;
+}
+
+.maintenance-actions {
+    display: flex;
+    gap: 12px;
+}
+
+.orphan-details {
+    margin-top: 16px;
+    padding: 12px;
+    background-color: var(--bg-primary);
+    border-radius: 6px;
+    max-height: 250px;
+    overflow-y: auto;
+}
+
+.orphan-details-header {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.orphan-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.orphan-item {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px;
+    background-color: var(--bg-tertiary);
+    border-radius: 4px;
+    font-size: 0.8rem;
+}
+
+.orphan-id {
+    font-family: monospace;
+    color: var(--accent);
+    flex-shrink: 0;
+}
+
+.orphan-meta {
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.orphan-preview {
+    color: var(--text-secondary);
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.orphan-more {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-style: italic;
+    padding-top: 4px;
+}
+
 /* Loading Overlay */
 .loading-overlay {
     display: none;

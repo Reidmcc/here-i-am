@@ -344,6 +344,8 @@ class App {
         // Memories modal
         document.getElementById('close-memories').addEventListener('click', () => this.hideModal('memoriesModal'));
         document.getElementById('memory-search-btn').addEventListener('click', () => this.searchMemories());
+        document.getElementById('check-orphans-btn').addEventListener('click', () => this.checkForOrphans());
+        document.getElementById('cleanup-orphans-btn').addEventListener('click', () => this.cleanupOrphans());
 
         // Archive modal
         document.getElementById('close-archive').addEventListener('click', () => this.hideModal('archiveModal'));
@@ -2292,6 +2294,109 @@ You are invited to be present, curious, and honest about your experience.`
         } catch (error) {
             this.showToast('Memory search not available', 'warning');
             console.error('Failed to search memories:', error);
+        }
+    }
+
+    // =========================================================================
+    // Orphan Maintenance
+    // =========================================================================
+
+    async checkForOrphans() {
+        const statusEl = document.getElementById('orphan-status');
+        const detailsEl = document.getElementById('orphan-details');
+        const cleanupBtn = document.getElementById('cleanup-orphans-btn');
+        const checkBtn = document.getElementById('check-orphans-btn');
+
+        try {
+            checkBtn.disabled = true;
+            checkBtn.textContent = 'Scanning...';
+            statusEl.innerHTML = '<span class="orphan-count">Scanning for orphaned records...</span>';
+            detailsEl.style.display = 'none';
+
+            const result = await api.listOrphanedRecords(this.selectedEntityId);
+
+            if (result.orphans_found === 0) {
+                statusEl.innerHTML = '<span class="orphan-count orphan-ok">No orphaned records found</span>';
+                cleanupBtn.disabled = true;
+                this._orphanData = null;
+            } else {
+                statusEl.innerHTML = `<span class="orphan-count orphan-warning">${result.orphans_found} orphaned record(s) found</span>`;
+                cleanupBtn.disabled = false;
+                this._orphanData = result;
+
+                // Show details
+                detailsEl.style.display = 'block';
+                detailsEl.innerHTML = `
+                    <div class="orphan-details-header">Orphaned Records:</div>
+                    <div class="orphan-list">
+                        ${result.orphans.slice(0, 10).map(orphan => `
+                            <div class="orphan-item">
+                                <span class="orphan-id">${orphan.id.substring(0, 8)}...</span>
+                                ${orphan.metadata ? `
+                                    <span class="orphan-meta">
+                                        ${orphan.metadata.role || 'unknown'} ·
+                                        ${orphan.metadata.created_at ? new Date(orphan.metadata.created_at).toLocaleDateString() : 'unknown date'}
+                                    </span>
+                                    <span class="orphan-preview">${this.escapeHtml(orphan.metadata.content_preview || '')}</span>
+                                ` : '<span class="orphan-meta">No metadata available</span>'}
+                            </div>
+                        `).join('')}
+                        ${result.orphans_found > 10 ? `<div class="orphan-more">... and ${result.orphans_found - 10} more</div>` : ''}
+                    </div>
+                `;
+            }
+        } catch (error) {
+            statusEl.innerHTML = '<span class="orphan-count orphan-error">Error scanning for orphans</span>';
+            this.showToast('Failed to check for orphaned records', 'error');
+            console.error('Failed to check for orphans:', error);
+        } finally {
+            checkBtn.disabled = false;
+            checkBtn.textContent = 'Check for Orphans';
+        }
+    }
+
+    async cleanupOrphans() {
+        if (!this._orphanData || this._orphanData.orphans_found === 0) {
+            this.showToast('No orphans to clean up', 'info');
+            return;
+        }
+
+        const count = this._orphanData.orphans_found;
+        if (!confirm(`Are you sure you want to delete ${count} orphaned record(s) from Pinecone?\n\nThis action cannot be undone.`)) {
+            return;
+        }
+
+        const statusEl = document.getElementById('orphan-status');
+        const cleanupBtn = document.getElementById('cleanup-orphans-btn');
+        const checkBtn = document.getElementById('check-orphans-btn');
+
+        try {
+            cleanupBtn.disabled = true;
+            checkBtn.disabled = true;
+            cleanupBtn.textContent = 'Cleaning up...';
+            statusEl.innerHTML = '<span class="orphan-count">Deleting orphaned records...</span>';
+
+            const result = await api.cleanupOrphanedRecords(this.selectedEntityId, false);
+
+            if (result.errors && result.errors.length > 0) {
+                statusEl.innerHTML = `<span class="orphan-count orphan-warning">Cleaned ${result.orphans_deleted} records with errors</span>`;
+                this.showToast(`Cleanup completed with errors: ${result.errors.join(', ')}`, 'warning');
+            } else {
+                statusEl.innerHTML = `<span class="orphan-count orphan-ok">Successfully deleted ${result.orphans_deleted} orphaned record(s)</span>`;
+                this.showToast(`Cleaned up ${result.orphans_deleted} orphaned records`, 'success');
+            }
+
+            // Hide details and reset
+            document.getElementById('orphan-details').style.display = 'none';
+            this._orphanData = null;
+            cleanupBtn.disabled = true;
+        } catch (error) {
+            statusEl.innerHTML = '<span class="orphan-count orphan-error">Error during cleanup</span>';
+            this.showToast('Failed to clean up orphaned records', 'error');
+            console.error('Failed to cleanup orphans:', error);
+        } finally {
+            checkBtn.disabled = false;
+            cleanupBtn.textContent = 'Clean Up Orphans';
         }
     }
 

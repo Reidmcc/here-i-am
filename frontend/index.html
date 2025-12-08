@@ -301,6 +301,29 @@
                 <div class="memory-list" id="memory-list">
                     <!-- Memories will load here -->
                 </div>
+
+                <!-- Orphan Maintenance Section -->
+                <div class="memory-maintenance">
+                    <details class="maintenance-section">
+                        <summary>Database Maintenance</summary>
+                        <div class="maintenance-content">
+                            <p class="maintenance-description">
+                                Check for and clean up orphaned vector records that exist in Pinecone but not in the SQL database.
+                                These can occur when deletions fail to sync properly.
+                            </p>
+                            <div class="orphan-status" id="orphan-status">
+                                <span class="orphan-count">Click "Check for Orphans" to scan</span>
+                            </div>
+                            <div class="maintenance-actions">
+                                <button id="check-orphans-btn" class="secondary-btn">Check for Orphans</button>
+                                <button id="cleanup-orphans-btn" class="danger-btn" disabled>Clean Up Orphans</button>
+                            </div>
+                            <div id="orphan-details" class="orphan-details" style="display: none;">
+                                <!-- Orphan details will be shown here -->
+                            </div>
+                        </div>
+                    </details>
+                </div>
             </div>
         </div>
     </div>
