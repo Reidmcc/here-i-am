@@ -331,6 +331,9 @@ class MemoryService:
         Returns:
             Dict with memory content or None if not found
         """
+        # Normalize ID to string
+        message_id = str(message_id)
+
         # Check cache first
         if use_cache:
             cached_content = self.cache.get_memory_content(message_id)
@@ -356,6 +359,9 @@ class MemoryService:
             if use_cache:
                 self.cache.set_memory_content(message_id, content_dict)
             return content_dict
+        else:
+            # Log details for debugging orphaned Pinecone records
+            logger.warning(f"[MEMORY] Message ID '{message_id}' not found in SQL database (may be orphaned in Pinecone)")
         return None
 
     async def update_retrieval_count(

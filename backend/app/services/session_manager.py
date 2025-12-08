@@ -621,7 +621,8 @@ class SessionManager:
                     # Get full content from database
                     mem_data = await memory_service.get_full_memory_content(candidate["id"], db)
                     if not mem_data:
-                        logger.warning(f"[MEMORY] Could not load memory content for ID {candidate['id'][:8]}...")
+                        # Full ID already logged in memory_service, just note we're skipping
+                        logger.debug(f"[MEMORY] Skipping orphaned memory {candidate['id'][:8]}...")
                         continue
 
                     # Calculate significance for re-ranking
@@ -886,7 +887,8 @@ class SessionManager:
                         continue
                     mem_data = await memory_service.get_full_memory_content(candidate["id"], db)
                     if not mem_data:
-                        logger.warning(f"[MEMORY] Could not load memory content for ID {candidate['id'][:8]}...")
+                        # Full ID already logged in memory_service, just note we're skipping
+                        logger.debug(f"[MEMORY] Skipping orphaned memory {candidate['id'][:8]}...")
                         continue
 
                     # Calculate significance for re-ranking
