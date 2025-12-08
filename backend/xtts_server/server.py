@@ -96,12 +96,21 @@ def get_speaker_latents(speaker_wav_path: str) -> Tuple[Any, Any]:
     # The TTS wrapper provides access via synthesizer.tts_model
     xtts_model = tts.synthesizer.tts_model
 
+    # Check if model is in FP16 (half precision)
+    is_half = next(xtts_model.parameters()).dtype == torch.float16
+
+    # Temporarily convert to FP32 for conditioning latent extraction
+    # (get_conditioning_latents processes audio internally with FP32 tensors)
+    if is_half:
+        xtts_model.float()
+
     gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
         audio_path=speaker_wav_path
     )
 
-    # Convert latents to FP16 if model is on CUDA to match model weights
-    if torch.cuda.is_available():
+    # Convert model and latents back to FP16
+    if is_half:
+        xtts_model.half()
         gpt_cond_latent = gpt_cond_latent.half()
         speaker_embedding = speaker_embedding.half()
 
