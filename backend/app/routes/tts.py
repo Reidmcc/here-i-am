@@ -143,6 +143,10 @@ async def clone_voice(
     audio_file: UploadFile = File(..., description="Audio sample for voice cloning (WAV preferred)"),
     label: str = Form(..., description="Display name for the voice"),
     description: str = Form("", description="Optional description"),
+    temperature: float = Form(0.75, description="Sampling temperature (0.0-1.0)"),
+    length_penalty: float = Form(1.0, description="Length penalty for generation"),
+    repetition_penalty: float = Form(5.0, description="Repetition penalty"),
+    speed: float = Form(1.0, description="Speech speed multiplier"),
 ):
     """
     Clone a voice from an audio sample (XTTS only).
@@ -192,6 +196,16 @@ async def clone_voice(
             detail="Audio file too small. Please provide a longer sample."
         )
 
+    # Validate parameter ranges
+    if not 0.0 <= temperature <= 1.0:
+        raise HTTPException(status_code=400, detail="Temperature must be between 0.0 and 1.0")
+    if not 0.1 <= speed <= 3.0:
+        raise HTTPException(status_code=400, detail="Speed must be between 0.1 and 3.0")
+    if not 0.1 <= length_penalty <= 10.0:
+        raise HTTPException(status_code=400, detail="Length penalty must be between 0.1 and 10.0")
+    if not 0.1 <= repetition_penalty <= 20.0:
+        raise HTTPException(status_code=400, detail="Repetition penalty must be between 0.1 and 20.0")
+
     try:
         from app.services.xtts_service import xtts_service
 
@@ -200,6 +214,10 @@ async def clone_voice(
             label=label,
             description=description,
             filename=audio_file.filename or "sample.wav",
+            temperature=temperature,
+            length_penalty=length_penalty,
+            repetition_penalty=repetition_penalty,
+            speed=speed,
         )
 
         return {
@@ -232,6 +250,65 @@ async def get_voice(voice_id: str):
                 return v
 
     raise HTTPException(status_code=404, detail="Voice not found")
+
+
+class VoiceUpdateRequest(BaseModel):
+    """Request body for updating voice settings."""
+    model_config = {"protected_namespaces": ()}
+
+    label: Optional[str] = None
+    description: Optional[str] = None
+    temperature: Optional[float] = None
+    length_penalty: Optional[float] = None
+    repetition_penalty: Optional[float] = None
+    speed: Optional[float] = None
+
+
+@router.put("/voices/{voice_id}")
+async def update_voice(voice_id: str, data: VoiceUpdateRequest):
+    """
+    Update a voice's settings (XTTS only).
+
+    Update the label, description, or synthesis parameters for a cloned voice.
+    """
+    provider = tts_service.get_provider()
+
+    if provider != "xtts":
+        raise HTTPException(
+            status_code=400,
+            detail="Voice updates are only available with XTTS provider"
+        )
+
+    # Validate parameter ranges if provided
+    if data.temperature is not None and not 0.0 <= data.temperature <= 1.0:
+        raise HTTPException(status_code=400, detail="Temperature must be between 0.0 and 1.0")
+    if data.speed is not None and not 0.1 <= data.speed <= 3.0:
+        raise HTTPException(status_code=400, detail="Speed must be between 0.1 and 3.0")
+    if data.length_penalty is not None and not 0.1 <= data.length_penalty <= 10.0:
+        raise HTTPException(status_code=400, detail="Length penalty must be between 0.1 and 10.0")
+    if data.repetition_penalty is not None and not 0.1 <= data.repetition_penalty <= 20.0:
+        raise HTTPException(status_code=400, detail="Repetition penalty must be between 0.1 and 20.0")
+
+    from app.services.xtts_service import xtts_service
+
+    voice = await xtts_service.update_voice(
+        voice_id=voice_id,
+        label=data.label,
+        description=data.description,
+        temperature=data.temperature,
+        length_penalty=data.length_penalty,
+        repetition_penalty=data.repetition_penalty,
+        speed=data.speed,
+    )
+
+    if not voice:
+        raise HTTPException(status_code=404, detail="Voice not found")
+
+    return {
+        "success": True,
+        "voice": voice.to_dict(),
+        "message": "Voice updated successfully",
+    }
 
 
 @router.delete("/voices/{voice_id}")

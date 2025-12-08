@@ -475,12 +475,18 @@ class ApiClient {
         return this.request('/tts/voices');
     }
 
-    async cloneVoice(audioFile, label, description = '') {
+    async cloneVoice(audioFile, label, description = '', options = {}) {
         const url = `${API_BASE}/tts/voices/clone`;
         const formData = new FormData();
         formData.append('audio_file', audioFile);
         formData.append('label', label);
         formData.append('description', description);
+
+        // Add voice synthesis parameters with defaults
+        formData.append('temperature', options.temperature ?? 0.75);
+        formData.append('length_penalty', options.length_penalty ?? 1.0);
+        formData.append('repetition_penalty', options.repetition_penalty ?? 5.0);
+        formData.append('speed', options.speed ?? 1.0);
 
         const response = await fetch(url, {
             method: 'POST',
@@ -493,6 +499,13 @@ class ApiClient {
         }
 
         return response.json();
+    }
+
+    async updateVoice(voiceId, updates) {
+        return this.request(`/tts/voices/${voiceId}`, {
+            method: 'PUT',
+            body: updates,
+        });
     }
 
     async deleteTTSVoice(voiceId) {

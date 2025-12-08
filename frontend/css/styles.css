@@ -1941,6 +1941,13 @@ h4.md-header {
     color: var(--text-muted);
 }
 
+.voice-item-params {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    font-family: monospace;
+    opacity: 0.8;
+}
+
 .voice-item-actions {
     display: flex;
     gap: 4px;
@@ -2018,6 +2025,68 @@ h4.md-header {
 #voice-clone-modal .form-group input[type="text"]:focus {
     outline: none;
     border-color: var(--accent);
+}
+
+/* Voice parameters section */
+.voice-params-section {
+    margin-top: 16px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 0;
+}
+
+.voice-params-section summary {
+    padding: 12px 16px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    background-color: var(--bg-secondary);
+    border-radius: 6px;
+}
+
+.voice-params-section[open] summary {
+    border-bottom: 1px solid var(--border-color);
+    border-radius: 6px 6px 0 0;
+}
+
+.voice-params-section summary:hover {
+    color: var(--text-primary);
+}
+
+.voice-params-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding: 16px;
+}
+
+.voice-params-grid .form-group {
+    margin-bottom: 0;
+}
+
+.voice-params-grid input[type="number"] {
+    width: 100%;
+    padding: 8px 10px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+
+.voice-params-grid input[type="number"]:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* Voice item settings button */
+.voice-item-btn.settings {
+    color: var(--text-secondary);
+}
+
+.voice-item-btn.settings:hover {
+    color: var(--accent);
+    background-color: var(--accent-subtle);
 }
 
 /* Empty voice list state */

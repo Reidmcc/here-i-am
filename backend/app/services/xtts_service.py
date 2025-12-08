@@ -58,6 +58,10 @@ class XTTSService:
                         label=v.get("label", ""),
                         description=v.get("description", ""),
                         sample_path=v.get("sample_path", ""),
+                        temperature=v.get("temperature", 0.75),
+                        length_penalty=v.get("length_penalty", 1.0),
+                        repetition_penalty=v.get("repetition_penalty", 5.0),
+                        speed=v.get("speed", 1.0),
                     )
                     for v in voices_data
                 ]
@@ -88,6 +92,10 @@ class XTTSService:
                         label=v.get("label", ""),
                         description=v.get("description", ""),
                         sample_path=v.get("sample_path", ""),
+                        temperature=v.get("temperature", 0.75),
+                        length_penalty=v.get("length_penalty", 1.0),
+                        repetition_penalty=v.get("repetition_penalty", 5.0),
+                        speed=v.get("speed", 1.0),
                     )
                     for v in voices_data
                 ]
@@ -147,6 +155,10 @@ class XTTSService:
         label: str,
         description: str = "",
         filename: str = "sample.wav",
+        temperature: float = 0.75,
+        length_penalty: float = 1.0,
+        repetition_penalty: float = 5.0,
+        speed: float = 1.0,
     ) -> XTTSVoiceConfig:
         """
         Clone a voice from an audio sample.
@@ -156,6 +168,10 @@ class XTTSService:
             label: Display name for the voice
             description: Optional description
             filename: Original filename for extension detection
+            temperature: Sampling temperature (0.0-1.0, default 0.75)
+            length_penalty: Length penalty for generation (default 1.0)
+            repetition_penalty: Repetition penalty (default 5.0)
+            speed: Speech speed multiplier (default 1.0)
 
         Returns:
             XTTSVoiceConfig for the new cloned voice
@@ -186,6 +202,10 @@ class XTTSService:
             label=label,
             description=description,
             sample_path=str(sample_path),
+            temperature=temperature,
+            length_penalty=length_penalty,
+            repetition_penalty=repetition_penalty,
+            speed=speed,
         )
 
         # Add to voices list
@@ -233,6 +253,57 @@ class XTTSService:
         logger.info(f"Deleted XTTS voice: {voice_id}")
         return True
 
+    async def update_voice(
+        self,
+        voice_id: str,
+        label: Optional[str] = None,
+        description: Optional[str] = None,
+        temperature: Optional[float] = None,
+        length_penalty: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
+        speed: Optional[float] = None,
+    ) -> Optional[XTTSVoiceConfig]:
+        """
+        Update a voice's settings.
+
+        Args:
+            voice_id: The ID of the voice to update
+            label: New display name (optional)
+            description: New description (optional)
+            temperature: New temperature setting (optional)
+            length_penalty: New length penalty setting (optional)
+            repetition_penalty: New repetition penalty setting (optional)
+            speed: New speed setting (optional)
+
+        Returns:
+            Updated XTTSVoiceConfig or None if not found
+        """
+        voices = await self._load_voices()
+        updated_voice = None
+
+        for voice in voices:
+            if voice.voice_id == voice_id:
+                if label is not None:
+                    voice.label = label
+                if description is not None:
+                    voice.description = description
+                if temperature is not None:
+                    voice.temperature = temperature
+                if length_penalty is not None:
+                    voice.length_penalty = length_penalty
+                if repetition_penalty is not None:
+                    voice.repetition_penalty = repetition_penalty
+                if speed is not None:
+                    voice.speed = speed
+                updated_voice = voice
+                break
+
+        if updated_voice:
+            await self._save_voices(voices)
+            logger.info(f"Updated XTTS voice: {voice_id}")
+
+        return updated_voice
+
     async def text_to_speech(
         self,
         text: str,
@@ -255,8 +326,9 @@ class XTTSService:
 
         lang = language or self.language
 
-        # Get the speaker file path
+        # Get the speaker file path and voice settings
         speaker_wav = None
+        voice = None
         if voice_id:
             voice = await self.get_voice(voice_id)
             if voice and voice.sample_path:
@@ -266,6 +338,12 @@ class XTTSService:
 
         if not speaker_wav:
             raise ValueError("No voice sample configured. Please clone a voice first.")
+
+        # Get voice parameters (use defaults if no voice config found)
+        temperature = voice.temperature if voice else 0.75
+        length_penalty = voice.length_penalty if voice else 1.0
+        repetition_penalty = voice.repetition_penalty if voice else 5.0
+        speed = voice.speed if voice else 1.0
 
         # Call the XTTS API
         # The xtts-api-server typically exposes /tts_to_audio endpoint
@@ -287,6 +365,10 @@ class XTTSService:
             data = {
                 "text": text,
                 "language": lang,
+                "temperature": str(temperature),
+                "length_penalty": str(length_penalty),
+                "repetition_penalty": str(repetition_penalty),
+                "speed": str(speed),
             }
 
             try:
@@ -307,6 +389,10 @@ class XTTSService:
                             "text": text,
                             "speaker_wav": speaker_wav,
                             "language": lang,
+                            "temperature": temperature,
+                            "length_penalty": length_penalty,
+                            "repetition_penalty": repetition_penalty,
+                            "speed": speed,
                         }
                     )
                     if alt_response.status_code == 200:
@@ -340,8 +426,9 @@ class XTTSService:
 
         lang = language or self.language
 
-        # Get the speaker file path
+        # Get the speaker file path and voice settings
         speaker_wav = None
+        voice = None
         if voice_id:
             voice = await self.get_voice(voice_id)
             if voice and voice.sample_path:
@@ -351,6 +438,12 @@ class XTTSService:
 
         if not speaker_wav:
             raise ValueError("No voice sample configured. Please clone a voice first.")
+
+        # Get voice parameters (use defaults if no voice config found)
+        temperature = voice.temperature if voice else 0.75
+        length_penalty = voice.length_penalty if voice else 1.0
+        repetition_penalty = voice.repetition_penalty if voice else 5.0
+        speed = voice.speed if voice else 1.0
 
         # Call the XTTS API with streaming
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -369,6 +462,10 @@ class XTTSService:
             data = {
                 "text": text,
                 "language": lang,
+                "temperature": str(temperature),
+                "length_penalty": str(length_penalty),
+                "repetition_penalty": str(repetition_penalty),
+                "speed": str(speed),
             }
 
             try:
