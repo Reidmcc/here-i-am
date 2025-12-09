@@ -617,8 +617,9 @@ class SessionManager:
 
         # Load already-retrieved memory IDs for deduplication
         # Note: get_retrieved_ids_for_conversation returns string IDs to match Pinecone
+        # For multi-entity conversations, filter by the responding entity to maintain isolation
         retrieved_ids = await memory_service.get_retrieved_ids_for_conversation(
-            conversation_id, db
+            conversation_id, db, entity_id=entity_id if is_multi_entity else None
         )
         session.retrieved_ids = retrieved_ids
 
@@ -1103,8 +1104,11 @@ class SessionManager:
         )
 
         # Yield memory info event before starting stream
+        # Include entity_id for multi-entity conversations so frontend can show per-entity memories
         yield {
             "type": "memories",
+            "entity_id": session.entity_id if session.is_multi_entity else None,
+            "entity_label": session.responding_entity_label if session.is_multi_entity else None,
             "new_memories": [
                 {
                     "id": m.id,

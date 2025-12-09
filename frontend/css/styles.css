@@ -1588,6 +1588,24 @@ h4.md-header {
     line-height: 1.4;
 }
 
+/* Multi-entity memory sections */
+.memory-entity-section {
+    margin-bottom: 16px;
+}
+
+.memory-entity-section:last-child {
+    margin-bottom: 0;
+}
+
+.memory-entity-header {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent);
+    padding: 8px 0;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
 /* Memory Maintenance / Orphan Cleanup */
 .memory-maintenance {
     margin-top: 24px;
