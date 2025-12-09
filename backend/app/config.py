@@ -190,7 +190,7 @@ class Settings(BaseSettings):
     # Leave some room between your setting and the actual max; token counting client-side is approximate
     # The maximum is for all inbound tokens, memory and conversation history token counts are combined
     context_token_limit: int = 175000  # Conversation history cap
-    memory_token_limit: int = 20000    # Memory block cap (kept small to reduce cache miss cost)
+    memory_token_limit: int = 10000    # Memory block cap (kept small to reduce cache miss cost)
 
     class Config:
         env_file = ".env"
