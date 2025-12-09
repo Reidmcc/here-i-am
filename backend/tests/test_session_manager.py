@@ -563,6 +563,7 @@ class TestSessionManager:
                     "conversation_id": "old-conv",
                     "created_at": "2024-01-01",
                     "role": "assistant",
+                    "last_retrieved_at": None,
                 }
             ])
             mock_memory.get_full_memory_content = AsyncMock(return_value={
@@ -572,6 +573,7 @@ class TestSessionManager:
                 "content": "Previous memory content",
                 "created_at": "2024-01-01",
                 "times_retrieved": 2,
+                "last_retrieved_at": None,
             })
             mock_memory.update_retrieval_count = AsyncMock()
 
@@ -591,6 +593,10 @@ class TestSessionManager:
             mock_settings.default_max_tokens = 4096
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
+            mock_settings.significance_half_life_days = 60
+            mock_settings.recency_boost_strength = 1.0
+            mock_settings.significance_floor = 0.01
+            mock_settings.retrieval_candidate_multiplier = 2
 
             session = manager.create_session(sample_conversation.id)
             result = await manager.process_message(session, "Hello", db_session)
@@ -617,7 +623,7 @@ class TestSessionManager:
             mock_memory.is_configured.return_value = True
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.search_memories = AsyncMock(return_value=[
-                {"id": "mem-1", "score": 0.9, "conversation_id": "old-conv"}
+                {"id": "mem-1", "score": 0.9, "conversation_id": "old-conv", "created_at": "2024-01-01", "last_retrieved_at": None}
             ])
             mock_memory.get_full_memory_content = AsyncMock(return_value={
                 "id": "mem-1",
@@ -626,6 +632,7 @@ class TestSessionManager:
                 "content": "Memory",
                 "created_at": "2024-01-01",
                 "times_retrieved": 1,
+                "last_retrieved_at": None,
             })
             mock_memory.update_retrieval_count = AsyncMock()
 
@@ -643,6 +650,10 @@ class TestSessionManager:
             mock_settings.default_max_tokens = 4096
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
+            mock_settings.significance_half_life_days = 60
+            mock_settings.recency_boost_strength = 1.0
+            mock_settings.significance_floor = 0.01
+            mock_settings.retrieval_candidate_multiplier = 2
 
             session = manager.create_session(sample_conversation.id)
 
@@ -864,3 +875,436 @@ class TestMultiEntityMemoryIsolation:
         # Messages should not be labeled
         assert session.conversation_context[0]["content"] == "Hello!"
         assert session.conversation_context[1]["content"] == "Hi there!"
+
+
+class TestCacheStateManagement:
+    """Tests for cache state management and two-breakpoint caching."""
+
+    def test_get_cache_aware_content_empty_session(self):
+        """Test cache-aware content for empty session."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        content = session.get_cache_aware_content()
+
+        assert content["cached_memories"] == []
+        assert content["new_memories"] == []
+        assert content["cached_context"] == []
+        assert content["new_context"] == []
+
+    def test_get_cache_aware_content_all_new(self):
+        """Test cache-aware content when nothing is cached yet."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add some memories
+        for i in range(3):
+            memory = MemoryEntry(
+                id=f"mem-{i}",
+                conversation_id="old-conv",
+                role="assistant",
+                content=f"Memory {i}",
+                created_at="2024-01-01",
+                times_retrieved=1,
+            )
+            session.add_memory(memory)
+
+        # Add conversation context
+        session.add_exchange("Hello", "Hi")
+        session.add_exchange("How are you?", "I'm well!")
+
+        # Cache state is empty (nothing cached yet)
+        assert session.last_cached_memory_ids == set()
+        assert session.last_cached_context_length == 0
+
+        content = session.get_cache_aware_content()
+
+        # All memories are new
+        assert len(content["cached_memories"]) == 0
+        assert len(content["new_memories"]) == 3
+
+        # All context is new
+        assert len(content["cached_context"]) == 0
+        assert len(content["new_context"]) == 4
+
+    def test_get_cache_aware_content_with_cached_state(self):
+        """Test cache-aware content with existing cached state."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add memories
+        for i in range(3):
+            memory = MemoryEntry(
+                id=f"mem-{i}",
+                conversation_id="old-conv",
+                role="assistant",
+                content=f"Memory {i}",
+                created_at="2024-01-01",
+                times_retrieved=1,
+            )
+            session.add_memory(memory)
+
+        # Add conversation context
+        session.add_exchange("First", "Response 1")
+        session.add_exchange("Second", "Response 2")
+
+        # Set cache state: first 2 memories and first 2 messages are cached
+        session.last_cached_memory_ids = {"mem-0", "mem-1"}
+        session.last_cached_context_length = 2
+
+        content = session.get_cache_aware_content()
+
+        # 2 cached memories, 1 new memory
+        assert len(content["cached_memories"]) == 2
+        assert len(content["new_memories"]) == 1
+        assert content["new_memories"][0]["id"] == "mem-2"
+
+        # 2 cached context messages, 2 new context messages
+        assert len(content["cached_context"]) == 2
+        assert len(content["new_context"]) == 2
+        assert content["cached_context"][0]["content"] == "First"
+        assert content["new_context"][0]["content"] == "Second"
+
+    def test_update_cache_state(self):
+        """Test updating cache state."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Initial state
+        assert session.last_cached_memory_ids == set()
+        assert session.last_cached_context_length == 0
+
+        # Update cache state
+        session.update_cache_state(
+            cached_memory_ids={"mem-0", "mem-1"},
+            cached_context_length=4
+        )
+
+        assert session.last_cached_memory_ids == {"mem-0", "mem-1"}
+        assert session.last_cached_context_length == 4
+
+    def test_should_consolidate_cache_memory_threshold(self):
+        """Test consolidation triggers at 4096 token memory threshold."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add memories that will be "new" (not in last_cached_memory_ids)
+        for i in range(5):
+            memory = MemoryEntry(
+                id=f"mem-{i}",
+                conversation_id="old-conv",
+                role="assistant",
+                content=f"Memory content {i} " * 500,  # Large content
+                created_at="2024-01-01",
+                times_retrieved=1,
+            )
+            session.add_memory(memory)
+
+        # Add some conversation context so function doesn't return early
+        session.add_exchange("Hello", "Hi")
+        session.last_cached_context_length = 2  # All context cached
+
+        # Token counter that returns > 4096 for the combined memory text
+        def count_tokens(text):
+            # Return high count that exceeds 4096 threshold
+            return 5000  # Above 4096 threshold
+
+        # Cached state is empty for memories, so all memories are "new"
+        result = session.should_consolidate_cache(count_tokens)
+
+        # Should consolidate because new memories > 4096 tokens
+        assert result is True
+
+    def test_should_consolidate_cache_memory_below_threshold(self):
+        """Test consolidation doesn't trigger below memory threshold."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add a single small memory
+        memory = MemoryEntry(
+            id="mem-0",
+            conversation_id="old-conv",
+            role="assistant",
+            content="Short memory",
+            created_at="2024-01-01",
+            times_retrieved=1,
+        )
+        session.add_memory(memory)
+
+        # Add some context so the function doesn't exit early
+        session.add_exchange("Hello", "Hi")
+        session.last_cached_context_length = 2  # All context is cached
+
+        # Token counter that returns low count
+        def count_tokens(text):
+            return 100  # Well below 4096 threshold
+
+        result = session.should_consolidate_cache(count_tokens)
+
+        # Should not consolidate because new memories < 4096 tokens
+        assert result is False
+
+    def test_should_consolidate_cache_context_threshold(self):
+        """Test consolidation triggers at 2048 token context threshold."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add conversation context - some cached, some new
+        for i in range(10):
+            session.add_exchange(f"Question {i} " * 50, f"Answer {i} " * 50)
+
+        # First 4 messages are cached
+        session.last_cached_context_length = 4
+
+        # Token counter
+        call_count = [0]
+        def count_tokens(text):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # Cached context check - return high value (so we don't hit "too small" branch)
+                return 2000
+            else:
+                # New context check - return value above 2048 threshold
+                return 2500
+
+        result = session.should_consolidate_cache(count_tokens)
+
+        # Should consolidate because new context >= 2048 tokens
+        assert result is True
+
+    def test_should_consolidate_cache_context_below_threshold(self):
+        """Test consolidation doesn't trigger below context threshold."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add a small amount of context
+        session.add_exchange("Hello", "Hi")
+        session.add_exchange("Question", "Answer")
+
+        # First 2 messages are cached
+        session.last_cached_context_length = 2
+
+        # Token counter - cached is large enough, new is below threshold
+        call_count = [0]
+        def count_tokens(text):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return 2000  # Cached context
+            else:
+                return 500  # New context - below 2048 threshold
+
+        result = session.should_consolidate_cache(count_tokens)
+
+        # Should not consolidate because new context < 2048 tokens
+        assert result is False
+
+    def test_should_consolidate_cache_small_cached_context(self):
+        """Test consolidation triggers when cached context is too small."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add some context
+        session.add_exchange("Hi", "Hello")
+        session.add_exchange("Question", "Answer")
+
+        # First 2 messages are "cached" but small
+        session.last_cached_context_length = 2
+
+        # Token counter - cached context is below 1024 minimum
+        def count_tokens(text):
+            return 500  # Below 1024 minimum
+
+        result = session.should_consolidate_cache(count_tokens)
+
+        # Should consolidate to grow the cache
+        assert result is True
+
+    def test_cache_state_preserved_across_exchanges(self):
+        """Test that cache state remains stable as new exchanges are added."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Initial exchanges
+        session.add_exchange("First", "Response 1")
+        session.add_exchange("Second", "Response 2")
+
+        # Set cache state
+        session.update_cache_state(set(), 4)  # All 4 messages cached
+
+        # Add more exchanges
+        session.add_exchange("Third", "Response 3")
+
+        # Cache state should be unchanged
+        assert session.last_cached_context_length == 4
+
+        # Get cache-aware content
+        content = session.get_cache_aware_content()
+
+        # First 4 messages should be cached, last 2 should be new
+        assert len(content["cached_context"]) == 4
+        assert len(content["new_context"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_load_session_preserves_context_cache_length(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """Test that load_session_from_db can preserve context cache length."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.get_entity_by_index.return_value = None
+
+            # Load without preserving - should use full context length
+            session1 = await manager.load_session_from_db(
+                sample_conversation.id,
+                db_session
+            )
+            manager.close_session(sample_conversation.id)
+
+            # Should have bootstrapped to full context length
+            assert session1.last_cached_context_length == len(session1.conversation_context)
+
+            # Load with preserved value
+            session2 = await manager.load_session_from_db(
+                sample_conversation.id,
+                db_session,
+                preserve_context_cache_length=1  # Preserve at 1
+            )
+
+            # Should use preserved value
+            assert session2.last_cached_context_length == 1
+
+    @pytest.mark.asyncio
+    async def test_load_session_caps_preserved_length_at_context_size(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """Test that preserved cache length is capped at actual context size."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.get_entity_by_index.return_value = None
+
+            # Load with preserved value larger than actual context
+            session = await manager.load_session_from_db(
+                sample_conversation.id,
+                db_session,
+                preserve_context_cache_length=100  # Way more than actual context
+            )
+
+            # Should be capped at actual context length (2 messages from fixture)
+            assert session.last_cached_context_length == 2
+
+
+class TestCacheBreakpointPlacement:
+    """Tests for cache breakpoint placement in message building."""
+
+    def test_memory_ids_sorted_for_cache_stability(self):
+        """Test that memories are sorted by ID for cache stability."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add memories in random order
+        for id_suffix in ["z", "a", "m", "b"]:
+            memory = MemoryEntry(
+                id=f"mem-{id_suffix}",
+                conversation_id="old-conv",
+                role="assistant",
+                content=f"Content {id_suffix}",
+                created_at="2024-01-01",
+                times_retrieved=1,
+            )
+            session.add_memory(memory)
+
+        memories = session.get_memories_for_injection()
+
+        # Should be sorted by ID
+        ids = [m["id"] for m in memories]
+        assert ids == ["mem-a", "mem-b", "mem-m", "mem-z"]
+
+    def test_cache_aware_content_preserves_memory_order(self):
+        """Test that cache-aware content preserves sorted memory order."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add memories
+        for id_suffix in ["c", "a", "b"]:
+            memory = MemoryEntry(
+                id=f"mem-{id_suffix}",
+                conversation_id="old-conv",
+                role="assistant",
+                content=f"Content {id_suffix}",
+                created_at="2024-01-01",
+                times_retrieved=1,
+            )
+            session.add_memory(memory)
+
+        # Mark some as cached
+        session.last_cached_memory_ids = {"mem-a", "mem-c"}
+
+        content = session.get_cache_aware_content()
+
+        # Cached memories should be sorted
+        cached_ids = [m["id"] for m in content["cached_memories"]]
+        assert cached_ids == ["mem-a", "mem-c"]
+
+        # New memories should also be sorted
+        new_ids = [m["id"] for m in content["new_memories"]]
+        assert new_ids == ["mem-b"]
+
+    def test_context_split_preserves_order(self):
+        """Test that context split preserves message order."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add exchanges
+        session.add_exchange("First", "Response 1")
+        session.add_exchange("Second", "Response 2")
+        session.add_exchange("Third", "Response 3")
+
+        # Cache first 4 messages (2 exchanges)
+        session.last_cached_context_length = 4
+
+        content = session.get_cache_aware_content()
+
+        # Verify order is preserved
+        assert content["cached_context"][0]["content"] == "First"
+        assert content["cached_context"][1]["content"] == "Response 1"
+        assert content["cached_context"][2]["content"] == "Second"
+        assert content["cached_context"][3]["content"] == "Response 2"
+        assert content["new_context"][0]["content"] == "Third"
+        assert content["new_context"][1]["content"] == "Response 3"
+
+    def test_identical_cache_aware_content_across_calls(self):
+        """Test that cache-aware content is identical across multiple calls."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        # Add memories
+        for i in range(3):
+            memory = MemoryEntry(
+                id=f"mem-{i}",
+                conversation_id="old-conv",
+                role="assistant",
+                content=f"Memory {i}",
+                created_at="2024-01-01",
+                times_retrieved=1,
+            )
+            session.add_memory(memory)
+
+        # Add context
+        session.add_exchange("Hello", "Hi")
+
+        # Set cache state
+        session.last_cached_memory_ids = {"mem-0", "mem-1"}
+        session.last_cached_context_length = 2
+
+        # Get content multiple times
+        content1 = session.get_cache_aware_content()
+        content2 = session.get_cache_aware_content()
+        content3 = session.get_cache_aware_content()
+
+        # All should be identical
+        assert content1 == content2
+        assert content2 == content3
+
+        # Verify specific structure
+        assert len(content1["cached_memories"]) == 2
+        assert len(content1["new_memories"]) == 1
+        assert len(content1["cached_context"]) == 2
+        assert len(content1["new_context"]) == 0

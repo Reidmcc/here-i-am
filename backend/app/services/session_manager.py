@@ -306,10 +306,10 @@ class ConversationSession:
         Consolidation causes a cache MISS but creates a larger cache for future hits.
         We consolidate when:
         1. Cached history is too small to actually cache (< 1024 tokens)
-        2. New memories >= 2048 tokens (higher threshold since memories grow faster)
-        3. New history >= 1024 tokens
+        2. New memories >= 4096 tokens (high threshold to reduce cache invalidations)
+        3. New history >= 2048 tokens (balance between cache hits and prefix growth)
         """
-        # Check new memories (higher threshold since memories grow faster - multiple per turn)
+        # Check new memories (high threshold to reduce cache invalidations)
         new_memory_ids = self.in_context_ids - self.last_cached_memory_ids
         if new_memory_ids:
             new_memories = [
@@ -320,8 +320,8 @@ class ConversationSession:
             if new_memories:
                 new_mem_text = "\n".join(f'"{m.content}"' for m in new_memories)
                 new_mem_tokens = count_tokens_fn(new_mem_text)
-                if new_mem_tokens >= 2048:
-                    logger.info(f"[CACHE] Consolidation check: new_memories={len(new_memories)}/{new_mem_tokens} tokens >= 2048, will consolidate")
+                if new_mem_tokens >= 4096:
+                    logger.info(f"[CACHE] Consolidation check: new_memories={len(new_memories)}/{new_mem_tokens} tokens >= 4096, will consolidate")
                     return True
 
         # Check conversation context
@@ -349,9 +349,9 @@ class ConversationSession:
         new_text = "\n".join(f"{m['role']}: {m['content']}" for m in new_context)
         new_tokens = count_tokens_fn(new_text)
 
-        # Consolidate when new history reaches minimum cacheable size
-        will_consolidate = new_tokens >= 1024
-        logger.info(f"[CACHE] Consolidation check: cached_history={len(cached_context)} msgs/{cached_tokens} tokens, new_history={len(new_context)} msgs/{new_tokens} tokens, threshold=1024, will_consolidate={will_consolidate}")
+        # Consolidate when new history reaches threshold (balance cache hits vs prefix growth)
+        will_consolidate = new_tokens >= 2048
+        logger.info(f"[CACHE] Consolidation check: cached_history={len(cached_context)} msgs/{cached_tokens} tokens, new_history={len(new_context)} msgs/{new_tokens} tokens, threshold=2048, will_consolidate={will_consolidate}")
 
         return will_consolidate
 
@@ -518,6 +518,7 @@ class SessionManager:
         conversation_id: str,
         db: AsyncSession,
         responding_entity_id: Optional[str] = None,
+        preserve_context_cache_length: Optional[int] = None,
     ) -> Optional[ConversationSession]:
         """
         Load a session from the database, including conversation history
@@ -528,6 +529,10 @@ class SessionManager:
             db: Database session
             responding_entity_id: For multi-entity conversations, the entity that will respond.
                                   This determines which entity's model/provider to use.
+            preserve_context_cache_length: If provided, use this value for last_cached_context_length
+                                           instead of resetting to len(conversation_context).
+                                           This preserves cache breakpoint stability across
+                                           entity switches in multi-entity conversations.
         """
         # Get conversation
         result = await db.execute(
@@ -640,10 +645,23 @@ class SessionManager:
                 )
                 session.in_context_ids.add(str_id)
 
-        # Bootstrap cache state: all existing content should be in the "cached" portion
-        # This ensures cache_control markers are placed correctly for cache hits
+        # Bootstrap cache state for memories - always reset since memories are per-entity
         session.last_cached_memory_ids = set(session.in_context_ids)
-        session.last_cached_context_length = len(session.conversation_context)
+
+        # For context cache length: preserve if provided (for multi-entity entity switches),
+        # otherwise bootstrap with all existing content
+        if preserve_context_cache_length is not None:
+            # Preserve the cache breakpoint location for stable cache hits
+            # Cap at actual context length to avoid out-of-bounds issues
+            session.last_cached_context_length = min(
+                preserve_context_cache_length,
+                len(session.conversation_context)
+            )
+            logger.info(f"[CACHE] Preserved context cache length: {session.last_cached_context_length} (requested: {preserve_context_cache_length})")
+        else:
+            # Bootstrap: treat all existing content as cached
+            session.last_cached_context_length = len(session.conversation_context)
+            logger.info(f"[CACHE] Bootstrap context cache length: {session.last_cached_context_length}")
 
         return session
 

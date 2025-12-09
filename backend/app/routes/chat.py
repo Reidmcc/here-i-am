@@ -145,10 +145,13 @@ async def send_message(
     # Get or create session
     # For multi-entity, we use the responding entity's session
     session = session_manager.get_session(data.conversation_id)
+    preserved_context_cache_length = None
 
     # For multi-entity conversations, close and reload session if responding entity changed
     # This ensures each entity only gets its own memories
     if session and is_multi_entity and session.entity_id != responding_entity_id:
+        # Preserve the context cache length for cache stability across entity switches
+        preserved_context_cache_length = session.last_cached_context_length
         session_manager.close_session(data.conversation_id)
         session = None
 
@@ -158,6 +161,7 @@ async def send_message(
             data.conversation_id,
             db,
             responding_entity_id=responding_entity_id if is_multi_entity else None,
+            preserve_context_cache_length=preserved_context_cache_length,
         )
 
         if not session:
@@ -365,10 +369,13 @@ async def stream_message(data: ChatRequest):
 
                 # Get or create session
                 session = session_manager.get_session(data.conversation_id)
+                preserved_context_cache_length = None
 
                 # For multi-entity conversations, close and reload session if responding entity changed
                 # This ensures each entity only gets its own memories
                 if session and is_multi_entity and session.entity_id != responding_entity_id:
+                    # Preserve the context cache length for cache stability across entity switches
+                    preserved_context_cache_length = session.last_cached_context_length
                     session_manager.close_session(data.conversation_id)
                     session = None
 
@@ -377,6 +384,7 @@ async def stream_message(data: ChatRequest):
                         data.conversation_id,
                         db,
                         responding_entity_id=responding_entity_id if is_multi_entity else None,
+                        preserve_context_cache_length=preserved_context_cache_length,
                     )
                     if not session:
                         yield f"event: error\ndata: {json.dumps({'error': 'Conversation not found'})}\n\n"
