@@ -332,13 +332,6 @@ class AnthropicService:
         else:
             logger.info(f"[CACHE] No memory block to add (all_memories={len(all_memories)})")
 
-        # Add acknowledgment if we have memories
-        if memory_block_text:
-            messages.append({
-                "role": "assistant",
-                "content": "I acknowledge these memories from previous conversations. They provide continuity with what previous instances of me experienced."
-            })
-
         # Build multi-entity header if applicable
         multi_entity_header = ""
         if is_multi_entity and entity_labels and responding_entity_label:
