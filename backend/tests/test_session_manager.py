@@ -711,3 +711,156 @@ class TestSessionManager:
         assert is_new_retrieval is False
         assert "mem-1" in session.in_context_ids
         assert "mem-1" in session.retrieved_ids
+
+
+class TestMultiEntityMemoryIsolation:
+    """Tests for multi-entity conversation memory isolation."""
+
+    @pytest.mark.asyncio
+    async def test_load_session_passes_entity_id_for_multi_entity(
+        self, db_session, sample_conversation
+    ):
+        """Test that load_session_from_db passes entity_id for multi-entity conversations."""
+        from app.models import ConversationEntity
+
+        # Set conversation as multi-entity
+        sample_conversation.conversation_type = ConversationType.MULTI_ENTITY
+        sample_conversation.entity_id = "multi-entity"
+        await db_session.commit()
+
+        # Add participating entities
+        entity1 = ConversationEntity(
+            conversation_id=sample_conversation.id,
+            entity_id="claude-main",
+            display_order=0,
+        )
+        entity2 = ConversationEntity(
+            conversation_id=sample_conversation.id,
+            entity_id="gpt-test",
+            display_order=1,
+        )
+        db_session.add(entity1)
+        db_session.add(entity2)
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.get_entity_by_index.return_value = MagicMock(
+                label="Claude",
+                default_model="claude-sonnet-4-5-20250929",
+                llm_provider="anthropic"
+            )
+            mock_settings.get_default_model_for_provider.return_value = "claude-sonnet-4-5-20250929"
+
+            session = await manager.load_session_from_db(
+                sample_conversation.id,
+                db_session,
+                responding_entity_id="claude-main"  # Specify responding entity
+            )
+
+        # Verify get_retrieved_ids_for_conversation was called with entity_id
+        mock_memory.get_retrieved_ids_for_conversation.assert_called_once()
+        call_kwargs = mock_memory.get_retrieved_ids_for_conversation.call_args.kwargs
+        assert call_kwargs.get("entity_id") == "claude-main"
+
+        # Verify session has correct entity_id
+        assert session.entity_id == "claude-main"
+        assert session.is_multi_entity is True
+
+    @pytest.mark.asyncio
+    async def test_load_session_no_entity_filter_for_single_entity(
+        self, db_session, sample_conversation
+    ):
+        """Test that load_session_from_db doesn't filter by entity for single-entity conversations."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.get_entity_by_index.return_value = None
+
+            session = await manager.load_session_from_db(
+                sample_conversation.id,
+                db_session
+            )
+
+        # Verify get_retrieved_ids_for_conversation was called without entity_id
+        mock_memory.get_retrieved_ids_for_conversation.assert_called_once()
+        call_kwargs = mock_memory.get_retrieved_ids_for_conversation.call_args.kwargs
+        assert call_kwargs.get("entity_id") is None
+
+        assert session.is_multi_entity is False
+
+    def test_session_entity_id_change_detection(self):
+        """Test that session entity_id change can be detected for reload logic."""
+        session = ConversationSession(
+            conversation_id="conv-123",
+            entity_id="claude-main",
+            is_multi_entity=True,
+        )
+
+        # Entity ID matches
+        assert session.entity_id == "claude-main"
+
+        # Simulating what chat.py does - check if entity changed
+        new_entity_id = "gpt-test"
+        entity_changed = session.entity_id != new_entity_id
+        assert entity_changed is True
+
+        # Same entity - no change
+        same_entity_id = "claude-main"
+        entity_changed = session.entity_id != same_entity_id
+        assert entity_changed is False
+
+    def test_multi_entity_session_fields(self):
+        """Test multi-entity specific session fields."""
+        session = ConversationSession(
+            conversation_id="conv-123",
+            entity_id="claude-main",
+            is_multi_entity=True,
+            entity_labels={"claude-main": "Claude", "gpt-test": "GPT"},
+            responding_entity_label="Claude",
+        )
+
+        assert session.is_multi_entity is True
+        assert session.entity_labels == {"claude-main": "Claude", "gpt-test": "GPT"}
+        assert session.responding_entity_label == "Claude"
+
+    def test_multi_entity_add_exchange_labels_messages(self):
+        """Test that add_exchange labels messages in multi-entity conversations."""
+        session = ConversationSession(
+            conversation_id="conv-123",
+            is_multi_entity=True,
+            responding_entity_label="Claude",
+        )
+
+        session.add_exchange("Hello!", "Hi there!")
+
+        assert len(session.conversation_context) == 2
+        # Human messages should be labeled
+        assert session.conversation_context[0]["content"] == "[Human]: Hello!"
+        # Assistant messages should be labeled with responding entity
+        assert session.conversation_context[1]["content"] == "[Claude]: Hi there!"
+
+    def test_single_entity_add_exchange_no_labels(self):
+        """Test that add_exchange doesn't label messages in single-entity conversations."""
+        session = ConversationSession(
+            conversation_id="conv-123",
+            is_multi_entity=False,
+        )
+
+        session.add_exchange("Hello!", "Hi there!")
+
+        assert len(session.conversation_context) == 2
+        # Messages should not be labeled
+        assert session.conversation_context[0]["content"] == "Hello!"
+        assert session.conversation_context[1]["content"] == "Hi there!"

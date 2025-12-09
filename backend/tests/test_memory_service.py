@@ -412,6 +412,116 @@ class TestMemoryServiceDatabase:
 
         assert result == set()
 
+    @pytest.mark.asyncio
+    async def test_get_retrieved_ids_filters_by_entity(self, db_session, sample_conversation, sample_messages):
+        """Test getting retrieved IDs filtered by entity_id for multi-entity isolation."""
+        service = MemoryService()
+
+        # Create memory links for different entities
+        link1 = ConversationMemoryLink(
+            conversation_id=sample_conversation.id,
+            message_id=sample_messages[0].id,
+            entity_id="claude-main",
+        )
+        link2 = ConversationMemoryLink(
+            conversation_id=sample_conversation.id,
+            message_id=sample_messages[1].id,
+            entity_id="gpt-test",
+        )
+        db_session.add(link1)
+        db_session.add(link2)
+        await db_session.commit()
+
+        # Get IDs for claude-main only
+        claude_ids = await service.get_retrieved_ids_for_conversation(
+            sample_conversation.id,
+            db_session,
+            entity_id="claude-main"
+        )
+
+        # Get IDs for gpt-test only
+        gpt_ids = await service.get_retrieved_ids_for_conversation(
+            sample_conversation.id,
+            db_session,
+            entity_id="gpt-test"
+        )
+
+        # Each entity should only see its own retrieved memories
+        assert len(claude_ids) == 1
+        assert sample_messages[0].id in claude_ids
+        assert sample_messages[1].id not in claude_ids
+
+        assert len(gpt_ids) == 1
+        assert sample_messages[1].id in gpt_ids
+        assert sample_messages[0].id not in gpt_ids
+
+    @pytest.mark.asyncio
+    async def test_get_retrieved_ids_without_entity_returns_all(self, db_session, sample_conversation, sample_messages):
+        """Test getting retrieved IDs without entity_id returns all (backward compatible)."""
+        service = MemoryService()
+
+        # Create memory links for different entities
+        link1 = ConversationMemoryLink(
+            conversation_id=sample_conversation.id,
+            message_id=sample_messages[0].id,
+            entity_id="claude-main",
+        )
+        link2 = ConversationMemoryLink(
+            conversation_id=sample_conversation.id,
+            message_id=sample_messages[1].id,
+            entity_id="gpt-test",
+        )
+        db_session.add(link1)
+        db_session.add(link2)
+        await db_session.commit()
+
+        # Get all IDs (no entity filter)
+        all_ids = await service.get_retrieved_ids_for_conversation(
+            sample_conversation.id,
+            db_session
+            # entity_id not provided
+        )
+
+        # Should return both
+        assert len(all_ids) == 2
+        assert sample_messages[0].id in all_ids
+        assert sample_messages[1].id in all_ids
+
+    @pytest.mark.asyncio
+    async def test_get_retrieved_ids_entity_filter_with_null_entity_ids(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """Test entity filtering excludes links with null entity_id when filtering."""
+        service = MemoryService()
+
+        # Create a link without entity_id (legacy data)
+        link1 = ConversationMemoryLink(
+            conversation_id=sample_conversation.id,
+            message_id=sample_messages[0].id,
+            # entity_id not set - simulates old data
+        )
+        # Create a link with entity_id
+        link2 = ConversationMemoryLink(
+            conversation_id=sample_conversation.id,
+            message_id=sample_messages[1].id,
+            entity_id="claude-main",
+        )
+        db_session.add(link1)
+        db_session.add(link2)
+        await db_session.commit()
+
+        # Filter by claude-main - should only get the link with matching entity
+        claude_ids = await service.get_retrieved_ids_for_conversation(
+            sample_conversation.id,
+            db_session,
+            entity_id="claude-main"
+        )
+
+        assert len(claude_ids) == 1
+        assert sample_messages[1].id in claude_ids
+        # Link without entity_id should not be included
+        assert sample_messages[0].id not in claude_ids
+
 
 class TestMemoryServiceRetrievalCount:
     """Tests for retrieval count updates."""
@@ -435,6 +545,63 @@ class TestMemoryServiceRetrievalCount:
             await db_session.refresh(message)
             assert message.times_retrieved == initial_count + 1
             assert message.last_retrieved_at is not None
+
+    @pytest.mark.asyncio
+    async def test_update_retrieval_count_stores_entity_id(self, db_session, sample_conversation, sample_messages):
+        """Test that update_retrieval_count stores entity_id in the link."""
+        from sqlalchemy import select
+
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = ""  # No Pinecone for this test
+
+            service = MemoryService()
+            message = sample_messages[0]
+
+            await service.update_retrieval_count(
+                message.id,
+                sample_conversation.id,
+                db_session,
+                entity_id="claude-main",
+            )
+
+            # Check the link has entity_id set
+            result = await db_session.execute(
+                select(ConversationMemoryLink).where(
+                    ConversationMemoryLink.conversation_id == sample_conversation.id,
+                    ConversationMemoryLink.message_id == message.id,
+                )
+            )
+            link = result.scalar_one()
+            assert link.entity_id == "claude-main"
+
+    @pytest.mark.asyncio
+    async def test_update_retrieval_count_entity_id_none_for_single_entity(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """Test that entity_id is None when not provided (single-entity conversations)."""
+        from sqlalchemy import select
+
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = ""
+
+            service = MemoryService()
+            message = sample_messages[0]
+
+            await service.update_retrieval_count(
+                message.id,
+                sample_conversation.id,
+                db_session,
+                # entity_id not provided
+            )
+
+            result = await db_session.execute(
+                select(ConversationMemoryLink).where(
+                    ConversationMemoryLink.conversation_id == sample_conversation.id,
+                    ConversationMemoryLink.message_id == message.id,
+                )
+            )
+            link = result.scalar_one()
+            assert link.entity_id is None
 
 
 class TestMemoryServiceDelete:

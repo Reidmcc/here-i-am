@@ -245,6 +245,64 @@ class TestConversationMemoryLinkModel:
         assert link.conversation.id == sample_conversation.id
         assert link.message.id == message.id
 
+    async def test_memory_link_with_entity_id(self, db_session, sample_conversation, sample_messages):
+        """Test memory link with entity_id for multi-entity isolation."""
+        message = sample_messages[0]
+        link = ConversationMemoryLink(
+            conversation_id=sample_conversation.id,
+            message_id=message.id,
+            entity_id="claude-main",
+        )
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        assert link.entity_id == "claude-main"
+
+    async def test_memory_link_entity_id_nullable(self, db_session, sample_conversation, sample_messages):
+        """Test memory link entity_id is nullable for backward compatibility."""
+        message = sample_messages[0]
+        link = ConversationMemoryLink(
+            conversation_id=sample_conversation.id,
+            message_id=message.id,
+            # entity_id not provided - should be None
+        )
+        db_session.add(link)
+        await db_session.commit()
+        await db_session.refresh(link)
+
+        assert link.entity_id is None
+
+    async def test_multiple_memory_links_different_entities(self, db_session, sample_conversation, sample_messages):
+        """Test same message can be retrieved by different entities in multi-entity conversation."""
+        message = sample_messages[0]
+
+        # Same message retrieved by two different entities
+        link1 = ConversationMemoryLink(
+            conversation_id=sample_conversation.id,
+            message_id=message.id,
+            entity_id="claude-main",
+        )
+        link2 = ConversationMemoryLink(
+            conversation_id=sample_conversation.id,
+            message_id=message.id,
+            entity_id="gpt-test",
+        )
+        db_session.add(link1)
+        db_session.add(link2)
+        await db_session.commit()
+
+        # Both links should exist
+        result = await db_session.execute(
+            select(ConversationMemoryLink).where(
+                ConversationMemoryLink.conversation_id == sample_conversation.id
+            )
+        )
+        links = result.scalars().all()
+        assert len(links) == 2
+        entity_ids = {link.entity_id for link in links}
+        assert entity_ids == {"claude-main", "gpt-test"}
+
 
 class TestCascadeDeletes:
     """Tests for cascade delete behavior."""
