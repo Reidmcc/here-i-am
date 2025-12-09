@@ -57,6 +57,10 @@ class TestMemoryServiceConfiguration:
         with patch("app.services.memory_service.settings") as mock_settings:
             mock_settings.pinecone_api_key = "test-key"
             mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+            # Mock entity with host (required for serverless indexes)
+            mock_entity = MagicMock()
+            mock_entity.host = "https://test-index.svc.pinecone.io"
+            mock_settings.get_entity_by_index.return_value = mock_entity
 
             service = MemoryService()
             mock_pc = MagicMock()
@@ -69,78 +73,33 @@ class TestMemoryServiceConfiguration:
             index2 = service.get_index("test-index")
 
             assert index1 is index2
-            mock_pc.Index.assert_called_once_with("test-index")
+            mock_pc.Index.assert_called_once_with("test-index", host="https://test-index.svc.pinecone.io")
 
 
-class TestMemoryServiceEmbeddings:
-    """Tests for embedding generation."""
+class TestMemoryServiceIntegratedInference:
+    """Tests for Pinecone integrated inference (no client-side embeddings)."""
 
-    @pytest.mark.asyncio
-    async def test_get_embedding_success(self):
-        """Test successful embedding generation."""
-        with patch("app.services.memory_service.settings") as mock_settings:
-            mock_settings.anthropic_api_key = "test-key"
+    def test_no_embedding_method(self):
+        """Verify that MemoryService doesn't have a get_embedding method.
 
-            service = MemoryService()
+        Embeddings are now handled by Pinecone's integrated inference.
+        """
+        service = MemoryService()
+        assert not hasattr(service, 'get_embedding'), \
+            "MemoryService should not have get_embedding - Pinecone handles embeddings"
 
-            mock_response = MagicMock()
-            mock_response.data = [MagicMock(embedding=[0.1] * 1024)]
-
-            mock_anthropic = MagicMock()
-            mock_anthropic.embeddings.create = AsyncMock(return_value=mock_response)
-            service._anthropic = mock_anthropic
-
-            embedding = await service.get_embedding("Test text")
-
-            assert embedding is not None
-            assert len(embedding) == 1024
-            mock_anthropic.embeddings.create.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_get_embedding_truncates_long_text(self):
-        """Test that long text is truncated."""
-        with patch("app.services.memory_service.settings") as mock_settings:
-            mock_settings.anthropic_api_key = "test-key"
-
-            service = MemoryService()
-
-            mock_response = MagicMock()
-            mock_response.data = [MagicMock(embedding=[0.1] * 1024)]
-
-            mock_anthropic = MagicMock()
-            mock_anthropic.embeddings.create = AsyncMock(return_value=mock_response)
-            service._anthropic = mock_anthropic
-
-            long_text = "x" * 10000
-            await service.get_embedding(long_text)
-
-            # Verify truncated text was passed
-            call_args = mock_anthropic.embeddings.create.call_args.kwargs
-            assert len(call_args["input"][0]) == 8000
-
-    @pytest.mark.asyncio
-    async def test_get_embedding_failure_returns_none(self):
-        """Test that embedding failure returns None gracefully."""
-        with patch("app.services.memory_service.settings") as mock_settings:
-            mock_settings.anthropic_api_key = "test-key"
-
-            service = MemoryService()
-
-            mock_anthropic = MagicMock()
-            mock_anthropic.embeddings.create = AsyncMock(side_effect=Exception("API error"))
-            service._anthropic = mock_anthropic
-
-            embedding = await service.get_embedding("Test text")
-
-            assert embedding is None
+    def test_uses_upsert_records_for_storage(self):
+        """Verify store_memory uses upsert_records (Pinecone integrated inference)."""
+        # This is verified in the store_memory tests below
+        pass
 
 
 class TestMemoryServiceStorage:
-    """Tests for memory storage."""
+    """Tests for memory storage using Pinecone integrated inference."""
 
     @pytest.mark.asyncio
     async def test_store_memory_success(self, mock_pinecone_index):
-        """Test successful memory storage."""
+        """Test successful memory storage using upsert_records (integrated inference)."""
         with patch("app.services.memory_service.settings") as mock_settings:
             mock_settings.pinecone_api_key = "test-key"
             mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
@@ -148,12 +107,8 @@ class TestMemoryServiceStorage:
             service = MemoryService()
             service._indexes["default"] = mock_pinecone_index
 
-            # Mock embedding generation
-            mock_response = MagicMock()
-            mock_response.data = [MagicMock(embedding=[0.1] * 1024)]
-            mock_anthropic = MagicMock()
-            mock_anthropic.embeddings.create = AsyncMock(return_value=mock_response)
-            service._anthropic = mock_anthropic
+            # Add upsert_records mock (Pinecone handles embedding internally)
+            mock_pinecone_index.upsert_records = MagicMock()
 
             result = await service.store_memory(
                 message_id="msg-123",
@@ -164,7 +119,7 @@ class TestMemoryServiceStorage:
             )
 
             assert result is True
-            mock_pinecone_index.upsert.assert_called_once()
+            mock_pinecone_index.upsert_records.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_store_memory_not_configured(self):
@@ -185,8 +140,8 @@ class TestMemoryServiceStorage:
             assert result is False
 
     @pytest.mark.asyncio
-    async def test_store_memory_embedding_failure(self, mock_pinecone_index):
-        """Test store_memory handles embedding failure."""
+    async def test_store_memory_pinecone_failure(self, mock_pinecone_index):
+        """Test store_memory handles Pinecone API failure."""
         with patch("app.services.memory_service.settings") as mock_settings:
             mock_settings.pinecone_api_key = "test-key"
             mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
@@ -194,10 +149,8 @@ class TestMemoryServiceStorage:
             service = MemoryService()
             service._indexes["default"] = mock_pinecone_index
 
-            # Mock embedding failure
-            mock_anthropic = MagicMock()
-            mock_anthropic.embeddings.create = AsyncMock(side_effect=Exception("API error"))
-            service._anthropic = mock_anthropic
+            # Mock upsert_records failure
+            mock_pinecone_index.upsert_records = MagicMock(side_effect=Exception("API error"))
 
             result = await service.store_memory(
                 message_id="msg-123",
@@ -211,11 +164,11 @@ class TestMemoryServiceStorage:
 
 
 class TestMemoryServiceSearch:
-    """Tests for memory search."""
+    """Tests for memory search using Pinecone integrated inference."""
 
     @pytest.mark.asyncio
     async def test_search_memories_success(self, mock_pinecone_index):
-        """Test successful memory search."""
+        """Test successful memory search using index.search (integrated inference)."""
         with patch("app.services.memory_service.settings") as mock_settings:
             mock_settings.pinecone_api_key = "test-key"
             mock_settings.retrieval_top_k = 5
@@ -225,12 +178,30 @@ class TestMemoryServiceSearch:
             service = MemoryService()
             service._indexes["default"] = mock_pinecone_index
 
-            # Mock embedding generation
-            mock_response = MagicMock()
-            mock_response.data = [MagicMock(embedding=[0.1] * 1024)]
-            mock_anthropic = MagicMock()
-            mock_anthropic.embeddings.create = AsyncMock(return_value=mock_response)
-            service._anthropic = mock_anthropic
+            # Mock cache service to avoid cache hits (set directly on _cache_service)
+            mock_cache = MagicMock()
+            mock_cache.get_search_results.return_value = None
+            service._cache_service = mock_cache
+
+            # Mock the new search response structure (integrated inference)
+            mock_hit = MagicMock()
+            mock_hit.to_dict.return_value = {
+                "_id": "test-memory-id",
+                "_score": 0.9,
+                "fields": {
+                    "conversation_id": "old-conversation-id",
+                    "created_at": "2024-01-01T12:00:00",
+                    "role": "assistant",
+                    "content_preview": "This is a test memory...",
+                    "times_retrieved": 5,
+                },
+            }
+
+            mock_result = MagicMock()
+            mock_result.hits = [mock_hit]
+            mock_search_result = MagicMock()
+            mock_search_result.result = mock_result
+            mock_pinecone_index.search = MagicMock(return_value=mock_search_result)
 
             results = await service.search_memories("What did we discuss?")
 
@@ -249,24 +220,26 @@ class TestMemoryServiceSearch:
 
             service = MemoryService()
 
-            # Create match with score below threshold
-            mock_match = MagicMock()
-            mock_match.id = "low-score-memory"
-            mock_match.score = 0.8  # Below 0.95 threshold
-            mock_match.metadata = {"conversation_id": "conv-1", "created_at": "2024-01-01"}
+            # Mock cache service (set directly on _cache_service)
+            mock_cache = MagicMock()
+            mock_cache.get_search_results.return_value = None
+            service._cache_service = mock_cache
 
-            mock_query_result = MagicMock()
-            mock_query_result.matches = [mock_match]
-            mock_pinecone_index.query = MagicMock(return_value=mock_query_result)
+            # Create match with score below threshold using new search API structure
+            mock_hit = MagicMock()
+            mock_hit.to_dict.return_value = {
+                "_id": "low-score-memory",
+                "_score": 0.8,  # Below 0.95 threshold
+                "fields": {"conversation_id": "conv-1", "created_at": "2024-01-01"},
+            }
+
+            mock_result = MagicMock()
+            mock_result.hits = [mock_hit]
+            mock_search_result = MagicMock()
+            mock_search_result.result = mock_result
+            mock_pinecone_index.search = MagicMock(return_value=mock_search_result)
 
             service._indexes["default"] = mock_pinecone_index
-
-            # Mock embedding
-            mock_response = MagicMock()
-            mock_response.data = [MagicMock(embedding=[0.1] * 1024)]
-            mock_anthropic = MagicMock()
-            mock_anthropic.embeddings.create = AsyncMock(return_value=mock_response)
-            service._anthropic = mock_anthropic
 
             results = await service.search_memories("Query")
 
@@ -284,27 +257,29 @@ class TestMemoryServiceSearch:
 
             service = MemoryService()
 
-            # Create match from current conversation
-            mock_match = MagicMock()
-            mock_match.id = "current-conv-memory"
-            mock_match.score = 0.9
-            mock_match.metadata = {
-                "conversation_id": "current-conv-id",
-                "created_at": "2024-01-01",
+            # Mock cache service (set directly on _cache_service)
+            mock_cache = MagicMock()
+            mock_cache.get_search_results.return_value = None
+            service._cache_service = mock_cache
+
+            # Create match from current conversation using new API structure
+            mock_hit = MagicMock()
+            mock_hit.to_dict.return_value = {
+                "_id": "current-conv-memory",
+                "_score": 0.9,
+                "fields": {
+                    "conversation_id": "current-conv-id",
+                    "created_at": "2024-01-01",
+                },
             }
 
-            mock_query_result = MagicMock()
-            mock_query_result.matches = [mock_match]
-            mock_pinecone_index.query = MagicMock(return_value=mock_query_result)
+            mock_result = MagicMock()
+            mock_result.hits = [mock_hit]
+            mock_search_result = MagicMock()
+            mock_search_result.result = mock_result
+            mock_pinecone_index.search = MagicMock(return_value=mock_search_result)
 
             service._indexes["default"] = mock_pinecone_index
-
-            # Mock embedding
-            mock_response = MagicMock()
-            mock_response.data = [MagicMock(embedding=[0.1] * 1024)]
-            mock_anthropic = MagicMock()
-            mock_anthropic.embeddings.create = AsyncMock(return_value=mock_response)
-            service._anthropic = mock_anthropic
 
             results = await service.search_memories(
                 "Query",
@@ -324,14 +299,30 @@ class TestMemoryServiceSearch:
             mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
 
             service = MemoryService()
-            service._indexes["default"] = mock_pinecone_index
 
-            # Mock embedding
-            mock_response = MagicMock()
-            mock_response.data = [MagicMock(embedding=[0.1] * 1024)]
-            mock_anthropic = MagicMock()
-            mock_anthropic.embeddings.create = AsyncMock(return_value=mock_response)
-            service._anthropic = mock_anthropic
+            # Mock cache service (set directly on _cache_service)
+            mock_cache = MagicMock()
+            mock_cache.get_search_results.return_value = None
+            service._cache_service = mock_cache
+
+            # Create match using new API structure
+            mock_hit = MagicMock()
+            mock_hit.to_dict.return_value = {
+                "_id": "test-memory-id",
+                "_score": 0.9,
+                "fields": {
+                    "conversation_id": "conv-1",
+                    "created_at": "2024-01-01",
+                },
+            }
+
+            mock_result = MagicMock()
+            mock_result.hits = [mock_hit]
+            mock_search_result = MagicMock()
+            mock_search_result.result = mock_result
+            mock_pinecone_index.search = MagicMock(return_value=mock_search_result)
+
+            service._indexes["default"] = mock_pinecone_index
 
             results = await service.search_memories(
                 "Query",
