@@ -397,9 +397,11 @@ class MemoryService:
             )
 
             # Create link record for deduplication tracking
+            # Include entity_id for multi-entity conversation isolation
             link = ConversationMemoryLink(
                 conversation_id=conversation_id,
                 message_id=message_id,
+                entity_id=entity_id,
             )
             db.add(link)
             await db.commit()
@@ -430,18 +432,31 @@ class MemoryService:
     async def get_retrieved_ids_for_conversation(
         self,
         conversation_id: str,
-        db: AsyncSession
+        db: AsyncSession,
+        entity_id: Optional[str] = None,
     ) -> set:
         """
         Get all message IDs that have been retrieved in a conversation.
         Used for session deduplication.
 
+        Args:
+            conversation_id: The conversation to get retrieved IDs for
+            db: Database session
+            entity_id: Optional entity filter. For multi-entity conversations,
+                      this filters to only memories retrieved by that entity.
+                      If None, returns all retrieved memories (backward compatible).
+
         Note: Returns string IDs to match Pinecone's string ID format.
         """
-        result = await db.execute(
-            select(ConversationMemoryLink.message_id)
-            .where(ConversationMemoryLink.conversation_id == conversation_id)
+        query = select(ConversationMemoryLink.message_id).where(
+            ConversationMemoryLink.conversation_id == conversation_id
         )
+
+        # For multi-entity conversations, filter by entity_id
+        if entity_id is not None:
+            query = query.where(ConversationMemoryLink.entity_id == entity_id)
+
+        result = await db.execute(query)
         # Convert to strings to match Pinecone's string ID format
         return set(str(row[0]) for row in result.fetchall())
 

@@ -146,6 +146,12 @@ async def send_message(
     # For multi-entity, we use the responding entity's session
     session = session_manager.get_session(data.conversation_id)
 
+    # For multi-entity conversations, close and reload session if responding entity changed
+    # This ensures each entity only gets its own memories
+    if session and is_multi_entity and session.entity_id != responding_entity_id:
+        session_manager.close_session(data.conversation_id)
+        session = None
+
     if not session:
         # Try to load from database
         session = await session_manager.load_session_from_db(
@@ -359,6 +365,12 @@ async def stream_message(data: ChatRequest):
 
                 # Get or create session
                 session = session_manager.get_session(data.conversation_id)
+
+                # For multi-entity conversations, close and reload session if responding entity changed
+                # This ensures each entity only gets its own memories
+                if session and is_multi_entity and session.entity_id != responding_entity_id:
+                    session_manager.close_session(data.conversation_id)
+                    session = None
 
                 if not session:
                     session = await session_manager.load_session_from_db(
