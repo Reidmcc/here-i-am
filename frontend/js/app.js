@@ -1903,7 +1903,7 @@ class App {
             updateContent: (newToken) => {
                 accumulatedContent += newToken;
                 contentSpan.textContent = accumulatedContent;
-                this.scrollToBottom();
+                // Note: Auto-scroll disabled to let users read beginning of long messages during generation
             },
             finalize: (options = {}) => {
                 // Remove cursor
