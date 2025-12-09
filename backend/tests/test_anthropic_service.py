@@ -532,7 +532,6 @@ class TestCacheBreakpointPlacement:
             memories=memories,
             conversation_context=[],
             current_message="Test",
-            cached_memories=memories,
             cached_context=cached_context,
             new_context=[],
         )
@@ -541,7 +540,6 @@ class TestCacheBreakpointPlacement:
             memories=memories,
             conversation_context=[],
             current_message="Test",
-            cached_memories=memories,
             cached_context=cached_context,
             new_context=[],
         )
@@ -719,8 +717,8 @@ class TestTwoBreakpointCachingStrategy:
         assert isinstance(last_cached["content"], list)
         assert last_cached["content"][0]["cache_control"]["type"] == "ephemeral"
 
-    def test_both_breakpoints_with_memories_and_context(self):
-        """Test both breakpoints when there are memories and cached context."""
+    def test_conversation_first_structure_with_memories_and_context(self):
+        """Test conversation-first structure with single cache breakpoint."""
         service = AnthropicService()
 
         mock_encoder = MagicMock()
@@ -743,41 +741,35 @@ class TestTwoBreakpointCachingStrategy:
             memories=memories,
             conversation_context=[],
             current_message="Test",
-            cached_memories=memories,
             cached_context=cached_context,
             new_context=[],
         )
 
-        # Structure should be:
-        # 0: memory block (breakpoint 1) - with cache_control
-        # 1: memory ack
-        # 2: cached context[0] with [CURRENT CONVERSATION] marker
-        # 3: cached context[1] (breakpoint 2) - with cache_control
-        # 4: final message
+        # Structure should be (3 messages for proper alternation):
+        # 0: cached context[0] with [CONVERSATION HISTORY] marker
+        # 1: cached context[1] with cache_control (cache breakpoint)
+        # 2: combined: [/CONVERSATION HISTORY] + memories + [CURRENT USER MESSAGE] + date + current message
 
-        # Breakpoint 1: memory block
+        assert len(messages) == 3
+
+        # First cached context (with CONVERSATION HISTORY marker)
         assert messages[0]["role"] == "user"
-        assert isinstance(messages[0]["content"], list)
-        assert messages[0]["content"][0]["cache_control"]["type"] == "ephemeral"
-        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS" in messages[0]["content"][0]["text"]
+        assert "[CONVERSATION HISTORY]" in messages[0]["content"]
+        assert "Question " in messages[0]["content"]
 
-        # Memory acknowledgment
+        # Cache breakpoint: last cached context
         assert messages[1]["role"] == "assistant"
-        assert "acknowledge" in messages[1]["content"].lower()
+        assert isinstance(messages[1]["content"], list)
+        assert messages[1]["content"][0]["cache_control"]["type"] == "ephemeral"
 
-        # First cached context (with marker)
+        # Combined final message (maintains proper user/assistant alternation)
         assert messages[2]["role"] == "user"
-        assert "[CURRENT CONVERSATION]" in messages[2]["content"]
-
-        # Breakpoint 2: last cached context
-        assert messages[3]["role"] == "assistant"
-        assert isinstance(messages[3]["content"], list)
-        assert messages[3]["content"][0]["cache_control"]["type"] == "ephemeral"
-
-        # Final message
-        assert messages[4]["role"] == "user"
-        assert "[DATE CONTEXT]" in messages[4]["content"]
-        assert "Test" in messages[4]["content"]
+        assert "[/CONVERSATION HISTORY]" in messages[2]["content"]
+        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in messages[2]["content"]
+        assert "Memory " in messages[2]["content"]
+        assert "[CURRENT USER MESSAGE]" in messages[2]["content"]
+        assert "[DATE CONTEXT]" in messages[2]["content"]
+        assert "Test" in messages[2]["content"]
 
     def test_new_context_after_cached_context(self):
         """Test that new context appears after cached context without cache_control."""

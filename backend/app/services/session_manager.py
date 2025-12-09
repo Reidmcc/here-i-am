@@ -99,29 +99,22 @@ def _build_memory_block_text(
     memories: List[Dict[str, Any]],
     conversation_start_date: Optional[datetime] = None,
 ) -> str:
-    """Build the context block text for token counting (date context + memories)."""
-    context_parts = []
+    """
+    Build the memory block text for token counting purposes.
 
-    # Date context is always included
-    current_date = datetime.utcnow()
-    date_block = "[DATE CONTEXT]\n"
-    if conversation_start_date:
-        date_block += f"This conversation started: {conversation_start_date.strftime('%Y-%m-%d')}\n"
-    date_block += f"Current date: {current_date.strftime('%Y-%m-%d')}\n"
-    date_block += "[END DATE CONTEXT]"
-    context_parts.append(date_block)
+    This matches the format used in anthropic_service.build_messages_with_memories
+    where memories are placed after conversation history.
+    """
+    if not memories:
+        return ""
 
-    # Add memory block if there are memories
-    if memories:
-        memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS. THESE ARE NOT PART OF THE CURRENT CONVERSATION]\n\n"
-        for mem in memories:
-            memory_block += f"Memory (from {mem['created_at']}):\n"
-            memory_block += f'"{mem["content"]}"\n\n'
-        memory_block += "[END MEMORIES]"
-        context_parts.append(memory_block)
+    memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
+    for mem in memories:
+        memory_block += f"Memory (from {mem['created_at']}):\n"
+        memory_block += f'"{mem["content"]}"\n\n'
+    memory_block += "[/MEMORIES]"
 
-    full_context = "\n\n".join(context_parts) + "\n\n[CURRENT CONVERSATION]"
-    return full_context
+    return memory_block
 
 
 @dataclass
@@ -179,10 +172,8 @@ class ConversationSession:
     # IDs currently in the memory block (can be trimmed and restored)
     in_context_ids: Set[str] = field(default_factory=set)
 
-    # Cache tracking for two-breakpoint caching:
-    # 1. Memory block (breakpoint 1) - changes when new memories retrieved
-    # 2. History block (breakpoint 2) - kept stable, periodically consolidated
-    last_cached_memory_ids: Set[str] = field(default_factory=set)
+    # Cache tracking for conversation history (single breakpoint)
+    # Memories are placed after the cache breakpoint so they don't invalidate cache
     last_cached_context_length: int = 0  # Frozen history length for cache stability
 
     def add_memory(self, memory: MemoryEntry) -> Tuple[bool, bool]:
@@ -255,75 +246,36 @@ class ConversationSession:
 
     def get_cache_aware_content(self) -> Dict[str, Any]:
         """
-        Get memories and context split into cached vs new portions.
+        Get context split into cached vs new portions for cache hit optimization.
 
-        Two-breakpoint caching strategy:
-        1. Memory block: cached_memories (stable) vs new_memories
-        2. History block: cached_context (frozen) vs new_context (grows)
+        Single-breakpoint caching strategy:
+        - Conversation history is cached (frozen portion)
+        - Memories are placed after conversation history (don't affect cache hits)
 
-        Cache hits occur when both blocks are identical to previous call.
+        Cache hits occur when cached conversation history is identical to previous call.
         Periodic consolidation moves new_context into cached_context.
         """
-        # Get all in-context memories, sorted by ID for stability
-        all_memories = [
-            self.session_memories[mid]
-            for mid in self.in_context_ids
-            if mid in self.session_memories
-        ]
-        all_memories.sort(key=lambda m: m.id)
-
-        # Split memories into previously cached vs new
-        cached_memories = []
-        new_memories = []
-        for m in all_memories:
-            mem_dict = {
-                "id": m.id,
-                "content": m.content,
-                "created_at": m.created_at,
-                "times_retrieved": m.times_retrieved,
-                "role": m.role,
-            }
-            if m.id in self.last_cached_memory_ids:
-                cached_memories.append(mem_dict)
-            else:
-                new_memories.append(mem_dict)
-
         # Split context into cached (frozen) vs new
         cached_context = self.conversation_context[:self.last_cached_context_length]
         new_context = self.conversation_context[self.last_cached_context_length:]
 
         return {
-            "cached_memories": cached_memories,
-            "new_memories": new_memories,
             "cached_context": cached_context,
             "new_context": new_context,
         }
 
     def should_consolidate_cache(self, count_tokens_fn) -> bool:
         """
-        Determine if we should consolidate (grow) the cached content.
+        Determine if we should consolidate (grow) the cached conversation history.
 
         Consolidation causes a cache MISS but creates a larger cache for future hits.
+        With the new structure, only conversation history is cached (memories are
+        placed after the cache breakpoint and don't affect cache hits).
+
         We consolidate when:
         1. Cached history is too small to actually cache (< 1024 tokens)
-        2. New memories >= 4096 tokens (high threshold to reduce cache invalidations)
-        3. New history >= 2048 tokens (balance between cache hits and prefix growth)
+        2. New history >= 2048 tokens (balance between cache hits and prefix growth)
         """
-        # Check new memories (high threshold to reduce cache invalidations)
-        new_memory_ids = self.in_context_ids - self.last_cached_memory_ids
-        if new_memory_ids:
-            new_memories = [
-                self.session_memories[mid]
-                for mid in new_memory_ids
-                if mid in self.session_memories
-            ]
-            if new_memories:
-                new_mem_text = "\n".join(f'"{m.content}"' for m in new_memories)
-                new_mem_tokens = count_tokens_fn(new_mem_text)
-                if new_mem_tokens >= 4096:
-                    logger.info(f"[CACHE] Consolidation check: new_memories={len(new_memories)}/{new_mem_tokens} tokens >= 4096, will consolidate")
-                    return True
-
         # Check conversation context
         if not self.conversation_context:
             return False
@@ -355,23 +307,22 @@ class ConversationSession:
 
         return will_consolidate
 
-    def update_cache_state(self, cached_memory_ids: Set[str], cached_context_length: int):
+    def update_cache_state(self, cached_context_length: int):
         """
         Update cache tracking after an API call.
 
+        With the new structure, only conversation history is cached (memories are
+        placed after the cache breakpoint).
+
         Args:
-            cached_memory_ids: IDs of memories in the cached block
             cached_context_length: Number of messages in the cached history block
         """
-        old_mem_count = len(self.last_cached_memory_ids)
         old_ctx_len = self.last_cached_context_length
-
-        self.last_cached_memory_ids = cached_memory_ids
         self.last_cached_context_length = cached_context_length
 
         # Log if cache state changed
-        if len(cached_memory_ids) != old_mem_count or cached_context_length != old_ctx_len:
-            logger.info(f"[CACHE] Cache state updated: memories {old_mem_count}->{len(cached_memory_ids)}, history {old_ctx_len}->{cached_context_length} msgs")
+        if cached_context_length != old_ctx_len:
+            logger.info(f"[CACHE] Cache state updated: history {old_ctx_len}->{cached_context_length} msgs")
 
     def trim_memories_to_limit(
         self,
@@ -645,9 +596,6 @@ class SessionManager:
                 )
                 session.in_context_ids.add(str_id)
 
-        # Bootstrap cache state for memories - always reset since memories are per-entity
-        session.last_cached_memory_ids = set(session.in_context_ids)
-
         # For context cache length: preserve if provided (for multi-entity entity switches),
         # otherwise bootstrap with all existing content
         if preserve_context_cache_length is not None:
@@ -854,15 +802,15 @@ class SessionManager:
         # This causes a cache MISS but creates a larger cache for future hits
         should_consolidate = session.should_consolidate_cache(llm_service.count_tokens)
 
-        # Step 6: Build API messages with two-breakpoint caching
-        # Breakpoint 1: memories (changes when new memories retrieved)
-        # Breakpoint 2: history (kept stable, consolidated periodically)
+        # Step 6: Build API messages with conversation-first caching
+        # Cache breakpoint: end of cached conversation history
+        # Memories are placed after history (don't invalidate cache)
         memories_for_injection = session.get_memories_for_injection()
         cache_content = session.get_cache_aware_content()
 
         # Debug logging for memory injection
         logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
-        logger.info(f"[MEMORY] Cache content: {len(cache_content['cached_memories'])} cached memories, {len(cache_content['new_memories'])} new memories")
+        logger.info(f"[CACHE] Context: {len(cache_content['cached_context'])} cached msgs, {len(cache_content['new_context'])} new msgs")
 
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
@@ -871,8 +819,6 @@ class SessionManager:
             model=session.model,
             conversation_start_date=session.conversation_start_date,
             enable_caching=True,
-            new_memory_ids=truly_new_memory_ids,
-            cached_memories=cache_content["cached_memories"],
             cached_context=cache_content["cached_context"],
             new_context=cache_content["new_context"],
             is_multi_entity=session.is_multi_entity,
@@ -894,22 +840,18 @@ class SessionManager:
         # Step 8: Update conversation context and cache state
         session.add_exchange(user_message, response["content"])
 
-        # Update cache state:
-        # Both memories and history only grow on consolidation/bootstrap to keep cache stable
+        # Update cache state for conversation history (memories don't affect cache hits)
         if should_consolidate:
-            # Consolidate: grow both memory and history cache
-            new_cached_mem_ids = set(session.in_context_ids)
+            # Consolidate: grow the cached history (excluding the 2 messages just added)
             new_cached_ctx_len = len(session.conversation_context) - 2
         elif session.last_cached_context_length == 0 and len(session.conversation_context) > 0:
             # Bootstrap: start caching with all current content
-            new_cached_mem_ids = set(session.in_context_ids)
             new_cached_ctx_len = len(session.conversation_context)
         else:
-            # Keep stable: don't grow either cache (for cache hits)
-            new_cached_mem_ids = session.last_cached_memory_ids
+            # Keep stable: don't grow the cache (for cache hits)
             new_cached_ctx_len = session.last_cached_context_length
 
-        session.update_cache_state(new_cached_mem_ids, new_cached_ctx_len)
+        session.update_cache_state(new_cached_ctx_len)
 
         # Step 8: Store new messages as memories (happens in route layer with DB)
         # Return data for the route to handle storage
@@ -1147,13 +1089,15 @@ class SessionManager:
         # Step 4: Check if we should consolidate (grow) the cached history
         should_consolidate = session.should_consolidate_cache(llm_service.count_tokens)
 
-        # Step 5: Build API messages with two-breakpoint caching
+        # Step 5: Build API messages with conversation-first caching
+        # Cache breakpoint: end of cached conversation history
+        # Memories are placed after history (don't invalidate cache)
         memories_for_injection = session.get_memories_for_injection()
         cache_content = session.get_cache_aware_content()
 
         # Debug logging for memory injection
         logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
-        logger.info(f"[MEMORY] Cache content: {len(cache_content['cached_memories'])} cached memories, {len(cache_content['new_memories'])} new memories")
+        logger.info(f"[CACHE] Context: {len(cache_content['cached_context'])} cached msgs, {len(cache_content['new_context'])} new msgs")
 
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
@@ -1162,8 +1106,6 @@ class SessionManager:
             model=session.model,
             conversation_start_date=session.conversation_start_date,
             enable_caching=True,
-            new_memory_ids=truly_new_memory_ids,
-            cached_memories=cache_content["cached_memories"],
             cached_context=cache_content["cached_context"],
             new_context=cache_content["new_context"],
             is_multi_entity=session.is_multi_entity,
@@ -1188,21 +1130,17 @@ class SessionManager:
                 # Update conversation context and cache state
                 session.add_exchange(user_message, full_content)
 
-                # Update cache state with consolidation logic
-                # Both memories and history only grow on consolidation/bootstrap
+                # Update cache state for conversation history (memories don't affect cache hits)
                 if should_consolidate:
-                    new_cached_mem_ids = set(session.in_context_ids)
                     new_cached_ctx_len = len(session.conversation_context) - 2
                 elif session.last_cached_context_length == 0 and len(session.conversation_context) > 0:
                     # Bootstrap: start caching with all current content
-                    new_cached_mem_ids = set(session.in_context_ids)
                     new_cached_ctx_len = len(session.conversation_context)
                 else:
                     # Keep stable for cache hits
-                    new_cached_mem_ids = session.last_cached_memory_ids
                     new_cached_ctx_len = session.last_cached_context_length
 
-                session.update_cache_state(new_cached_mem_ids, new_cached_ctx_len)
+                session.update_cache_state(new_cached_ctx_len)
             yield event
 
     def close_session(self, conversation_id: str):
