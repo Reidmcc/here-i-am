@@ -1104,8 +1104,11 @@ class SessionManager:
         )
 
         # Yield memory info event before starting stream
+        # Include entity_id for multi-entity conversations so frontend can show per-entity memories
         yield {
             "type": "memories",
+            "entity_id": session.entity_id if session.is_multi_entity else None,
+            "entity_label": session.responding_entity_label if session.is_multi_entity else None,
             "new_memories": [
                 {
                     "id": m.id,

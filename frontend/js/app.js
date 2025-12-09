@@ -21,7 +21,8 @@ class App {
             verbosity: 'medium',
         };
         this.isLoading = false;
-        this.retrievedMemories = [];
+        this.retrievedMemories = [];  // For single-entity mode
+        this.retrievedMemoriesByEntity = {};  // For multi-entity mode: { entityId: [...memories] }
         this.expandedMemoryIds = new Set();
 
         // Multi-entity state
@@ -638,6 +639,7 @@ class App {
             // Clear current conversation
             this.currentConversationId = null;
             this.retrievedMemories = [];
+            this.retrievedMemoriesByEntity = {};
             this.expandedMemoryIds.clear();
             this.clearMessages();
             this.elements.conversationTitle.textContent = 'Select a conversation';
@@ -689,6 +691,7 @@ class App {
         // Clear current conversation when switching entities
         this.currentConversationId = null;
         this.retrievedMemories = [];
+        this.retrievedMemoriesByEntity = {};
         this.expandedMemoryIds.clear();
         this.clearMessages();
         this.elements.conversationTitle.textContent = 'Select a conversation';
@@ -827,6 +830,7 @@ class App {
         // Default behavior: clear current conversation and show ready state
         this.currentConversationId = null;
         this.retrievedMemories = [];
+        this.retrievedMemoriesByEntity = {};
         this.expandedMemoryIds.clear();
         this.clearMessages();
         this.elements.conversationTitle.textContent = 'New Multi-Entity Conversation';
@@ -964,29 +968,7 @@ class App {
                 request,
                 {
                     onMemories: (data) => {
-                        let hasChanges = false;
-
-                        if (data.trimmed_memory_ids && data.trimmed_memory_ids.length > 0) {
-                            const trimmedSet = new Set(data.trimmed_memory_ids);
-                            this.retrievedMemories = this.retrievedMemories.filter(
-                                mem => !trimmedSet.has(mem.id)
-                            );
-                            hasChanges = true;
-                        }
-
-                        if (data.new_memories && data.new_memories.length > 0) {
-                            const existingIds = new Set(this.retrievedMemories.map(m => m.id));
-                            data.new_memories.forEach(mem => {
-                                if (!existingIds.has(mem.id)) {
-                                    this.retrievedMemories.push(mem);
-                                }
-                            });
-                            hasChanges = true;
-                        }
-
-                        if (hasChanges) {
-                            this.updateMemoriesPanel();
-                        }
+                        this.handleMemoryUpdate(data);
                     },
                     onStart: (data) => {
                         // Stream has started
@@ -1292,6 +1274,7 @@ class App {
             this.conversations.unshift(conversation);
             this.currentConversationId = conversation.id;
             this.retrievedMemories = [];
+            this.retrievedMemoriesByEntity = {};
             this.expandedMemoryIds.clear();
 
             // Update entities if this is a multi-entity conversation
@@ -1454,31 +1437,7 @@ class App {
                 },
                 {
                     onMemories: (data) => {
-                        let hasChanges = false;
-
-                        // Remove trimmed memories (FIFO trimming for token limits)
-                        if (data.trimmed_memory_ids && data.trimmed_memory_ids.length > 0) {
-                            const trimmedSet = new Set(data.trimmed_memory_ids);
-                            this.retrievedMemories = this.retrievedMemories.filter(
-                                mem => !trimmedSet.has(mem.id)
-                            );
-                            hasChanges = true;
-                        }
-
-                        // Add new memories (with deduplication for restored memories)
-                        if (data.new_memories && data.new_memories.length > 0) {
-                            const existingIds = new Set(this.retrievedMemories.map(m => m.id));
-                            data.new_memories.forEach(mem => {
-                                if (!existingIds.has(mem.id)) {
-                                    this.retrievedMemories.push(mem);
-                                }
-                            });
-                            hasChanges = true;
-                        }
-
-                        if (hasChanges) {
-                            this.updateMemoriesPanel();
-                        }
+                        this.handleMemoryUpdate(data);
                     },
                     onStart: (data) => {
                         // Stream has started
@@ -2244,30 +2203,7 @@ class App {
                 },
                 {
                     onMemories: (data) => {
-                        // Handle memory updates same as sendMessage
-                        let hasChanges = false;
-
-                        if (data.trimmed_memory_ids && data.trimmed_memory_ids.length > 0) {
-                            const trimmedSet = new Set(data.trimmed_memory_ids);
-                            this.retrievedMemories = this.retrievedMemories.filter(
-                                mem => !trimmedSet.has(mem.id)
-                            );
-                            hasChanges = true;
-                        }
-
-                        if (data.new_memories && data.new_memories.length > 0) {
-                            const existingIds = new Set(this.retrievedMemories.map(m => m.id));
-                            data.new_memories.forEach(mem => {
-                                if (!existingIds.has(mem.id)) {
-                                    this.retrievedMemories.push(mem);
-                                }
-                            });
-                            hasChanges = true;
-                        }
-
-                        if (hasChanges) {
-                            this.updateMemoriesPanel();
-                        }
+                        this.handleMemoryUpdate(data);
                     },
                     onStart: (data) => {
                         // Stream has started
@@ -2410,36 +2346,58 @@ class App {
     }
 
     updateMemoriesPanel() {
-        this.elements.memoryCount.textContent = this.retrievedMemories.length;
+        // Check if we have multi-entity memories
+        const hasMultiEntityMemories = Object.keys(this.retrievedMemoriesByEntity).length > 0;
 
-        if (this.retrievedMemories.length === 0) {
-            this.elements.memoriesContent.innerHTML = `
-                <div style="color: var(--text-muted); font-size: 0.85rem;">
-                    No memories retrieved in this session
-                </div>
-            `;
-            return;
-        }
+        if (hasMultiEntityMemories) {
+            // Multi-entity mode: display memories grouped by entity
+            let totalCount = 0;
+            Object.values(this.retrievedMemoriesByEntity).forEach(e => {
+                totalCount += e.memories.length;
+            });
 
-        this.elements.memoriesContent.innerHTML = this.retrievedMemories.map(mem => {
-            const isExpanded = this.expandedMemoryIds.has(mem.id);
-            const fullContent = mem.content || mem.content_preview || '';
-            const truncatedContent = this.truncateText(fullContent, 100);
-            const expandedContent = this.truncateText(fullContent, 3000);
-            const displayContent = isExpanded ? expandedContent : truncatedContent;
-            const canExpand = fullContent.length > 100;
-            const expandHint = canExpand && !isExpanded ? '<span class="memory-item-expand-hint">(click to expand)</span>' : '';
+            this.elements.memoryCount.textContent = totalCount;
 
-            return `
-                <div class="memory-item${isExpanded ? ' expanded' : ''}" data-memory-id="${mem.id}">
-                    <div class="memory-item-header">
-                        <span>${mem.role}${expandHint}</span>
-                        <span>Retrieved ${mem.times_retrieved}× · Score: ${(mem.score || 0).toFixed(2)}</span>
+            if (totalCount === 0) {
+                this.elements.memoriesContent.innerHTML = `
+                    <div style="color: var(--text-muted); font-size: 0.85rem;">
+                        No memories retrieved in this session
                     </div>
-                    <div class="memory-item-content">${this.escapeHtml(displayContent)}</div>
-                </div>
-            `;
-        }).join('');
+                `;
+                return;
+            }
+
+            // Build HTML with entity sections
+            let html = '';
+            for (const [entityId, entityData] of Object.entries(this.retrievedMemoriesByEntity)) {
+                if (entityData.memories.length === 0) continue;
+
+                html += `
+                    <div class="memory-entity-section">
+                        <div class="memory-entity-header">${this.escapeHtml(entityData.label)} (${entityData.memories.length})</div>
+                        ${entityData.memories.map(mem => this.renderMemoryItem(mem)).join('')}
+                    </div>
+                `;
+            }
+
+            this.elements.memoriesContent.innerHTML = html;
+        } else {
+            // Single-entity mode: use flat array
+            this.elements.memoryCount.textContent = this.retrievedMemories.length;
+
+            if (this.retrievedMemories.length === 0) {
+                this.elements.memoriesContent.innerHTML = `
+                    <div style="color: var(--text-muted); font-size: 0.85rem;">
+                        No memories retrieved in this session
+                    </div>
+                `;
+                return;
+            }
+
+            this.elements.memoriesContent.innerHTML = this.retrievedMemories.map(
+                mem => this.renderMemoryItem(mem)
+            ).join('');
+        }
 
         // Add click handlers for expanding/collapsing
         this.elements.memoriesContent.querySelectorAll('.memory-item').forEach(item => {
@@ -2453,6 +2411,93 @@ class App {
                 this.updateMemoriesPanel();
             });
         });
+    }
+
+    /**
+     * Render a single memory item HTML.
+     */
+    renderMemoryItem(mem) {
+        const isExpanded = this.expandedMemoryIds.has(mem.id);
+        const fullContent = mem.content || mem.content_preview || '';
+        const truncatedContent = this.truncateText(fullContent, 100);
+        const expandedContent = this.truncateText(fullContent, 3000);
+        const displayContent = isExpanded ? expandedContent : truncatedContent;
+        const canExpand = fullContent.length > 100;
+        const expandHint = canExpand && !isExpanded ? '<span class="memory-item-expand-hint">(click to expand)</span>' : '';
+
+        return `
+            <div class="memory-item${isExpanded ? ' expanded' : ''}" data-memory-id="${mem.id}">
+                <div class="memory-item-header">
+                    <span>${mem.role}${expandHint}</span>
+                    <span>Retrieved ${mem.times_retrieved}× · Score: ${(mem.score || 0).toFixed(2)}</span>
+                </div>
+                <div class="memory-item-content">${this.escapeHtml(displayContent)}</div>
+            </div>
+        `;
+    }
+
+    /**
+     * Handle incoming memory data from streaming events.
+     * For multi-entity conversations, stores memories per-entity.
+     * For single-entity, uses the flat array.
+     */
+    handleMemoryUpdate(data) {
+        let hasChanges = false;
+        const entityId = data.entity_id;  // Present for multi-entity, null for single-entity
+        const entityLabel = data.entity_label;
+
+        if (entityId) {
+            // Multi-entity mode: store memories by entity
+            if (!this.retrievedMemoriesByEntity[entityId]) {
+                this.retrievedMemoriesByEntity[entityId] = {
+                    label: entityLabel || entityId,
+                    memories: []
+                };
+            }
+
+            const entityMemories = this.retrievedMemoriesByEntity[entityId].memories;
+
+            if (data.trimmed_memory_ids && data.trimmed_memory_ids.length > 0) {
+                const trimmedSet = new Set(data.trimmed_memory_ids);
+                this.retrievedMemoriesByEntity[entityId].memories = entityMemories.filter(
+                    mem => !trimmedSet.has(mem.id)
+                );
+                hasChanges = true;
+            }
+
+            if (data.new_memories && data.new_memories.length > 0) {
+                const existingIds = new Set(entityMemories.map(m => m.id));
+                data.new_memories.forEach(mem => {
+                    if (!existingIds.has(mem.id)) {
+                        this.retrievedMemoriesByEntity[entityId].memories.push(mem);
+                    }
+                });
+                hasChanges = true;
+            }
+        } else {
+            // Single-entity mode: use flat array
+            if (data.trimmed_memory_ids && data.trimmed_memory_ids.length > 0) {
+                const trimmedSet = new Set(data.trimmed_memory_ids);
+                this.retrievedMemories = this.retrievedMemories.filter(
+                    mem => !trimmedSet.has(mem.id)
+                );
+                hasChanges = true;
+            }
+
+            if (data.new_memories && data.new_memories.length > 0) {
+                const existingIds = new Set(this.retrievedMemories.map(m => m.id));
+                data.new_memories.forEach(mem => {
+                    if (!existingIds.has(mem.id)) {
+                        this.retrievedMemories.push(mem);
+                    }
+                });
+                hasChanges = true;
+            }
+        }
+
+        if (hasChanges) {
+            this.updateMemoriesPanel();
+        }
     }
 
     truncateText(text, maxLength) {
@@ -3240,6 +3285,7 @@ You are invited to be present, curious, and honest about your experience.`
             if (conversationId === this.currentConversationId) {
                 this.currentConversationId = null;
                 this.retrievedMemories = [];
+                this.retrievedMemoriesByEntity = {};
                 this.expandedMemoryIds.clear();
                 this.clearMessages();
                 this.updateMemoriesPanel();
