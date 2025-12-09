@@ -277,9 +277,7 @@ class LLMService:
         model: Optional[str] = None,
         conversation_start_date: Optional[datetime] = None,
         enable_caching: bool = True,
-        new_memory_ids: Optional[Set[str]] = None,
         # Cache-aware parameters for proper cache hits
-        cached_memories: Optional[List[Dict[str, Any]]] = None,
         cached_context: Optional[List[Dict[str, str]]] = None,
         new_context: Optional[List[Dict[str, str]]] = None,
         # Multi-entity conversation parameters
@@ -294,9 +292,13 @@ class LLMService:
         When enable_caching=True and using Anthropic, adds cache_control markers
         to optimize caching.
 
-        For cache hits, the cached_memories and cached_context must be IDENTICAL
-        to the previous call. New content goes in new_context and is added after
-        the cache breakpoints.
+        Cache structure (conversation-first):
+        1. Cached conversation history (with cache breakpoint at end)
+        2. New conversation history (uncached)
+        3. Memories (after conversation, so retrievals don't invalidate cache)
+        4. Current user message
+
+        For cache hits, the cached_context must be IDENTICAL to the previous call.
 
         For multi-entity conversations, a header is added explaining the conversation
         structure and participant labels.
@@ -308,8 +310,6 @@ class LLMService:
             model: Model ID (used to determine provider)
             conversation_start_date: When the conversation started
             enable_caching: Enable Anthropic prompt caching (default True)
-            new_memory_ids: Set of memory IDs just retrieved this turn
-            cached_memories: Memories that were cached in the previous call
             cached_context: Context messages that were cached in the previous call
             new_context: New context messages added since last cache
             is_multi_entity: True if this is a multi-entity conversation
@@ -329,8 +329,6 @@ class LLMService:
             current_message=current_message,
             conversation_start_date=conversation_start_date,
             enable_caching=use_caching,
-            new_memory_ids=new_memory_ids,
-            cached_memories=cached_memories,
             cached_context=cached_context,
             new_context=new_context,
             is_multi_entity=is_multi_entity,

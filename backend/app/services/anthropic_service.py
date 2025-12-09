@@ -243,7 +243,7 @@ class AnthropicService:
         conversation_start_date: Optional[datetime] = None,
         enable_caching: bool = True,
         new_memory_ids: Optional[Set[str]] = None,
-        # Two-breakpoint caching parameters
+        # Caching parameters
         cached_memories: Optional[List[Dict[str, Any]]] = None,
         cached_context: Optional[List[Dict[str, str]]] = None,
         new_context: Optional[List[Dict[str, str]]] = None,
@@ -253,84 +253,39 @@ class AnthropicService:
         responding_entity_label: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Build the message list for API call with two-breakpoint caching.
+        Build the message list for API call with conversation-first caching.
 
-        Breakpoint 1: All memories (changes when new memories retrieved)
-        Breakpoint 2: Cached history (kept stable, periodically consolidated)
+        Cache breakpoint: End of cached conversation history (most stable content)
 
         Message structure:
-        1. User: [all memories*]          <- cache breakpoint 1
-        2. Assistant: memory ack
-        3. User: [MULTI-ENTITY HEADER] (if multi-entity) + [CURRENT CONVERSATION] + cached history msg 1
-        4. Assistant: cached history msg 2
-        5. ...
-        N. Last cached history msg*       <- cache breakpoint 2
-        N+1. New history messages (regular, uncached)
+        1. User: [CONVERSATION HISTORY] + multi-entity header (if applicable) + cached history msg 1
+        2. Assistant: cached history msg 2
         ...
-        M. User: [date + current message]
+        N. Last cached history msg*       <- cache breakpoint (cache_control here)
+        N+1. New history messages (uncached, grows until consolidation)
+        ...
+        M-1. User: [/CONVERSATION HISTORY] + [MEMORIES] + memories block + [/MEMORIES]
+        M. User: [CURRENT USER MESSAGE] + date context + current message
 
         If current_message is None (multi-entity continuation), the entity is prompted
         to continue the conversation without a new human message.
 
-        For multi-entity conversations, a header is added before [CURRENT CONVERSATION]
+        For multi-entity conversations, a header is added after [CONVERSATION HISTORY]
         explaining the conversation structure and participant labels.
 
-        Cache hits occur when:
-        - Breakpoint 1: all memories are identical
-        - Breakpoint 2: all memories + cached history are identical
+        Cache hits occur when cached conversation history is identical to previous call.
+        Memories are placed after conversation history so new retrievals don't invalidate
+        the conversation cache.
         """
         messages = []
         new_memory_ids = new_memory_ids or set()
 
-        # Use cached_memories if provided, otherwise use all memories as cached
-        if cached_memories is None:
-            cached_memories = [m for m in memories if m['id'] not in new_memory_ids]
+        # Use cached_context if provided, otherwise use all context as cached
         if cached_context is None:
             cached_context = conversation_context
             new_context = []
         if new_context is None:
             new_context = []
-
-        # New memories = retrieved this turn, not yet in the cached block
-        cached_mem_ids = {m['id'] for m in cached_memories}
-        new_memories = [m for m in memories if m['id'] not in cached_mem_ids]
-
-        # Build the consolidated memory block with ALL memories (cached + new)
-        # All memories go in a single block for consistency
-        all_memories = cached_memories + new_memories
-        memory_block_text = ""
-        if all_memories:
-            memory_block_text = "[MEMORIES FROM PREVIOUS CONVERSATIONS. THESE ARE NOT PART OF THE CURRENT CONVERSATION]\n\n"
-            for mem in all_memories:
-                memory_block_text += f"Memory (from {mem['created_at']}):\n"
-                memory_block_text += f'"{mem["content"]}"\n\n'
-            memory_block_text += "[END MEMORIES]"
-
-        # Debug logging
-        memory_block_tokens = self.count_tokens(memory_block_text) if memory_block_text else 0
-        logger.info(f"[CACHE] Total memories: {len(all_memories)} (cached: {len(cached_memories)}, new: {len(new_memories)})")
-        logger.info(f"[CACHE] Memory block tokens: {memory_block_tokens} (minimum 1024 required)")
-        will_cache_mem = enable_caching and bool(memory_block_text) and memory_block_tokens >= 1024
-        logger.info(f"[CACHE] Will cache memories: {will_cache_mem}")
-
-        # BREAKPOINT 1: Add consolidated memory block
-        if will_cache_mem:
-            messages.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": memory_block_text,
-                        "cache_control": {"type": "ephemeral", "ttl": "1h"}
-                    }
-                ]
-            })
-            logger.info(f"[CACHE] Added memory block WITH cache_control ({memory_block_tokens} tokens)")
-        elif memory_block_text:
-            messages.append({"role": "user", "content": memory_block_text})
-            logger.info(f"[CACHE] Added memory block WITHOUT cache_control ({memory_block_tokens} tokens)")
-        else:
-            logger.info(f"[CACHE] No memory block to add (all_memories={len(all_memories)})")
 
         # Build multi-entity header if applicable
         multi_entity_header = ""
@@ -342,27 +297,28 @@ class AnthropicService:
             multi_entity_header += "[MESSAGES ARE EXPLICITLY MARKED BY WHICH PARTICIPANT SENT THE MESSAGE]\n"
             multi_entity_header += f'[MESSAGES LABELED AS FROM "{responding_entity_label}" ARE YOURS]\n\n'
 
-        # BREAKPOINT 2: Add cached history with cache_control on last message
-        # First message in history gets the multi-entity header (if applicable) and [CURRENT CONVERSATION] marker
+        # Calculate if we should cache conversation history
+        has_conversation = bool(cached_context) or bool(new_context)
+        cached_history_text = ""
+        cached_history_tokens = 0
+        will_cache_history = False
+
         if cached_context:
             cached_history_text = "\n".join(f"{m['role']}: {m['content']}" for m in cached_context)
             cached_history_tokens = self.count_tokens(cached_history_text)
             will_cache_history = enable_caching and cached_history_tokens >= 1024
             logger.info(f"[CACHE] Cached history: {len(cached_context)} msgs, {cached_history_tokens} tokens, will cache: {will_cache_history}")
 
-            # Debug: log individual message lengths
-            for i, msg in enumerate(cached_context):
-                msg_tokens = self.count_tokens(msg["content"])
-                logger.debug(f"[CACHE]   Message {i}: role={msg['role']}, tokens={msg_tokens}")
-
+        # STEP 1: Add cached conversation history with cache breakpoint on last message
+        if cached_context:
             for i, msg in enumerate(cached_context):
                 is_first = (i == 0)
                 is_last = (i == len(cached_context) - 1)
 
-                # Prepend multi-entity header (if applicable) and conversation marker to first message
+                # First message gets [CONVERSATION HISTORY] marker and multi-entity header
                 content = msg["content"]
                 if is_first:
-                    content = multi_entity_header + "[CURRENT CONVERSATION]\n\n" + content
+                    content = "[CONVERSATION HISTORY]\n" + multi_entity_header + "\n" + content
 
                 if is_last and will_cache_history:
                     # Put cache_control on the last cached history message
@@ -376,22 +332,47 @@ class AnthropicService:
                             }
                         ]
                     })
+                    logger.info(f"[CACHE] Added cached history WITH cache_control on last message")
                 else:
                     messages.append({"role": msg["role"], "content": content})
 
-        # Add new history (uncached, grows until consolidation)
-        # If there's no cached context but there is new context, first message gets the marker
+        # STEP 2: Add new conversation history (uncached, grows until consolidation)
         if new_context:
             logger.info(f"[CACHE] New history: {len(new_context)} messages (uncached)")
             for i, msg in enumerate(new_context):
                 content = msg["content"]
-                # Add multi-entity header (if applicable) and conversation marker if this is the first message and there was no cached context
+                # If there's no cached context, first new message gets the conversation header
                 if i == 0 and not cached_context:
-                    content = multi_entity_header + "[CURRENT CONVERSATION]\n\n" + content
+                    content = "[CONVERSATION HISTORY]\n" + multi_entity_header + "\n" + content
                 messages.append({"role": msg["role"], "content": content})
 
-        # Build the final user message with date context and current message
-        final_parts = []
+        # STEP 3: Build and add the memories block (after conversation history)
+        # Memories go after conversation so new retrievals don't invalidate conversation cache
+        all_memories = memories  # Already combined and sorted by caller
+        memory_block_text = ""
+        if all_memories:
+            memory_block_text = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
+            for mem in all_memories:
+                memory_block_text += f"Memory (from {mem['created_at']}):\n"
+                memory_block_text += f'"{mem["content"]}"\n\n'
+            memory_block_text += "[/MEMORIES]"
+
+        memory_block_tokens = self.count_tokens(memory_block_text) if memory_block_text else 0
+        logger.info(f"[CACHE] Total memories: {len(all_memories)}, {memory_block_tokens} tokens")
+
+        # Add end of conversation history marker and memories in a single user message
+        # This ensures proper alternation of user/assistant roles
+        history_end_and_memories = ""
+        if has_conversation:
+            history_end_and_memories = "[/CONVERSATION HISTORY]\n\n"
+        if memory_block_text:
+            history_end_and_memories += memory_block_text
+
+        if history_end_and_memories:
+            messages.append({"role": "user", "content": history_end_and_memories})
+
+        # STEP 4: Build the final user message with date context and current message
+        final_parts = ["[CURRENT USER MESSAGE]"]
 
         # Date context
         current_date = datetime.utcnow()
@@ -399,34 +380,25 @@ class AnthropicService:
         if conversation_start_date:
             date_block += f"This conversation started: {conversation_start_date.strftime('%Y-%m-%d')}\n"
         date_block += f"Current date: {current_date.strftime('%Y-%m-%d')}\n"
-        date_block += "[END DATE CONTEXT]"
+        date_block += "[/DATE CONTEXT]"
         final_parts.append(date_block)
 
         # Handle current message or continuation prompt
         if current_message:
-            # Current message - add multi-entity header (if applicable) and conversation marker if this is the very first message
-            if not cached_context and not new_context:
-                # For multi-entity, also add participant label to the current message
-                if is_multi_entity:
-                    labeled_message = f"[Human]: {current_message}"
-                    final_parts.append(multi_entity_header + "[CURRENT CONVERSATION]\n\n" + labeled_message)
-                else:
-                    final_parts.append("[CURRENT CONVERSATION]\n\n" + current_message)
+            if is_multi_entity:
+                final_parts.append(f"[Human]: {current_message}")
             else:
-                # For multi-entity, add participant label to the current message
-                if is_multi_entity:
-                    final_parts.append(f"[Human]: {current_message}")
-                else:
-                    final_parts.append(current_message)
+                final_parts.append(current_message)
+            # Handle case where this is the very first message (no conversation history)
+            if not cached_context and not new_context:
+                # Prepend conversation header and multi-entity header to the message block
+                final_parts.insert(0, "[CONVERSATION HISTORY]\n" + multi_entity_header)
         else:
             # Continuation without new human message (multi-entity)
-            # Add a continuation prompt to let the entity respond
             continuation_prompt = "[CONTINUATION]\nPlease continue the conversation by responding to what was said above."
+            final_parts.append(continuation_prompt)
             if not cached_context and not new_context:
-                # This shouldn't happen (continuation with no context), but handle it
-                final_parts.append(multi_entity_header + "[CURRENT CONVERSATION]\n\n" + continuation_prompt)
-            else:
-                final_parts.append(continuation_prompt)
+                final_parts.insert(0, "[CONVERSATION HISTORY]\n" + multi_entity_header)
 
         final_message = "\n\n".join(final_parts)
         messages.append({"role": "user", "content": final_message})

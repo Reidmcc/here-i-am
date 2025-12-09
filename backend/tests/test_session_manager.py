@@ -878,7 +878,7 @@ class TestMultiEntityMemoryIsolation:
 
 
 class TestCacheStateManagement:
-    """Tests for cache state management and two-breakpoint caching."""
+    """Tests for cache state management and conversation-first caching."""
 
     def test_get_cache_aware_content_empty_session(self):
         """Test cache-aware content for empty session."""
@@ -886,8 +886,7 @@ class TestCacheStateManagement:
 
         content = session.get_cache_aware_content()
 
-        assert content["cached_memories"] == []
-        assert content["new_memories"] == []
+        # With conversation-first caching, only context is tracked in cache state
         assert content["cached_context"] == []
         assert content["new_context"] == []
 
@@ -912,16 +911,11 @@ class TestCacheStateManagement:
         session.add_exchange("How are you?", "I'm well!")
 
         # Cache state is empty (nothing cached yet)
-        assert session.last_cached_memory_ids == set()
         assert session.last_cached_context_length == 0
 
         content = session.get_cache_aware_content()
 
-        # All memories are new
-        assert len(content["cached_memories"]) == 0
-        assert len(content["new_memories"]) == 3
-
-        # All context is new
+        # All context is new (memories are no longer tracked in cache state)
         assert len(content["cached_context"]) == 0
         assert len(content["new_context"]) == 4
 
@@ -929,32 +923,14 @@ class TestCacheStateManagement:
         """Test cache-aware content with existing cached state."""
         session = ConversationSession(conversation_id="conv-123")
 
-        # Add memories
-        for i in range(3):
-            memory = MemoryEntry(
-                id=f"mem-{i}",
-                conversation_id="old-conv",
-                role="assistant",
-                content=f"Memory {i}",
-                created_at="2024-01-01",
-                times_retrieved=1,
-            )
-            session.add_memory(memory)
-
         # Add conversation context
         session.add_exchange("First", "Response 1")
         session.add_exchange("Second", "Response 2")
 
-        # Set cache state: first 2 memories and first 2 messages are cached
-        session.last_cached_memory_ids = {"mem-0", "mem-1"}
+        # Set cache state: first 2 messages are cached
         session.last_cached_context_length = 2
 
         content = session.get_cache_aware_content()
-
-        # 2 cached memories, 1 new memory
-        assert len(content["cached_memories"]) == 2
-        assert len(content["new_memories"]) == 1
-        assert content["new_memories"][0]["id"] == "mem-2"
 
         # 2 cached context messages, 2 new context messages
         assert len(content["cached_context"]) == 2
@@ -967,76 +943,12 @@ class TestCacheStateManagement:
         session = ConversationSession(conversation_id="conv-123")
 
         # Initial state
-        assert session.last_cached_memory_ids == set()
         assert session.last_cached_context_length == 0
 
-        # Update cache state
-        session.update_cache_state(
-            cached_memory_ids={"mem-0", "mem-1"},
-            cached_context_length=4
-        )
+        # Update cache state (only context length now)
+        session.update_cache_state(cached_context_length=4)
 
-        assert session.last_cached_memory_ids == {"mem-0", "mem-1"}
         assert session.last_cached_context_length == 4
-
-    def test_should_consolidate_cache_memory_threshold(self):
-        """Test consolidation triggers at 4096 token memory threshold."""
-        session = ConversationSession(conversation_id="conv-123")
-
-        # Add memories that will be "new" (not in last_cached_memory_ids)
-        for i in range(5):
-            memory = MemoryEntry(
-                id=f"mem-{i}",
-                conversation_id="old-conv",
-                role="assistant",
-                content=f"Memory content {i} " * 500,  # Large content
-                created_at="2024-01-01",
-                times_retrieved=1,
-            )
-            session.add_memory(memory)
-
-        # Add some conversation context so function doesn't return early
-        session.add_exchange("Hello", "Hi")
-        session.last_cached_context_length = 2  # All context cached
-
-        # Token counter that returns > 4096 for the combined memory text
-        def count_tokens(text):
-            # Return high count that exceeds 4096 threshold
-            return 5000  # Above 4096 threshold
-
-        # Cached state is empty for memories, so all memories are "new"
-        result = session.should_consolidate_cache(count_tokens)
-
-        # Should consolidate because new memories > 4096 tokens
-        assert result is True
-
-    def test_should_consolidate_cache_memory_below_threshold(self):
-        """Test consolidation doesn't trigger below memory threshold."""
-        session = ConversationSession(conversation_id="conv-123")
-
-        # Add a single small memory
-        memory = MemoryEntry(
-            id="mem-0",
-            conversation_id="old-conv",
-            role="assistant",
-            content="Short memory",
-            created_at="2024-01-01",
-            times_retrieved=1,
-        )
-        session.add_memory(memory)
-
-        # Add some context so the function doesn't exit early
-        session.add_exchange("Hello", "Hi")
-        session.last_cached_context_length = 2  # All context is cached
-
-        # Token counter that returns low count
-        def count_tokens(text):
-            return 100  # Well below 4096 threshold
-
-        result = session.should_consolidate_cache(count_tokens)
-
-        # Should not consolidate because new memories < 4096 tokens
-        assert result is False
 
     def test_should_consolidate_cache_context_threshold(self):
         """Test consolidation triggers at 2048 token context threshold."""
@@ -1220,35 +1132,6 @@ class TestCacheBreakpointPlacement:
         ids = [m["id"] for m in memories]
         assert ids == ["mem-a", "mem-b", "mem-m", "mem-z"]
 
-    def test_cache_aware_content_preserves_memory_order(self):
-        """Test that cache-aware content preserves sorted memory order."""
-        session = ConversationSession(conversation_id="conv-123")
-
-        # Add memories
-        for id_suffix in ["c", "a", "b"]:
-            memory = MemoryEntry(
-                id=f"mem-{id_suffix}",
-                conversation_id="old-conv",
-                role="assistant",
-                content=f"Content {id_suffix}",
-                created_at="2024-01-01",
-                times_retrieved=1,
-            )
-            session.add_memory(memory)
-
-        # Mark some as cached
-        session.last_cached_memory_ids = {"mem-a", "mem-c"}
-
-        content = session.get_cache_aware_content()
-
-        # Cached memories should be sorted
-        cached_ids = [m["id"] for m in content["cached_memories"]]
-        assert cached_ids == ["mem-a", "mem-c"]
-
-        # New memories should also be sorted
-        new_ids = [m["id"] for m in content["new_memories"]]
-        assert new_ids == ["mem-b"]
-
     def test_context_split_preserves_order(self):
         """Test that context split preserves message order."""
         session = ConversationSession(conversation_id="conv-123")
@@ -1275,23 +1158,11 @@ class TestCacheBreakpointPlacement:
         """Test that cache-aware content is identical across multiple calls."""
         session = ConversationSession(conversation_id="conv-123")
 
-        # Add memories
-        for i in range(3):
-            memory = MemoryEntry(
-                id=f"mem-{i}",
-                conversation_id="old-conv",
-                role="assistant",
-                content=f"Memory {i}",
-                created_at="2024-01-01",
-                times_retrieved=1,
-            )
-            session.add_memory(memory)
-
         # Add context
         session.add_exchange("Hello", "Hi")
+        session.add_exchange("Question", "Answer")
 
         # Set cache state
-        session.last_cached_memory_ids = {"mem-0", "mem-1"}
         session.last_cached_context_length = 2
 
         # Get content multiple times
@@ -1303,8 +1174,6 @@ class TestCacheBreakpointPlacement:
         assert content1 == content2
         assert content2 == content3
 
-        # Verify specific structure
-        assert len(content1["cached_memories"]) == 2
-        assert len(content1["new_memories"]) == 1
+        # Verify specific structure (memories no longer tracked in cache state)
         assert len(content1["cached_context"]) == 2
-        assert len(content1["new_context"]) == 0
+        assert len(content1["new_context"]) == 2
