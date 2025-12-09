@@ -1030,8 +1030,8 @@ class TestCacheStateManagement:
         session.add_exchange("First", "Response 1")
         session.add_exchange("Second", "Response 2")
 
-        # Set cache state
-        session.update_cache_state(set(), 4)  # All 4 messages cached
+        # Set cache state (only context length now - memories are after cache breakpoint)
+        session.update_cache_state(cached_context_length=4)  # All 4 messages cached
 
         # Add more exchanges
         session.add_exchange("Third", "Response 3")

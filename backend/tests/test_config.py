@@ -66,6 +66,7 @@ class TestEntityConfig:
             "description": "A test entity",
             "llm_provider": "anthropic",
             "default_model": "claude-sonnet-4-5-20250929",
+            "host": None,
         }
 
 
@@ -80,11 +81,11 @@ class TestSettings:
         )
 
         assert settings.default_model == "claude-sonnet-4-5-20250929"
-        assert settings.default_openai_model == "gpt-4o"
+        assert settings.default_openai_model == "gpt-5.1"
         assert settings.default_temperature == 1.0
         assert settings.default_max_tokens == 4096
-        assert settings.retrieval_top_k == 10
-        assert settings.similarity_threshold == 0.7
+        assert settings.retrieval_top_k == 5
+        assert settings.similarity_threshold == 0.3
 
     def test_settings_custom_values(self, test_settings):
         """Test Settings with custom values."""
@@ -210,8 +211,8 @@ class TestSettings:
             _env_file=None,
         )
 
-        assert settings.recency_boost_strength == 1.0
-        assert settings.significance_floor == 0.0
+        assert settings.recency_boost_strength == 1.2
+        assert settings.significance_floor == 0.25
 
     def test_settings_reflection_defaults(self):
         """Test reflection-related default settings."""
