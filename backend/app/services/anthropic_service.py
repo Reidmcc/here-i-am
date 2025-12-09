@@ -343,10 +343,11 @@ class AnthropicService:
         multi_entity_header = ""
         if is_multi_entity and entity_labels and responding_entity_label:
             ai_labels = list(entity_labels.values())
+            quoted_labels = ', '.join(f'"{label}"' for label in ai_labels)
             multi_entity_header = "[THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN]\n"
-            multi_entity_header += f"[THE AI PARTICIPANTS ARE DESIGNATED: {', '.join(ai_labels)}]\n"
+            multi_entity_header += f"[THE AI PARTICIPANTS ARE DESIGNATED: {quoted_labels}]\n"
             multi_entity_header += "[MESSAGES ARE EXPLICITLY MARKED BY WHICH PARTICIPANT SENT THE MESSAGE]\n"
-            multi_entity_header += f"[MESSAGES LABELED AS FROM {responding_entity_label} ARE YOURS]\n\n"
+            multi_entity_header += f'[MESSAGES LABELED AS FROM "{responding_entity_label}" ARE YOURS]\n\n'
 
         # BREAKPOINT 2: Add cached history with cache_control on last message
         # First message in history gets the multi-entity header (if applicable) and [CURRENT CONVERSATION] marker
