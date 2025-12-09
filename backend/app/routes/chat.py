@@ -157,9 +157,13 @@ async def send_message(
         if not session:
             raise HTTPException(status_code=404, detail="Failed to load conversation session")
 
-    # For multi-entity, update session's entity_id to the responding entity
+    # For multi-entity, update session's multi-entity fields
     if is_multi_entity and responding_entity_id:
         session.entity_id = responding_entity_id
+        session.is_multi_entity = True
+        # Build entity_labels mapping from participating entities
+        session.entity_labels = {eid: get_entity_label(eid) or eid for eid in multi_entity_ids}
+        session.responding_entity_label = get_entity_label(responding_entity_id)
         # Update model to use the responding entity's default model
         entity = settings.get_entity_by_index(responding_entity_id)
         if entity and entity.default_model:
@@ -366,9 +370,13 @@ async def stream_message(data: ChatRequest):
                         yield f"event: error\ndata: {json.dumps({'error': 'Conversation not found'})}\n\n"
                         return
 
-                # For multi-entity, update session's entity_id to the responding entity
+                # For multi-entity, update session's multi-entity fields
                 if is_multi_entity and responding_entity_id:
                     session.entity_id = responding_entity_id
+                    session.is_multi_entity = True
+                    # Build entity_labels mapping from participating entities
+                    session.entity_labels = {eid: get_entity_label(eid) or eid for eid in multi_entity_ids}
+                    session.responding_entity_label = get_entity_label(responding_entity_id)
                     # Update model to use the responding entity's default model
                     entity = settings.get_entity_by_index(responding_entity_id)
                     if entity and entity.default_model:

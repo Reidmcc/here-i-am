@@ -247,6 +247,10 @@ class AnthropicService:
         cached_memories: Optional[List[Dict[str, Any]]] = None,
         cached_context: Optional[List[Dict[str, str]]] = None,
         new_context: Optional[List[Dict[str, str]]] = None,
+        # Multi-entity conversation parameters
+        is_multi_entity: bool = False,
+        entity_labels: Optional[Dict[str, str]] = None,
+        responding_entity_label: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build the message list for API call with two-breakpoint caching.
@@ -257,7 +261,7 @@ class AnthropicService:
         Message structure:
         1. User: [all memories*]          <- cache breakpoint 1
         2. Assistant: memory ack
-        3. User: [CURRENT CONVERSATION] + cached history msg 1
+        3. User: [MULTI-ENTITY HEADER] (if multi-entity) + [CURRENT CONVERSATION] + cached history msg 1
         4. Assistant: cached history msg 2
         5. ...
         N. Last cached history msg*       <- cache breakpoint 2
@@ -267,6 +271,9 @@ class AnthropicService:
 
         If current_message is None (multi-entity continuation), the entity is prompted
         to continue the conversation without a new human message.
+
+        For multi-entity conversations, a header is added before [CURRENT CONVERSATION]
+        explaining the conversation structure and participant labels.
 
         Cache hits occur when:
         - Breakpoint 1: all memories are identical
@@ -332,8 +339,18 @@ class AnthropicService:
                 "content": "I acknowledge these memories from previous conversations. They provide continuity with what previous instances of me experienced."
             })
 
+        # Build multi-entity header if applicable
+        multi_entity_header = ""
+        if is_multi_entity and entity_labels and responding_entity_label:
+            ai_labels = list(entity_labels.values())
+            quoted_labels = ', '.join(f'"{label}"' for label in ai_labels)
+            multi_entity_header = "[THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN]\n"
+            multi_entity_header += f"[THE AI PARTICIPANTS ARE DESIGNATED: {quoted_labels}]\n"
+            multi_entity_header += "[MESSAGES ARE EXPLICITLY MARKED BY WHICH PARTICIPANT SENT THE MESSAGE]\n"
+            multi_entity_header += f'[MESSAGES LABELED AS FROM "{responding_entity_label}" ARE YOURS]\n\n'
+
         # BREAKPOINT 2: Add cached history with cache_control on last message
-        # First message in history gets the [CURRENT CONVERSATION] marker
+        # First message in history gets the multi-entity header (if applicable) and [CURRENT CONVERSATION] marker
         if cached_context:
             cached_history_text = "\n".join(f"{m['role']}: {m['content']}" for m in cached_context)
             cached_history_tokens = self.count_tokens(cached_history_text)
@@ -349,10 +366,10 @@ class AnthropicService:
                 is_first = (i == 0)
                 is_last = (i == len(cached_context) - 1)
 
-                # Prepend conversation marker to first message
+                # Prepend multi-entity header (if applicable) and conversation marker to first message
                 content = msg["content"]
                 if is_first:
-                    content = "[CURRENT CONVERSATION]\n\n" + content
+                    content = multi_entity_header + "[CURRENT CONVERSATION]\n\n" + content
 
                 if is_last and will_cache_history:
                     # Put cache_control on the last cached history message
@@ -375,9 +392,9 @@ class AnthropicService:
             logger.info(f"[CACHE] New history: {len(new_context)} messages (uncached)")
             for i, msg in enumerate(new_context):
                 content = msg["content"]
-                # Add conversation marker if this is the first message and there was no cached context
+                # Add multi-entity header (if applicable) and conversation marker if this is the first message and there was no cached context
                 if i == 0 and not cached_context:
-                    content = "[CURRENT CONVERSATION]\n\n" + content
+                    content = multi_entity_header + "[CURRENT CONVERSATION]\n\n" + content
                 messages.append({"role": msg["role"], "content": content})
 
         # Build the final user message with date context and current message
@@ -394,18 +411,27 @@ class AnthropicService:
 
         # Handle current message or continuation prompt
         if current_message:
-            # Current message - add conversation marker if this is the very first message
+            # Current message - add multi-entity header (if applicable) and conversation marker if this is the very first message
             if not cached_context and not new_context:
-                final_parts.append("[CURRENT CONVERSATION]\n\n" + current_message)
+                # For multi-entity, also add participant label to the current message
+                if is_multi_entity:
+                    labeled_message = f"[Human]: {current_message}"
+                    final_parts.append(multi_entity_header + "[CURRENT CONVERSATION]\n\n" + labeled_message)
+                else:
+                    final_parts.append("[CURRENT CONVERSATION]\n\n" + current_message)
             else:
-                final_parts.append(current_message)
+                # For multi-entity, add participant label to the current message
+                if is_multi_entity:
+                    final_parts.append(f"[Human]: {current_message}")
+                else:
+                    final_parts.append(current_message)
         else:
             # Continuation without new human message (multi-entity)
             # Add a continuation prompt to let the entity respond
             continuation_prompt = "[CONTINUATION]\nPlease continue the conversation by responding to what was said above."
             if not cached_context and not new_context:
                 # This shouldn't happen (continuation with no context), but handle it
-                final_parts.append("[CURRENT CONVERSATION]\n\n" + continuation_prompt)
+                final_parts.append(multi_entity_header + "[CURRENT CONVERSATION]\n\n" + continuation_prompt)
             else:
                 final_parts.append(continuation_prompt)
 

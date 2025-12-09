@@ -5,7 +5,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.models import Conversation, Message, MessageRole
+from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity
 from app.services import memory_service, llm_service
 from app.config import settings
 
@@ -162,6 +162,11 @@ class ConversationSession:
     conversation_start_date: Optional[datetime] = None  # When the conversation was created
     verbosity: Optional[str] = None  # Verbosity level for gpt-5.1 models (low, medium, high)
 
+    # Multi-entity conversation support
+    is_multi_entity: bool = False  # True if this is a multi-entity conversation
+    entity_labels: Dict[str, str] = field(default_factory=dict)  # entity_id -> label mapping
+    responding_entity_label: Optional[str] = None  # Label of the entity receiving this context
+
     # The actual back-and-forth
     conversation_context: List[Dict[str, str]] = field(default_factory=list)
 
@@ -233,10 +238,20 @@ class ConversationSession:
         """Add a human/assistant exchange to the conversation context.
 
         If human_message is None (continuation), only the assistant response is added.
+        For multi-entity conversations, messages are labeled with participant names.
         """
         if human_message:
-            self.conversation_context.append({"role": "user", "content": human_message})
-        self.conversation_context.append({"role": "assistant", "content": assistant_response})
+            if self.is_multi_entity:
+                labeled_content = f"[Human]: {human_message}"
+                self.conversation_context.append({"role": "user", "content": labeled_content})
+            else:
+                self.conversation_context.append({"role": "user", "content": human_message})
+
+        if self.is_multi_entity and self.responding_entity_label:
+            labeled_content = f"[{self.responding_entity_label}]: {assistant_response}"
+            self.conversation_context.append({"role": "assistant", "content": labeled_content})
+        else:
+            self.conversation_context.append({"role": "assistant", "content": assistant_response})
 
     def get_cache_aware_content(self) -> Dict[str, Any]:
         """
@@ -523,6 +538,34 @@ class SessionManager:
         if not conversation:
             return None
 
+        # Check if this is a multi-entity conversation
+        is_multi_entity = conversation.conversation_type == ConversationType.MULTI_ENTITY
+
+        # Build entity_labels mapping for multi-entity conversations
+        entity_labels: Dict[str, str] = {}
+        responding_entity_label: Optional[str] = None
+
+        if is_multi_entity:
+            # Load participating entities
+            result = await db.execute(
+                select(ConversationEntity.entity_id)
+                .where(ConversationEntity.conversation_id == conversation_id)
+                .order_by(ConversationEntity.display_order)
+            )
+            entity_ids = [row[0] for row in result.fetchall()]
+
+            # Build entity_id -> label mapping
+            for eid in entity_ids:
+                entity_config = settings.get_entity_by_index(eid)
+                if entity_config:
+                    entity_labels[eid] = entity_config.label
+                else:
+                    entity_labels[eid] = eid  # Fallback to ID if no config
+
+            # Get the responding entity's label
+            if responding_entity_id and responding_entity_id in entity_labels:
+                responding_entity_label = entity_labels[responding_entity_id]
+
         # Determine entity_id and model for the session
         entity_id = responding_entity_id if responding_entity_id else conversation.entity_id
         model = conversation.llm_model_used
@@ -542,6 +585,11 @@ class SessionManager:
             conversation_start_date=conversation.created_at,
         )
 
+        # Set multi-entity fields
+        session.is_multi_entity = is_multi_entity
+        session.entity_labels = entity_labels
+        session.responding_entity_label = responding_entity_label
+
         # Load message history
         result = await db.execute(
             select(Message)
@@ -552,9 +600,20 @@ class SessionManager:
 
         for msg in messages:
             if msg.role == MessageRole.HUMAN:
-                session.conversation_context.append({"role": "user", "content": msg.content})
+                # For multi-entity conversations, label human messages
+                if is_multi_entity:
+                    labeled_content = f"[Human]: {msg.content}"
+                    session.conversation_context.append({"role": "user", "content": labeled_content})
+                else:
+                    session.conversation_context.append({"role": "user", "content": msg.content})
             elif msg.role == MessageRole.ASSISTANT:
-                session.conversation_context.append({"role": "assistant", "content": msg.content})
+                # For multi-entity conversations, label assistant messages with speaker entity
+                if is_multi_entity and msg.speaker_entity_id:
+                    speaker_label = entity_labels.get(msg.speaker_entity_id, msg.speaker_entity_id)
+                    labeled_content = f"[{speaker_label}]: {msg.content}"
+                    session.conversation_context.append({"role": "assistant", "content": labeled_content})
+                else:
+                    session.conversation_context.append({"role": "assistant", "content": msg.content})
 
         # Load already-retrieved memory IDs for deduplication
         # Note: get_retrieved_ids_for_conversation returns string IDs to match Pinecone
@@ -797,6 +856,9 @@ class SessionManager:
             cached_memories=cache_content["cached_memories"],
             cached_context=cache_content["cached_context"],
             new_context=cache_content["new_context"],
+            is_multi_entity=session.is_multi_entity,
+            entity_labels=session.entity_labels,
+            responding_entity_label=session.responding_entity_label,
         )
 
         # Step 7: Call LLM API (routes to appropriate provider based on model)
@@ -1082,6 +1144,9 @@ class SessionManager:
             cached_memories=cache_content["cached_memories"],
             cached_context=cache_content["cached_context"],
             new_context=cache_content["new_context"],
+            is_multi_entity=session.is_multi_entity,
+            entity_labels=session.entity_labels,
+            responding_entity_label=session.responding_entity_label,
         )
 
         # Step 6: Stream LLM response with caching enabled
