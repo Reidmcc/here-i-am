@@ -49,6 +49,21 @@ async def run_migrations(conn):
         ))
         print("  ✓ Added speaker_entity_id column")
 
+    # Check if entity_id column exists in conversation_memory_links table
+    result = await conn.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_memory_links'"
+    ))
+    if result.fetchone():
+        result = await conn.execute(text("PRAGMA table_info(conversation_memory_links)"))
+        columns = [row[1] for row in result.fetchall()]
+
+        if 'entity_id' not in columns:
+            print("Migrating: Adding 'entity_id' column to conversation_memory_links table...")
+            await conn.execute(text(
+                "ALTER TABLE conversation_memory_links ADD COLUMN entity_id VARCHAR(100)"
+            ))
+            print("  ✓ Added entity_id column for multi-entity memory isolation")
+
 
 async def init_db():
     async with engine.begin() as conn:
