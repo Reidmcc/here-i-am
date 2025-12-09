@@ -297,7 +297,10 @@ class AnthropicService:
 
         # Build the consolidated memory block with ALL memories (cached + new)
         # All memories go in a single block for consistency
+        # CRITICAL: Sort by ID to ensure consistent ordering regardless of which
+        # memories are cached vs new. This is essential for Anthropic cache hits.
         all_memories = cached_memories + new_memories
+        all_memories.sort(key=lambda m: m['id'])
         memory_block_text = ""
         if all_memories:
             memory_block_text = "[MEMORIES FROM PREVIOUS CONVERSATIONS. THESE ARE NOT PART OF THE CURRENT CONVERSATION]\n\n"

@@ -244,7 +244,7 @@ class TestAnthropicService:
         first_content = messages[0]["content"]
         if isinstance(first_content, list):
             first_content = first_content[0]["text"]
-        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in first_content
+        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS" in first_content
         assert "I remember you mentioned enjoying programming" in first_content
         assert "[END MEMORIES]" in first_content
 
@@ -377,3 +377,75 @@ class TestAnthropicService:
         assert "[NEW MEMORIES RETRIEVED THIS TURN]" not in final_content
         assert "[DATE CONTEXT]" in final_content
         assert "Test" in final_content
+
+    def test_build_messages_memory_ordering_consistent_after_consolidation(self):
+        """
+        Test that memory ordering is consistent regardless of cached vs new split.
+
+        This is critical for Anthropic cache hits. Before consolidation, memories
+        might be split into cached=[B, D] + new=[A, C]. After consolidation, they
+        might all be in cached=[A, B, C, D]. The memory block text must be identical
+        in both cases for cache to hit.
+        """
+        service = AnthropicService()
+
+        # Mock encoder and cache
+        mock_encoder = MagicMock()
+        mock_encoder.encode.return_value = list(range(1500))
+        service._encoder = mock_encoder
+
+        mock_cache = MagicMock()
+        mock_cache.get_token_count.return_value = None
+        service._cache_service = mock_cache
+
+        # Create memories with IDs that will sort differently when split vs together
+        # When split: cached=[bbb, ddd] + new=[aaa, ccc] = [bbb, ddd, aaa, ccc]
+        # When together: all sorted = [aaa, bbb, ccc, ddd]
+        # With the fix, both should produce [aaa, bbb, ccc, ddd]
+        memories = [
+            {"id": "aaa", "content": "Memory A", "created_at": "2024-01-01"},
+            {"id": "bbb", "content": "Memory B", "created_at": "2024-01-02"},
+            {"id": "ccc", "content": "Memory C", "created_at": "2024-01-03"},
+            {"id": "ddd", "content": "Memory D", "created_at": "2024-01-04"},
+        ]
+
+        # Scenario 1: Before consolidation - some cached, some new
+        # cached_memories=[bbb, ddd] (sorted), new_memories=[aaa, ccc] (sorted)
+        messages_before = service.build_messages_with_memories(
+            memories, [], "Test",
+            cached_memories=[
+                {"id": "bbb", "content": "Memory B", "created_at": "2024-01-02"},
+                {"id": "ddd", "content": "Memory D", "created_at": "2024-01-04"},
+            ],
+            new_context=[],
+        )
+
+        # Scenario 2: After consolidation - all cached
+        # cached_memories=[aaa, bbb, ccc, ddd] (all sorted), new_memories=[]
+        messages_after = service.build_messages_with_memories(
+            memories, [], "Test",
+            cached_memories=[
+                {"id": "aaa", "content": "Memory A", "created_at": "2024-01-01"},
+                {"id": "bbb", "content": "Memory B", "created_at": "2024-01-02"},
+                {"id": "ccc", "content": "Memory C", "created_at": "2024-01-03"},
+                {"id": "ddd", "content": "Memory D", "created_at": "2024-01-04"},
+            ],
+            new_context=[],
+        )
+
+        # Extract memory block text from both scenarios
+        before_content = messages_before[0]["content"]
+        if isinstance(before_content, list):
+            before_content = before_content[0]["text"]
+
+        after_content = messages_after[0]["content"]
+        if isinstance(after_content, list):
+            after_content = after_content[0]["text"]
+
+        # The memory blocks should be IDENTICAL for cache hits
+        assert before_content == after_content
+
+        # Verify the order is sorted by ID (aaa, bbb, ccc, ddd)
+        assert before_content.index("Memory A") < before_content.index("Memory B")
+        assert before_content.index("Memory B") < before_content.index("Memory C")
+        assert before_content.index("Memory C") < before_content.index("Memory D")
