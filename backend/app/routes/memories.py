@@ -69,13 +69,11 @@ def calculate_significance(
     half_life_modifier = 0.5 ** (days_since_creation / settings.significance_half_life_days)
 
     # Recency factor - boosts recently retrieved memories
+    # Cap at 1 day minimum to prevent very recent retrievals from dominating
     recency_factor = 1.0
     if last_retrieved_at:
-        days_since_retrieval = (now - last_retrieved_at).days
-        if days_since_retrieval > 0:
-            recency_factor = 1.0 + min(1.0 / days_since_retrieval, settings.recency_boost_strength)
-        else:
-            recency_factor = 1.0 + settings.recency_boost_strength
+        days_since_retrieval = max((now - last_retrieved_at).days, 1)
+        recency_factor = 1.0 + min(1.0 / days_since_retrieval, settings.recency_boost_strength)
 
     # Calculate significance
     significance = times_retrieved * recency_factor * half_life_modifier
