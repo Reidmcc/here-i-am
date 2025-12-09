@@ -346,7 +346,7 @@ class AnthropicService:
                     content = "[CONVERSATION HISTORY]\n" + multi_entity_header + "\n" + content
                 messages.append({"role": msg["role"], "content": content})
 
-        # STEP 3: Build and add the memories block (after conversation history)
+        # STEP 3: Build the memories block text (after conversation history)
         # Memories go after conversation so new retrievals don't invalidate conversation cache
         all_memories = memories  # Already combined and sorted by caller
         memory_block_text = ""
@@ -360,19 +360,24 @@ class AnthropicService:
         memory_block_tokens = self.count_tokens(memory_block_text) if memory_block_text else 0
         logger.info(f"[CACHE] Total memories: {len(all_memories)}, {memory_block_tokens} tokens")
 
-        # Add end of conversation history marker and memories in a single user message
-        # This ensures proper alternation of user/assistant roles
-        history_end_and_memories = ""
+        # STEP 4: Build the final user message combining:
+        # - End of conversation history marker
+        # - Memories block
+        # - Date context
+        # - Current user message
+        # All in ONE user message to ensure proper user/assistant alternation
+        final_parts = []
+
+        # End conversation history marker (if there was any history)
         if has_conversation:
-            history_end_and_memories = "[/CONVERSATION HISTORY]\n\n"
+            final_parts.append("[/CONVERSATION HISTORY]")
+
+        # Memories block
         if memory_block_text:
-            history_end_and_memories += memory_block_text
+            final_parts.append(memory_block_text)
 
-        if history_end_and_memories:
-            messages.append({"role": "user", "content": history_end_and_memories})
-
-        # STEP 4: Build the final user message with date context and current message
-        final_parts = ["[CURRENT USER MESSAGE]"]
+        # Current message section marker
+        final_parts.append("[CURRENT USER MESSAGE]")
 
         # Date context
         current_date = datetime.utcnow()

@@ -745,11 +745,12 @@ class TestTwoBreakpointCachingStrategy:
             new_context=[],
         )
 
-        # Structure should be:
+        # Structure should be (3 messages for proper alternation):
         # 0: cached context[0] with [CONVERSATION HISTORY] marker
         # 1: cached context[1] with cache_control (cache breakpoint)
-        # 2: memories block (after conversation history)
-        # 3: final message with date context and current message
+        # 2: combined: [/CONVERSATION HISTORY] + memories + [CURRENT USER MESSAGE] + date + current message
+
+        assert len(messages) == 3
 
         # First cached context (with CONVERSATION HISTORY marker)
         assert messages[0]["role"] == "user"
@@ -761,17 +762,14 @@ class TestTwoBreakpointCachingStrategy:
         assert isinstance(messages[1]["content"], list)
         assert messages[1]["content"][0]["cache_control"]["type"] == "ephemeral"
 
-        # Memories block (after conversation history)
+        # Combined final message (maintains proper user/assistant alternation)
         assert messages[2]["role"] == "user"
         assert "[/CONVERSATION HISTORY]" in messages[2]["content"]
         assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in messages[2]["content"]
         assert "Memory " in messages[2]["content"]
-
-        # Final message
-        assert messages[3]["role"] == "user"
-        assert "[CURRENT USER MESSAGE]" in messages[3]["content"]
-        assert "[DATE CONTEXT]" in messages[3]["content"]
-        assert "Test" in messages[3]["content"]
+        assert "[CURRENT USER MESSAGE]" in messages[2]["content"]
+        assert "[DATE CONTEXT]" in messages[2]["content"]
+        assert "Test" in messages[2]["content"]
 
     def test_new_context_after_cached_context(self):
         """Test that new context appears after cached context without cache_control."""
