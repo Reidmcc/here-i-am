@@ -2336,14 +2336,13 @@ h4.md-header {
 .entity-responder-selector {
     position: fixed;
     bottom: 120px;
-    left: 50%;
-    transform: translateX(-50%);
+    right: 24px;
     background: var(--bg-elevated);
     padding: 12px 20px;
     border-radius: 12px;
     box-shadow: 0 4px 20px var(--shadow-lg);
     z-index: 50;
-    text-align: center;
+    text-align: right;
     border: 1px solid var(--border-color);
 }
 
@@ -2357,7 +2356,7 @@ h4.md-header {
 .entity-responder-buttons {
     display: flex;
     gap: 8px;
-    justify-content: center;
+    justify-content: flex-end;
 }
 
 .entity-responder-btn {
