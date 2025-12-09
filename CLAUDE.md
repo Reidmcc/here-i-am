@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2025-12-08
+**Last Updated:** 2025-12-09
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -78,6 +78,38 @@ PINECONE_INDEXES='[
 - Different research phases with separate continuity
 - Comparative research between Claude and GPT models
 
+### Multi-Entity Conversations
+
+Beyond separate entity workspaces, the application supports **multi-entity conversations** where multiple AI entities participate in a single conversation with the human researcher.
+
+**Key Features:**
+- **Multiple Participants** - 2+ entities can participate in one conversation
+- **Turn-by-Turn Response Selection** - Researcher selects which entity responds each turn
+- **Speaker Labeling** - Each message shows which entity spoke (e.g., "[Claude]", "[GPT]")
+- **Cross-Entity Memory Storage** - Messages stored to ALL participating entities' Pinecone indexes
+- **Continuation Mode** - Entities can respond without a new human message
+
+**How Multi-Entity Conversations Work:**
+
+1. **Creation**: Select "Multi-Entity Conversation" from entity dropdown, choose 2+ entities
+2. **Message Flow**:
+   - Human sends message → Researcher selects responding entity → Entity responds
+   - The "Continue" button allows an entity to respond without new human input
+3. **Memory Storage**:
+   - Human messages: Stored to all entities with `role="human"`
+   - Assistant messages: Stored to responding entity as `role="assistant"`, to other entities with speaker label as role (e.g., `role="Claude"`)
+4. **Context Injection**: A header identifies participating entities to each responder:
+   ```
+   [THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN]
+   [THE AI PARTICIPANTS ARE DESIGNATED: "Claude" & "GPT"]
+   [MESSAGES LABELED AS FROM "Claude" ARE YOURS]
+   ```
+
+**Database Implementation:**
+- Conversations with `conversation_type="multi_entity"` use `entity_id="multi-entity"` as a marker
+- Actual participating entities stored in `ConversationEntities` junction table
+- Messages track speaker via `speaker_entity_id` field
+
 ---
 
 ## Codebase Architecture
@@ -90,6 +122,7 @@ here-i-am/
 │   ├── app/
 │   │   ├── models/            # SQLAlchemy ORM models
 │   │   │   ├── conversation.py
+│   │   │   ├── conversation_entity.py  # Multi-entity conversation participants
 │   │   │   ├── message.py
 │   │   │   └── conversation_memory_link.py
 │   │   ├── routes/            # FastAPI endpoint routers
@@ -621,15 +654,16 @@ created_at: DateTime
 updated_at: DateTime
 title: String (nullable)
 tags: JSON
-conversation_type: Enum (NORMAL, REFLECTION)
+conversation_type: Enum (NORMAL, REFLECTION, MULTI_ENTITY)
 system_prompt_used: Text (nullable)
 llm_model_used: String (default: claude-sonnet-4-5-20250929)
 notes: Text (nullable)
-entity_id: String (nullable)  # Pinecone index name for this conversation's AI entity
+entity_id: String (nullable)  # Pinecone index name, or "multi-entity" for multi-entity conversations
 
 # Relationships
 messages: List[Message]
 memory_links: List[ConversationMemoryLink]
+entities: List[ConversationEntity]  # For multi-entity conversations
 ```
 
 ### Messages Table
@@ -643,6 +677,7 @@ created_at: DateTime
 token_count: Integer (nullable)
 times_retrieved: Integer (default: 0)
 last_retrieved_at: DateTime (nullable)
+speaker_entity_id: String (nullable)  # For multi-entity: which entity generated this message
 
 # Relationships
 conversation: Conversation
@@ -659,10 +694,25 @@ retrieved_at: DateTime
 # Purpose: Track which memories retrieved in which conversations
 ```
 
+### Conversation Entities Table (Multi-Entity Support)
+
+```python
+id: UUID (PK)
+conversation_id: UUID (FK -> conversations.id)
+entity_id: String  # Pinecone index name of participating entity
+added_at: DateTime
+display_order: Integer  # Order for UI display
+
+# Purpose: Track which entities participate in multi-entity conversations
+# Relationships
+conversation: Conversation
+```
+
 ### Cascade Deletes
 
 - Deleting a conversation deletes all its messages
 - Deleting a conversation deletes all its memory links
+- Deleting a conversation deletes all its entity associations
 - Deleting a message from vector store requires manual Pinecone deletion
 
 ---
@@ -676,21 +726,31 @@ retrieved_at: DateTime
 | POST | `/api/conversations/` | Create conversation |
 | GET | `/api/conversations/` | List all conversations |
 | GET | `/api/conversations/{id}` | Get specific conversation |
-| GET | `/api/conversations/{id}/messages` | Get conversation messages |
+| GET | `/api/conversations/{id}/messages` | Get conversation messages (includes speaker labels) |
 | PATCH | `/api/conversations/{id}` | Update title/tags/notes |
 | DELETE | `/api/conversations/{id}` | Delete conversation |
 | GET | `/api/conversations/{id}/export` | Export to JSON |
 | POST | `/api/conversations/import-seed` | Import seed conversation |
+
+**Multi-Entity Parameters:**
+- `POST /api/conversations/`: Use `entity_ids: ["entity1", "entity2"]` to create multi-entity conversation
+- `GET /api/conversations/`: Filter by `entity_id=multi-entity` to list multi-entity conversations
+- Response includes `entities` array with participating entity details for multi-entity conversations
 
 ### Chat
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/chat/send` | Send message (full pipeline) |
+| POST | `/api/chat/stream` | Send message with SSE streaming |
 | POST | `/api/chat/quick` | Quick chat (no persistence) |
 | GET | `/api/chat/session/{id}` | Get session state |
 | DELETE | `/api/chat/session/{id}` | Close session |
 | GET | `/api/chat/config` | Get default config |
+
+**Multi-Entity Parameters (for `/api/chat/send` and `/api/chat/stream`):**
+- `responding_entity_id` (required for multi-entity): Which entity should respond
+- `message` can be `null` for continuation mode (entity responds without new human input)
 
 ### Memories
 
@@ -791,28 +851,36 @@ retrieved_at: DateTime
 
 **In-Memory State:**
 - `currentConversationId` - Active conversation
-- `selectedEntityId` - Currently selected AI entity
+- `selectedEntityId` - Currently selected AI entity (or `"multi-entity"`)
 - `entities` - List of available entities
 - `settings` - Chat configuration (model, temp, etc.)
 - `retrievedMemories` - Map of conversation_id -> memory list
 - `cachedElements` - DOM element references
+- `isMultiEntityMode` - Whether in multi-entity conversation mode
+- `currentConversationEntities` - Array of entity IDs for multi-entity conversations
+- `pendingResponderId` - Selected entity for next response in multi-entity mode
 
 **No State Persistence:** State resets on page refresh (conversations loaded from DB)
 
 ### Key Features
 
 1. **Entity Selector** - Switch between AI entities with separate memory spaces
-2. **Auto-resizing Textarea** - Grows with content
-3. **Auto-title Generation** - From first message if untitled
-4. **Real-time Memory Panel** - Shows memories as retrieved
-5. **Export to JSON** - Download conversations
-6. **Semantic Memory Search** - Search within selected entity's memories
-7. **Toast Notifications** - User feedback system
-8. **Loading States** - Typing indicators, overlays
-9. **Text-to-Speech** - Listen to AI messages via ElevenLabs or local XTTS (optional)
-10. **Message Actions** - Copy button, edit/delete for human messages
-11. **Voice Selection** - Choose from configured or cloned voices in settings
-12. **Voice Cloning** - Clone custom voices from audio samples (XTTS only)
+2. **Multi-Entity Mode** - Create conversations with multiple AI participants
+3. **Entity Selection Modal** - Choose which entities participate in multi-entity conversations
+4. **Entity Responder Selector** - Select which entity responds each turn (appears after sending message)
+5. **Continue Button** - Allow entity to respond without new human message (multi-entity)
+6. **Speaker Labels** - Display which entity spoke each message (e.g., "[Claude]")
+7. **Auto-resizing Textarea** - Grows with content
+8. **Auto-title Generation** - From first message if untitled
+9. **Real-time Memory Panel** - Shows memories as retrieved
+10. **Export to JSON** - Download conversations
+11. **Semantic Memory Search** - Search within selected entity's memories
+12. **Toast Notifications** - User feedback system
+13. **Loading States** - Typing indicators, overlays
+14. **Text-to-Speech** - Listen to AI messages via ElevenLabs or local XTTS (optional)
+15. **Message Actions** - Copy button, edit/delete for human messages
+16. **Voice Selection** - Choose from configured or cloned voices in settings
+17. **Voice Cloning** - Clone custom voices from audio samples (XTTS only)
 
 ---
 
@@ -885,6 +953,19 @@ retrieved_at: DateTime
     - Speaker latents are cached for repeat voice requests
     - Long text is automatically chunked (XTTS has 400 token limit)
 
+13. **Multi-Entity Conversation Storage**
+    - Multi-entity conversations use `entity_id="multi-entity"` as a marker value
+    - Actual participating entities stored in `ConversationEntities` table
+    - Messages are stored to ALL participating entities' Pinecone indexes
+    - Human messages: `role="human"` for all entities
+    - Assistant messages: `role="assistant"` for responding entity, `role="{speaker_label}"` for others
+    - Memory retrieval only happens from the responding entity's index
+
+14. **Multi-Entity Session State**
+    - Session tracks `is_multi_entity`, `entity_labels`, and `responding_entity_label`
+    - A special header is injected to identify participants to each entity
+    - Continuation mode (no human message) supported for entity-to-entity flow
+
 ### Common Pitfalls
 
 **When modifying memory retrieval:**
@@ -901,6 +982,13 @@ retrieved_at: DateTime
 - Consider impact on session memory accumulator
 - Test with existing conversations (backwards compatibility)
 - Verify memory injection still works correctly
+
+**When modifying multi-entity conversations:**
+- Ensure `responding_entity_id` is validated against conversation's entity list
+- Memory storage must write to all participating entities' indexes
+- Test both streaming and non-streaming endpoints
+- Verify speaker labels display correctly in both stored messages and streaming
+- Test continuation mode (null message) flow
 
 ### Performance Considerations
 
@@ -976,6 +1064,14 @@ retrieved_at: DateTime
 - Models: `backend/app/models/`
 - Database setup: `backend/app/database.py`
 - Schema defined in model files
+
+**Multi-Entity Conversations:**
+- Conversation entity model: `backend/app/models/conversation_entity.py`
+- Conversation routes (creation/listing): `backend/app/routes/conversations.py`
+- Chat routes (responding_entity_id): `backend/app/routes/chat.py`
+- Session manager (multi-entity state): `backend/app/services/session_manager.py`
+- Anthropic service (context header): `backend/app/services/anthropic_service.py`
+- Frontend entity modal/responder: `frontend/js/app.js` (lines 752-893)
 
 ### Key Constants
 
