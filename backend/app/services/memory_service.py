@@ -4,9 +4,9 @@ import logging
 
 from pinecone import Pinecone
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_
 from app.config import settings
-from app.models import Message, ConversationMemoryLink, Conversation
+from app.models import Message, ConversationMemoryLink, Conversation, ConversationEntity
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -466,22 +466,62 @@ class MemoryService:
         entity_id: Optional[str] = None,
     ) -> Set[str]:
         """
-        Get IDs of all archived conversations.
+        Get IDs of all archived conversations relevant to a specific entity.
 
         Used to filter out memories from archived conversations during retrieval.
 
+        This method handles three cases:
+        1. Single-entity conversations where entity_id matches
+        2. Multi-entity conversations where the entity is a participant
+        3. Legacy conversations with NULL entity_id (only for the default entity)
+
         Args:
             db: Database session
-            entity_id: Optional entity filter. If provided, only returns archived
-                       conversations for that entity.
+            entity_id: Optional entity filter. If provided, returns archived
+                       conversations where this entity's memories would be stored.
         """
-        query = select(Conversation.id).where(Conversation.is_archived == True)
+        archived_ids: Set[str] = set()
 
-        if entity_id is not None:
-            query = query.where(Conversation.entity_id == entity_id)
+        if entity_id is None:
+            # No filter - return all archived conversations
+            query = select(Conversation.id).where(Conversation.is_archived == True)
+            result = await db.execute(query)
+            return set(row[0] for row in result.fetchall())
 
-        result = await db.execute(query)
-        return set(row[0] for row in result.fetchall())
+        # Case 1: Single-entity conversations with matching entity_id
+        single_entity_query = select(Conversation.id).where(
+            Conversation.is_archived == True,
+            Conversation.entity_id == entity_id
+        )
+        result = await db.execute(single_entity_query)
+        archived_ids.update(row[0] for row in result.fetchall())
+
+        # Case 2: Multi-entity conversations where this entity is a participant
+        # These have entity_id = "multi-entity" but store memories in each participant's index
+        multi_entity_query = select(Conversation.id).where(
+            Conversation.is_archived == True,
+            Conversation.entity_id == "multi-entity"
+        ).join(
+            ConversationEntity,
+            ConversationEntity.conversation_id == Conversation.id
+        ).where(
+            ConversationEntity.entity_id == entity_id
+        )
+        result = await db.execute(multi_entity_query)
+        archived_ids.update(row[0] for row in result.fetchall())
+
+        # Case 3: Legacy conversations with NULL entity_id (for default entity only)
+        # These have their memories stored in the default entity's Pinecone index
+        default_entity = settings.get_default_entity()
+        if default_entity and default_entity.index_name == entity_id:
+            null_entity_query = select(Conversation.id).where(
+                Conversation.is_archived == True,
+                Conversation.entity_id.is_(None)
+            )
+            result = await db.execute(null_entity_query)
+            archived_ids.update(row[0] for row in result.fetchall())
+
+        return archived_ids
 
     async def delete_memory(self, message_id: str, entity_id: Optional[str] = None) -> bool:
         """
