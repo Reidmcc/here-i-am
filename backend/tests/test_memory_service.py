@@ -656,6 +656,80 @@ class TestMemoryServiceDatabase:
             # Should NOT include null entity_id (those are in default entity's index)
             assert conv_null.id not in archived_ids
 
+    @pytest.mark.asyncio
+    async def test_get_archived_conversation_ids_includes_multi_entity_conversations(self, db_session):
+        """Test archived IDs include multi-entity conversations where the entity is a participant.
+
+        Multi-entity conversations have entity_id='multi-entity' but their memories
+        are stored in each participating entity's Pinecone index. When filtering
+        archived conversations for a specific entity, we need to include archived
+        multi-entity conversations where that entity is a participant.
+        """
+        from app.models import Conversation, ConversationEntity, ConversationType
+        import uuid
+
+        service = MemoryService()
+
+        # Create a multi-entity conversation with gpt-test and claude-main as participants
+        multi_conv = Conversation(
+            id=str(uuid.uuid4()),
+            entity_id="multi-entity",
+            conversation_type=ConversationType.MULTI_ENTITY,
+            is_archived=True,
+        )
+        db_session.add(multi_conv)
+        await db_session.flush()
+
+        # Add participants
+        participant1 = ConversationEntity(
+            conversation_id=multi_conv.id,
+            entity_id="gpt-test",
+            display_order=0,
+        )
+        participant2 = ConversationEntity(
+            conversation_id=multi_conv.id,
+            entity_id="claude-main",
+            display_order=1,
+        )
+        db_session.add(participant1)
+        db_session.add(participant2)
+
+        # Create a single-entity archived conversation for a different entity
+        other_conv = Conversation(
+            id=str(uuid.uuid4()),
+            entity_id="other-entity",
+            is_archived=True,
+        )
+        db_session.add(other_conv)
+        await db_session.commit()
+
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="claude-main")
+
+            # Query for gpt-test - should include the multi-entity conversation
+            gpt_archived = await service.get_archived_conversation_ids(
+                db_session, entity_id="gpt-test"
+            )
+
+            assert multi_conv.id in gpt_archived  # gpt-test is a participant
+            assert other_conv.id not in gpt_archived  # other-entity, not gpt-test
+
+            # Query for claude-main - should also include the multi-entity conversation
+            claude_archived = await service.get_archived_conversation_ids(
+                db_session, entity_id="claude-main"
+            )
+
+            assert multi_conv.id in claude_archived  # claude-main is a participant
+            assert other_conv.id not in claude_archived
+
+            # Query for other-entity - should NOT include the multi-entity conversation
+            other_archived = await service.get_archived_conversation_ids(
+                db_session, entity_id="other-entity"
+            )
+
+            assert multi_conv.id not in other_archived  # other-entity is NOT a participant
+            assert other_conv.id in other_archived  # but should include its own conversation
+
 
 class TestMemoryServiceRetrievalCount:
     """Tests for retrieval count updates."""
