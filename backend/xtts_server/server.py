@@ -170,6 +170,17 @@ def get_model():
             # Load the model
             _tts_model = TTS(_model_name).to(device)
 
+            # Override the tokenizer's character limits to match our chunking
+            # The default 250 char limit is overly conservative; XTTS can handle 400 tokens
+            try:
+                tokenizer = _tts_model.synthesizer.tts_model.tokenizer
+                if hasattr(tokenizer, 'char_limits'):
+                    for lang in tokenizer.char_limits:
+                        tokenizer.char_limits[lang] = MAX_CHUNK_CHARS
+                    logger.info(f"Updated tokenizer char_limits to {MAX_CHUNK_CHARS}")
+            except Exception as e:
+                logger.warning(f"Could not update tokenizer char_limits: {e}")
+
             # Apply reduce-overhead optimization for GPU (staying in FP32 for stability)
             if device == "cuda":
                 logger.info("Applying torch.compile with reduce-overhead mode...")
@@ -357,31 +368,50 @@ def numpy_to_wav_bytes(audio_array: np.ndarray, sample_rate: int = 24000) -> byt
     return buffer.read()
 
 
-# XTTS has a 400 token limit. We use ~250 chars as a safe limit since
-# tokenization varies and we want to leave room for language-specific expansion.
-MAX_CHUNK_CHARS = 250
+# XTTS has a 400 token limit (gpt_max_text_tokens: 402).
+# English averages ~4 chars/token, so 400 tokens ≈ 1600 chars.
+# We use 400 chars to avoid XTTS audio truncation at chunk ends -
+# larger chunks (500-600) cause content loss at the end of chunks.
+MAX_CHUNK_CHARS = 400
+
+
+def _normalize_chunk(text: str) -> str:
+    """Normalize text for TTS - remove problematic characters and fix whitespace."""
+    # Remove brackets - XTTS doesn't handle them well
+    text = re.sub(r'[\[\]]', '', text)
+    # Replace newlines with spaces
+    text = text.replace('\n', ' ')
+    # Collapse multiple spaces into one
+    text = re.sub(r' +', ' ', text)
+    return text.strip()
 
 
 def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
     """
     Split text into chunks suitable for XTTS processing.
 
-    Splits at sentence boundaries (., !, ?) when possible, otherwise at
-    word boundaries. Each chunk will be under max_chars.
+    Splits at sentence boundaries first, then paragraph breaks, clause boundaries
+    (commas, semicolons), and finally word boundaries as a last resort.
+    All chunks are normalized (newlines replaced with spaces) for TTS compatibility.
 
     Args:
         text: The text to split
         max_chars: Maximum characters per chunk
 
     Returns:
-        List of text chunks
+        List of text chunks (normalized for TTS)
     """
     if len(text) <= max_chars:
-        return [text]
+        return [_normalize_chunk(text)]
 
     chunks = []
-    # Split into sentences first (keeping the punctuation)
-    sentences = re.split(r'(?<=[.!?])\s+', text)
+
+    # Split into sentences at punctuation followed by space and uppercase letter.
+    # Require lowercase before punctuation to avoid splitting inside ALL CAPS
+    # labels like [MEMORIES FROM PREVIOUS CONVERSATIONS. THESE ARE NOT...]
+    sentence_pattern = r'(?<=[a-z][.!?])\s+(?=[A-Z])'
+    sentences = re.split(sentence_pattern, text)
+    sentences = [s for s in sentences if s.strip()]
 
     current_chunk = ""
     for sentence in sentences:
@@ -392,16 +422,30 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
                 chunks.append(current_chunk.strip())
                 current_chunk = ""
 
-            # If single sentence is too long, split by words
+            # If single sentence is too long, try splitting further
             if len(sentence) > max_chars:
-                words = sentence.split()
-                for word in words:
-                    if len(current_chunk) + len(word) + 1 > max_chars:
-                        if current_chunk.strip():
-                            chunks.append(current_chunk.strip())
-                        current_chunk = word + " "
-                    else:
-                        current_chunk += word + " "
+                # First try paragraph breaks (double newlines)
+                paragraphs = re.split(r'\n\n+', sentence)
+                if len(paragraphs) > 1:
+                    for para in paragraphs:
+                        para = para.strip()
+                        if not para:
+                            continue
+                        if len(current_chunk) + len(para) + 1 > max_chars:
+                            if current_chunk.strip():
+                                chunks.append(current_chunk.strip())
+                                current_chunk = ""
+                            if len(para) > max_chars:
+                                # Paragraph still too long - try clause splits
+                                _split_by_clauses(para, max_chars, chunks, current_chunk)
+                                current_chunk = ""
+                            else:
+                                current_chunk = para + " "
+                        else:
+                            current_chunk += para + " "
+                else:
+                    # No paragraph breaks - try clause splits
+                    current_chunk = _split_by_clauses(sentence, max_chars, chunks, current_chunk)
             else:
                 current_chunk = sentence + " "
         else:
@@ -411,7 +455,33 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
     if current_chunk.strip():
         chunks.append(current_chunk.strip())
 
-    return chunks
+    # Normalize all chunks for TTS compatibility
+    return [_normalize_chunk(chunk) for chunk in chunks]
+
+
+def _split_by_clauses(text: str, max_chars: int, chunks: list, current_chunk: str) -> str:
+    """Helper to split text by clause boundaries (comma/semicolon) then words."""
+    clauses = re.split(r'(?<=[,;])\s+', text)
+    for clause in clauses:
+        if len(current_chunk) + len(clause) + 1 > max_chars:
+            if current_chunk.strip():
+                chunks.append(current_chunk.strip())
+                current_chunk = ""
+            # If single clause is still too long, split by words
+            if len(clause) > max_chars:
+                words = clause.split()
+                for word in words:
+                    if len(current_chunk) + len(word) + 1 > max_chars:
+                        if current_chunk.strip():
+                            chunks.append(current_chunk.strip())
+                        current_chunk = word + " "
+                    else:
+                        current_chunk += word + " "
+            else:
+                current_chunk = clause + " "
+        else:
+            current_chunk += clause + " "
+    return current_chunk
 
 
 def synthesize_with_cached_latents(
