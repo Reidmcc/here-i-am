@@ -810,7 +810,14 @@ class SessionManager:
 
         # Debug logging for memory injection
         logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
-        logger.info(f"[CACHE] Context: {len(cache_content['cached_context'])} cached msgs, {len(cache_content['new_context'])} new msgs")
+        # Log cached context breakdown by role
+        cached_ctx = cache_content['cached_context']
+        new_ctx = cache_content['new_context']
+        cached_user = sum(1 for m in cached_ctx if m.get('role') == 'user')
+        cached_asst = sum(1 for m in cached_ctx if m.get('role') == 'assistant')
+        new_user = sum(1 for m in new_ctx if m.get('role') == 'user')
+        new_asst = sum(1 for m in new_ctx if m.get('role') == 'assistant')
+        logger.info(f"[CACHE] Context: {len(cached_ctx)} cached msgs ({cached_user} user, {cached_asst} assistant), {len(new_ctx)} new msgs ({new_user} user, {new_asst} assistant)")
 
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
@@ -1097,7 +1104,14 @@ class SessionManager:
 
         # Debug logging for memory injection
         logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
-        logger.info(f"[CACHE] Context: {len(cache_content['cached_context'])} cached msgs, {len(cache_content['new_context'])} new msgs")
+        # Log cached context breakdown by role
+        cached_ctx = cache_content['cached_context']
+        new_ctx = cache_content['new_context']
+        cached_user = sum(1 for m in cached_ctx if m.get('role') == 'user')
+        cached_asst = sum(1 for m in cached_ctx if m.get('role') == 'assistant')
+        new_user = sum(1 for m in new_ctx if m.get('role') == 'user')
+        new_asst = sum(1 for m in new_ctx if m.get('role') == 'assistant')
+        logger.info(f"[CACHE] Context: {len(cached_ctx)} cached msgs ({cached_user} user, {cached_asst} assistant), {len(new_ctx)} new msgs ({new_user} user, {new_asst} assistant)")
 
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
