@@ -318,6 +318,7 @@ async def list_conversations(
     conversations = result.scalars().all()
 
     response = []
+    deleted_empty = False
     for conv in conversations:
         # Get message count
         msg_result = await db.execute(
@@ -326,6 +327,12 @@ async def list_conversations(
         )
         messages = msg_result.scalars().all()
         message_count = len(messages)
+
+        # Clean up empty conversations (no messages ever sent)
+        if message_count == 0:
+            await db.delete(conv)
+            deleted_empty = True
+            continue
 
         # Get preview from first human message
         preview = None
@@ -357,6 +364,10 @@ async def list_conversations(
             entities=entities_info,
             entity_system_prompts=conv.entity_system_prompts,
         ))
+
+    # Commit any deleted empty conversations
+    if deleted_empty:
+        await db.commit()
 
     return response
 
