@@ -16,10 +16,14 @@ class App {
             model: 'claude-sonnet-4-5-20250929',
             temperature: 1.0,
             maxTokens: 4096,
-            systemPrompt: null,
+            systemPrompt: null,  // Current entity's system prompt (for display)
             conversationType: 'normal',
             verbosity: 'medium',
         };
+
+        // Per-entity system prompts: { entity_id: system_prompt, ... }
+        // Stores user-defined system prompts for each entity
+        this.entitySystemPrompts = {};
         this.isLoading = false;
         this.retrievedMemories = [];  // For single-entity mode
         this.retrievedMemoriesByEntity = {};  // For multi-entity mode: { entityId: [...memories] }
@@ -32,6 +36,12 @@ class App {
         this.pendingActionAfterEntitySelection = null;  // 'createConversation' or 'sendMessage'
         this.pendingMessageForEntitySelection = null;  // Message to send after entity selection
         this.constructedAt = Date.now();  // Used to detect browser form restoration
+
+        // Request tracking to prevent race conditions
+        this.loadConversationsRequestId = 0;  // Incremented on each loadConversations call
+
+        // Debug tracking for conversation persistence issue
+        this.lastCreatedConversation = null;  // { id, entity_id, createdAt }
 
         // Cache DOM elements
         this.elements = {
@@ -77,6 +87,8 @@ class App {
             maxTokensInput: document.getElementById('max-tokens-input'),
             presetSelect: document.getElementById('preset-select'),
             systemPromptInput: document.getElementById('system-prompt-input'),
+            systemPromptLabel: document.getElementById('system-prompt-label'),
+            systemPromptHelp: document.getElementById('system-prompt-help'),
             conversationTypeSelect: document.getElementById('conversation-type-select'),
 
             // Buttons
@@ -184,10 +196,38 @@ class App {
         this.bindEvents();
         this.initVoiceDictation();
         await this.loadEntities();
+        this.loadEntitySystemPromptsFromStorage();  // Load saved system prompts
         await this.loadConversations();
         await this.loadConfig();
         await this.checkTTSStatus();
         this.updateModelIndicator();
+    }
+
+    loadEntitySystemPromptsFromStorage() {
+        // Load entitySystemPrompts from localStorage
+        try {
+            const saved = localStorage.getItem('entitySystemPrompts');
+            if (saved) {
+                this.entitySystemPrompts = JSON.parse(saved);
+                // Update current system prompt if we have a selected entity
+                if (this.selectedEntityId && this.selectedEntityId !== 'multi-entity') {
+                    if (this.entitySystemPrompts[this.selectedEntityId] !== undefined) {
+                        this.settings.systemPrompt = this.entitySystemPrompts[this.selectedEntityId];
+                    }
+                }
+            }
+        } catch (error) {
+            console.warn('Failed to load entitySystemPrompts from localStorage:', error);
+        }
+    }
+
+    saveEntitySystemPromptsToStorage() {
+        // Save entitySystemPrompts to localStorage
+        try {
+            localStorage.setItem('entitySystemPrompts', JSON.stringify(this.entitySystemPrompts));
+        } catch (error) {
+            console.warn('Failed to save entitySystemPrompts to localStorage:', error);
+        }
     }
 
     async checkTTSStatus() {
@@ -531,13 +571,62 @@ class App {
     }
 
     async loadConversations() {
+        // Increment request ID to track this specific request
+        const requestId = ++this.loadConversationsRequestId;
+        const requestEntityId = this.selectedEntityId;
+
+        console.log('[DEBUG] loadConversations started:', {
+            requestId,
+            entityId: requestEntityId,
+        });
+
         try {
             // Load conversations filtered by current entity
-            this.conversations = await api.listConversations(50, 0, this.selectedEntityId);
+            const conversations = await api.listConversations(50, 0, requestEntityId);
+
+            // Check if this request is still current (prevents race conditions)
+            // If the user switched entities while the request was in flight,
+            // the response should be ignored
+            if (requestId !== this.loadConversationsRequestId) {
+                console.log('[DEBUG] Ignoring stale loadConversations response for entity:', requestEntityId);
+                return;
+            }
+
+            // Check if the last created conversation is in the response (for debugging)
+            let lastCreatedCheck = null;
+            if (this.lastCreatedConversation) {
+                const found = conversations.find(c => c.id === this.lastCreatedConversation.id);
+                const shouldBeHere = this.lastCreatedConversation.entity_id === requestEntityId;
+                lastCreatedCheck = {
+                    lastCreatedId: this.lastCreatedConversation.id,
+                    lastCreatedEntityId: this.lastCreatedConversation.entity_id,
+                    requestEntityId,
+                    shouldBeHere,
+                    foundInResponse: !!found,
+                    isConsistent: !shouldBeHere || !!found,  // OK if it shouldn't be here, or if it is found
+                };
+                if (shouldBeHere && !found) {
+                    console.warn('[DEBUG] PERSISTENCE BUG DETECTED! Recently created conversation not found in response:', lastCreatedCheck);
+                }
+            }
+
+            console.log('[DEBUG] loadConversations completed:', {
+                requestId,
+                entityId: requestEntityId,
+                count: conversations.length,
+                ids: conversations.map(c => c.id).slice(0, 5),
+                entityIds: conversations.slice(0, 5).map(c => ({ id: c.id.slice(0, 8), entity_id: c.entity_id })),
+                lastCreatedCheck,
+            });
+
+            this.conversations = conversations;
             this.renderConversationList();
         } catch (error) {
-            this.showToast('Failed to load conversations', 'error');
-            console.error('Failed to load conversations:', error);
+            // Only show error if this request is still current
+            if (requestId === this.loadConversationsRequestId) {
+                this.showToast('Failed to load conversations', 'error');
+                console.error('Failed to load conversations:', error);
+            }
         }
     }
 
@@ -611,6 +700,14 @@ class App {
             this.updateEntityDescription();
             this.updateTemperatureMax();
 
+            // Initialize system prompt for the default entity
+            if (this.selectedEntityId) {
+                const defaultEntity = this.entities.find(e => e.index_name === this.selectedEntityId);
+                if (defaultEntity && defaultEntity.default_system_prompt) {
+                    this.settings.systemPrompt = defaultEntity.default_system_prompt;
+                }
+            }
+
             // Always show entity selector so users know which entity they're working with
             this.elements.entitySelector.style.display = 'block';
         } catch (error) {
@@ -621,6 +718,12 @@ class App {
     }
 
     handleEntityChange(entityId) {
+        console.log('[DEBUG] handleEntityChange called:', {
+            newEntityId: entityId,
+            previousEntityId: this.selectedEntityId,
+            lastCreatedConversation: this.lastCreatedConversation,
+        });
+
         // Check if multi-entity was selected
         if (entityId === 'multi-entity') {
             // Don't process during browser form restoration (happens within ~100ms of page load)
@@ -686,6 +789,16 @@ class App {
             }
             this.updateModelIndicator();
             this.updateTemperatureMax();
+
+            // Load system prompt for this entity
+            // Priority: user-defined prompt > entity's default prompt > null
+            if (this.entitySystemPrompts[entityId] !== undefined) {
+                this.settings.systemPrompt = this.entitySystemPrompts[entityId];
+            } else if (entity.default_system_prompt) {
+                this.settings.systemPrompt = entity.default_system_prompt;
+            } else {
+                this.settings.systemPrompt = null;
+            }
         }
 
         // Clear current conversation when switching entities
@@ -1253,23 +1366,64 @@ class App {
 
             if (this.isMultiEntityMode && this.currentConversationEntities.length >= 2) {
                 // Create multi-entity conversation
+                // Build entity_system_prompts for participating entities
+                const entityPrompts = {};
+                for (const entity of this.currentConversationEntities) {
+                    if (this.entitySystemPrompts[entity.index_name] !== undefined) {
+                        entityPrompts[entity.index_name] = this.entitySystemPrompts[entity.index_name];
+                    }
+                }
                 conversationData = {
                     model: this.settings.model,
-                    system_prompt: this.settings.systemPrompt,
+                    system_prompt: this.settings.systemPrompt,  // Fallback
                     conversation_type: 'multi_entity',
                     entity_ids: this.currentConversationEntities.map(e => e.index_name),
+                    entity_system_prompts: Object.keys(entityPrompts).length > 0 ? entityPrompts : null,
                 };
             } else {
                 // Standard single-entity conversation
+                // Validate that we have a selected entity
+                if (!this.selectedEntityId || this.selectedEntityId === 'multi-entity') {
+                    console.error('[DEBUG] BUG: Creating single-entity conversation without valid selectedEntityId:', {
+                        selectedEntityId: this.selectedEntityId,
+                        isMultiEntityMode: this.isMultiEntityMode,
+                    });
+                }
+
+                // Include per-entity system prompt if set
+                const entityPrompts = {};
+                if (this.selectedEntityId && this.entitySystemPrompts[this.selectedEntityId] !== undefined) {
+                    entityPrompts[this.selectedEntityId] = this.entitySystemPrompts[this.selectedEntityId];
+                }
                 conversationData = {
                     model: this.settings.model,
-                    system_prompt: this.settings.systemPrompt,
+                    system_prompt: this.settings.systemPrompt,  // Fallback
                     conversation_type: this.settings.conversationType,
                     entity_id: this.selectedEntityId,
+                    entity_system_prompts: Object.keys(entityPrompts).length > 0 ? entityPrompts : null,
                 };
             }
 
+            console.log('[DEBUG] Creating conversation with data:', {
+                entity_id: conversationData.entity_id,
+                conversation_type: conversationData.conversation_type,
+                selectedEntityId: this.selectedEntityId,
+            });
+
             const conversation = await api.createConversation(conversationData);
+
+            console.log('[DEBUG] Conversation created:', {
+                id: conversation.id,
+                entity_id: conversation.entity_id,
+                selectedEntityId: this.selectedEntityId,
+            });
+
+            // Track last created conversation for debugging persistence issues
+            this.lastCreatedConversation = {
+                id: conversation.id,
+                entity_id: conversation.entity_id,
+                createdAt: Date.now(),
+            };
 
             this.conversations.unshift(conversation);
             this.currentConversationId = conversation.id;
@@ -1337,6 +1491,10 @@ class App {
                 this.isMultiEntityMode = false;
                 this.currentConversationEntities = [];
             }
+
+            // Note: We do NOT merge conversation's entity_system_prompts into entitySystemPrompts
+            // entitySystemPrompts holds the user's default settings for NEW conversations
+            // Each conversation stores its own entity_system_prompts independently
 
             this.renderConversationList();
             this.clearMessages();
@@ -2538,6 +2696,25 @@ class App {
         this.updateVerbosityControlState();
         // Reset import section to step 1
         this.resetImportToStep1();
+
+        // Update system prompt label to show current entity
+        if (this.selectedEntityId && this.selectedEntityId !== 'multi-entity') {
+            const entity = this.entities.find(e => e.index_name === this.selectedEntityId);
+            if (entity) {
+                this.elements.systemPromptLabel.textContent = `System Prompt for ${entity.label} (optional)`;
+                this.elements.systemPromptHelp.textContent = `This prompt applies to ${entity.label} and will be used for new conversations with this entity.`;
+            } else {
+                this.elements.systemPromptLabel.textContent = 'System Prompt (optional)';
+                this.elements.systemPromptHelp.textContent = 'This prompt applies to the currently selected entity and will be used for new conversations.';
+            }
+        } else if (this.selectedEntityId === 'multi-entity') {
+            this.elements.systemPromptLabel.textContent = 'Fallback System Prompt (optional)';
+            this.elements.systemPromptHelp.textContent = 'This fallback prompt is used when an entity has no specific system prompt configured.';
+        } else {
+            this.elements.systemPromptLabel.textContent = 'System Prompt (optional)';
+            this.elements.systemPromptHelp.textContent = 'This prompt applies to the currently selected entity and will be used for new conversations.';
+        }
+
         this.showModal('settingsModal');
     }
 
@@ -2561,6 +2738,14 @@ class App {
         this.settings.conversationType = this.elements.conversationTypeSelect.value;
         // Save verbosity value
         this.settings.verbosity = this.elements.verbositySelect.value;
+
+        // Save system prompt per-entity (for single-entity mode)
+        if (this.selectedEntityId && this.selectedEntityId !== 'multi-entity') {
+            this.entitySystemPrompts[this.selectedEntityId] = this.settings.systemPrompt;
+        }
+
+        // Persist entity system prompts to localStorage
+        this.saveEntitySystemPromptsToStorage();
 
         // Apply theme
         this.setTheme(this.elements.themeSelect.value);

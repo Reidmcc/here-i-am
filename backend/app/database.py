@@ -64,6 +64,21 @@ async def run_migrations(conn):
             ))
             print("  ✓ Added entity_id column for multi-entity memory isolation")
 
+    # Check if entity_system_prompts column exists in conversations table
+    result = await conn.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
+    ))
+    if result.fetchone():
+        result = await conn.execute(text("PRAGMA table_info(conversations)"))
+        columns = [row[1] for row in result.fetchall()]
+
+        if 'entity_system_prompts' not in columns:
+            print("Migrating: Adding 'entity_system_prompts' column to conversations table...")
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN entity_system_prompts JSON"
+            ))
+            print("  ✓ Added entity_system_prompts column for per-entity system prompts")
+
 
 async def init_db():
     async with engine.begin() as conn:
