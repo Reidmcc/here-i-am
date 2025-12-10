@@ -307,7 +307,10 @@ class AnthropicService:
             cached_history_text = "\n".join(f"{m['role']}: {m['content']}" for m in cached_context)
             cached_history_tokens = self.count_tokens(cached_history_text)
             will_cache_history = enable_caching and cached_history_tokens >= 1024
-            logger.info(f"[CACHE] Cached history: {len(cached_context)} msgs, {cached_history_tokens} tokens, will cache: {will_cache_history}")
+            # Count messages by role for debugging
+            user_count = sum(1 for m in cached_context if m.get('role') == 'user')
+            assistant_count = sum(1 for m in cached_context if m.get('role') == 'assistant')
+            logger.info(f"[CACHE] Cached history: {len(cached_context)} msgs ({user_count} user, {assistant_count} assistant), {cached_history_tokens} tokens, will cache: {will_cache_history}")
 
         # STEP 1: Add cached conversation history with cache breakpoint on last message
         if cached_context:
@@ -410,7 +413,9 @@ class AnthropicService:
 
         # Log final message structure for debugging
         msg_summary = [f"{m['role']}:{len(m['content']) if isinstance(m['content'], str) else 'array'}" for m in messages]
-        logger.info(f"[CACHE] Final message structure: {len(messages)} messages [{', '.join(msg_summary)}]")
+        user_msgs = sum(1 for m in messages if m.get('role') == 'user')
+        assistant_msgs = sum(1 for m in messages if m.get('role') == 'assistant')
+        logger.info(f"[CACHE] Final message structure: {len(messages)} messages ({user_msgs} user, {assistant_msgs} assistant) [{', '.join(msg_summary)}]")
 
         return messages
 

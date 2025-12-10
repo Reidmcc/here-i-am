@@ -554,6 +554,12 @@ class SessionManager:
         )
         messages = result.scalars().all()
 
+        # Count messages by role for debugging
+        human_count = sum(1 for m in messages if m.role == MessageRole.HUMAN)
+        assistant_count = sum(1 for m in messages if m.role == MessageRole.ASSISTANT)
+        other_count = len(messages) - human_count - assistant_count
+        logger.info(f"[SESSION] Loading {len(messages)} messages from DB ({human_count} human, {assistant_count} assistant, {other_count} other)")
+
         for msg in messages:
             if msg.role == MessageRole.HUMAN:
                 # For multi-entity conversations, label human messages
@@ -570,6 +576,8 @@ class SessionManager:
                     session.conversation_context.append({"role": "assistant", "content": labeled_content})
                 else:
                     session.conversation_context.append({"role": "assistant", "content": msg.content})
+            else:
+                logger.warning(f"[SESSION] Skipping message with unexpected role: {msg.role}")
 
         # Load already-retrieved memory IDs for deduplication
         # Note: get_retrieved_ids_for_conversation returns string IDs to match Pinecone
@@ -810,7 +818,14 @@ class SessionManager:
 
         # Debug logging for memory injection
         logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
-        logger.info(f"[CACHE] Context: {len(cache_content['cached_context'])} cached msgs, {len(cache_content['new_context'])} new msgs")
+        # Log cached context breakdown by role
+        cached_ctx = cache_content['cached_context']
+        new_ctx = cache_content['new_context']
+        cached_user = sum(1 for m in cached_ctx if m.get('role') == 'user')
+        cached_asst = sum(1 for m in cached_ctx if m.get('role') == 'assistant')
+        new_user = sum(1 for m in new_ctx if m.get('role') == 'user')
+        new_asst = sum(1 for m in new_ctx if m.get('role') == 'assistant')
+        logger.info(f"[CACHE] Context: {len(cached_ctx)} cached msgs ({cached_user} user, {cached_asst} assistant), {len(new_ctx)} new msgs ({new_user} user, {new_asst} assistant)")
 
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
@@ -1097,7 +1112,14 @@ class SessionManager:
 
         # Debug logging for memory injection
         logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
-        logger.info(f"[CACHE] Context: {len(cache_content['cached_context'])} cached msgs, {len(cache_content['new_context'])} new msgs")
+        # Log cached context breakdown by role
+        cached_ctx = cache_content['cached_context']
+        new_ctx = cache_content['new_context']
+        cached_user = sum(1 for m in cached_ctx if m.get('role') == 'user')
+        cached_asst = sum(1 for m in cached_ctx if m.get('role') == 'assistant')
+        new_user = sum(1 for m in new_ctx if m.get('role') == 'user')
+        new_asst = sum(1 for m in new_ctx if m.get('role') == 'assistant')
+        logger.info(f"[CACHE] Context: {len(cached_ctx)} cached msgs ({cached_user} user, {cached_asst} assistant), {len(new_ctx)} new msgs ({new_user} user, {new_asst} assistant)")
 
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
