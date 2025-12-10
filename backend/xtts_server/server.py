@@ -170,6 +170,17 @@ def get_model():
             # Load the model
             _tts_model = TTS(_model_name).to(device)
 
+            # Override the tokenizer's character limits to match our chunking
+            # The default 250 char limit is overly conservative; XTTS can handle 400 tokens
+            try:
+                tokenizer = _tts_model.synthesizer.tts_model.tokenizer
+                if hasattr(tokenizer, 'char_limits'):
+                    for lang in tokenizer.char_limits:
+                        tokenizer.char_limits[lang] = MAX_CHUNK_CHARS
+                    logger.info(f"Updated tokenizer char_limits to {MAX_CHUNK_CHARS}")
+            except Exception as e:
+                logger.warning(f"Could not update tokenizer char_limits: {e}")
+
             # Apply reduce-overhead optimization for GPU (staying in FP32 for stability)
             if device == "cuda":
                 logger.info("Applying torch.compile with reduce-overhead mode...")
