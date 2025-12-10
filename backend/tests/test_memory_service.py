@@ -513,6 +513,149 @@ class TestMemoryServiceDatabase:
         # Link without entity_id should not be included
         assert sample_messages[0].id not in claude_ids
 
+    @pytest.mark.asyncio
+    async def test_get_archived_conversation_ids_basic(self, db_session, sample_conversation):
+        """Test getting archived conversation IDs."""
+        from app.models import Conversation
+
+        service = MemoryService()
+
+        # Archive the sample conversation
+        sample_conversation.is_archived = True
+        await db_session.commit()
+
+        # Get archived IDs (no entity filter)
+        archived_ids = await service.get_archived_conversation_ids(db_session)
+
+        assert sample_conversation.id in archived_ids
+
+    @pytest.mark.asyncio
+    async def test_get_archived_conversation_ids_filters_by_entity(self, db_session):
+        """Test archived IDs filtered by entity_id."""
+        from app.models import Conversation
+        import uuid
+
+        service = MemoryService()
+
+        # Create conversations for different entities
+        conv1 = Conversation(
+            id=str(uuid.uuid4()),
+            entity_id="claude-main",
+            is_archived=True,
+        )
+        conv2 = Conversation(
+            id=str(uuid.uuid4()),
+            entity_id="gpt-test",
+            is_archived=True,
+        )
+        db_session.add(conv1)
+        db_session.add(conv2)
+        await db_session.commit()
+
+        with patch("app.services.memory_service.settings") as mock_settings:
+            # Non-default entity - should only get that entity's conversations
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="claude-main")
+
+            gpt_archived = await service.get_archived_conversation_ids(
+                db_session, entity_id="gpt-test"
+            )
+
+            assert conv2.id in gpt_archived
+            assert conv1.id not in gpt_archived
+
+    @pytest.mark.asyncio
+    async def test_get_archived_conversation_ids_includes_null_entity_for_default(self, db_session):
+        """Test archived IDs include NULL entity_id conversations when querying default entity.
+
+        This is the key fix: conversations with NULL entity_id have their memories
+        stored in the default entity's Pinecone index, so when filtering by the
+        default entity, we must also include conversations with NULL entity_id.
+        """
+        from app.models import Conversation
+        import uuid
+
+        service = MemoryService()
+
+        # Create conversation with explicit entity_id
+        conv_explicit = Conversation(
+            id=str(uuid.uuid4()),
+            entity_id="claude-main",
+            is_archived=True,
+        )
+        # Create conversation with NULL entity_id (legacy)
+        conv_null = Conversation(
+            id=str(uuid.uuid4()),
+            entity_id=None,  # Legacy conversation
+            is_archived=True,
+        )
+        # Create conversation with different entity
+        conv_other = Conversation(
+            id=str(uuid.uuid4()),
+            entity_id="gpt-test",
+            is_archived=True,
+        )
+        db_session.add(conv_explicit)
+        db_session.add(conv_null)
+        db_session.add(conv_other)
+        await db_session.commit()
+
+        with patch("app.services.memory_service.settings") as mock_settings:
+            # Set claude-main as the default entity
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="claude-main")
+
+            # Query for claude-main (the default entity)
+            archived_ids = await service.get_archived_conversation_ids(
+                db_session, entity_id="claude-main"
+            )
+
+            # Should include both explicit claude-main AND null entity_id
+            assert conv_explicit.id in archived_ids
+            assert conv_null.id in archived_ids
+            # Should NOT include different entity
+            assert conv_other.id not in archived_ids
+
+    @pytest.mark.asyncio
+    async def test_get_archived_conversation_ids_excludes_null_for_non_default(self, db_session):
+        """Test archived IDs exclude NULL entity_id conversations for non-default entities.
+
+        When querying a non-default entity, NULL entity_id conversations should not
+        be included because their memories are in the default entity's index.
+        """
+        from app.models import Conversation
+        import uuid
+
+        service = MemoryService()
+
+        # Create conversation with NULL entity_id (legacy)
+        conv_null = Conversation(
+            id=str(uuid.uuid4()),
+            entity_id=None,
+            is_archived=True,
+        )
+        # Create conversation with gpt-test entity
+        conv_gpt = Conversation(
+            id=str(uuid.uuid4()),
+            entity_id="gpt-test",
+            is_archived=True,
+        )
+        db_session.add(conv_null)
+        db_session.add(conv_gpt)
+        await db_session.commit()
+
+        with patch("app.services.memory_service.settings") as mock_settings:
+            # claude-main is default, not gpt-test
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="claude-main")
+
+            # Query for gpt-test (NOT the default entity)
+            archived_ids = await service.get_archived_conversation_ids(
+                db_session, entity_id="gpt-test"
+            )
+
+            # Should only include gpt-test conversations
+            assert conv_gpt.id in archived_ids
+            # Should NOT include null entity_id (those are in default entity's index)
+            assert conv_null.id not in archived_ids
+
 
 class TestMemoryServiceRetrievalCount:
     """Tests for retrieval count updates."""

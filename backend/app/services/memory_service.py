@@ -4,7 +4,7 @@ import logging
 
 from pinecone import Pinecone
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_
 from app.config import settings
 from app.models import Message, ConversationMemoryLink, Conversation
 import numpy as np
@@ -473,12 +473,28 @@ class MemoryService:
         Args:
             db: Database session
             entity_id: Optional entity filter. If provided, only returns archived
-                       conversations for that entity.
+                       conversations for that entity. Also includes conversations
+                       with NULL entity_id if the provided entity_id matches the
+                       default entity (for backward compatibility with legacy
+                       conversations that stored memories in the default index).
         """
         query = select(Conversation.id).where(Conversation.is_archived == True)
 
         if entity_id is not None:
-            query = query.where(Conversation.entity_id == entity_id)
+            # Check if this entity_id is the default entity
+            # Conversations with NULL entity_id have their memories stored in
+            # the default entity's Pinecone index, so we need to include them
+            default_entity = settings.get_default_entity()
+            if default_entity and default_entity.index_name == entity_id:
+                # Include both explicit matches AND null entity_id (legacy conversations)
+                query = query.where(
+                    or_(
+                        Conversation.entity_id == entity_id,
+                        Conversation.entity_id.is_(None)
+                    )
+                )
+            else:
+                query = query.where(Conversation.entity_id == entity_id)
 
         result = await db.execute(query)
         return set(row[0] for row in result.fetchall())
