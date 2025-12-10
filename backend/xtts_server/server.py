@@ -375,22 +375,32 @@ def numpy_to_wav_bytes(audio_array: np.ndarray, sample_rate: int = 24000) -> byt
 MAX_CHUNK_CHARS = 600
 
 
+def _normalize_chunk(text: str) -> str:
+    """Normalize whitespace in a chunk for TTS - replace newlines with spaces."""
+    # Replace newlines with spaces
+    text = text.replace('\n', ' ')
+    # Collapse multiple spaces into one
+    text = re.sub(r' +', ' ', text)
+    return text.strip()
+
+
 def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
     """
     Split text into chunks suitable for XTTS processing.
 
     Splits at sentence boundaries first, then paragraph breaks, clause boundaries
     (commas, semicolons), and finally word boundaries as a last resort.
+    All chunks are normalized (newlines replaced with spaces) for TTS compatibility.
 
     Args:
         text: The text to split
         max_chars: Maximum characters per chunk
 
     Returns:
-        List of text chunks
+        List of text chunks (normalized for TTS)
     """
     if len(text) <= max_chars:
-        return [text]
+        return [_normalize_chunk(text)]
 
     chunks = []
 
@@ -443,7 +453,8 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
     if current_chunk.strip():
         chunks.append(current_chunk.strip())
 
-    return chunks
+    # Normalize all chunks for TTS compatibility
+    return [_normalize_chunk(chunk) for chunk in chunks]
 
 
 def _split_by_clauses(text: str, max_chars: int, chunks: list, current_chunk: str) -> str:
