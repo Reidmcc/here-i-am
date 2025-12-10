@@ -357,17 +357,20 @@ def numpy_to_wav_bytes(audio_array: np.ndarray, sample_rate: int = 24000) -> byt
     return buffer.read()
 
 
-# XTTS has a 400 token limit. We use ~250 chars as a safe limit since
-# tokenization varies and we want to leave room for language-specific expansion.
-MAX_CHUNK_CHARS = 250
+# XTTS has a 400 token limit (gpt_max_text_tokens: 402).
+# English averages ~4 chars/token, so 400 tokens ≈ 1600 chars.
+# We use 400 chars as a conservative limit that works across languages
+# while still allowing efficient sentence packing.
+MAX_CHUNK_CHARS = 400
 
 
 def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
     """
     Split text into chunks suitable for XTTS processing.
 
-    Splits at sentence boundaries (., !, ?) when possible, otherwise at
-    word boundaries. Each chunk will be under max_chars.
+    Splits at sentence boundaries (., !, ?) when possible, using a regex
+    that avoids common abbreviations. Falls back to clause boundaries
+    (commas, semicolons) or word boundaries for long sentences.
 
     Args:
         text: The text to split
@@ -380,8 +383,16 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
         return [text]
 
     chunks = []
-    # Split into sentences first (keeping the punctuation)
-    sentences = re.split(r'(?<=[.!?])\s+', text)
+
+    # Split into sentences at sentence-ending punctuation followed by space
+    # and an uppercase letter (indicating new sentence start).
+    # This naturally avoids most abbreviations like "Dr. Smith" since
+    # the word after the period starts lowercase or is a name.
+    # Pattern: (. or ! or ?) followed by space(s) and uppercase letter
+    sentence_pattern = r'(?<=[.!?])\s+(?=[A-Z])'
+    sentences = re.split(sentence_pattern, text)
+    # Filter out empty strings from split
+    sentences = [s for s in sentences if s.strip()]
 
     current_chunk = ""
     for sentence in sentences:
@@ -392,16 +403,29 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
                 chunks.append(current_chunk.strip())
                 current_chunk = ""
 
-            # If single sentence is too long, split by words
+            # If single sentence is too long, try splitting at clause boundaries
             if len(sentence) > max_chars:
-                words = sentence.split()
-                for word in words:
-                    if len(current_chunk) + len(word) + 1 > max_chars:
+                # Try comma/semicolon splits first
+                clauses = re.split(r'(?<=[,;])\s+', sentence)
+                for clause in clauses:
+                    if len(current_chunk) + len(clause) + 1 > max_chars:
                         if current_chunk.strip():
                             chunks.append(current_chunk.strip())
-                        current_chunk = word + " "
+                            current_chunk = ""
+                        # If single clause is still too long, split by words
+                        if len(clause) > max_chars:
+                            words = clause.split()
+                            for word in words:
+                                if len(current_chunk) + len(word) + 1 > max_chars:
+                                    if current_chunk.strip():
+                                        chunks.append(current_chunk.strip())
+                                    current_chunk = word + " "
+                                else:
+                                    current_chunk += word + " "
+                        else:
+                            current_chunk = clause + " "
                     else:
-                        current_chunk += word + " "
+                        current_chunk += clause + " "
             else:
                 current_chunk = sentence + " "
         else:
