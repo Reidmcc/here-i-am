@@ -376,7 +376,9 @@ MAX_CHUNK_CHARS = 400
 
 
 def _normalize_chunk(text: str) -> str:
-    """Normalize whitespace in a chunk for TTS - replace newlines with spaces."""
+    """Normalize text for TTS - remove problematic characters and fix whitespace."""
+    # Remove brackets - XTTS doesn't handle them well
+    text = re.sub(r'[\[\]]', '', text)
     # Replace newlines with spaces
     text = text.replace('\n', ' ')
     # Collapse multiple spaces into one
