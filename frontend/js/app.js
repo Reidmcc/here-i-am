@@ -230,6 +230,27 @@ class App {
         }
     }
 
+    loadSelectedVoiceFromStorage() {
+        // Load selected voice ID from localStorage
+        try {
+            return localStorage.getItem('here-i-am-voice-id');
+        } catch (error) {
+            console.warn('Failed to load voice selection from localStorage:', error);
+            return null;
+        }
+    }
+
+    saveSelectedVoiceToStorage() {
+        // Save selected voice ID to localStorage
+        try {
+            if (this.selectedVoiceId) {
+                localStorage.setItem('here-i-am-voice-id', this.selectedVoiceId);
+            }
+        } catch (error) {
+            console.warn('Failed to save voice selection to localStorage:', error);
+        }
+    }
+
     async checkTTSStatus() {
         try {
             const status = await api.getTTSStatus();
@@ -238,7 +259,11 @@ class App {
 
             if (status.configured) {
                 this.ttsVoices = status.voices || [];
-                this.selectedVoiceId = status.default_voice_id;
+
+                // Try to restore saved voice selection, fall back to default
+                const savedVoiceId = this.loadSelectedVoiceFromStorage();
+                const savedVoiceExists = savedVoiceId && this.ttsVoices.some(v => v.voice_id === savedVoiceId);
+                this.selectedVoiceId = savedVoiceExists ? savedVoiceId : status.default_voice_id;
 
                 // Track XTTS server health
                 if (this.ttsProvider === 'xtts') {
@@ -2755,7 +2780,8 @@ class App {
             const newVoiceId = this.elements.voiceSelect.value;
             if (newVoiceId !== this.selectedVoiceId) {
                 this.selectedVoiceId = newVoiceId;
-                // Clear audio cache when voice changes
+                // Persist voice selection and clear audio cache when voice changes
+                this.saveSelectedVoiceToStorage();
                 this.clearAudioCache();
             }
         }
