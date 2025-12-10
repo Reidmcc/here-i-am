@@ -379,9 +379,8 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
     """
     Split text into chunks suitable for XTTS processing.
 
-    Splits at sentence boundaries (., !, ?) when possible, using a regex
-    that avoids common abbreviations. Falls back to clause boundaries
-    (commas, semicolons) or word boundaries for long sentences.
+    Splits at sentence boundaries first, then paragraph breaks, clause boundaries
+    (commas, semicolons), and finally word boundaries as a last resort.
 
     Args:
         text: The text to split
@@ -395,14 +394,11 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
 
     chunks = []
 
-    # Split into sentences at sentence-ending punctuation followed by space
-    # and an uppercase letter (indicating new sentence start).
-    # This naturally avoids most abbreviations like "Dr. Smith" since
-    # the word after the period starts lowercase or is a name.
-    # Pattern: (. or ! or ?) followed by space(s) and uppercase letter
-    sentence_pattern = r'(?<=[.!?])\s+(?=[A-Z])'
+    # Split into sentences at punctuation followed by space and uppercase letter.
+    # Require lowercase before punctuation to avoid splitting inside ALL CAPS
+    # labels like [MEMORIES FROM PREVIOUS CONVERSATIONS. THESE ARE NOT...]
+    sentence_pattern = r'(?<=[a-z][.!?])\s+(?=[A-Z])'
     sentences = re.split(sentence_pattern, text)
-    # Filter out empty strings from split
     sentences = [s for s in sentences if s.strip()]
 
     current_chunk = ""
@@ -414,29 +410,30 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
                 chunks.append(current_chunk.strip())
                 current_chunk = ""
 
-            # If single sentence is too long, try splitting at clause boundaries
+            # If single sentence is too long, try splitting further
             if len(sentence) > max_chars:
-                # Try comma/semicolon splits first
-                clauses = re.split(r'(?<=[,;])\s+', sentence)
-                for clause in clauses:
-                    if len(current_chunk) + len(clause) + 1 > max_chars:
-                        if current_chunk.strip():
-                            chunks.append(current_chunk.strip())
-                            current_chunk = ""
-                        # If single clause is still too long, split by words
-                        if len(clause) > max_chars:
-                            words = clause.split()
-                            for word in words:
-                                if len(current_chunk) + len(word) + 1 > max_chars:
-                                    if current_chunk.strip():
-                                        chunks.append(current_chunk.strip())
-                                    current_chunk = word + " "
-                                else:
-                                    current_chunk += word + " "
+                # First try paragraph breaks (double newlines)
+                paragraphs = re.split(r'\n\n+', sentence)
+                if len(paragraphs) > 1:
+                    for para in paragraphs:
+                        para = para.strip()
+                        if not para:
+                            continue
+                        if len(current_chunk) + len(para) + 1 > max_chars:
+                            if current_chunk.strip():
+                                chunks.append(current_chunk.strip())
+                                current_chunk = ""
+                            if len(para) > max_chars:
+                                # Paragraph still too long - try clause splits
+                                _split_by_clauses(para, max_chars, chunks, current_chunk)
+                                current_chunk = ""
+                            else:
+                                current_chunk = para + " "
                         else:
-                            current_chunk = clause + " "
-                    else:
-                        current_chunk += clause + " "
+                            current_chunk += para + " "
+                else:
+                    # No paragraph breaks - try clause splits
+                    current_chunk = _split_by_clauses(sentence, max_chars, chunks, current_chunk)
             else:
                 current_chunk = sentence + " "
         else:
@@ -447,6 +444,31 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
         chunks.append(current_chunk.strip())
 
     return chunks
+
+
+def _split_by_clauses(text: str, max_chars: int, chunks: list, current_chunk: str) -> str:
+    """Helper to split text by clause boundaries (comma/semicolon) then words."""
+    clauses = re.split(r'(?<=[,;])\s+', text)
+    for clause in clauses:
+        if len(current_chunk) + len(clause) + 1 > max_chars:
+            if current_chunk.strip():
+                chunks.append(current_chunk.strip())
+                current_chunk = ""
+            # If single clause is still too long, split by words
+            if len(clause) > max_chars:
+                words = clause.split()
+                for word in words:
+                    if len(current_chunk) + len(word) + 1 > max_chars:
+                        if current_chunk.strip():
+                            chunks.append(current_chunk.strip())
+                        current_chunk = word + " "
+                    else:
+                        current_chunk += word + " "
+            else:
+                current_chunk = clause + " "
+        else:
+            current_chunk += clause + " "
+    return current_chunk
 
 
 def synthesize_with_cached_latents(
