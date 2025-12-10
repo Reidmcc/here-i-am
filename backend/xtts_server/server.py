@@ -370,9 +370,9 @@ def numpy_to_wav_bytes(audio_array: np.ndarray, sample_rate: int = 24000) -> byt
 
 # XTTS has a 400 token limit (gpt_max_text_tokens: 402).
 # English averages ~4 chars/token, so 400 tokens ≈ 1600 chars.
-# We use 600 chars as a moderate limit that works across languages
-# while allowing efficient sentence packing and reducing chunk count.
-MAX_CHUNK_CHARS = 600
+# We use 400 chars to avoid XTTS audio truncation at chunk ends -
+# larger chunks (500-600) cause content loss at the end of chunks.
+MAX_CHUNK_CHARS = 400
 
 
 def _normalize_chunk(text: str) -> str:
