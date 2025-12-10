@@ -554,6 +554,12 @@ class SessionManager:
         )
         messages = result.scalars().all()
 
+        # Count messages by role for debugging
+        human_count = sum(1 for m in messages if m.role == MessageRole.HUMAN)
+        assistant_count = sum(1 for m in messages if m.role == MessageRole.ASSISTANT)
+        other_count = len(messages) - human_count - assistant_count
+        logger.info(f"[SESSION] Loading {len(messages)} messages from DB ({human_count} human, {assistant_count} assistant, {other_count} other)")
+
         for msg in messages:
             if msg.role == MessageRole.HUMAN:
                 # For multi-entity conversations, label human messages
@@ -570,6 +576,8 @@ class SessionManager:
                     session.conversation_context.append({"role": "assistant", "content": labeled_content})
                 else:
                     session.conversation_context.append({"role": "assistant", "content": msg.content})
+            else:
+                logger.warning(f"[SESSION] Skipping message with unexpected role: {msg.role}")
 
         # Load already-retrieved memory IDs for deduplication
         # Note: get_retrieved_ids_for_conversation returns string IDs to match Pinecone
