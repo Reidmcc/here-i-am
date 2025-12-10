@@ -44,7 +44,7 @@ This implements a novel **Session Memory Accumulator Pattern**:
   - `conversation_context`: Actual message history
   - `session_memories`: Deduplicated accumulated memories
 - Memories are retrieved via semantic search (Pinecone)
-- **Significance = times_retrieved × recency_factor ÷ age_factor**
+- **Significance = times_retrieved × recency_factor × half_life_modifier**
 - What matters is what keeps mattering across conversations
 
 ### Multi-Entity System
@@ -60,7 +60,7 @@ The application supports multiple AI entities, each with its own:
 # Configure entities via JSON array (required for memory features)
 PINECONE_INDEXES='[
   {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929", "host": "https://claude-main-xxxxx.svc.xxx.pinecone.io"},
-  {"index_name": "gpt-research", "label": "GPT Research", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-4o", "host": "https://gpt-research-xxxxx.svc.xxx.pinecone.io"}
+  {"index_name": "gpt-research", "label": "GPT Research", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-5.1", "host": "https://gpt-research-xxxxx.svc.xxx.pinecone.io"}
 ]'
 ```
 
@@ -236,7 +236,7 @@ significance = times_retrieved * recency_factor * half_life_modifier
 ```
 
 Where:
-- `recency_factor` boosts recently-retrieved memories (decays based on `last_retrieved_at`)
+- `recency_factor` boosts recently-retrieved memories (decays based on `last_retrieved_at`, with a 1-day minimum cap to prevent very recent retrievals from dominating)
 - `half_life_modifier` decays significance over time: `0.5 ^ (days_since_creation / half_life_days)`
 
 **Philosophy:** Memories aren't pre-tagged as important. Significance emerges from retrieval patterns. The half-life modifier prevents old frequently-retrieved memories from permanently dominating - they must continue being retrieved to maintain significance.
@@ -295,38 +295,34 @@ class CacheService:
 
 ### 6. Memory Injection Format
 
-**Location:** `backend/app/services/anthropic_service.py:238-398`
+**Location:** `backend/app/services/anthropic_service.py:238-415`
 
-Memories are injected using a two-breakpoint caching strategy for Anthropic prompt caching:
+Memories are injected using a conversation-first caching strategy for Anthropic prompt caching:
 
 ```
-User: [MEMORIES FROM PREVIOUS CONVERSATIONS. THESE ARE NOT PART OF THE CURRENT CONVERSATION]
+User: [CONVERSATION HISTORY]
+<multi-entity header if applicable>
+<cached conversation history>*  <- cache breakpoint (on last cached message)
+<new conversation history>
+[/CONVERSATION HISTORY]
 
+[MEMORIES FROM PREVIOUS CONVERSATIONS]
 Memory (from 2025-11-30):
 "Original message content here..."
+[/MEMORIES]
 
-Memory (from 2025-11-28):
-"Another memory..."
-
-[END MEMORIES]
-```
-
-```
-Assistant: I acknowledge these memories from previous conversations...
-
-User: [CURRENT CONVERSATION]
-<conversation history...>
-
-User: [DATE CONTEXT]
+[CURRENT USER MESSAGE]
+[DATE CONTEXT]
 Current date: 2025-12-07
-[END DATE CONTEXT]
+[/DATE CONTEXT]
 
 <current message>
 ```
 
-**Why:** Two cache breakpoints maximize cache hits:
-- Breakpoint 1: Memory block (invalidated when new memories retrieved)
-- Breakpoint 2: Conversation history (invalidated when context consolidated)
+**Why:** Conversation-first caching maximizes cache hits:
+- Cache breakpoint placed on last cached conversation history message
+- Memories are placed AFTER conversation history, so new memory retrievals don't invalidate the conversation cache
+- Periodic consolidation grows the cached history (causes one cache miss to create larger cache)
 
 ---
 
@@ -392,7 +388,7 @@ ELEVENLABS_MODEL_ID=eleven_multilingual_v2  # TTS model
 # Each entity requires a pre-created Pinecone index with dimension=1024 and integrated inference (llama-text-embed-v2)
 PINECONE_INDEXES='[
   {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929", "host": "https://claude-main-xxxxx.svc.xxx.pinecone.io"},
-  {"index_name": "gpt-research", "label": "GPT", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-4o", "host": "https://gpt-research-xxxxx.svc.xxx.pinecone.io"}
+  {"index_name": "gpt-research", "label": "GPT", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-5.1", "host": "https://gpt-research-xxxxx.svc.xxx.pinecone.io"}
 ]'
 ```
 
@@ -690,8 +686,10 @@ id: UUID (PK)
 conversation_id: UUID (FK -> conversations.id)
 message_id: UUID (FK -> messages.id)
 retrieved_at: DateTime
+entity_id: String (nullable)  # Which entity retrieved this memory (for multi-entity isolation)
 
 # Purpose: Track which memories retrieved in which conversations
+# For multi-entity conversations, entity_id tracks which entity retrieved the memory
 ```
 
 ### Conversation Entities Table (Multi-Entity Support)
@@ -898,11 +896,12 @@ conversation: Conversation
    - Session manager uses dictionary, not persistent storage
    - Frontend must handle "session not found" gracefully
 
-3. **No Testing Infrastructure**
-   - No unit tests, integration tests, or test fixtures
-   - Manual testing required for all changes
-   - Be extra cautious with database migrations
-   - Verify changes in running application
+3. **Testing Infrastructure**
+   - Unit tests located in `backend/tests/`
+   - Run tests with `pytest` from the backend directory
+   - Tests use in-memory SQLite database
+   - Key test files: `test_anthropic_service.py`, `test_session_manager.py`, `test_memory_service.py`, `test_config.py`
+   - Still verify significant changes in running application
 
 4. **Database URL Naming**
    - Must use `HERE_I_AM_DATABASE_URL` (not `DATABASE_URL`)
@@ -1065,6 +1064,11 @@ conversation: Conversation
 - Database setup: `backend/app/database.py`
 - Schema defined in model files
 
+**Testing:**
+- Test configuration: `backend/tests/conftest.py`
+- Service tests: `backend/tests/test_*.py`
+- Run tests: `cd backend && pytest`
+
 **Multi-Entity Conversations:**
 - Conversation entity model: `backend/app/models/conversation_entity.py`
 - Conversation routes (creation/listing): `backend/app/routes/conversations.py`
@@ -1078,26 +1082,35 @@ conversation: Conversation
 ```python
 # Default models
 DEFAULT_MODEL = "claude-sonnet-4-5-20250929"  # Anthropic default
-DEFAULT_OPENAI_MODEL = "gpt-4o"  # OpenAI default
+DEFAULT_OPENAI_MODEL = "gpt-5.1"  # OpenAI default
+
+# Supported OpenAI models include:
+#   gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-4
+#   gpt-5.1, gpt-5-mini, gpt-5.1-chat-latest
+#   o1, o1-mini, o1-preview, o3, o3-mini, o4-mini
 
 # Memory settings (config.py)
 initial_retrieval_top_k = 5  # First retrieval in conversation
 retrieval_top_k = 5          # Subsequent retrievals
 similarity_threshold = 0.3   # Tuned for llama-text-embed-v2
 retrieval_candidate_multiplier = 2  # Fetch 2x candidates, re-rank by significance
-recency_boost_strength = 1.0
+recency_boost_strength = 1.2  # Max recency boost
+significance_floor = 0.25     # Minimum significance value
 significance_half_life_days = 60  # Significance halves every 60 days
 
 # Context limits (tokens)
 context_token_limit = 175000  # Conversation history cap
-memory_token_limit = 20000    # Memory block cap
+memory_token_limit = 10000    # Memory block cap (kept small to reduce cache miss cost)
 
 # Significance calculation
 significance = times_retrieved * recency_factor * half_life_modifier
-# recency_factor = 1.0 + min(1/days_since_retrieval, recency_boost_strength)
+# recency_factor = 1.0 + min(1/max(days_since_retrieval, 1), recency_boost_strength)
+#   Note: days_since_retrieval capped at 1-day minimum to prevent very recent retrievals from dominating
 # half_life_modifier = 0.5 ^ (days_since_creation / significance_half_life_days)
-significance = times_retrieved * recency_boost_strength / age_factor
-age_factor = 1 + (age_days * age_decay_rate)
+# Final significance = max(calculated_significance, significance_floor)
+
+# GPT-5.1 verbosity setting (config.py)
+default_verbosity = "medium"  # Options: "low", "medium", "high" for GPT-5.1 models
 
 # XTTS defaults (config.py)
 xtts_enabled = False              # Must be explicitly enabled
