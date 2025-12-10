@@ -34,6 +34,10 @@ class Conversation(Base):
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
     # Imported conversations are hidden from the conversation list but their messages are stored as memories
     is_imported: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Per-entity system prompts (JSON: { entity_id: system_prompt, ... })
+    # Allows different system prompts for each entity in multi-entity conversations
+    # or overriding the default system prompt for single-entity conversations
+    entity_system_prompts: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     messages: Mapped[List["Message"]] = relationship(
         "Message", back_populates="conversation", cascade="all, delete-orphan"

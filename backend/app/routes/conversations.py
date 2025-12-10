@@ -25,11 +25,13 @@ class ConversationCreate(BaseModel):
     title: Optional[str] = None
     tags: Optional[List[str]] = None
     conversation_type: str = "normal"
-    system_prompt: Optional[str] = None
+    system_prompt: Optional[str] = None  # Legacy: single system prompt (fallback)
     model: str = "claude-sonnet-4-5-20250929"
     entity_id: Optional[str] = None  # Pinecone index name for the AI entity
     # For multi-entity conversations: list of entity IDs to include
     entity_ids: Optional[List[str]] = None
+    # Per-entity system prompts: { entity_id: system_prompt, ... }
+    entity_system_prompts: Optional[dict] = None
 
 
 class ConversationUpdate(BaseModel):
@@ -64,6 +66,8 @@ class ConversationResponse(BaseModel):
     preview: Optional[str] = None
     # For multi-entity conversations: list of participating entities
     entities: Optional[List[EntityInfo]] = None
+    # Per-entity system prompts: { entity_id: system_prompt, ... }
+    entity_system_prompts: Optional[dict] = None
 
     class Config:
         from_attributes = True
@@ -191,6 +195,7 @@ async def create_conversation(
             system_prompt_used=data.system_prompt,
             llm_model_used=data.model,
             entity_id="multi-entity",  # Special marker for multi-entity conversations
+            entity_system_prompts=data.entity_system_prompts,
         )
 
         db.add(conversation)
@@ -227,6 +232,7 @@ async def create_conversation(
             entity_missing=False,
             message_count=0,
             entities=entities_info,
+            entity_system_prompts=conversation.entity_system_prompts,
         )
     else:
         # Standard single-entity conversation
@@ -248,6 +254,7 @@ async def create_conversation(
             system_prompt_used=data.system_prompt,
             llm_model_used=data.model,
             entity_id=data.entity_id,
+            entity_system_prompts=data.entity_system_prompts,
         )
 
         db.add(conversation)
@@ -268,6 +275,7 @@ async def create_conversation(
             is_archived=conversation.is_archived,
             entity_missing=not check_entity_exists(conversation.entity_id),
             message_count=0,
+            entity_system_prompts=conversation.entity_system_prompts,
         )
 
 
@@ -347,6 +355,7 @@ async def list_conversations(
             message_count=message_count,
             preview=preview,
             entities=entities_info,
+            entity_system_prompts=conv.entity_system_prompts,
         ))
 
     return response
@@ -410,6 +419,7 @@ async def list_archived_conversations(
             entity_missing=not check_entity_exists(conv.entity_id),
             message_count=message_count,
             preview=preview,
+            entity_system_prompts=conv.entity_system_prompts,
         ))
 
     return response
@@ -462,6 +472,7 @@ async def get_conversation(
         message_count=len(messages),
         preview=preview,
         entities=entities_info,
+        entity_system_prompts=conversation.entity_system_prompts,
     )
 
 
@@ -548,6 +559,7 @@ async def update_conversation(
         is_archived=conversation.is_archived,
         entity_missing=not check_entity_exists(conversation.entity_id),
         message_count=message_count,
+        entity_system_prompts=conversation.entity_system_prompts,
     )
 
 
