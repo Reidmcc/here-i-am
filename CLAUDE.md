@@ -495,7 +495,7 @@ StyleTTS 2 provides local, GPU-accelerated text-to-speech with voice cloning cap
 - Python 3.9-3.11 (Python 3.12+ may have compatibility issues)
 - espeak-ng installed (required for phonemizer)
 
-**Installation:**
+**Installation (Linux/macOS):**
 ```bash
 cd backend
 
@@ -514,6 +514,37 @@ brew install espeak-ng
 # Step 3: Install StyleTTS 2 dependencies
 pip install -r requirements-styletts2.txt
 ```
+
+**Installation (Windows):**
+```powershell
+cd backend
+
+# Step 1: Install PyTorch (choose one based on your hardware)
+# For NVIDIA GPU with CUDA:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+# For CPU only:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Step 2: Install espeak-ng (required for phonemizer)
+# Download from: https://github.com/espeak-ng/espeak-ng/releases
+# Run the installer (e.g., espeak-ng-X.XX-x64.msi)
+# The installer adds espeak-ng to PATH automatically
+
+# Step 3: Set PHONEMIZER_ESPEAK_LIBRARY environment variable
+# Option A: Set temporarily in current session
+$env:PHONEMIZER_ESPEAK_LIBRARY = "C:\Program Files\eSpeak NG\libespeak-ng.dll"
+
+# Option B: Set permanently (run as Administrator)
+[System.Environment]::SetEnvironmentVariable("PHONEMIZER_ESPEAK_LIBRARY", "C:\Program Files\eSpeak NG\libespeak-ng.dll", "Machine")
+
+# Step 4: Install StyleTTS 2 dependencies
+pip install -r requirements-styletts2.txt
+```
+
+**Windows Troubleshooting:**
+- If phonemizer fails to find espeak-ng, verify the DLL path exists and update `PHONEMIZER_ESPEAK_LIBRARY` accordingly
+- Visual Studio Build Tools may be required for some dependencies
+- Python 3.9-3.11 recommended (3.12+ may have compatibility issues)
 
 **Running the StyleTTS 2 Server:**
 ```bash
