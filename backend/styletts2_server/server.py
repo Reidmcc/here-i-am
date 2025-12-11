@@ -581,6 +581,82 @@ def adjust_audio_speed(audio_array: np.ndarray, speed: float) -> np.ndarray:
 # 150 chars typically produces ~30-50 tokens, leaving headroom for edge cases
 MAX_CHUNK_CHARS = 150
 
+# =============================================================================
+# Pronunciation Fixes
+# =============================================================================
+# Dictionary of words that StyleTTS 2 mispronounces and their phonetic corrections.
+# Loaded from STYLETTS2_PRONUNCIATION_FIXES environment variable (JSON format).
+# Keys are lowercase; matching is case-insensitive but preserves original case pattern.
+
+# Default fixes if not configured via environment
+_DEFAULT_PRONUNCIATION_FIXES: Dict[str, str] = {
+    # Past tense -ed endings often pronounced incorrectly
+    "turned": "turnd",
+    "learned": "lernd",
+    "burned": "burnd",
+    "earned": "ernd",
+    # Words that get mispronounced
+    "into": "in to",
+}
+
+
+def _load_pronunciation_fixes() -> Dict[str, str]:
+    """
+    Load pronunciation fixes from environment variable or use defaults.
+
+    The STYLETTS2_PRONUNCIATION_FIXES environment variable should be a JSON object
+    mapping words to their phonetic replacements, e.g.:
+    {"turned": "turnd", "into": "in to"}
+    """
+    env_fixes = os.environ.get("STYLETTS2_PRONUNCIATION_FIXES", "")
+    if env_fixes:
+        try:
+            fixes = json.loads(env_fixes)
+            if isinstance(fixes, dict):
+                logger.info(f"Loaded {len(fixes)} pronunciation fixes from environment")
+                return fixes
+            else:
+                logger.warning("STYLETTS2_PRONUNCIATION_FIXES is not a JSON object, using defaults")
+        except json.JSONDecodeError as e:
+            logger.warning(f"Invalid JSON in STYLETTS2_PRONUNCIATION_FIXES: {e}, using defaults")
+
+    logger.info(f"Using {len(_DEFAULT_PRONUNCIATION_FIXES)} default pronunciation fixes")
+    return _DEFAULT_PRONUNCIATION_FIXES.copy()
+
+
+# Load fixes once at module import time
+PRONUNCIATION_FIXES: Dict[str, str] = _load_pronunciation_fixes()
+
+
+def fix_pronunciation(text: str) -> str:
+    """
+    Apply pronunciation fixes to text before TTS synthesis.
+
+    Uses word boundary matching to replace mispronounced words with
+    phonetic spellings that StyleTTS 2 handles better.
+
+    Args:
+        text: Input text to fix
+
+    Returns:
+        Text with pronunciation fixes applied
+    """
+    for word, replacement in PRONUNCIATION_FIXES.items():
+        # Use word boundaries to match whole words only
+        # Case-insensitive matching with a function to preserve case pattern
+        def replace_with_case(match: re.Match) -> str:
+            original = match.group(0)
+            if original.isupper():
+                return replacement.upper()
+            elif original[0].isupper():
+                return replacement.capitalize()
+            return replacement
+
+        pattern = rf'\b{re.escape(word)}\b'
+        text = re.sub(pattern, replace_with_case, text, flags=re.IGNORECASE)
+
+    return text
+
 # Crossfade duration in samples (at 24kHz) for smooth chunk transitions
 CROSSFADE_SAMPLES = 6000  # 250ms crossfade
 
@@ -654,6 +730,8 @@ def crossfade_chunks(audio_arrays: list, crossfade_samples: int = CROSSFADE_SAMP
 
 def _normalize_chunk(text: str) -> str:
     """Normalize text for TTS - remove problematic characters and fix whitespace."""
+    # Apply pronunciation fixes first
+    text = fix_pronunciation(text)
     # Remove brackets - can cause issues
     text = re.sub(r'[\[\]]', '', text)
     # Add period before double newlines (paragraph breaks) if no punctuation present

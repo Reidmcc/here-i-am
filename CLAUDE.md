@@ -610,6 +610,14 @@ StyleTTS 2 supports voice cloning from audio samples. Upload a 6-30 second WAV f
 - `diffusion_steps` (1-50): Quality vs speed tradeoff - higher = better quality but slower (default: 10)
 - `embedding_scale` (0.0-10.0): Classifier free guidance scale (default: 1.0)
 
+**Pronunciation Fixes:**
+StyleTTS 2 occasionally mispronounces certain words. The server includes a pronunciation fix system that automatically replaces problematic words with phonetic spellings before synthesis. Configure via the `STYLETTS2_PRONUNCIATION_FIXES` environment variable (JSON object):
+```bash
+# In .env
+STYLETTS2_PRONUNCIATION_FIXES='{"turned": "turnd", "learned": "lernd", "burned": "burnd", "earned": "ernd", "into": "in to"}'
+```
+If not set, default fixes are used. Set to `{}` to disable all fixes. Fixes are applied with case-insensitive word boundary matching and preserve the original case pattern.
+
 **Speaker Embedding Caching:**
 The StyleTTS 2 server caches speaker embeddings (computed from reference audio) based on file content hash. This dramatically speeds up repeat TTS requests for the same voice. Pre-load voices on startup via:
 ```bash
