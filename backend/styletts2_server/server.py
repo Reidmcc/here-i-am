@@ -445,10 +445,8 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
     """
     Split text into chunks suitable for StyleTTS 2 processing.
 
-    Uses a simple, robust approach:
-    1. First split by paragraph breaks (double newlines)
-    2. Then split by sentence-ending punctuation
-    3. Finally split by any punctuation or word boundaries
+    Uses a simple approach: split by sentences, then by clauses if needed,
+    then by words as a last resort.
 
     Args:
         text: The text to split
@@ -469,55 +467,54 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
     chunks = []
 
     # Split by sentence-ending punctuation (. ! ?) followed by space
-    # This is more permissive than requiring specific letter patterns
     sentences = re.split(r'(?<=[.!?])\s+', text)
 
     current_chunk = ""
+
     for sentence in sentences:
         sentence = sentence.strip()
         if not sentence:
             continue
 
-        # If adding this sentence would exceed limit
-        if len(current_chunk) + len(sentence) + 1 > max_chars:
-            # Save current chunk if not empty
+        # If this sentence alone is too long, split it further
+        if len(sentence) > max_chars:
+            # First, save any existing chunk
             if current_chunk:
-                chunks.append(current_chunk)
+                chunks.append(current_chunk.strip())
+                current_chunk = ""
 
-            # If single sentence is too long, split it further
-            if len(sentence) > max_chars:
-                # Split by commas, semicolons, or dashes
-                parts = re.split(r'(?<=[,;:\-])\s+', sentence)
-                for part in parts:
-                    part = part.strip()
-                    if not part:
-                        continue
-                    if len(current_chunk) + len(part) + 1 > max_chars:
-                        if current_chunk:
-                            chunks.append(current_chunk)
-                        # If still too long, split by words
-                        if len(part) > max_chars:
-                            words = part.split()
-                            current_chunk = ""
-                            for word in words:
-                                if len(current_chunk) + len(word) + 1 > max_chars:
-                                    if current_chunk:
-                                        chunks.append(current_chunk)
-                                    current_chunk = word
-                                else:
-                                    current_chunk = (current_chunk + " " + word).strip()
-                        else:
-                            current_chunk = part
-                    else:
-                        current_chunk = (current_chunk + " " + part).strip()
+            # Split the long sentence into smaller pieces
+            remaining = sentence
+            while remaining:
+                if len(remaining) <= max_chars:
+                    current_chunk = remaining
+                    break
+
+                # Find a good break point (prefer punctuation/space)
+                break_point = max_chars
+                for i in range(max_chars, max(0, max_chars - 50), -1):
+                    if remaining[i - 1] in ' ,;:-':
+                        break_point = i
+                        break
+
+                chunks.append(remaining[:break_point].strip())
+                remaining = remaining[break_point:].strip()
+
+        # If adding this sentence would exceed the limit
+        elif current_chunk and len(current_chunk) + len(sentence) + 1 > max_chars:
+            chunks.append(current_chunk.strip())
+            current_chunk = sentence
+
+        # Otherwise, accumulate
+        else:
+            if current_chunk:
+                current_chunk = current_chunk + " " + sentence
             else:
                 current_chunk = sentence
-        else:
-            current_chunk = (current_chunk + " " + sentence).strip()
 
     # Don't forget the last chunk
     if current_chunk:
-        chunks.append(current_chunk)
+        chunks.append(current_chunk.strip())
 
     # Filter out empty chunks
     result = [c for c in chunks if c.strip()]
@@ -528,31 +525,6 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
         logger.info(f"  Chunk {i+1}: {chunk[:80]}{'...' if len(chunk) > 80 else ''} ({len(chunk)} chars)")
 
     return result
-
-
-def _split_by_clauses(text: str, max_chars: int, chunks: list, current_chunk: str) -> str:
-    """Helper to split text by clause boundaries (comma/semicolon) then words."""
-    clauses = re.split(r'(?<=[,;])\s+', text)
-    for clause in clauses:
-        if len(current_chunk) + len(clause) + 1 > max_chars:
-            if current_chunk.strip():
-                chunks.append(current_chunk.strip())
-                current_chunk = ""
-            # If single clause is still too long, split by words
-            if len(clause) > max_chars:
-                words = clause.split()
-                for word in words:
-                    if len(current_chunk) + len(word) + 1 > max_chars:
-                        if current_chunk.strip():
-                            chunks.append(current_chunk.strip())
-                        current_chunk = word + " "
-                    else:
-                        current_chunk += word + " "
-            else:
-                current_chunk = clause + " "
-        else:
-            current_chunk += clause + " "
-    return current_chunk
 
 
 def synthesize_with_cached_embeddings(
