@@ -370,11 +370,11 @@ def _normalize_chunk(text: str) -> str:
     text = re.sub(r'[\[\]]', '', text)
     # Replace newlines with spaces
     text = text.replace('\n', ' ')
-    # Convert ALL CAPS words (3+ chars) to title case to prevent letter-by-letter spelling
-    # Preserves short acronyms like "AI", "UK", "US" but fixes "MEMORIES" -> "Memories"
+    # Convert ALL CAPS words (2+ chars) to title case to prevent letter-by-letter spelling
+    # This includes common words like "OF", "TO", "IN" that would otherwise be spelled out
     def fix_caps(match):
         word = match.group(0)
-        if len(word) > 2:
+        if len(word) >= 2:
             return word.capitalize()
         return word
     text = re.sub(r'\b[A-Z]{2,}\b', fix_caps, text)
@@ -387,9 +387,10 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
     """
     Split text into chunks suitable for StyleTTS 2 processing.
 
-    Splits at sentence boundaries first, then paragraph breaks, clause boundaries
-    (commas, semicolons), and finally word boundaries as a last resort.
-    All chunks are normalized for TTS compatibility.
+    Uses a simple, robust approach:
+    1. First split by paragraph breaks (double newlines)
+    2. Then split by sentence-ending punctuation
+    3. Finally split by any punctuation or word boundaries
 
     Args:
         text: The text to split
@@ -398,61 +399,70 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
     Returns:
         List of text chunks (normalized for TTS)
     """
+    # Normalize first to get accurate length measurements
+    text = _normalize_chunk(text)
+
+    if not text:
+        return []
+
     if len(text) <= max_chars:
-        return [_normalize_chunk(text)]
+        return [text]
 
     chunks = []
 
-    # Split into sentences at punctuation followed by space and uppercase letter.
-    # Require lowercase before punctuation to avoid splitting inside ALL CAPS
-    sentence_pattern = r'(?<=[a-z][.!?])\s+(?=[A-Z])'
-    sentences = re.split(sentence_pattern, text)
-    sentences = [s for s in sentences if s.strip()]
+    # Split by sentence-ending punctuation (. ! ?) followed by space
+    # This is more permissive than requiring specific letter patterns
+    sentences = re.split(r'(?<=[.!?])\s+', text)
 
     current_chunk = ""
     for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+
         # If adding this sentence would exceed limit
         if len(current_chunk) + len(sentence) + 1 > max_chars:
             # Save current chunk if not empty
-            if current_chunk.strip():
-                chunks.append(current_chunk.strip())
-                current_chunk = ""
+            if current_chunk:
+                chunks.append(current_chunk)
 
-            # If single sentence is too long, try splitting further
+            # If single sentence is too long, split it further
             if len(sentence) > max_chars:
-                # First try paragraph breaks (double newlines)
-                paragraphs = re.split(r'\n\n+', sentence)
-                if len(paragraphs) > 1:
-                    for para in paragraphs:
-                        para = para.strip()
-                        if not para:
-                            continue
-                        if len(current_chunk) + len(para) + 1 > max_chars:
-                            if current_chunk.strip():
-                                chunks.append(current_chunk.strip())
-                                current_chunk = ""
-                            if len(para) > max_chars:
-                                # Paragraph still too long - try clause splits
-                                _split_by_clauses(para, max_chars, chunks, current_chunk)
-                                current_chunk = ""
-                            else:
-                                current_chunk = para + " "
+                # Split by commas, semicolons, or dashes
+                parts = re.split(r'(?<=[,;:\-])\s+', sentence)
+                for part in parts:
+                    part = part.strip()
+                    if not part:
+                        continue
+                    if len(current_chunk) + len(part) + 1 > max_chars:
+                        if current_chunk:
+                            chunks.append(current_chunk)
+                        # If still too long, split by words
+                        if len(part) > max_chars:
+                            words = part.split()
+                            current_chunk = ""
+                            for word in words:
+                                if len(current_chunk) + len(word) + 1 > max_chars:
+                                    if current_chunk:
+                                        chunks.append(current_chunk)
+                                    current_chunk = word
+                                else:
+                                    current_chunk = (current_chunk + " " + word).strip()
                         else:
-                            current_chunk += para + " "
-                else:
-                    # No paragraph breaks - try clause splits
-                    current_chunk = _split_by_clauses(sentence, max_chars, chunks, current_chunk)
+                            current_chunk = part
+                    else:
+                        current_chunk = (current_chunk + " " + part).strip()
             else:
-                current_chunk = sentence + " "
+                current_chunk = sentence
         else:
-            current_chunk += sentence + " "
+            current_chunk = (current_chunk + " " + sentence).strip()
 
     # Don't forget the last chunk
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
+    if current_chunk:
+        chunks.append(current_chunk)
 
-    # Normalize all chunks for TTS compatibility
-    return [_normalize_chunk(chunk) for chunk in chunks]
+    # Filter out empty chunks
+    return [c for c in chunks if c.strip()]
 
 
 def _split_by_clauses(text: str, max_chars: int, chunks: list, current_chunk: str) -> str:
