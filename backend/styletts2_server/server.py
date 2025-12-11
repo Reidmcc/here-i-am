@@ -22,6 +22,22 @@ from fastapi.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# Patch torch.load for PyTorch 2.6+ compatibility with styletts2
+# The styletts2 package uses torch.load without weights_only=False,
+# but PyTorch 2.6+ defaults to weights_only=True for security.
+# We trust the HuggingFace models, so we patch to use the old behavior.
+_original_torch_load = torch.load
+
+
+def _patched_torch_load(*args, **kwargs):
+    """Wrapper that defaults weights_only=False for backward compatibility."""
+    if "weights_only" not in kwargs:
+        kwargs["weights_only"] = False
+    return _original_torch_load(*args, **kwargs)
+
+
+torch.load = _patched_torch_load
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
