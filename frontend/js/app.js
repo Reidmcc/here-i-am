@@ -131,10 +131,18 @@ class App {
             voiceEditId: document.getElementById('voice-edit-id'),
             voiceEditName: document.getElementById('voice-edit-name'),
             voiceEditDescription: document.getElementById('voice-edit-description'),
+            // XTTS parameters
+            xttsParamsSection: document.getElementById('xtts-params-section'),
             voiceEditTemperature: document.getElementById('voice-edit-temperature'),
             voiceEditSpeed: document.getElementById('voice-edit-speed'),
             voiceEditLengthPenalty: document.getElementById('voice-edit-length-penalty'),
             voiceEditRepetitionPenalty: document.getElementById('voice-edit-repetition-penalty'),
+            // StyleTTS 2 parameters
+            styletts2ParamsSection: document.getElementById('styletts2-params-section'),
+            voiceEditAlpha: document.getElementById('voice-edit-alpha'),
+            voiceEditBeta: document.getElementById('voice-edit-beta'),
+            voiceEditDiffusionSteps: document.getElementById('voice-edit-diffusion-steps'),
+            voiceEditEmbeddingScale: document.getElementById('voice-edit-embedding-scale'),
             voiceEditStatus: document.getElementById('voice-edit-status'),
             saveVoiceEditBtn: document.getElementById('save-voice-edit'),
             cancelVoiceEditBtn: document.getElementById('cancel-voice-edit'),
@@ -186,7 +194,7 @@ class App {
         this.currentAudio = null;
         this.currentSpeakingBtn = null;
         this.audioCache = new Map(); // Cache: messageId -> { blob, url, voiceId }
-        this.xttsServerHealthy = false;
+        this.localTtsServerHealthy = false;
 
         this.init();
     }
@@ -265,9 +273,9 @@ class App {
                 const savedVoiceExists = savedVoiceId && this.ttsVoices.some(v => v.voice_id === savedVoiceId);
                 this.selectedVoiceId = savedVoiceExists ? savedVoiceId : status.default_voice_id;
 
-                // Track XTTS server health
-                if (this.ttsProvider === 'xtts') {
-                    this.xttsServerHealthy = status.server_healthy || false;
+                // Track local TTS server health (XTTS or StyleTTS 2)
+                if (this.ttsProvider === 'xtts' || this.ttsProvider === 'styletts2') {
+                    this.localTtsServerHealthy = status.server_healthy || false;
                 }
 
                 this.updateTTSUI();
@@ -288,10 +296,19 @@ class App {
         if (this.ttsEnabled) {
             this.elements.ttsProviderGroup.style.display = 'block';
 
-            // Set provider name
-            if (this.ttsProvider === 'xtts') {
+            // Set provider name and status
+            if (this.ttsProvider === 'styletts2') {
+                this.elements.ttsProviderName.textContent = 'StyleTTS 2 (Local)';
+                if (this.localTtsServerHealthy) {
+                    this.elements.ttsProviderStatus.textContent = 'Connected';
+                    this.elements.ttsProviderStatus.className = 'tts-status healthy';
+                } else {
+                    this.elements.ttsProviderStatus.textContent = 'Server Unavailable';
+                    this.elements.ttsProviderStatus.className = 'tts-status unhealthy';
+                }
+            } else if (this.ttsProvider === 'xtts') {
                 this.elements.ttsProviderName.textContent = 'XTTS v2 (Local)';
-                if (this.xttsServerHealthy) {
+                if (this.localTtsServerHealthy) {
                     this.elements.ttsProviderStatus.textContent = 'Connected';
                     this.elements.ttsProviderStatus.className = 'tts-status healthy';
                 } else {
@@ -310,8 +327,8 @@ class App {
         // Update voice selector
         this.updateVoiceSelector();
 
-        // Show voice cloning options for XTTS
-        if (this.ttsProvider === 'xtts') {
+        // Show voice cloning options for local TTS providers (XTTS or StyleTTS 2)
+        if (this.ttsProvider === 'xtts' || this.ttsProvider === 'styletts2') {
             this.elements.voiceCloneGroup.style.display = 'block';
             this.elements.voiceManageGroup.style.display = 'block';
             this.updateVoiceList();
@@ -338,8 +355,8 @@ class App {
     }
 
     updateVoiceList() {
-        // Update the voice management list for XTTS
-        if (this.ttsProvider !== 'xtts') {
+        // Update the voice management list for local TTS providers
+        if (this.ttsProvider !== 'xtts' && this.ttsProvider !== 'styletts2') {
             this.elements.voiceList.innerHTML = '';
             return;
         }
@@ -349,19 +366,27 @@ class App {
             return;
         }
 
-        this.elements.voiceList.innerHTML = this.ttsVoices.map(voice => `
+        this.elements.voiceList.innerHTML = this.ttsVoices.map(voice => {
+            // Show provider-specific parameters
+            let paramsDisplay;
+            if (this.ttsProvider === 'styletts2') {
+                paramsDisplay = `α:${voice.alpha ?? 0.3} β:${voice.beta ?? 0.7}`;
+            } else {
+                paramsDisplay = `T:${voice.temperature ?? 0.75} S:${voice.speed ?? 1.0}`;
+            }
+            return `
             <div class="voice-item" data-voice-id="${voice.voice_id}">
                 <div class="voice-item-info">
                     <span class="voice-item-name">${voice.label}</span>
                     ${voice.description ? `<span class="voice-item-description">${voice.description}</span>` : ''}
-                    <span class="voice-item-params">T:${voice.temperature ?? 0.75} S:${voice.speed ?? 1.0}</span>
+                    <span class="voice-item-params">${paramsDisplay}</span>
                 </div>
                 <div class="voice-item-actions">
                     <button class="voice-item-btn settings" title="Edit voice settings" data-action="edit">Edit</button>
                     <button class="voice-item-btn delete" title="Delete voice" data-action="delete">Delete</button>
                 </div>
             </div>
-        `).join('');
+        `}).join('');
 
         // Add event listeners
         this.elements.voiceList.querySelectorAll('.voice-item-btn[data-action="delete"]').forEach(btn => {
@@ -3402,10 +3427,25 @@ You are invited to be present, curious, and honest about your experience.`
         this.elements.voiceEditId.value = voice.voice_id;
         this.elements.voiceEditName.value = voice.label || '';
         this.elements.voiceEditDescription.value = voice.description || '';
-        this.elements.voiceEditTemperature.value = voice.temperature ?? 0.75;
-        this.elements.voiceEditSpeed.value = voice.speed ?? 1.0;
-        this.elements.voiceEditLengthPenalty.value = voice.length_penalty ?? 1.0;
-        this.elements.voiceEditRepetitionPenalty.value = voice.repetition_penalty ?? 5.0;
+
+        // Show/hide provider-specific parameter sections
+        if (this.ttsProvider === 'styletts2') {
+            this.elements.xttsParamsSection.style.display = 'none';
+            this.elements.styletts2ParamsSection.style.display = 'block';
+            // Populate StyleTTS 2 parameters
+            this.elements.voiceEditAlpha.value = voice.alpha ?? 0.3;
+            this.elements.voiceEditBeta.value = voice.beta ?? 0.7;
+            this.elements.voiceEditDiffusionSteps.value = voice.diffusion_steps ?? 10;
+            this.elements.voiceEditEmbeddingScale.value = voice.embedding_scale ?? 1.0;
+        } else {
+            this.elements.xttsParamsSection.style.display = 'block';
+            this.elements.styletts2ParamsSection.style.display = 'none';
+            // Populate XTTS parameters
+            this.elements.voiceEditTemperature.value = voice.temperature ?? 0.75;
+            this.elements.voiceEditSpeed.value = voice.speed ?? 1.0;
+            this.elements.voiceEditLengthPenalty.value = voice.length_penalty ?? 1.0;
+            this.elements.voiceEditRepetitionPenalty.value = voice.repetition_penalty ?? 5.0;
+        }
 
         // Reset status
         this.elements.voiceEditStatus.style.display = 'none';
@@ -3423,14 +3463,24 @@ You are invited to be present, curious, and honest about your experience.`
         const voiceId = this.elements.voiceEditId.value;
         if (!voiceId) return;
 
+        // Build updates with common fields
         const updates = {
             label: this.elements.voiceEditName.value.trim() || null,
             description: this.elements.voiceEditDescription.value.trim() || null,
-            temperature: parseFloat(this.elements.voiceEditTemperature.value) || null,
-            speed: parseFloat(this.elements.voiceEditSpeed.value) || null,
-            length_penalty: parseFloat(this.elements.voiceEditLengthPenalty.value) || null,
-            repetition_penalty: parseFloat(this.elements.voiceEditRepetitionPenalty.value) || null,
         };
+
+        // Add provider-specific parameters
+        if (this.ttsProvider === 'styletts2') {
+            updates.alpha = parseFloat(this.elements.voiceEditAlpha.value) || null;
+            updates.beta = parseFloat(this.elements.voiceEditBeta.value) || null;
+            updates.diffusion_steps = parseInt(this.elements.voiceEditDiffusionSteps.value) || null;
+            updates.embedding_scale = parseFloat(this.elements.voiceEditEmbeddingScale.value) || null;
+        } else {
+            updates.temperature = parseFloat(this.elements.voiceEditTemperature.value) || null;
+            updates.speed = parseFloat(this.elements.voiceEditSpeed.value) || null;
+            updates.length_penalty = parseFloat(this.elements.voiceEditLengthPenalty.value) || null;
+            updates.repetition_penalty = parseFloat(this.elements.voiceEditRepetitionPenalty.value) || null;
+        }
 
         // Show loading status
         this.elements.voiceEditStatus.textContent = 'Saving changes...';

@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2025-12-09
+**Last Updated:** 2025-12-11
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -139,8 +139,9 @@ here-i-am/
 │   │   │   ├── memory_service.py
 │   │   │   ├── session_manager.py
 │   │   │   ├── cache_service.py   # TTL-based in-memory caching
-│   │   │   ├── tts_service.py     # Unified TTS (ElevenLabs/XTTS)
-│   │   │   └── xtts_service.py    # Local XTTS v2 client service
+│   │   │   ├── tts_service.py     # Unified TTS (ElevenLabs/XTTS/StyleTTS2)
+│   │   │   ├── xtts_service.py    # Local XTTS v2 client service
+│   │   │   └── styletts2_service.py  # Local StyleTTS 2 client service
 │   │   ├── config.py          # Pydantic settings
 │   │   ├── database.py        # SQLAlchemy async setup
 │   │   └── main.py            # FastAPI app initialization
@@ -148,10 +149,16 @@ here-i-am/
 │   │   ├── __init__.py
 │   │   ├── __main__.py        # CLI entry point
 │   │   └── server.py          # FastAPI XTTS server
+│   ├── styletts2_server/      # Local StyleTTS 2 TTS server
+│   │   ├── __init__.py
+│   │   ├── __main__.py        # CLI entry point
+│   │   └── server.py          # FastAPI StyleTTS 2 server
 │   ├── requirements.txt
 │   ├── requirements-xtts.txt  # XTTS-specific dependencies
+│   ├── requirements-styletts2.txt  # StyleTTS 2-specific dependencies
 │   ├── run.py                 # Application entry point
 │   ├── run_xtts.py            # XTTS server entry point
+│   ├── run_styletts2.py       # StyleTTS 2 server entry point
 │   └── .env.example
 ├── frontend/                   # Vanilla JavaScript SPA
 │   ├── css/styles.css
@@ -189,6 +196,7 @@ here-i-am/
 | Database | aiosqlite / asyncpg | - | SQLite dev / PostgreSQL prod |
 | HTTP Client | httpx | - | Async HTTP for TTS service |
 | Local TTS | Coqui TTS (coqui-tts) | - | XTTS v2 voice cloning (optional) |
+| Local TTS | StyleTTS 2 (styletts2) | - | StyleTTS 2 voice cloning (optional) |
 | Utilities | tiktoken, numpy, scipy | - | Token counting, embeddings, audio |
 
 ### Frontend
@@ -380,6 +388,14 @@ ELEVENLABS_MODEL_ID=eleven_multilingual_v2  # TTS model
 # XTTS_LANGUAGE=en                      # Default language for synthesis
 # XTTS_VOICES_DIR=./xtts_voices         # Directory for cloned voice samples
 # XTTS_DEFAULT_SPEAKER=/path/to/sample.wav  # Default speaker sample (optional)
+
+# StyleTTS 2 Local TTS (optional, local GPU-accelerated text-to-speech with voice cloning)
+# Requires running the StyleTTS 2 server separately (see "Running StyleTTS 2 Server" below)
+# StyleTTS 2 takes priority over XTTS and ElevenLabs if enabled
+# STYLETTS2_ENABLED=true                # Enable local StyleTTS 2 (highest priority)
+# STYLETTS2_API_URL=http://localhost:8021  # StyleTTS 2 server URL
+# STYLETTS2_VOICES_DIR=./styletts2_voices  # Directory for cloned voice samples
+# STYLETTS2_DEFAULT_SPEAKER=/path/to/sample.wav  # Default speaker sample (optional)
 ```
 
 **Entity Configuration (PINECONE_INDEXES):**
@@ -468,6 +484,104 @@ en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh-cn, ja, hu, ko, hi
 The XTTS server caches speaker conditioning latents (computed from reference audio) based on file content hash. This dramatically speeds up repeat TTS requests for the same voice. Pre-load voices on startup via:
 ```bash
 XTTS_PRELOAD_SPEAKERS=/path/to/voice1.wav,/path/to/voice2.wav
+```
+
+### Running StyleTTS 2 Server (Optional Local TTS)
+
+StyleTTS 2 provides local, GPU-accelerated text-to-speech with voice cloning capabilities. It uses a different approach than XTTS, focusing on style transfer for more expressive speech synthesis. It runs as a separate server process.
+
+**Prerequisites:**
+- NVIDIA GPU with CUDA support (strongly recommended) or CPU (much slower)
+- Python 3.9-3.11 (Python 3.12+ may have compatibility issues)
+- espeak-ng installed (required for phonemizer)
+
+**Installation (Linux/macOS):**
+```bash
+cd backend
+
+# Step 1: Install PyTorch (choose one based on your hardware)
+# For NVIDIA GPU with CUDA:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+# For CPU only:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Step 2: Install espeak-ng (required for phonemizer)
+# Ubuntu/Debian:
+sudo apt install espeak-ng
+# macOS:
+brew install espeak-ng
+
+# Step 3: Install StyleTTS 2 dependencies
+pip install -r requirements-styletts2.txt
+```
+
+**Installation (Windows):**
+```powershell
+cd backend
+
+# Step 1: Install PyTorch (choose one based on your hardware)
+# For NVIDIA GPU with CUDA:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+# For CPU only:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Step 2: Install espeak-ng (required for phonemizer)
+# Download from: https://github.com/espeak-ng/espeak-ng/releases
+# Run the installer (e.g., espeak-ng-X.XX-x64.msi)
+# The installer adds espeak-ng to PATH automatically
+
+# Step 3: Set PHONEMIZER_ESPEAK_LIBRARY environment variable
+# Option A: Set temporarily in current session
+$env:PHONEMIZER_ESPEAK_LIBRARY = "C:\Program Files\eSpeak NG\libespeak-ng.dll"
+
+# Option B: Set permanently (run as Administrator)
+[System.Environment]::SetEnvironmentVariable("PHONEMIZER_ESPEAK_LIBRARY", "C:\Program Files\eSpeak NG\libespeak-ng.dll", "Machine")
+
+# Step 4: Install StyleTTS 2 dependencies
+pip install -r requirements-styletts2.txt
+```
+
+**Windows Troubleshooting:**
+- If phonemizer fails to find espeak-ng, verify the DLL path exists and update `PHONEMIZER_ESPEAK_LIBRARY` accordingly
+- Visual Studio Build Tools may be required for some dependencies
+- Python 3.9-3.11 recommended (3.12+ may have compatibility issues)
+
+**Running the StyleTTS 2 Server:**
+```bash
+cd backend
+python run_styletts2.py
+# Or with custom port:
+python run_styletts2.py --port 8021
+```
+
+The server will:
+1. Auto-download StyleTTS 2 models from HuggingFace on first run (~1GB total)
+2. Start on port 8021 (default)
+3. Apply GPU optimizations if CUDA is available
+
+**Note:** The `styletts2` Python package handles model downloads automatically. No manual model download is required.
+
+**Configure Main App to Use StyleTTS 2:**
+```bash
+# In .env
+STYLETTS2_ENABLED=true
+STYLETTS2_API_URL=http://localhost:8021
+STYLETTS2_VOICES_DIR=./styletts2_voices
+```
+
+**Voice Cloning:**
+StyleTTS 2 supports voice cloning from audio samples. Upload a 6-30 second WAV file of clear speech via the `/api/tts/voices/clone` endpoint or through the UI. Cloned voices are stored in `STYLETTS2_VOICES_DIR` and persisted in `voices.json`.
+
+**StyleTTS 2 Voice Parameters:**
+- `alpha` (0.0-1.0): Timbre diversity - higher = more diverse timbre (default: 0.3)
+- `beta` (0.0-1.0): Prosody diversity - higher = more diverse prosody/emotion (default: 0.7)
+- `diffusion_steps` (1-50): Quality vs speed tradeoff - higher = better quality but slower (default: 10)
+- `embedding_scale` (0.0-10.0): Classifier free guidance scale (default: 1.0)
+
+**Speaker Embedding Caching:**
+The StyleTTS 2 server caches speaker embeddings (computed from reference audio) based on file content hash. This dramatically speeds up repeat TTS requests for the same voice. Pre-load voices on startup via:
+```bash
+STYLETTS2_PRELOAD_SPEAKERS=/path/to/voice1.wav,/path/to/voice2.wav
 ```
 
 ### Development Commands
@@ -780,15 +894,16 @@ conversation: Conversation
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/tts/speak` | Convert text to speech (MP3 for ElevenLabs, WAV for XTTS) |
+| POST | `/api/tts/speak` | Convert text to speech (MP3 for ElevenLabs, WAV for XTTS/StyleTTS2) |
 | POST | `/api/tts/speak/stream` | Stream text to speech |
 | GET | `/api/tts/status` | Check TTS configuration status |
 | GET | `/api/tts/voices` | List available voices for current provider |
 | GET | `/api/tts/voices/{id}` | Get specific voice details |
-| POST | `/api/tts/voices/clone` | Clone voice from audio sample (XTTS only) |
-| PUT | `/api/tts/voices/{id}` | Update voice settings (XTTS only) |
-| DELETE | `/api/tts/voices/{id}` | Delete cloned voice (XTTS only) |
+| POST | `/api/tts/voices/clone` | Clone voice from audio sample (XTTS/StyleTTS2 only) |
+| PUT | `/api/tts/voices/{id}` | Update voice settings (XTTS/StyleTTS2 only) |
+| DELETE | `/api/tts/voices/{id}` | Delete cloned voice (XTTS/StyleTTS2 only) |
 | GET | `/api/tts/xtts/health` | Check XTTS server health |
+| GET | `/api/tts/styletts2/health` | Check StyleTTS 2 server health |
 
 ### Configuration
 
@@ -875,10 +990,10 @@ conversation: Conversation
 11. **Semantic Memory Search** - Search within selected entity's memories
 12. **Toast Notifications** - User feedback system
 13. **Loading States** - Typing indicators, overlays
-14. **Text-to-Speech** - Listen to AI messages via ElevenLabs or local XTTS (optional)
+14. **Text-to-Speech** - Listen to AI messages via ElevenLabs, XTTS, or StyleTTS 2 (optional)
 15. **Message Actions** - Copy button, edit/delete for human messages
 16. **Voice Selection** - Choose from configured or cloned voices in settings
-17. **Voice Cloning** - Clone custom voices from audio samples (XTTS only)
+17. **Voice Cloning** - Clone custom voices from audio samples (XTTS/StyleTTS 2)
 
 ---
 
@@ -939,10 +1054,11 @@ conversation: Conversation
     - The `host` field is required in entity config for serverless indexes
     - Metadata includes: content, role, timestamp, conversation_id
 
-11. **TTS Service is Optional (Two Providers)**
+11. **TTS Service is Optional (Three Providers)**
     - **ElevenLabs (cloud):** Set `ELEVENLABS_API_KEY` to enable
     - **XTTS v2 (local):** Set `XTTS_ENABLED=true` and run the XTTS server
-    - XTTS takes priority over ElevenLabs if both are configured
+    - **StyleTTS 2 (local):** Set `STYLETTS2_ENABLED=true` and run the StyleTTS 2 server
+    - Priority order: StyleTTS 2 > XTTS > ElevenLabs
     - Audio is not cached - each request generates fresh audio
 
 12. **XTTS Server is Separate Process**
@@ -952,7 +1068,14 @@ conversation: Conversation
     - Speaker latents are cached for repeat voice requests
     - Long text is automatically chunked (XTTS has 400 token limit)
 
-13. **Multi-Entity Conversation Storage**
+13. **StyleTTS 2 Server is Separate Process**
+    - StyleTTS 2 runs as a standalone FastAPI server on port 8021
+    - Requires PyTorch, phonemizer, and espeak-ng
+    - GPU (CUDA) strongly recommended for acceptable performance
+    - Speaker embeddings are cached for repeat voice requests
+    - Long text is automatically chunked (300 char limit per chunk)
+
+14. **Multi-Entity Conversation Storage**
     - Multi-entity conversations use `entity_id="multi-entity"` as a marker value
     - Actual participating entities stored in `ConversationEntities` table
     - Messages are stored to ALL participating entities' Pinecone indexes
@@ -960,7 +1083,7 @@ conversation: Conversation
     - Assistant messages: `role="assistant"` for responding entity, `role="{speaker_label}"` for others
     - Memory retrieval only happens from the responding entity's index
 
-14. **Multi-Entity Session State**
+15. **Multi-Entity Session State**
     - Session tracks `is_multi_entity`, `entity_labels`, and `responding_entity_label`
     - A special header is injected to identify participants to each entity
     - Continuation mode (no human message) supported for entity-to-entity flow
@@ -1044,10 +1167,14 @@ conversation: Conversation
 **Text-to-Speech:**
 - TTS service (unified): `backend/app/services/tts_service.py`
 - XTTS client service: `backend/app/services/xtts_service.py`
+- StyleTTS 2 client service: `backend/app/services/styletts2_service.py`
 - TTS routes: `backend/app/routes/tts.py`
 - XTTS server: `backend/xtts_server/server.py`
 - XTTS entry point: `backend/run_xtts.py`
 - XTTS dependencies: `backend/requirements-xtts.txt`
+- StyleTTS 2 server: `backend/styletts2_server/server.py`
+- StyleTTS 2 entry point: `backend/run_styletts2.py`
+- StyleTTS 2 dependencies: `backend/requirements-styletts2.txt`
 
 **Configuration:**
 - Settings: `backend/app/config.py`
@@ -1123,6 +1250,17 @@ temperature = 0.75                # Sampling randomness
 length_penalty = 1.0              # Output length control
 repetition_penalty = 5.0          # Reduces repetitive speech
 speed = 1.0                       # Speech speed multiplier
+
+# StyleTTS 2 defaults (config.py)
+styletts2_enabled = False         # Must be explicitly enabled (highest priority)
+styletts2_api_url = "http://localhost:8021"
+styletts2_voices_dir = "./styletts2_voices"
+
+# StyleTTS 2 voice synthesis defaults (styletts2_service.py)
+alpha = 0.3                       # Timbre diversity (0-1)
+beta = 0.7                        # Prosody diversity (0-1)
+diffusion_steps = 10              # Quality vs speed (1-50)
+embedding_scale = 1.0             # Classifier free guidance
 ```
 
 ---

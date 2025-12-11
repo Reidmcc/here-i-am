@@ -1,0 +1,47 @@
+# StyleTTS 2 Server Dependencies
+# ===============================
+#
+# IMPORTANT: Install PyTorch FIRST before installing StyleTTS 2!
+# The styletts2 package requires PyTorch to be pre-installed.
+#
+# Step 1: Install PyTorch (choose one based on your system)
+# ---------------------------------------------------------
+# For CUDA (NVIDIA GPU):
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+#
+# For CPU only:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#
+# Step 2: Install espeak-ng (required for phonemizer)
+# ---------------------------------------------------------
+# Ubuntu/Debian:
+#   sudo apt install espeak-ng
+#
+# macOS:
+#   brew install espeak-ng
+#
+# Windows:
+#   Download from https://github.com/espeak-ng/espeak-ng/releases
+#
+# Step 3: Install this requirements file
+# ---------------------------------------------------------
+#   pip install -r requirements-styletts2.txt
+#
+# Note: Requires Python 3.9-3.11. Python 3.12+ may have compatibility issues.
+# Note: On Windows, you may need Visual Studio Build Tools installed.
+
+# StyleTTS 2 library (install after PyTorch)
+styletts2
+
+# Phonemizer for text-to-phoneme conversion (requires espeak-ng system package)
+phonemizer>=3.2.0
+
+# Additional dependencies
+numpy>=1.22.0,<2.0.0
+scipy>=1.10.0
+nltk>=3.8.0  # For text tokenization (punkt_tab downloaded automatically on first run)
+
+# Server dependencies (should already be installed from main requirements)
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9

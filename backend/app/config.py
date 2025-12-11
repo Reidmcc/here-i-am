@@ -64,6 +64,43 @@ class XTTSVoiceConfig:
         }
 
 
+class StyleTTS2VoiceConfig:
+    """Configuration for a StyleTTS 2 cloned voice."""
+    def __init__(
+        self,
+        voice_id: str,
+        label: str,
+        description: str = "",
+        sample_path: str = "",
+        alpha: float = 0.3,
+        beta: float = 0.7,
+        diffusion_steps: int = 10,
+        embedding_scale: float = 1.0,
+    ):
+        self.voice_id = voice_id
+        self.label = label
+        self.description = description
+        self.sample_path = sample_path
+        # StyleTTS 2 synthesis parameters
+        self.alpha = alpha  # Timbre parameter (0-1), higher = more diverse
+        self.beta = beta    # Prosody parameter (0-1), higher = more diverse
+        self.diffusion_steps = diffusion_steps  # Quality vs speed tradeoff
+        self.embedding_scale = embedding_scale  # Classifier free guidance
+
+    def to_dict(self):
+        return {
+            "voice_id": self.voice_id,
+            "label": self.label,
+            "description": self.description,
+            "sample_path": self.sample_path,
+            "provider": "styletts2",
+            "alpha": self.alpha,
+            "beta": self.beta,
+            "diffusion_steps": self.diffusion_steps,
+            "embedding_scale": self.embedding_scale,
+        }
+
+
 class EntityConfig:
     """Configuration for a single AI entity (Pinecone index)."""
     def __init__(
@@ -118,6 +155,17 @@ class Settings(BaseSettings):
     xtts_language: str = "en"
     # Directory to store cloned voice samples
     xtts_voices_dir: str = "./xtts_voices"
+
+    # StyleTTS 2 Local TTS settings
+    # Set STYLETTS2_ENABLED=true to use local StyleTTS 2 for TTS
+    # StyleTTS 2 takes priority over XTTS and ElevenLabs if enabled
+    styletts2_enabled: bool = False
+    # URL of the StyleTTS 2 API server
+    styletts2_api_url: str = "http://localhost:8021"
+    # Default speaker wav file path for StyleTTS 2
+    styletts2_default_speaker: str = ""
+    # Directory to store cloned voice samples
+    styletts2_voices_dir: str = "./styletts2_voices"
 
     # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, llm_provider, default_model)
     # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'
@@ -288,10 +336,13 @@ class Settings(BaseSettings):
         """
         Get the current TTS provider.
 
-        Returns "xtts" if XTTS is enabled, "elevenlabs" if ElevenLabs API key is set,
+        Returns "styletts2" if StyleTTS 2 is enabled (highest priority),
+        "xtts" if XTTS is enabled, "elevenlabs" if ElevenLabs API key is set,
         or "none" if no TTS is configured.
         """
-        if self.xtts_enabled:
+        if self.styletts2_enabled:
+            return "styletts2"
+        elif self.xtts_enabled:
             return "xtts"
         elif self.elevenlabs_api_key:
             return "elevenlabs"
