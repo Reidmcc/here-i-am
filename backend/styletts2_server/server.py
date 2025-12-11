@@ -585,8 +585,11 @@ MAX_CHUNK_CHARS = 150
 # Pronunciation Fixes
 # =============================================================================
 # Dictionary of words that StyleTTS 2 mispronounces and their phonetic corrections.
+# Loaded from STYLETTS2_PRONUNCIATION_FIXES environment variable (JSON format).
 # Keys are lowercase; matching is case-insensitive but preserves original case pattern.
-PRONUNCIATION_FIXES: Dict[str, str] = {
+
+# Default fixes if not configured via environment
+_DEFAULT_PRONUNCIATION_FIXES: Dict[str, str] = {
     # Past tense -ed endings often pronounced incorrectly
     "turned": "turnd",
     "learned": "lernd",
@@ -594,8 +597,35 @@ PRONUNCIATION_FIXES: Dict[str, str] = {
     "earned": "ernd",
     # Words that get mispronounced
     "into": "in to",
-    # Add more as you discover them
 }
+
+
+def _load_pronunciation_fixes() -> Dict[str, str]:
+    """
+    Load pronunciation fixes from environment variable or use defaults.
+
+    The STYLETTS2_PRONUNCIATION_FIXES environment variable should be a JSON object
+    mapping words to their phonetic replacements, e.g.:
+    {"turned": "turnd", "into": "in to"}
+    """
+    env_fixes = os.environ.get("STYLETTS2_PRONUNCIATION_FIXES", "")
+    if env_fixes:
+        try:
+            fixes = json.loads(env_fixes)
+            if isinstance(fixes, dict):
+                logger.info(f"Loaded {len(fixes)} pronunciation fixes from environment")
+                return fixes
+            else:
+                logger.warning("STYLETTS2_PRONUNCIATION_FIXES is not a JSON object, using defaults")
+        except json.JSONDecodeError as e:
+            logger.warning(f"Invalid JSON in STYLETTS2_PRONUNCIATION_FIXES: {e}, using defaults")
+
+    logger.info(f"Using {len(_DEFAULT_PRONUNCIATION_FIXES)} default pronunciation fixes")
+    return _DEFAULT_PRONUNCIATION_FIXES.copy()
+
+
+# Load fixes once at module import time
+PRONUNCIATION_FIXES: Dict[str, str] = _load_pronunciation_fixes()
 
 
 def fix_pronunciation(text: str) -> str:
