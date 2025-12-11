@@ -312,7 +312,7 @@ class StyleTTS2Service:
 
         Args:
             text: The text to convert to speech
-            voice_id: Optional voice ID (uses default if not specified)
+            voice_id: Optional voice ID (uses default LJSpeech voice if not specified)
 
         Returns:
             Audio bytes in WAV format
@@ -330,17 +330,38 @@ class StyleTTS2Service:
         if not speaker_wav and self.default_speaker:
             speaker_wav = self.default_speaker
 
-        if not speaker_wav:
-            raise ValueError("No voice sample configured. Please clone a voice first.")
-
         # Get voice parameters (use defaults if no voice config found)
         alpha = voice.alpha if voice else 0.3
         beta = voice.beta if voice else 0.7
         diffusion_steps = voice.diffusion_steps if voice else 10
         embedding_scale = voice.embedding_scale if voice else 1.0
 
-        # Call the StyleTTS 2 API
         async with httpx.AsyncClient(timeout=120.0) as client:
+            # If no speaker configured, use the default LJSpeech voice
+            if not speaker_wav:
+                logger.info("No voice configured, using default LJSpeech voice")
+                url = f"{self.api_url}/tts_default"
+                data = {
+                    "text": text,
+                    "alpha": str(alpha),
+                    "beta": str(beta),
+                    "diffusion_steps": str(diffusion_steps),
+                    "embedding_scale": str(embedding_scale),
+                }
+
+                try:
+                    response = await client.post(url, data=data)
+                except httpx.ConnectError:
+                    raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}")
+
+                if response.status_code != 200:
+                    error_detail = response.text
+                    logger.error(f"StyleTTS 2 API error: {response.status_code} - {error_detail}")
+                    raise ValueError(f"StyleTTS 2 API error: {response.status_code}")
+
+                return response.content
+
+            # Use cloned voice with speaker reference
             url = f"{self.api_url}/tts_to_audio"
 
             # Read the speaker wav file for multipart upload
@@ -370,26 +391,6 @@ class StyleTTS2Service:
             if response.status_code != 200:
                 error_detail = response.text
                 logger.error(f"StyleTTS 2 API error: {response.status_code} - {error_detail}")
-
-                # Try alternative endpoint format
-                alt_url = f"{self.api_url}/tts"
-                try:
-                    alt_response = await client.post(
-                        alt_url,
-                        json={
-                            "text": text,
-                            "speaker_wav": speaker_wav,
-                            "alpha": alpha,
-                            "beta": beta,
-                            "diffusion_steps": diffusion_steps,
-                            "embedding_scale": embedding_scale,
-                        }
-                    )
-                    if alt_response.status_code == 200:
-                        return alt_response.content
-                except Exception:
-                    pass
-
                 raise ValueError(f"StyleTTS 2 API error: {response.status_code}")
 
             return response.content
@@ -404,7 +405,7 @@ class StyleTTS2Service:
 
         Args:
             text: The text to convert to speech
-            voice_id: Optional voice ID (uses default if not specified)
+            voice_id: Optional voice ID (uses default LJSpeech voice if not specified)
 
         Yields:
             Audio bytes chunks
@@ -422,16 +423,20 @@ class StyleTTS2Service:
         if not speaker_wav and self.default_speaker:
             speaker_wav = self.default_speaker
 
-        if not speaker_wav:
-            raise ValueError("No voice sample configured. Please clone a voice first.")
-
         # Get voice parameters (use defaults if no voice config found)
         alpha = voice.alpha if voice else 0.3
         beta = voice.beta if voice else 0.7
         diffusion_steps = voice.diffusion_steps if voice else 10
         embedding_scale = voice.embedding_scale if voice else 1.0
 
-        # Call the StyleTTS 2 API with streaming
+        # If no speaker configured, fall back to non-streaming with default voice
+        if not speaker_wav:
+            logger.info("No voice configured, using default LJSpeech voice (non-streaming)")
+            audio = await self.text_to_speech(text, voice_id)
+            yield audio
+            return
+
+        # Call the StyleTTS 2 API with streaming for cloned voices
         async with httpx.AsyncClient(timeout=120.0) as client:
             url = f"{self.api_url}/tts_stream"
 

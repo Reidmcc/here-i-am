@@ -538,6 +538,127 @@ def synthesize_with_cached_embeddings(
         raise
 
 
+def synthesize_default_voice(
+    text: str,
+    alpha: float = 0.3,
+    beta: float = 0.7,
+    diffusion_steps: int = 10,
+    embedding_scale: float = 1.0,
+) -> bytes:
+    """
+    Synthesize speech using the default LJSpeech voice (no reference needed).
+
+    Args:
+        text: Text to synthesize
+        alpha: Timbre parameter (0-1), higher = more diverse timbre
+        beta: Prosody parameter (0-1), higher = more diverse prosody
+        diffusion_steps: Number of diffusion steps (5-20, higher = better quality but slower)
+        embedding_scale: Classifier free guidance scale
+
+    Returns:
+        WAV audio bytes
+    """
+    try:
+        model = get_model()
+
+        # Split text into chunks
+        chunks = split_text_into_chunks(text)
+        logger.info(f"Split text into {len(chunks)} chunk(s) for default voice")
+
+        audio_arrays = []
+
+        for i, chunk in enumerate(chunks):
+            logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
+
+            # Synthesize using default voice (no ref_s/ref_p means use LJSpeech)
+            audio_array = model.inference(
+                text=chunk,
+                alpha=alpha,
+                beta=beta,
+                diffusion_steps=diffusion_steps,
+                embedding_scale=embedding_scale,
+            )
+
+            # Convert to numpy array if it's a tensor
+            if hasattr(audio_array, "cpu"):
+                audio_array = audio_array.cpu().numpy()
+
+            audio_arrays.append(audio_array)
+
+        # Concatenate all audio chunks
+        if len(audio_arrays) == 1:
+            combined_audio = audio_arrays[0]
+        else:
+            combined_audio = np.concatenate(audio_arrays)
+
+        # StyleTTS 2 outputs at 24kHz
+        sample_rate = 24000
+
+        return numpy_to_wav_bytes(combined_audio, sample_rate)
+
+    except Exception as e:
+        logger.error(f"synthesize_default_voice failed: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise
+
+
+@app.post("/tts_default")
+async def tts_default_voice(
+    text: str = Form(..., description="Text to synthesize"),
+    alpha: str = Form("0.3", description="Timbre parameter (0-1)"),
+    beta: str = Form("0.7", description="Prosody parameter (0-1)"),
+    diffusion_steps: str = Form("10", description="Diffusion steps (5-20)"),
+    embedding_scale: str = Form("1.0", description="Embedding scale"),
+):
+    """
+    Convert text to speech using the default LJSpeech voice.
+
+    No speaker reference audio needed - uses the pre-trained LJSpeech voice.
+    """
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+
+    # Parse parameters
+    try:
+        alpha_val = float(alpha)
+        beta_val = float(beta)
+        diffusion_steps_val = int(diffusion_steps)
+        embedding_scale_val = float(embedding_scale)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}")
+
+    # Validate parameters
+    if not 0 <= alpha_val <= 1:
+        raise HTTPException(status_code=400, detail="Alpha must be between 0 and 1")
+    if not 0 <= beta_val <= 1:
+        raise HTTPException(status_code=400, detail="Beta must be between 0 and 1")
+    if not 1 <= diffusion_steps_val <= 50:
+        raise HTTPException(status_code=400, detail="Diffusion steps must be between 1 and 50")
+
+    try:
+        logger.info(f"Generating speech with default voice for {len(text)} chars")
+        audio_bytes = synthesize_default_voice(
+            text=text,
+            alpha=alpha_val,
+            beta=beta_val,
+            diffusion_steps=diffusion_steps_val,
+            embedding_scale=embedding_scale_val,
+        )
+
+        logger.info(f"Generated {len(audio_bytes)} bytes of audio")
+
+        return Response(
+            content=audio_bytes,
+            media_type="audio/wav",
+            headers={"Content-Disposition": "inline"},
+        )
+
+    except Exception as e:
+        logger.error(f"TTS generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
+
+
 @app.post("/tts_to_audio")
 async def tts_to_audio(
     text: str = Form(..., description="Text to synthesize"),
