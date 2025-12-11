@@ -2,6 +2,7 @@
 StyleTTS 2 FastAPI Server
 
 Provides text-to-speech synthesis using the StyleTTS 2 model.
+Supports both gruut (MIT licensed) and espeak-ng phonemizers.
 """
 
 import hashlib
@@ -11,9 +12,10 @@ import logging
 import os
 import re
 import tempfile
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Tuple, Any
+from typing import Optional, Dict, Tuple, Any, List
 
 import torch
 import numpy as np
@@ -22,6 +24,116 @@ from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+
+# =============================================================================
+# Phonemizer Abstraction
+# =============================================================================
+
+class Phonemizer(ABC):
+    """Abstract base class for phonemizers."""
+
+    @abstractmethod
+    def phonemize(self, text: str) -> str:
+        """Convert text to phonemes."""
+        pass
+
+
+class GruutPhonemizer(Phonemizer):
+    """
+    Gruut-based phonemizer (MIT licensed, no system dependencies).
+
+    Uses the gruut library which is pure Python and doesn't require
+    espeak-ng to be installed on the system.
+    """
+
+    def __init__(self, language: str = "en-us"):
+        self.language = language
+        try:
+            import gruut
+            self.gruut = gruut
+        except ImportError:
+            raise ImportError(
+                "gruut is required for the gruut phonemizer. "
+                "Install it with: pip install gruut"
+            )
+
+    def phonemize(self, text: str) -> str:
+        """Convert text to IPA phonemes using gruut."""
+        phonemes = []
+        for sentence in self.gruut.sentences(text, lang=self.language):
+            for word in sentence:
+                if word.phonemes:
+                    phonemes.append("".join(word.phonemes))
+        return " ".join(phonemes)
+
+
+class EspeakPhonemizer(Phonemizer):
+    """
+    Espeak-ng based phonemizer (requires espeak-ng system package).
+
+    Uses the phonemizer library with espeak-ng backend.
+    This provides higher quality phonemization but requires
+    espeak-ng to be installed on the system.
+    """
+
+    def __init__(self, language: str = "en-us"):
+        self.language = language
+        try:
+            import phonemizer
+            from phonemizer.backend import EspeakBackend
+
+            # Initialize the espeak backend
+            self.backend = EspeakBackend(
+                language=language,
+                preserve_punctuation=True,
+                with_stress=True,
+                words_mismatch='ignore'
+            )
+            self.phonemizer = phonemizer
+        except ImportError:
+            raise ImportError(
+                "phonemizer is required for the espeak phonemizer. "
+                "Install it with: pip install phonemizer"
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to initialize espeak backend: {e}. "
+                "Make sure espeak-ng is installed on your system."
+            )
+
+    def phonemize(self, text: str) -> str:
+        """Convert text to IPA phonemes using espeak-ng."""
+        # Use the phonemizer library
+        result = self.phonemizer.phonemize(
+            text,
+            language=self.language,
+            backend='espeak',
+            preserve_punctuation=True,
+            with_stress=True,
+            strip=True
+        )
+        return result
+
+
+def get_phonemizer(backend: str = "gruut", language: str = "en-us") -> Phonemizer:
+    """
+    Factory function to create a phonemizer instance.
+
+    Args:
+        backend: "gruut" or "espeak"
+        language: Language code (default: "en-us")
+
+    Returns:
+        Phonemizer instance
+    """
+    backend = backend.lower()
+    if backend == "gruut":
+        return GruutPhonemizer(language=language)
+    elif backend == "espeak":
+        return EspeakPhonemizer(language=language)
+    else:
+        raise ValueError(f"Unknown phonemizer backend: {backend}. Use 'gruut' or 'espeak'.")
 
 # Download required NLTK data for text tokenization (used by styletts2)
 # This runs once on module load and skips if already downloaded
@@ -70,6 +182,7 @@ app.add_middleware(
 # Global model instances
 _styletts2_model = None
 _device = None
+_custom_phonemizer: Optional[Phonemizer] = None
 
 # Speaker embedding cache: maps file hash -> style tensor
 _speaker_embedding_cache: Dict[str, Any] = {}
@@ -177,7 +290,7 @@ def clear_speaker_cache(file_hash: Optional[str] = None) -> int:
 
 def get_model():
     """Get or initialize the StyleTTS 2 model."""
-    global _styletts2_model, _device
+    global _styletts2_model, _device, _custom_phonemizer
 
     if _styletts2_model is None:
         logger.info("Loading StyleTTS 2 model...")
@@ -189,9 +302,25 @@ def get_model():
             _device = "cuda" if torch.cuda.is_available() else "cpu"
             logger.info(f"Using device: {_device}")
 
+            # Get phonemizer configuration from environment
+            phonemizer_backend = os.environ.get("STYLETTS2_PHONEMIZER", "gruut").lower()
+            logger.info(f"Using phonemizer backend: {phonemizer_backend}")
+
             # Initialize StyleTTS 2
             # The model downloads automatically on first use
             _styletts2_model = styletts2_tts.StyleTTS2()
+
+            # Replace the model's phoneme_converter with our custom implementation
+            # This allows us to support both gruut and espeak backends
+            try:
+                _custom_phonemizer = get_phonemizer(phonemizer_backend)
+                _styletts2_model.phoneme_converter = _custom_phonemizer
+                logger.info(f"Configured custom {phonemizer_backend} phonemizer")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to configure custom phonemizer ({phonemizer_backend}): {e}. "
+                    "Using default phonemizer from styletts2 package."
+                )
 
             logger.info("StyleTTS 2 model loaded successfully")
 
@@ -317,12 +446,14 @@ async def startup_event():
 @app.get("/")
 async def root():
     """Root endpoint with server info."""
+    phonemizer_backend = os.environ.get("STYLETTS2_PHONEMIZER", "gruut").lower()
     return {
         "name": "StyleTTS 2 Server",
         "version": "0.1.0",
         "model": "styletts2",
         "status": "ready" if _styletts2_model is not None else "loading",
         "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "phonemizer": phonemizer_backend,
         "speaker_cache_size": len(_speaker_embedding_cache),
     }
 
@@ -330,9 +461,11 @@ async def root():
 @app.get("/health")
 async def health():
     """Health check endpoint."""
+    phonemizer_backend = os.environ.get("STYLETTS2_PHONEMIZER", "gruut").lower()
     return {
         "status": "healthy",
         "model_loaded": _styletts2_model is not None,
+        "phonemizer": phonemizer_backend,
         "speaker_cache_size": len(_speaker_embedding_cache),
     }
 

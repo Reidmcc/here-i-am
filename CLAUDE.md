@@ -396,6 +396,7 @@ ELEVENLABS_MODEL_ID=eleven_multilingual_v2  # TTS model
 # STYLETTS2_API_URL=http://localhost:8021  # StyleTTS 2 server URL
 # STYLETTS2_VOICES_DIR=./styletts2_voices  # Directory for cloned voice samples
 # STYLETTS2_DEFAULT_SPEAKER=/path/to/sample.wav  # Default speaker sample (optional)
+# STYLETTS2_PHONEMIZER=gruut            # "gruut" (default, no deps) or "espeak" (requires espeak-ng)
 ```
 
 **Entity Configuration (PINECONE_INDEXES):**
@@ -493,9 +494,17 @@ StyleTTS 2 provides local, GPU-accelerated text-to-speech with voice cloning cap
 **Prerequisites:**
 - NVIDIA GPU with CUDA support (strongly recommended) or CPU (much slower)
 - Python 3.9-3.11 (Python 3.12+ may have compatibility issues)
-- espeak-ng installed (required for phonemizer)
+- espeak-ng installed (only if using espeak phonemizer; gruut is the default and requires no system deps)
 
-**Installation (Linux/macOS):**
+**Phonemizer Options:**
+The server supports two phonemizer backends, controlled by `STYLETTS2_PHONEMIZER` environment variable:
+
+| Backend | Pros | Cons |
+|---------|------|------|
+| **gruut** (default) | MIT licensed, pure Python, no system deps | Slightly lower quality in some edge cases |
+| **espeak** | Higher quality phonemization | Requires espeak-ng system package |
+
+**Installation with Gruut (Recommended - No System Dependencies):**
 ```bash
 cd backend
 
@@ -505,7 +514,22 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
 # For CPU only:
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-# Step 2: Install espeak-ng (required for phonemizer)
+# Step 2: Install StyleTTS 2 dependencies
+pip install -r requirements-styletts2.txt
+# That's it! gruut is installed automatically and is the default phonemizer.
+```
+
+**Installation with Espeak (Linux/macOS):**
+```bash
+cd backend
+
+# Step 1: Install PyTorch (choose one based on your hardware)
+# For NVIDIA GPU with CUDA:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+# For CPU only:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Step 2: Install espeak-ng system package
 # Ubuntu/Debian:
 sudo apt install espeak-ng
 # macOS:
@@ -513,9 +537,12 @@ brew install espeak-ng
 
 # Step 3: Install StyleTTS 2 dependencies
 pip install -r requirements-styletts2.txt
+
+# Step 4: Set phonemizer to espeak in .env
+# STYLETTS2_PHONEMIZER=espeak
 ```
 
-**Installation (Windows):**
+**Installation with Espeak (Windows):**
 ```powershell
 cd backend
 
@@ -525,7 +552,7 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
 # For CPU only:
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-# Step 2: Install espeak-ng (required for phonemizer)
+# Step 2: Install espeak-ng
 # Download from: https://github.com/espeak-ng/espeak-ng/releases
 # Run the installer (e.g., espeak-ng-X.XX-x64.msi)
 # The installer adds espeak-ng to PATH automatically
@@ -539,11 +566,14 @@ $env:PHONEMIZER_ESPEAK_LIBRARY = "C:\Program Files\eSpeak NG\libespeak-ng.dll"
 
 # Step 4: Install StyleTTS 2 dependencies
 pip install -r requirements-styletts2.txt
+
+# Step 5: Set phonemizer to espeak in .env
+# STYLETTS2_PHONEMIZER=espeak
 ```
 
-**Windows Troubleshooting:**
-- If phonemizer fails to find espeak-ng, verify the DLL path exists and update `PHONEMIZER_ESPEAK_LIBRARY` accordingly
-- Visual Studio Build Tools may be required for some dependencies
+**Troubleshooting:**
+- If using espeak and phonemizer fails to find espeak-ng, verify the DLL path exists and update `PHONEMIZER_ESPEAK_LIBRARY` accordingly
+- Visual Studio Build Tools may be required for some dependencies on Windows
 - Python 3.9-3.11 recommended (3.12+ may have compatibility issues)
 
 **Running the StyleTTS 2 Server:**
@@ -567,6 +597,8 @@ The server will:
 STYLETTS2_ENABLED=true
 STYLETTS2_API_URL=http://localhost:8021
 STYLETTS2_VOICES_DIR=./styletts2_voices
+# Phonemizer: "gruut" (default, no system deps) or "espeak" (requires espeak-ng)
+STYLETTS2_PHONEMIZER=gruut
 ```
 
 **Voice Cloning:**
@@ -1070,10 +1102,11 @@ conversation: Conversation
 
 13. **StyleTTS 2 Server is Separate Process**
     - StyleTTS 2 runs as a standalone FastAPI server on port 8021
-    - Requires PyTorch, phonemizer, and espeak-ng
+    - Requires PyTorch; espeak-ng only needed if `STYLETTS2_PHONEMIZER=espeak`
+    - Default phonemizer is gruut (MIT licensed, no system dependencies)
     - GPU (CUDA) strongly recommended for acceptable performance
     - Speaker embeddings are cached for repeat voice requests
-    - Long text is automatically chunked (300 char limit per chunk)
+    - Long text is automatically chunked (150 char limit per chunk)
 
 14. **Multi-Entity Conversation Storage**
     - Multi-entity conversations use `entity_id="multi-entity"` as a marker value
@@ -1255,6 +1288,7 @@ speed = 1.0                       # Speech speed multiplier
 styletts2_enabled = False         # Must be explicitly enabled (highest priority)
 styletts2_api_url = "http://localhost:8021"
 styletts2_voices_dir = "./styletts2_voices"
+styletts2_phonemizer = "gruut"    # "gruut" (default, no system deps) or "espeak"
 
 # StyleTTS 2 voice synthesis defaults (styletts2_service.py)
 alpha = 0.3                       # Timbre diversity (0-1)

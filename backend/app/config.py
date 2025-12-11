@@ -166,6 +166,8 @@ class Settings(BaseSettings):
     styletts2_default_speaker: str = ""
     # Directory to store cloned voice samples
     styletts2_voices_dir: str = "./styletts2_voices"
+    # Phonemizer backend: "gruut" (MIT licensed, no system deps) or "espeak" (requires espeak-ng)
+    styletts2_phonemizer: str = "gruut"
 
     # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, llm_provider, default_model)
     # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'
