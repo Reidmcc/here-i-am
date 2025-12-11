@@ -71,18 +71,17 @@ app.add_middleware(
 _styletts2_model = None
 _device = None
 
-# Speaker embedding cache: maps file hash -> (ref_s, ref_p)
-_speaker_embedding_cache: Dict[str, Tuple[Any, Any]] = {}
+# Speaker embedding cache: maps file hash -> style tensor
+_speaker_embedding_cache: Dict[str, Any] = {}
 
-# Cached default voice embeddings (computed once on first use)
-_default_voice_embeddings: Optional[Tuple[Any, Any]] = None
+# Cached default voice embedding (computed once on first use)
+_default_voice_embeddings: Optional[Any] = None
 
 
 @dataclass
-class SpeakerEmbeddings:
-    """Cached speaker style embeddings."""
-    ref_s: Any  # torch.Tensor - style embedding
-    ref_p: Any  # torch.Tensor - prosody embedding
+class SpeakerEmbedding:
+    """Cached speaker style embedding."""
+    style: Any  # torch.Tensor - style embedding from compute_style()
     file_hash: str
 
 
@@ -95,15 +94,15 @@ def compute_file_hash(file_path: str) -> str:
     return sha256_hash.hexdigest()[:16]  # Use first 16 chars
 
 
-def get_speaker_embeddings(speaker_wav_path: str) -> Tuple[Any, Any]:
+def get_speaker_embeddings(speaker_wav_path: str) -> Any:
     """
-    Get speaker style embeddings, using cache if available.
+    Get speaker style embedding, using cache if available.
 
     Args:
         speaker_wav_path: Path to the speaker reference audio file
 
     Returns:
-        Tuple of (ref_s, ref_p) tensors
+        Style embedding tensor
     """
     global _speaker_embedding_cache
 
@@ -120,14 +119,14 @@ def get_speaker_embeddings(speaker_wav_path: str) -> Tuple[Any, Any]:
     # Get the model and compute embeddings
     model = get_model()
 
-    # Compute reference embeddings using StyleTTS 2's compute_style method
-    ref_s, ref_p = model.compute_style(speaker_wav_path)
+    # Compute style embedding using StyleTTS 2's compute_style method
+    style = model.compute_style(speaker_wav_path)
 
     # Cache the result
-    _speaker_embedding_cache[file_hash] = (ref_s, ref_p)
-    logger.info(f"Cached speaker embeddings for {speaker_wav_path} (hash: {file_hash})")
+    _speaker_embedding_cache[file_hash] = style
+    logger.info(f"Cached speaker embedding for {speaker_wav_path} (hash: {file_hash})")
 
-    return ref_s, ref_p
+    return style
 
 
 def preload_speaker_embeddings(speaker_paths: list) -> int:
@@ -203,16 +202,16 @@ def get_model():
     return _styletts2_model
 
 
-def get_default_voice_embeddings() -> Tuple[Any, Any]:
+def get_default_voice_embeddings() -> Any:
     """
-    Get cached default voice (LJSpeech) embeddings.
+    Get cached default voice (LJSpeech) style embedding.
 
-    Computes them once on first call, then returns cached version.
+    Computes it once on first call, then returns cached version.
     This prevents the styletts2 library from re-downloading and re-processing
     the default reference audio on every inference call.
 
     Returns:
-        Tuple of (ref_s, ref_p) style embeddings for the default voice
+        Style embedding tensor for the default voice
     """
     global _default_voice_embeddings
 
@@ -225,11 +224,9 @@ def get_default_voice_embeddings() -> Tuple[Any, Any]:
     model = get_model()
 
     # The styletts2 library uses a default LJSpeech reference audio
-    # We need to trigger one inference to get it cached, or compute style directly
-    # Using compute_style with the default reference URL
+    # We download it and compute the style embedding
     try:
         import requests
-        import tempfile
 
         # This is the default reference audio URL used by styletts2
         default_audio_url = "https://styletts2.github.io/wavs/LJSpeech/OOD/GT/00001.wav"
@@ -243,10 +240,10 @@ def get_default_voice_embeddings() -> Tuple[Any, Any]:
             temp_path = f.name
 
         try:
-            # Compute style embeddings
-            ref_s, ref_p = model.compute_style(temp_path)
-            _default_voice_embeddings = (ref_s, ref_p)
-            logger.info("Default voice embeddings computed and cached")
+            # Compute style embedding - returns single tensor
+            style = model.compute_style(temp_path)
+            _default_voice_embeddings = style
+            logger.info("Default voice embedding computed and cached")
         finally:
             # Clean up temp file
             os.unlink(temp_path)
@@ -567,7 +564,7 @@ def synthesize_with_cached_embeddings(
     embedding_scale: float = 1.0,
 ) -> bytes:
     """
-    Synthesize speech using cached speaker embeddings for better performance.
+    Synthesize speech using cached speaker embedding for better performance.
 
     Automatically chunks long text for optimal quality.
 
@@ -583,9 +580,9 @@ def synthesize_with_cached_embeddings(
         WAV audio bytes
     """
     try:
-        # Get cached (or compute) speaker embeddings
-        logger.debug(f"Getting speaker embeddings for {speaker_wav_path}")
-        ref_s, ref_p = get_speaker_embeddings(speaker_wav_path)
+        # Get cached (or compute) speaker embedding
+        logger.debug(f"Getting speaker embedding for {speaker_wav_path}")
+        style = get_speaker_embeddings(speaker_wav_path)
 
         # Get the model
         model = get_model()
@@ -599,11 +596,11 @@ def synthesize_with_cached_embeddings(
         for i, chunk in enumerate(chunks):
             logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
 
-            # Synthesize using cached embeddings
+            # Synthesize using cached embedding
+            # The 'target' parameter receives the style embedding from compute_style()
             audio_array = model.inference(
                 text=chunk,
-                ref_s=ref_s,
-                ref_p=ref_p,
+                target=style,
                 alpha=alpha,
                 beta=beta,
                 diffusion_steps=diffusion_steps,
@@ -644,7 +641,7 @@ def synthesize_default_voice(
     """
     Synthesize speech using the default LJSpeech voice (no reference needed).
 
-    Uses cached default voice embeddings to prevent re-processing the reference
+    Uses cached default voice embedding to prevent re-processing the reference
     audio for each chunk (which was causing audio looping issues).
 
     Args:
@@ -660,10 +657,10 @@ def synthesize_default_voice(
     try:
         model = get_model()
 
-        # Get cached default voice embeddings (computed once on first use)
+        # Get cached default voice embedding (computed once on first use)
         # This prevents the library from re-downloading and re-processing
         # the default reference audio for each chunk
-        ref_s, ref_p = get_default_voice_embeddings()
+        style = get_default_voice_embeddings()
 
         # Split text into chunks
         chunks = split_text_into_chunks(text)
@@ -674,11 +671,11 @@ def synthesize_default_voice(
         for i, chunk in enumerate(chunks):
             logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
 
-            # Synthesize using cached default voice embeddings
+            # Synthesize using cached default voice embedding
+            # The 'target' parameter receives the style embedding from compute_style()
             audio_array = model.inference(
                 text=chunk,
-                ref_s=ref_s,
-                ref_p=ref_p,
+                target=style,
                 alpha=alpha,
                 beta=beta,
                 diffusion_steps=diffusion_steps,
