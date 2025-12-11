@@ -493,6 +493,9 @@ def _normalize_chunk(text: str) -> str:
     """Normalize text for TTS - remove problematic characters and fix whitespace."""
     # Remove brackets - can cause issues
     text = re.sub(r'[\[\]]', '', text)
+    # Add period before double newlines (paragraph breaks) if no punctuation present
+    # This creates natural pauses at bullet points and paragraph breaks
+    text = re.sub(r'([^.!?,;:\n])\n\n', r'\1.\n\n', text)
     # Replace newlines with spaces
     text = text.replace('\n', ' ')
     # Replace standalone dashes (space-dash-space) with comma for natural pause
