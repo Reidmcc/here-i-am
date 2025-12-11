@@ -134,12 +134,14 @@ class TTSService:
     Unified TTS service that delegates to the appropriate provider.
 
     This service checks configuration to determine whether to use
-    ElevenLabs (cloud) or XTTS (local) for text-to-speech conversion.
+    StyleTTS 2 (local), XTTS (local), or ElevenLabs (cloud) for
+    text-to-speech conversion.
     """
 
     def __init__(self):
         self._elevenlabs = ElevenLabsService()
         self._xtts = None  # Lazy loaded to avoid circular imports
+        self._styletts2 = None  # Lazy loaded to avoid circular imports
 
     @property
     def xtts(self):
@@ -149,6 +151,14 @@ class TTSService:
             self._xtts = xtts_service
         return self._xtts
 
+    @property
+    def styletts2(self):
+        """Lazy load StyleTTS 2 service to avoid circular imports."""
+        if self._styletts2 is None:
+            from app.services.styletts2_service import styletts2_service
+            self._styletts2 = styletts2_service
+        return self._styletts2
+
     def get_provider(self) -> str:
         """Get the current TTS provider name."""
         return settings.get_tts_provider()
@@ -156,7 +166,9 @@ class TTSService:
     def is_configured(self) -> bool:
         """Check if any TTS provider is configured."""
         provider = self.get_provider()
-        if provider == "xtts":
+        if provider == "styletts2":
+            return self.styletts2.is_configured()
+        elif provider == "xtts":
             return self.xtts.is_configured()
         elif provider == "elevenlabs":
             return self._elevenlabs.is_configured()
@@ -171,7 +183,11 @@ class TTSService:
         provider = self.get_provider()
         voices = []
 
-        if provider == "xtts":
+        if provider == "styletts2":
+            # StyleTTS 2 voices are loaded synchronously here for compatibility
+            styletts2_voices = self.styletts2._load_voices_sync()
+            voices = [v.to_dict() for v in styletts2_voices]
+        elif provider == "xtts":
             # XTTS voices are loaded synchronously here for compatibility
             xtts_voices = self.xtts._load_voices_sync()
             voices = [v.to_dict() for v in xtts_voices]
@@ -190,7 +206,10 @@ class TTSService:
         provider = self.get_provider()
         voices = []
 
-        if provider == "xtts":
+        if provider == "styletts2":
+            styletts2_voices = await self.styletts2.get_voices()
+            voices = [v.to_dict() for v in styletts2_voices]
+        elif provider == "xtts":
             xtts_voices = await self.xtts.get_voices()
             voices = [v.to_dict() for v in xtts_voices]
         elif provider == "elevenlabs":
@@ -203,7 +222,12 @@ class TTSService:
         """Get the default voice ID for the active provider."""
         provider = self.get_provider()
 
-        if provider == "xtts":
+        if provider == "styletts2":
+            voices = self.styletts2._load_voices_sync()
+            if voices:
+                return voices[0].voice_id
+            return None
+        elif provider == "xtts":
             voices = self.xtts._load_voices_sync()
             if voices:
                 return voices[0].voice_id
@@ -228,11 +252,13 @@ class TTSService:
             model_id: Optional model ID override (ElevenLabs only)
 
         Returns:
-            Audio bytes (MP3 for ElevenLabs, WAV for XTTS)
+            Audio bytes (MP3 for ElevenLabs, WAV for XTTS/StyleTTS 2)
         """
         provider = self.get_provider()
 
-        if provider == "xtts":
+        if provider == "styletts2":
+            return await self.styletts2.text_to_speech(text, voice_id)
+        elif provider == "xtts":
             return await self.xtts.text_to_speech(text, voice_id)
         elif provider == "elevenlabs":
             return await self._elevenlabs.text_to_speech(text, voice_id, model_id)
@@ -258,7 +284,10 @@ class TTSService:
         """
         provider = self.get_provider()
 
-        if provider == "xtts":
+        if provider == "styletts2":
+            async for chunk in self.styletts2.text_to_speech_stream(text, voice_id):
+                yield chunk
+        elif provider == "xtts":
             async for chunk in self.xtts.text_to_speech_stream(text, voice_id):
                 yield chunk
         elif provider == "elevenlabs":
@@ -297,6 +326,13 @@ class TTSService:
 
         if provider == "elevenlabs":
             status["model_id"] = self._elevenlabs.model_id
+        elif provider == "styletts2":
+            # Check StyleTTS 2 server health
+            health = await self.styletts2.check_server_health()
+            status["server_healthy"] = health.get("healthy", False)
+            status["server_url"] = settings.styletts2_api_url
+            if not health.get("healthy"):
+                status["server_error"] = health.get("error", "Unknown error")
         elif provider == "xtts":
             # Check XTTS server health
             health = await self.xtts.check_server_health()
