@@ -39,6 +39,7 @@ phonemizer>=3.2.0
 # Additional dependencies
 numpy>=1.22.0,<2.0.0
 scipy>=1.10.0
+nltk>=3.8.0  # For text tokenization (punkt_tab downloaded automatically on first run)
 
 # Server dependencies (should already be installed from main requirements)
 fastapi>=0.109.0

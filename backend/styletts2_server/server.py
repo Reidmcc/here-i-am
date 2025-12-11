@@ -17,10 +17,19 @@ from typing import Optional, Dict, Tuple, Any
 
 import torch
 import numpy as np
+import nltk
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+# Download required NLTK data for text tokenization (used by styletts2)
+# This runs once on module load and skips if already downloaded
+try:
+    nltk.data.find('tokenizers/punkt_tab')
+except LookupError:
+    print("Downloading NLTK punkt_tab tokenizer...")
+    nltk.download('punkt_tab', quiet=True)
 
 # Patch torch.load for PyTorch 2.6+ compatibility with styletts2
 # The styletts2 package uses torch.load without weights_only=False,
