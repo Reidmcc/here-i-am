@@ -306,6 +306,10 @@ class StyleTTS2Service:
         self,
         text: str,
         voice_id: Optional[str] = None,
+        alpha: Optional[float] = None,
+        beta: Optional[float] = None,
+        diffusion_steps: Optional[int] = None,
+        embedding_scale: Optional[float] = None,
     ) -> bytes:
         """
         Convert text to speech using StyleTTS 2.
@@ -313,6 +317,10 @@ class StyleTTS2Service:
         Args:
             text: The text to convert to speech
             voice_id: Optional voice ID (uses default LJSpeech voice if not specified)
+            alpha: Override timbre parameter (0-1), uses voice setting or default if None
+            beta: Override prosody parameter (0-1), uses voice setting or default if None
+            diffusion_steps: Override quality/speed (1-50), uses voice setting or default if None
+            embedding_scale: Override classifier free guidance, uses voice setting or default if None
 
         Returns:
             Audio bytes in WAV format
@@ -330,11 +338,11 @@ class StyleTTS2Service:
         if not speaker_wav and self.default_speaker:
             speaker_wav = self.default_speaker
 
-        # Get voice parameters (use defaults if no voice config found)
-        alpha = voice.alpha if voice else 0.3
-        beta = voice.beta if voice else 0.7
-        diffusion_steps = voice.diffusion_steps if voice else 10
-        embedding_scale = voice.embedding_scale if voice else 1.0
+        # Get voice parameters: override > voice config > defaults
+        alpha = alpha if alpha is not None else (voice.alpha if voice else 0.3)
+        beta = beta if beta is not None else (voice.beta if voice else 0.7)
+        diffusion_steps = diffusion_steps if diffusion_steps is not None else (voice.diffusion_steps if voice else 10)
+        embedding_scale = embedding_scale if embedding_scale is not None else (voice.embedding_scale if voice else 1.0)
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             # If no speaker configured, use the default LJSpeech voice
@@ -399,6 +407,10 @@ class StyleTTS2Service:
         self,
         text: str,
         voice_id: Optional[str] = None,
+        alpha: Optional[float] = None,
+        beta: Optional[float] = None,
+        diffusion_steps: Optional[int] = None,
+        embedding_scale: Optional[float] = None,
     ) -> AsyncIterator[bytes]:
         """
         Convert text to speech and stream audio chunks.
@@ -406,6 +418,10 @@ class StyleTTS2Service:
         Args:
             text: The text to convert to speech
             voice_id: Optional voice ID (uses default LJSpeech voice if not specified)
+            alpha: Override timbre parameter (0-1), uses voice setting or default if None
+            beta: Override prosody parameter (0-1), uses voice setting or default if None
+            diffusion_steps: Override quality/speed (1-50), uses voice setting or default if None
+            embedding_scale: Override classifier free guidance, uses voice setting or default if None
 
         Yields:
             Audio bytes chunks
@@ -423,16 +439,22 @@ class StyleTTS2Service:
         if not speaker_wav and self.default_speaker:
             speaker_wav = self.default_speaker
 
-        # Get voice parameters (use defaults if no voice config found)
-        alpha = voice.alpha if voice else 0.3
-        beta = voice.beta if voice else 0.7
-        diffusion_steps = voice.diffusion_steps if voice else 10
-        embedding_scale = voice.embedding_scale if voice else 1.0
+        # Get voice parameters: override > voice config > defaults
+        alpha = alpha if alpha is not None else (voice.alpha if voice else 0.3)
+        beta = beta if beta is not None else (voice.beta if voice else 0.7)
+        diffusion_steps = diffusion_steps if diffusion_steps is not None else (voice.diffusion_steps if voice else 10)
+        embedding_scale = embedding_scale if embedding_scale is not None else (voice.embedding_scale if voice else 1.0)
 
         # If no speaker configured, fall back to non-streaming with default voice
         if not speaker_wav:
             logger.info("No voice configured, using default LJSpeech voice (non-streaming)")
-            audio = await self.text_to_speech(text, voice_id)
+            audio = await self.text_to_speech(
+                text, voice_id,
+                alpha=alpha,
+                beta=beta,
+                diffusion_steps=diffusion_steps,
+                embedding_scale=embedding_scale,
+            )
             yield audio
             return
 
@@ -462,7 +484,13 @@ class StyleTTS2Service:
                 async with client.stream("POST", url, data=data, files=files) as response:
                     if response.status_code != 200:
                         # Fall back to non-streaming
-                        audio = await self.text_to_speech(text, voice_id)
+                        audio = await self.text_to_speech(
+                            text, voice_id,
+                            alpha=alpha,
+                            beta=beta,
+                            diffusion_steps=diffusion_steps,
+                            embedding_scale=embedding_scale,
+                        )
                         yield audio
                         return
 

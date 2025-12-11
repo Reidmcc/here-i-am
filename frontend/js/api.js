@@ -468,11 +468,18 @@ class ApiClient {
         return this.request('/tts/status');
     }
 
-    async textToSpeech(text, voiceId = null) {
+    async textToSpeech(text, voiceId = null, styletts2Params = null) {
         const url = `${API_BASE}/tts/speak`;
         const body = { text };
         if (voiceId) {
             body.voice_id = voiceId;
+        }
+        // Add StyleTTS 2 parameters if provided
+        if (styletts2Params) {
+            if (styletts2Params.alpha !== undefined) body.alpha = styletts2Params.alpha;
+            if (styletts2Params.beta !== undefined) body.beta = styletts2Params.beta;
+            if (styletts2Params.diffusion_steps !== undefined) body.diffusion_steps = styletts2Params.diffusion_steps;
+            if (styletts2Params.embedding_scale !== undefined) body.embedding_scale = styletts2Params.embedding_scale;
         }
 
         const response = await fetch(url, {

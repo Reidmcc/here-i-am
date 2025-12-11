@@ -21,6 +21,11 @@ class TTSRequest(BaseModel):
     text: str
     voice_id: Optional[str] = None
     model_id: Optional[str] = None
+    # StyleTTS 2 parameter overrides (used when voice has no saved settings)
+    alpha: Optional[float] = None  # Timbre parameter (0-1)
+    beta: Optional[float] = None   # Prosody parameter (0-1)
+    diffusion_steps: Optional[int] = None  # Quality vs speed (1-50)
+    embedding_scale: Optional[float] = None  # Classifier free guidance
 
 
 @router.post("/speak")
@@ -48,6 +53,10 @@ async def text_to_speech(data: TTSRequest):
             text=data.text,
             voice_id=data.voice_id,
             model_id=data.model_id,
+            alpha=data.alpha,
+            beta=data.beta,
+            diffusion_steps=data.diffusion_steps,
+            embedding_scale=data.embedding_scale,
         )
 
         # Determine content type based on provider
@@ -91,6 +100,10 @@ async def text_to_speech_stream(data: TTSRequest):
             text=data.text,
             voice_id=data.voice_id,
             model_id=data.model_id,
+            alpha=data.alpha,
+            beta=data.beta,
+            diffusion_steps=data.diffusion_steps,
+            embedding_scale=data.embedding_scale,
         ):
             yield chunk
 
