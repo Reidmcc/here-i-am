@@ -518,7 +518,9 @@ def synthesize_with_cached_latents(
         # Use no_grad to ensure no gradient computation and reduce memory
         with torch.no_grad():
             for i, chunk in enumerate(chunks):
-                logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
+                chunk_len = len(chunk)
+                # Log full chunk content for debugging audio loss issues
+                logger.info(f"Chunk {i+1}/{len(chunks)} ({chunk_len} chars): {chunk[:100]}{'...' if chunk_len > 100 else ''}")
 
                 # Synthesize using cached latents
                 audio_output = xtts_model.inference(
@@ -538,6 +540,10 @@ def synthesize_with_cached_latents(
                 if hasattr(audio_array, "cpu"):
                     audio_array = audio_array.cpu().numpy()
 
+                # Log audio duration for this chunk (24kHz sample rate)
+                chunk_duration = len(audio_array) / 24000
+                logger.info(f"Chunk {i+1} produced {len(audio_array)} samples ({chunk_duration:.2f}s)")
+
                 audio_arrays.append(audio_array)
 
                 # Explicitly clear GPU memory after each chunk to prevent VRAM accumulation
@@ -545,6 +551,10 @@ def synthesize_with_cached_latents(
                 del audio_output
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+
+        # Log total before concatenation
+        total_samples = sum(len(a) for a in audio_arrays)
+        logger.info(f"Total audio: {total_samples} samples ({total_samples/24000:.2f}s) from {len(audio_arrays)} chunks")
 
         # Concatenate all audio chunks
         if len(audio_arrays) == 1:
