@@ -74,6 +74,9 @@ _device = None
 # Speaker embedding cache: maps file hash -> (ref_s, ref_p)
 _speaker_embedding_cache: Dict[str, Tuple[Any, Any]] = {}
 
+# Cached default voice embeddings (computed once on first use)
+_default_voice_embeddings: Optional[Tuple[Any, Any]] = None
+
 
 @dataclass
 class SpeakerEmbeddings:
@@ -198,6 +201,61 @@ def get_model():
             raise RuntimeError(f"Failed to load StyleTTS 2 model: {e}")
 
     return _styletts2_model
+
+
+def get_default_voice_embeddings() -> Tuple[Any, Any]:
+    """
+    Get cached default voice (LJSpeech) embeddings.
+
+    Computes them once on first call, then returns cached version.
+    This prevents the styletts2 library from re-downloading and re-processing
+    the default reference audio on every inference call.
+
+    Returns:
+        Tuple of (ref_s, ref_p) style embeddings for the default voice
+    """
+    global _default_voice_embeddings
+
+    if _default_voice_embeddings is not None:
+        logger.debug("Using cached default voice embeddings")
+        return _default_voice_embeddings
+
+    logger.info("Computing default voice embeddings (one-time operation)...")
+
+    model = get_model()
+
+    # The styletts2 library uses a default LJSpeech reference audio
+    # We need to trigger one inference to get it cached, or compute style directly
+    # Using compute_style with the default reference URL
+    try:
+        import requests
+        import tempfile
+
+        # This is the default reference audio URL used by styletts2
+        default_audio_url = "https://styletts2.github.io/wavs/LJSpeech/OOD/GT/00001.wav"
+
+        # Download to temp file
+        response = requests.get(default_audio_url, timeout=30)
+        response.raise_for_status()
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            f.write(response.content)
+            temp_path = f.name
+
+        try:
+            # Compute style embeddings
+            ref_s, ref_p = model.compute_style(temp_path)
+            _default_voice_embeddings = (ref_s, ref_p)
+            logger.info("Default voice embeddings computed and cached")
+        finally:
+            # Clean up temp file
+            os.unlink(temp_path)
+
+    except Exception as e:
+        logger.error(f"Failed to compute default voice embeddings: {e}")
+        raise
+
+    return _default_voice_embeddings
 
 
 def get_preload_speaker_paths() -> list:
@@ -586,6 +644,9 @@ def synthesize_default_voice(
     """
     Synthesize speech using the default LJSpeech voice (no reference needed).
 
+    Uses cached default voice embeddings to prevent re-processing the reference
+    audio for each chunk (which was causing audio looping issues).
+
     Args:
         text: Text to synthesize
         alpha: Timbre parameter (0-1), higher = more diverse timbre
@@ -599,6 +660,11 @@ def synthesize_default_voice(
     try:
         model = get_model()
 
+        # Get cached default voice embeddings (computed once on first use)
+        # This prevents the library from re-downloading and re-processing
+        # the default reference audio for each chunk
+        ref_s, ref_p = get_default_voice_embeddings()
+
         # Split text into chunks
         chunks = split_text_into_chunks(text)
         logger.info(f"Split text into {len(chunks)} chunk(s) for default voice")
@@ -608,9 +674,11 @@ def synthesize_default_voice(
         for i, chunk in enumerate(chunks):
             logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
 
-            # Synthesize using default voice (no ref_s/ref_p means use LJSpeech)
+            # Synthesize using cached default voice embeddings
             audio_array = model.inference(
                 text=chunk,
+                ref_s=ref_s,
+                ref_p=ref_p,
                 alpha=alpha,
                 beta=beta,
                 diffusion_steps=diffusion_steps,
