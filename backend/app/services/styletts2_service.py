@@ -310,6 +310,7 @@ class StyleTTS2Service:
         beta: Optional[float] = None,
         diffusion_steps: Optional[int] = None,
         embedding_scale: Optional[float] = None,
+        speed: Optional[float] = None,
     ) -> bytes:
         """
         Convert text to speech using StyleTTS 2.
@@ -321,6 +322,7 @@ class StyleTTS2Service:
             beta: Override prosody parameter (0-1), uses voice setting or default if None
             diffusion_steps: Override quality/speed (1-50), uses voice setting or default if None
             embedding_scale: Override classifier free guidance, uses voice setting or default if None
+            speed: Override speech speed (0.5-2.0), uses voice setting or default if None
 
         Returns:
             Audio bytes in WAV format
@@ -343,6 +345,7 @@ class StyleTTS2Service:
         beta = beta if beta is not None else (voice.beta if voice else 0.7)
         diffusion_steps = diffusion_steps if diffusion_steps is not None else (voice.diffusion_steps if voice else 10)
         embedding_scale = embedding_scale if embedding_scale is not None else (voice.embedding_scale if voice else 1.0)
+        speed = speed if speed is not None else (getattr(voice, 'speed', None) if voice else 1.0) or 1.0
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             # If no speaker configured, use the default LJSpeech voice
@@ -355,6 +358,7 @@ class StyleTTS2Service:
                     "beta": str(beta),
                     "diffusion_steps": str(diffusion_steps),
                     "embedding_scale": str(embedding_scale),
+                    "speed": str(speed),
                 }
 
                 try:
@@ -389,6 +393,7 @@ class StyleTTS2Service:
                 "beta": str(beta),
                 "diffusion_steps": str(diffusion_steps),
                 "embedding_scale": str(embedding_scale),
+                "speed": str(speed),
             }
 
             try:
@@ -411,6 +416,7 @@ class StyleTTS2Service:
         beta: Optional[float] = None,
         diffusion_steps: Optional[int] = None,
         embedding_scale: Optional[float] = None,
+        speed: Optional[float] = None,
     ) -> AsyncIterator[bytes]:
         """
         Convert text to speech and stream audio chunks.
@@ -422,6 +428,7 @@ class StyleTTS2Service:
             beta: Override prosody parameter (0-1), uses voice setting or default if None
             diffusion_steps: Override quality/speed (1-50), uses voice setting or default if None
             embedding_scale: Override classifier free guidance, uses voice setting or default if None
+            speed: Override speech speed (0.5-2.0), uses voice setting or default if None
 
         Yields:
             Audio bytes chunks
@@ -444,6 +451,7 @@ class StyleTTS2Service:
         beta = beta if beta is not None else (voice.beta if voice else 0.7)
         diffusion_steps = diffusion_steps if diffusion_steps is not None else (voice.diffusion_steps if voice else 10)
         embedding_scale = embedding_scale if embedding_scale is not None else (voice.embedding_scale if voice else 1.0)
+        speed = speed if speed is not None else (getattr(voice, 'speed', None) if voice else 1.0) or 1.0
 
         # If no speaker configured, fall back to non-streaming with default voice
         if not speaker_wav:
@@ -454,6 +462,7 @@ class StyleTTS2Service:
                 beta=beta,
                 diffusion_steps=diffusion_steps,
                 embedding_scale=embedding_scale,
+                speed=speed,
             )
             yield audio
             return
@@ -478,6 +487,7 @@ class StyleTTS2Service:
                 "beta": str(beta),
                 "diffusion_steps": str(diffusion_steps),
                 "embedding_scale": str(embedding_scale),
+                "speed": str(speed),
             }
 
             try:
@@ -490,6 +500,7 @@ class StyleTTS2Service:
                             beta=beta,
                             diffusion_steps=diffusion_steps,
                             embedding_scale=embedding_scale,
+                            speed=speed,
                         )
                         yield audio
                         return

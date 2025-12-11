@@ -132,6 +132,7 @@ class App {
             styletts2Beta: document.getElementById('styletts2-beta'),
             styletts2DiffusionSteps: document.getElementById('styletts2-diffusion-steps'),
             styletts2EmbeddingScale: document.getElementById('styletts2-embedding-scale'),
+            styletts2Speed: document.getElementById('styletts2-speed'),
 
             // Voice Edit Modal
             voiceEditModal: document.getElementById('voice-edit-modal'),
@@ -2860,6 +2861,7 @@ class App {
                 this.elements.styletts2Beta.value = params.beta ?? 0.7;
                 this.elements.styletts2DiffusionSteps.value = params.diffusion_steps ?? 10;
                 this.elements.styletts2EmbeddingScale.value = params.embedding_scale ?? 1.0;
+                this.elements.styletts2Speed.value = params.speed ?? 1.0;
             } catch (e) {
                 console.warn('Failed to load StyleTTS 2 settings:', e);
             }
@@ -2873,6 +2875,7 @@ class App {
             beta: parseFloat(this.elements.styletts2Beta.value) || 0.7,
             diffusion_steps: parseInt(this.elements.styletts2DiffusionSteps.value) || 10,
             embedding_scale: parseFloat(this.elements.styletts2EmbeddingScale.value) || 1.0,
+            speed: parseFloat(this.elements.styletts2Speed.value) || 1.0,
         };
         localStorage.setItem('styletts2_params', JSON.stringify(params));
         // Clear audio cache since parameters changed
@@ -2894,6 +2897,7 @@ class App {
             beta: 0.7,
             diffusion_steps: 10,
             embedding_scale: 1.0,
+            speed: 1.0,
         };
     }
 

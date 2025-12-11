@@ -246,6 +246,7 @@ class TTSService:
         beta: Optional[float] = None,
         diffusion_steps: Optional[int] = None,
         embedding_scale: Optional[float] = None,
+        speed: Optional[float] = None,
     ) -> bytes:
         """
         Convert text to speech using the active provider.
@@ -258,6 +259,7 @@ class TTSService:
             beta: StyleTTS 2 prosody parameter override (0-1)
             diffusion_steps: StyleTTS 2 quality/speed override (1-50)
             embedding_scale: StyleTTS 2 classifier free guidance override
+            speed: StyleTTS 2 speech speed override (0.5-2.0)
 
         Returns:
             Audio bytes (MP3 for ElevenLabs, WAV for XTTS/StyleTTS 2)
@@ -271,6 +273,7 @@ class TTSService:
                 beta=beta,
                 diffusion_steps=diffusion_steps,
                 embedding_scale=embedding_scale,
+                speed=speed,
             )
         elif provider == "xtts":
             return await self.xtts.text_to_speech(text, voice_id)
@@ -288,6 +291,7 @@ class TTSService:
         beta: Optional[float] = None,
         diffusion_steps: Optional[int] = None,
         embedding_scale: Optional[float] = None,
+        speed: Optional[float] = None,
     ) -> AsyncIterator[bytes]:
         """
         Convert text to speech and stream audio bytes.
@@ -300,6 +304,7 @@ class TTSService:
             beta: StyleTTS 2 prosody parameter override (0-1)
             diffusion_steps: StyleTTS 2 quality/speed override (1-50)
             embedding_scale: StyleTTS 2 classifier free guidance override
+            speed: StyleTTS 2 speech speed override (0.5-2.0)
 
         Yields:
             Audio bytes chunks
@@ -313,6 +318,7 @@ class TTSService:
                 beta=beta,
                 diffusion_steps=diffusion_steps,
                 embedding_scale=embedding_scale,
+                speed=speed,
             ):
                 yield chunk
         elif provider == "xtts":

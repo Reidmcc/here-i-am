@@ -480,6 +480,7 @@ class ApiClient {
             if (styletts2Params.beta !== undefined) body.beta = styletts2Params.beta;
             if (styletts2Params.diffusion_steps !== undefined) body.diffusion_steps = styletts2Params.diffusion_steps;
             if (styletts2Params.embedding_scale !== undefined) body.embedding_scale = styletts2Params.embedding_scale;
+            if (styletts2Params.speed !== undefined) body.speed = styletts2Params.speed;
         }
 
         const response = await fetch(url, {
