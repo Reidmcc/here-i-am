@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Tuple, Any
@@ -603,13 +604,15 @@ async def tts_to_audio(
 
         # Generate speech using cached speaker latents
         logger.info(f"Generating speech for {len(text)} chars, language={language}")
+        start_time = time.time()
         audio_bytes = synthesize_with_cached_latents(
             text=text,
             speaker_wav_path=speaker_path,
             language=language,
         )
+        elapsed = time.time() - start_time
 
-        logger.info(f"Generated {len(audio_bytes)} bytes of audio")
+        logger.info(f"Generated {len(audio_bytes)} bytes of audio in {elapsed:.2f} seconds")
 
         return Response(
             content=audio_bytes,
@@ -655,13 +658,15 @@ async def _tts_with_path(text: str, speaker_wav: str, language: str) -> Response
     try:
         # Generate speech using cached speaker latents
         logger.info(f"Generating speech for {len(text)} chars, language={language}")
+        start_time = time.time()
         audio_bytes = synthesize_with_cached_latents(
             text=text,
             speaker_wav_path=str(speaker_path),
             language=language,
         )
+        elapsed = time.time() - start_time
 
-        logger.info(f"Generated {len(audio_bytes)} bytes of audio")
+        logger.info(f"Generated {len(audio_bytes)} bytes of audio in {elapsed:.2f} seconds")
 
         return Response(
             content=audio_bytes,
