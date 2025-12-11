@@ -597,10 +597,10 @@ def synthesize_with_cached_embeddings(
             logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
 
             # Synthesize using cached embedding
-            # The 'target' parameter receives the style embedding from compute_style()
+            # Pass the style embedding from compute_style() as ref_s
             audio_array = model.inference(
                 text=chunk,
-                target=style,
+                ref_s=style,
                 alpha=alpha,
                 beta=beta,
                 diffusion_steps=diffusion_steps,
@@ -672,10 +672,10 @@ def synthesize_default_voice(
             logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
 
             # Synthesize using cached default voice embedding
-            # The 'target' parameter receives the style embedding from compute_style()
+            # Pass the style embedding from compute_style() as ref_s
             audio_array = model.inference(
                 text=chunk,
-                target=style,
+                ref_s=style,
                 alpha=alpha,
                 beta=beta,
                 diffusion_steps=diffusion_steps,
