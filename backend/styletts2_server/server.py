@@ -669,7 +669,7 @@ def synthesize_default_voice(
         audio_arrays = []
 
         for i, chunk in enumerate(chunks):
-            logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
+            logger.info(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:80]}...")
 
             # Synthesize using cached default voice embedding
             # Pass the style embedding from compute_style() as ref_s
@@ -686,6 +686,7 @@ def synthesize_default_voice(
             if hasattr(audio_array, "cpu"):
                 audio_array = audio_array.cpu().numpy()
 
+            logger.info(f"Chunk {i+1} audio shape: {audio_array.shape}, duration: {len(audio_array)/24000:.2f}s")
             audio_arrays.append(audio_array)
 
         # Concatenate all audio chunks
@@ -693,6 +694,8 @@ def synthesize_default_voice(
             combined_audio = audio_arrays[0]
         else:
             combined_audio = np.concatenate(audio_arrays)
+
+        logger.info(f"Combined audio shape: {combined_audio.shape}, total duration: {len(combined_audio)/24000:.2f}s")
 
         # StyleTTS 2 outputs at 24kHz
         sample_rate = 24000
