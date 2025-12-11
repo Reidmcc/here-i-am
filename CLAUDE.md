@@ -555,9 +555,11 @@ python run_styletts2.py --port 8021
 ```
 
 The server will:
-1. Download the StyleTTS 2 model on first run
+1. Auto-download StyleTTS 2 models from HuggingFace on first run (~1GB total)
 2. Start on port 8021 (default)
 3. Apply GPU optimizations if CUDA is available
+
+**Note:** The `styletts2` Python package handles model downloads automatically. No manual model download is required.
 
 **Configure Main App to Use StyleTTS 2:**
 ```bash
