@@ -12,28 +12,40 @@
 # For CPU only:
 #   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 #
-# Step 2: Install espeak-ng (required for phonemizer)
+# Step 2: Choose your phonemizer backend
 # ---------------------------------------------------------
-# Ubuntu/Debian:
-#   sudo apt install espeak-ng
+# The server supports two phonemizer backends:
 #
-# macOS:
-#   brew install espeak-ng
+# Option A - gruut (default, recommended):
+#   - MIT licensed, pure Python
+#   - No system dependencies required
+#   - Set STYLETTS2_PHONEMIZER=gruut (or leave unset)
+#   - Just install this requirements file
 #
-# Windows:
-#   Download from https://github.com/espeak-ng/espeak-ng/releases
+# Option B - espeak:
+#   - Requires espeak-ng system package
+#   - Higher quality phonemization in some cases
+#   - Set STYLETTS2_PHONEMIZER=espeak
+#   - Install espeak-ng first:
+#     Ubuntu/Debian: sudo apt install espeak-ng
+#     macOS: brew install espeak-ng
+#     Windows: https://github.com/espeak-ng/espeak-ng/releases
 #
 # Step 3: Install this requirements file
 # ---------------------------------------------------------
 #   pip install -r requirements-styletts2.txt
 #
 # Note: Requires Python 3.9-3.11. Python 3.12+ may have compatibility issues.
-# Note: On Windows, you may need Visual Studio Build Tools installed.
+# Note: On Windows with espeak, you may need to set PHONEMIZER_ESPEAK_LIBRARY.
 
 # StyleTTS 2 library (install after PyTorch)
 styletts2
 
-# Phonemizer for text-to-phoneme conversion (requires espeak-ng system package)
+# Gruut phonemizer (MIT licensed, no system deps - default option)
+gruut>=2.4.0
+
+# Phonemizer for espeak backend (optional, requires espeak-ng system package)
+# Only needed if you set STYLETTS2_PHONEMIZER=espeak
 phonemizer>=3.2.0
 
 # Additional dependencies
