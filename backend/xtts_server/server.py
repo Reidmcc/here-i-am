@@ -181,14 +181,11 @@ def get_model():
             except Exception as e:
                 logger.warning(f"Could not update tokenizer char_limits: {e}")
 
-            # Apply reduce-overhead optimization for GPU (staying in FP32 for stability)
-            if device == "cuda":
-                logger.info("Applying torch.compile with reduce-overhead mode...")
-                _tts_model.synthesizer.tts_model = torch.compile(
-                    _tts_model.synthesizer.tts_model,
-                    mode="reduce-overhead"
-                )
-                logger.info("Model optimizations applied successfully")
+            # Note: We intentionally do NOT use torch.compile here.
+            # The "reduce-overhead" mode uses CUDA graphs which cache GPU execution states
+            # for each unique input shape. With variable-length text chunks, this causes
+            # VRAM to accumulate rapidly as each chunk length creates a new cached graph.
+            # For XTTS inference with variable text lengths, the standard eager mode is safer.
 
             logger.info("XTTS v2 model loaded successfully")
 
@@ -517,28 +514,36 @@ def synthesize_with_cached_latents(
 
         audio_arrays = []
 
-        for i, chunk in enumerate(chunks):
-            logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
+        # Use no_grad to ensure no gradient computation and reduce memory
+        with torch.no_grad():
+            for i, chunk in enumerate(chunks):
+                logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
 
-            # Synthesize using cached latents
-            audio_output = xtts_model.inference(
-                text=chunk,
-                language=language,
-                gpt_cond_latent=gpt_cond_latent,
-                speaker_embedding=speaker_embedding,
-            )
+                # Synthesize using cached latents
+                audio_output = xtts_model.inference(
+                    text=chunk,
+                    language=language,
+                    gpt_cond_latent=gpt_cond_latent,
+                    speaker_embedding=speaker_embedding,
+                )
 
-            # Get the audio waveform from output dict
-            audio_array = audio_output.get("wav")
-            if audio_array is None:
-                logger.error(f"XTTS model returned: {audio_output.keys() if isinstance(audio_output, dict) else type(audio_output)}")
-                raise RuntimeError("XTTS model did not return audio")
+                # Get the audio waveform from output dict
+                audio_array = audio_output.get("wav")
+                if audio_array is None:
+                    logger.error(f"XTTS model returned: {audio_output.keys() if isinstance(audio_output, dict) else type(audio_output)}")
+                    raise RuntimeError("XTTS model did not return audio")
 
-            # Convert to numpy array if it's a tensor
-            if hasattr(audio_array, "cpu"):
-                audio_array = audio_array.cpu().numpy()
+                # Convert to numpy array if it's a tensor - move to CPU immediately
+                if hasattr(audio_array, "cpu"):
+                    audio_array = audio_array.cpu().numpy()
 
-            audio_arrays.append(audio_array)
+                audio_arrays.append(audio_array)
+
+                # Explicitly clear GPU memory after each chunk to prevent VRAM accumulation
+                # This is critical for long texts with many chunks
+                del audio_output
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         # Concatenate all audio chunks
         if len(audio_arrays) == 1:
