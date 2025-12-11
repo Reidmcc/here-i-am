@@ -370,6 +370,14 @@ def _normalize_chunk(text: str) -> str:
     text = re.sub(r'[\[\]]', '', text)
     # Replace newlines with spaces
     text = text.replace('\n', ' ')
+    # Convert ALL CAPS words (3+ chars) to title case to prevent letter-by-letter spelling
+    # Preserves short acronyms like "AI", "UK", "US" but fixes "MEMORIES" -> "Memories"
+    def fix_caps(match):
+        word = match.group(0)
+        if len(word) > 2:
+            return word.capitalize()
+        return word
+    text = re.sub(r'\b[A-Z]{2,}\b', fix_caps, text)
     # Collapse multiple spaces into one
     text = re.sub(r' +', ' ', text)
     return text.strip()
