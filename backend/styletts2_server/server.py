@@ -413,6 +413,36 @@ def numpy_to_wav_bytes(audio_array: np.ndarray, sample_rate: int = 24000) -> byt
     return buffer.read()
 
 
+def adjust_audio_speed(audio_array: np.ndarray, speed: float) -> np.ndarray:
+    """
+    Adjust audio playback speed by resampling.
+
+    Args:
+        audio_array: Input audio samples
+        speed: Speed multiplier (1.0 = normal, 2.0 = 2x faster, 0.5 = half speed)
+
+    Returns:
+        Resampled audio array
+    """
+    if speed == 1.0:
+        return audio_array
+
+    from scipy import signal
+
+    # Calculate new number of samples
+    # speed > 1.0 means fewer samples (faster), speed < 1.0 means more samples (slower)
+    original_length = len(audio_array)
+    new_length = int(original_length / speed)
+
+    if new_length < 1:
+        new_length = 1
+
+    # Resample to new length
+    resampled = signal.resample(audio_array.astype(np.float32), new_length)
+
+    return resampled
+
+
 # StyleTTS 2 text encoder (ALBERT) has a 512 token limit
 # Keep chunks small to stay well under this limit
 # 150 chars typically produces ~30-50 tokens, leaving headroom for edge cases
@@ -607,6 +637,7 @@ def synthesize_with_cached_embeddings(
     beta: float = 0.7,
     diffusion_steps: int = 10,
     embedding_scale: float = 1.0,
+    speed: float = 1.0,
 ) -> bytes:
     """
     Synthesize speech using cached speaker embedding for better performance.
@@ -620,6 +651,7 @@ def synthesize_with_cached_embeddings(
         beta: Prosody parameter (0-1), higher = more diverse prosody
         diffusion_steps: Number of diffusion steps (5-20, higher = better quality but slower)
         embedding_scale: Classifier free guidance scale
+        speed: Speech speed multiplier (0.5-2.0, 1.0 = normal)
 
     Returns:
         WAV audio bytes
@@ -661,6 +693,10 @@ def synthesize_with_cached_embeddings(
         # Concatenate audio chunks with crossfading for smooth transitions
         combined_audio = crossfade_chunks(audio_arrays)
 
+        # Apply speed adjustment if not 1.0
+        if speed != 1.0:
+            combined_audio = adjust_audio_speed(combined_audio, speed)
+
         # StyleTTS 2 outputs at 24kHz
         sample_rate = 24000
 
@@ -679,6 +715,7 @@ def synthesize_default_voice(
     beta: float = 0.7,
     diffusion_steps: int = 10,
     embedding_scale: float = 1.0,
+    speed: float = 1.0,
 ) -> bytes:
     """
     Synthesize speech using the default LJSpeech voice (no reference needed).
@@ -692,6 +729,7 @@ def synthesize_default_voice(
         beta: Prosody parameter (0-1), higher = more diverse prosody
         diffusion_steps: Number of diffusion steps (5-20, higher = better quality but slower)
         embedding_scale: Classifier free guidance scale
+        speed: Speech speed multiplier (0.5-2.0, 1.0 = normal)
 
     Returns:
         WAV audio bytes
@@ -734,6 +772,10 @@ def synthesize_default_voice(
         # Concatenate audio chunks with crossfading for smooth transitions
         combined_audio = crossfade_chunks(audio_arrays)
 
+        # Apply speed adjustment if not 1.0
+        if speed != 1.0:
+            combined_audio = adjust_audio_speed(combined_audio, speed)
+
         logger.info(f"Combined audio shape: {combined_audio.shape}, total duration: {len(combined_audio)/24000:.2f}s")
 
         # StyleTTS 2 outputs at 24kHz
@@ -755,6 +797,7 @@ async def tts_default_voice(
     beta: str = Form("0.7", description="Prosody parameter (0-1)"),
     diffusion_steps: str = Form("10", description="Diffusion steps (5-20)"),
     embedding_scale: str = Form("1.0", description="Embedding scale"),
+    speed: str = Form("1.0", description="Speech speed (0.5-2.0)"),
 ):
     """
     Convert text to speech using the default LJSpeech voice.
@@ -770,6 +813,7 @@ async def tts_default_voice(
         beta_val = float(beta)
         diffusion_steps_val = int(diffusion_steps)
         embedding_scale_val = float(embedding_scale)
+        speed_val = float(speed)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}")
 
@@ -780,15 +824,18 @@ async def tts_default_voice(
         raise HTTPException(status_code=400, detail="Beta must be between 0 and 1")
     if not 1 <= diffusion_steps_val <= 50:
         raise HTTPException(status_code=400, detail="Diffusion steps must be between 1 and 50")
+    if not 0.5 <= speed_val <= 2.0:
+        raise HTTPException(status_code=400, detail="Speed must be between 0.5 and 2.0")
 
     try:
-        logger.info(f"Generating speech with default voice for {len(text)} chars")
+        logger.info(f"Generating speech with default voice for {len(text)} chars, speed={speed_val}")
         audio_bytes = synthesize_default_voice(
             text=text,
             alpha=alpha_val,
             beta=beta_val,
             diffusion_steps=diffusion_steps_val,
             embedding_scale=embedding_scale_val,
+            speed=speed_val,
         )
 
         logger.info(f"Generated {len(audio_bytes)} bytes of audio")
@@ -812,6 +859,7 @@ async def tts_to_audio(
     beta: str = Form("0.7", description="Prosody parameter (0-1)"),
     diffusion_steps: str = Form("10", description="Diffusion steps (5-20)"),
     embedding_scale: str = Form("1.0", description="Embedding scale"),
+    speed: str = Form("1.0", description="Speech speed (0.5-2.0)"),
 ):
     """
     Convert text to speech using a speaker reference audio.
@@ -828,6 +876,7 @@ async def tts_to_audio(
         beta_val = float(beta)
         diffusion_steps_val = int(diffusion_steps)
         embedding_scale_val = float(embedding_scale)
+        speed_val = float(speed)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}")
 
@@ -838,6 +887,8 @@ async def tts_to_audio(
         raise HTTPException(status_code=400, detail="Beta must be between 0 and 1")
     if not 1 <= diffusion_steps_val <= 50:
         raise HTTPException(status_code=400, detail="Diffusion steps must be between 1 and 50")
+    if not 0.5 <= speed_val <= 2.0:
+        raise HTTPException(status_code=400, detail="Speed must be between 0.5 and 2.0")
 
     # Save speaker audio to temp file
     speaker_audio_data = await speaker_wav.read()
@@ -852,7 +903,7 @@ async def tts_to_audio(
         speaker_path = save_temp_audio(speaker_audio_data, suffix)
 
         # Generate speech using cached speaker embeddings
-        logger.info(f"Generating speech for {len(text)} chars, alpha={alpha_val}, beta={beta_val}")
+        logger.info(f"Generating speech for {len(text)} chars, alpha={alpha_val}, beta={beta_val}, speed={speed_val}")
         audio_bytes = synthesize_with_cached_embeddings(
             text=text,
             speaker_wav_path=speaker_path,
@@ -860,6 +911,7 @@ async def tts_to_audio(
             beta=beta_val,
             diffusion_steps=diffusion_steps_val,
             embedding_scale=embedding_scale_val,
+            speed=speed_val,
         )
 
         logger.info(f"Generated {len(audio_bytes)} bytes of audio")
@@ -893,6 +945,7 @@ class TTSRequest(BaseModel):
     beta: float = 0.7
     diffusion_steps: int = 10
     embedding_scale: float = 1.0
+    speed: float = 1.0
 
 
 async def _tts_with_path(
@@ -902,6 +955,7 @@ async def _tts_with_path(
     beta: float,
     diffusion_steps: int,
     embedding_scale: float,
+    speed: float = 1.0,
 ) -> Response:
     """
     Internal TTS function using a speaker file path.
@@ -917,7 +971,7 @@ async def _tts_with_path(
 
     try:
         # Generate speech using cached speaker embeddings
-        logger.info(f"Generating speech for {len(text)} chars, alpha={alpha}, beta={beta}")
+        logger.info(f"Generating speech for {len(text)} chars, alpha={alpha}, beta={beta}, speed={speed}")
         audio_bytes = synthesize_with_cached_embeddings(
             text=text,
             speaker_wav_path=str(speaker_path),
@@ -925,6 +979,7 @@ async def _tts_with_path(
             beta=beta,
             diffusion_steps=diffusion_steps,
             embedding_scale=embedding_scale,
+            speed=speed,
         )
 
         logger.info(f"Generated {len(audio_bytes)} bytes of audio")
@@ -957,6 +1012,7 @@ async def tts_json(request: TTSRequest):
         request.beta,
         request.diffusion_steps,
         request.embedding_scale,
+        request.speed,
     )
 
 
@@ -968,6 +1024,7 @@ async def tts_form(
     beta: str = Form("0.7"),
     diffusion_steps: str = Form("10"),
     embedding_scale: str = Form("1.0"),
+    speed: str = Form("1.0"),
 ):
     """
     TTS endpoint accepting Form data with speaker_wav as a file path.
@@ -980,6 +1037,7 @@ async def tts_form(
         beta_val = float(beta)
         diffusion_steps_val = int(diffusion_steps)
         embedding_scale_val = float(embedding_scale)
+        speed_val = float(speed)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}")
 
@@ -990,6 +1048,7 @@ async def tts_form(
         beta_val,
         diffusion_steps_val,
         embedding_scale_val,
+        speed_val,
     )
 
 
@@ -1001,6 +1060,7 @@ async def tts_stream(
     beta: str = Form("0.7"),
     diffusion_steps: str = Form("10"),
     embedding_scale: str = Form("1.0"),
+    speed: str = Form("1.0"),
 ):
     """
     Stream TTS audio (currently just returns full audio, streaming TBD).
@@ -1017,6 +1077,7 @@ async def tts_stream(
         beta=beta,
         diffusion_steps=diffusion_steps,
         embedding_scale=embedding_scale,
+        speed=speed,
     )
 
 

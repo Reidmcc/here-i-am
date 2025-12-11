@@ -126,6 +126,14 @@ class App {
             createVoiceCloneBtn: document.getElementById('create-voice-clone'),
             cancelVoiceCloneBtn: document.getElementById('cancel-voice-clone'),
 
+            // StyleTTS 2 Parameters (Settings Modal)
+            styletts2ParamsGroup: document.getElementById('styletts2-params-group'),
+            styletts2Alpha: document.getElementById('styletts2-alpha'),
+            styletts2Beta: document.getElementById('styletts2-beta'),
+            styletts2DiffusionSteps: document.getElementById('styletts2-diffusion-steps'),
+            styletts2EmbeddingScale: document.getElementById('styletts2-embedding-scale'),
+            styletts2Speed: document.getElementById('styletts2-speed'),
+
             // Voice Edit Modal
             voiceEditModal: document.getElementById('voice-edit-modal'),
             voiceEditId: document.getElementById('voice-edit-id'),
@@ -335,6 +343,15 @@ class App {
         } else {
             this.elements.voiceCloneGroup.style.display = 'none';
             this.elements.voiceManageGroup.style.display = 'none';
+        }
+
+        // Show StyleTTS 2 parameters section only for StyleTTS 2 provider
+        if (this.ttsProvider === 'styletts2') {
+            this.elements.styletts2ParamsGroup.style.display = 'block';
+            // Load saved parameters
+            this.loadStyleTTS2Settings();
+        } else {
+            this.elements.styletts2ParamsGroup.style.display = 'none';
         }
     }
 
@@ -1918,8 +1935,11 @@ class App {
             // Strip markdown for cleaner speech
             const textContent = this.stripMarkdown(content);
 
-            // Get audio from API with selected voice
-            const audioBlob = await api.textToSpeech(textContent, this.selectedVoiceId);
+            // Get StyleTTS 2 parameters if using StyleTTS 2 provider
+            const styletts2Params = this.ttsProvider === 'styletts2' ? this.getStyleTTS2Params() : null;
+
+            // Get audio from API with selected voice and parameters
+            const audioBlob = await api.textToSpeech(textContent, this.selectedVoiceId, styletts2Params);
             const audioUrl = URL.createObjectURL(audioBlob);
 
             // Cache the audio
@@ -2811,6 +2831,11 @@ class App {
             }
         }
 
+        // Save StyleTTS 2 parameters if using StyleTTS 2
+        if (this.ttsProvider === 'styletts2') {
+            this.saveStyleTTS2Settings();
+        }
+
         this.updateModelIndicator();
         this.hideModal('settingsModal');
         this.showToast('Settings applied', 'success');
@@ -2824,6 +2849,56 @@ class App {
             }
         }
         this.audioCache.clear();
+    }
+
+    loadStyleTTS2Settings() {
+        // Load StyleTTS 2 parameters from localStorage
+        const stored = localStorage.getItem('styletts2_params');
+        if (stored) {
+            try {
+                const params = JSON.parse(stored);
+                this.elements.styletts2Alpha.value = params.alpha ?? 0.3;
+                this.elements.styletts2Beta.value = params.beta ?? 0.7;
+                this.elements.styletts2DiffusionSteps.value = params.diffusion_steps ?? 10;
+                this.elements.styletts2EmbeddingScale.value = params.embedding_scale ?? 1.0;
+                this.elements.styletts2Speed.value = params.speed ?? 1.0;
+            } catch (e) {
+                console.warn('Failed to load StyleTTS 2 settings:', e);
+            }
+        }
+    }
+
+    saveStyleTTS2Settings() {
+        // Save StyleTTS 2 parameters to localStorage
+        const params = {
+            alpha: parseFloat(this.elements.styletts2Alpha.value) || 0.3,
+            beta: parseFloat(this.elements.styletts2Beta.value) || 0.7,
+            diffusion_steps: parseInt(this.elements.styletts2DiffusionSteps.value) || 10,
+            embedding_scale: parseFloat(this.elements.styletts2EmbeddingScale.value) || 1.0,
+            speed: parseFloat(this.elements.styletts2Speed.value) || 1.0,
+        };
+        localStorage.setItem('styletts2_params', JSON.stringify(params));
+        // Clear audio cache since parameters changed
+        this.clearAudioCache();
+    }
+
+    getStyleTTS2Params() {
+        // Get current StyleTTS 2 parameters for use in TTS requests
+        const stored = localStorage.getItem('styletts2_params');
+        if (stored) {
+            try {
+                return JSON.parse(stored);
+            } catch (e) {
+                // Fall through to defaults
+            }
+        }
+        return {
+            alpha: 0.3,
+            beta: 0.7,
+            diffusion_steps: 10,
+            embedding_scale: 1.0,
+            speed: 1.0,
+        };
     }
 
     handleImportFileChange() {

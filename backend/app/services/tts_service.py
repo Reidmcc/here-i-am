@@ -242,6 +242,11 @@ class TTSService:
         text: str,
         voice_id: Optional[str] = None,
         model_id: Optional[str] = None,
+        alpha: Optional[float] = None,
+        beta: Optional[float] = None,
+        diffusion_steps: Optional[int] = None,
+        embedding_scale: Optional[float] = None,
+        speed: Optional[float] = None,
     ) -> bytes:
         """
         Convert text to speech using the active provider.
@@ -250,6 +255,11 @@ class TTSService:
             text: The text to convert to speech
             voice_id: Optional voice ID override
             model_id: Optional model ID override (ElevenLabs only)
+            alpha: StyleTTS 2 timbre parameter override (0-1)
+            beta: StyleTTS 2 prosody parameter override (0-1)
+            diffusion_steps: StyleTTS 2 quality/speed override (1-50)
+            embedding_scale: StyleTTS 2 classifier free guidance override
+            speed: StyleTTS 2 speech speed override (0.5-2.0)
 
         Returns:
             Audio bytes (MP3 for ElevenLabs, WAV for XTTS/StyleTTS 2)
@@ -257,7 +267,14 @@ class TTSService:
         provider = self.get_provider()
 
         if provider == "styletts2":
-            return await self.styletts2.text_to_speech(text, voice_id)
+            return await self.styletts2.text_to_speech(
+                text, voice_id,
+                alpha=alpha,
+                beta=beta,
+                diffusion_steps=diffusion_steps,
+                embedding_scale=embedding_scale,
+                speed=speed,
+            )
         elif provider == "xtts":
             return await self.xtts.text_to_speech(text, voice_id)
         elif provider == "elevenlabs":
@@ -270,6 +287,11 @@ class TTSService:
         text: str,
         voice_id: Optional[str] = None,
         model_id: Optional[str] = None,
+        alpha: Optional[float] = None,
+        beta: Optional[float] = None,
+        diffusion_steps: Optional[int] = None,
+        embedding_scale: Optional[float] = None,
+        speed: Optional[float] = None,
     ) -> AsyncIterator[bytes]:
         """
         Convert text to speech and stream audio bytes.
@@ -278,6 +300,11 @@ class TTSService:
             text: The text to convert to speech
             voice_id: Optional voice ID override
             model_id: Optional model ID override (ElevenLabs only)
+            alpha: StyleTTS 2 timbre parameter override (0-1)
+            beta: StyleTTS 2 prosody parameter override (0-1)
+            diffusion_steps: StyleTTS 2 quality/speed override (1-50)
+            embedding_scale: StyleTTS 2 classifier free guidance override
+            speed: StyleTTS 2 speech speed override (0.5-2.0)
 
         Yields:
             Audio bytes chunks
@@ -285,7 +312,14 @@ class TTSService:
         provider = self.get_provider()
 
         if provider == "styletts2":
-            async for chunk in self.styletts2.text_to_speech_stream(text, voice_id):
+            async for chunk in self.styletts2.text_to_speech_stream(
+                text, voice_id,
+                alpha=alpha,
+                beta=beta,
+                diffusion_steps=diffusion_steps,
+                embedding_scale=embedding_scale,
+                speed=speed,
+            ):
                 yield chunk
         elif provider == "xtts":
             async for chunk in self.xtts.text_to_speech_stream(text, voice_id):
