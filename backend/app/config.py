@@ -65,7 +65,7 @@ class XTTSVoiceConfig:
 
 
 class StyleTTS2VoiceConfig:
-    """Configuration for a StyleTTS 2 cloned voice."""
+    """Configuration for a StyleTTS 2 voice (cloned or pre-built)."""
     def __init__(
         self,
         voice_id: str,
@@ -76,6 +76,8 @@ class StyleTTS2VoiceConfig:
         beta: float = 0.7,
         diffusion_steps: int = 10,
         embedding_scale: float = 1.0,
+        voice_type: str = "cloned",  # "cloned" or "prebuilt"
+        speaker_id: Optional[int] = None,  # LibriTTS speaker ID for pre-built voices
     ):
         self.voice_id = voice_id
         self.label = label
@@ -86,9 +88,18 @@ class StyleTTS2VoiceConfig:
         self.beta = beta    # Prosody parameter (0-1), higher = more diverse
         self.diffusion_steps = diffusion_steps  # Quality vs speed tradeoff
         self.embedding_scale = embedding_scale  # Classifier free guidance
+        # Voice type: "cloned" (user-created) or "prebuilt" (LibriTTS)
+        self.voice_type = voice_type
+        # For pre-built voices, the LibriTTS speaker ID
+        self.speaker_id = speaker_id
+
+    @property
+    def is_deletable(self) -> bool:
+        """Pre-built voices cannot be deleted."""
+        return self.voice_type == "cloned"
 
     def to_dict(self):
-        return {
+        result = {
             "voice_id": self.voice_id,
             "label": self.label,
             "description": self.description,
@@ -98,7 +109,12 @@ class StyleTTS2VoiceConfig:
             "beta": self.beta,
             "diffusion_steps": self.diffusion_steps,
             "embedding_scale": self.embedding_scale,
+            "voice_type": self.voice_type,
+            "is_deletable": self.is_deletable,
         }
+        if self.speaker_id is not None:
+            result["speaker_id"] = self.speaker_id
+        return result
 
 
 class EntityConfig:

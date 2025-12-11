@@ -2123,6 +2123,39 @@ h4.md-header {
     opacity: 0.8;
 }
 
+/* Voice type badges (pre-built vs cloned) */
+.voice-type-badge {
+    display: inline-block;
+    font-size: 0.65rem;
+    font-weight: 500;
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+
+.voice-type-badge.prebuilt {
+    background-color: rgba(74, 158, 255, 0.15);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+}
+
+.voice-type-badge.cloned {
+    background-color: rgba(76, 175, 124, 0.15);
+    color: var(--success);
+    border: 1px solid var(--success);
+}
+
+.voice-item.prebuilt {
+    border-color: rgba(74, 158, 255, 0.3);
+}
+
+.voice-item.cloned {
+    border-color: rgba(76, 175, 124, 0.3);
+}
+
 .voice-item-actions {
     display: flex;
     gap: 4px;

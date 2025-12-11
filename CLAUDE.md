@@ -569,14 +569,22 @@ STYLETTS2_API_URL=http://localhost:8021
 STYLETTS2_VOICES_DIR=./styletts2_voices
 ```
 
+**Pre-built Voices (LibriTTS):**
+StyleTTS 2 includes 21 pre-built voices: the default LJSpeech voice plus 20 LibriTTS voices. These voices are available immediately without any voice cloning setup:
+- **Default (LJSpeech)**: Female, clear and expressive (uses LJSpeech model)
+- **LibriTTS voices**: 20 diverse voices (10 female, 10 male) using the LibriTTS multi-speaker model
+
+Pre-built voices are marked as "Built-in" in the UI and cannot be edited or deleted. Select them from the voice dropdown in settings.
+
 **Voice Cloning:**
-StyleTTS 2 supports voice cloning from audio samples. Upload a 6-30 second WAV file of clear speech via the `/api/tts/voices/clone` endpoint or through the UI. Cloned voices are stored in `STYLETTS2_VOICES_DIR` and persisted in `voices.json`.
+In addition to pre-built voices, StyleTTS 2 supports voice cloning from audio samples. Upload a 6-30 second WAV file of clear speech via the `/api/tts/voices/clone` endpoint or through the UI. Cloned voices are stored in `STYLETTS2_VOICES_DIR` and persisted in `voices.json`.
 
 **StyleTTS 2 Voice Parameters:**
 - `alpha` (0.0-1.0): Timbre diversity - higher = more diverse timbre (default: 0.3)
 - `beta` (0.0-1.0): Prosody diversity - higher = more diverse prosody/emotion (default: 0.7)
 - `diffusion_steps` (1-50): Quality vs speed tradeoff - higher = better quality but slower (default: 10)
 - `embedding_scale` (0.0-10.0): Classifier free guidance scale (default: 1.0)
+- `speed` (0.5-2.0): Speech speed multiplier (default: 1.0)
 
 **Speaker Embedding Caching:**
 The StyleTTS 2 server caches speaker embeddings (computed from reference audio) based on file content hash. This dramatically speeds up repeat TTS requests for the same voice. Pre-load voices on startup via:

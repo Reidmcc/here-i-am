@@ -68,7 +68,8 @@ app.add_middleware(
 )
 
 # Global model instances
-_styletts2_model = None
+_styletts2_model = None  # LJSpeech (single-speaker) model
+_libritts_model = None   # LibriTTS (multi-speaker) model
 _device = None
 
 # Speaker embedding cache: maps file hash -> style tensor
@@ -76,6 +77,31 @@ _speaker_embedding_cache: Dict[str, Any] = {}
 
 # Cached default voice embedding (computed once on first use)
 _default_voice_embeddings: Optional[Any] = None
+
+# LibriTTS pre-built voices with speaker metadata
+# These are a curated selection of diverse voices from the LibriTTS dataset
+LIBRITTS_VOICES = [
+    {"speaker_id": 0, "label": "LibriTTS - Linda", "description": "Female, American English, clear and warm"},
+    {"speaker_id": 1, "label": "LibriTTS - Mary", "description": "Female, American English, gentle tone"},
+    {"speaker_id": 2, "label": "LibriTTS - John", "description": "Male, American English, conversational"},
+    {"speaker_id": 3, "label": "LibriTTS - Mike", "description": "Male, American English, steady narrator"},
+    {"speaker_id": 4, "label": "LibriTTS - Emily", "description": "Female, American English, youthful"},
+    {"speaker_id": 5, "label": "LibriTTS - Sarah", "description": "Female, American English, expressive"},
+    {"speaker_id": 6, "label": "LibriTTS - David", "description": "Male, American English, professional"},
+    {"speaker_id": 7, "label": "LibriTTS - James", "description": "Male, American English, mature"},
+    {"speaker_id": 8, "label": "LibriTTS - Susan", "description": "Female, American English, articulate"},
+    {"speaker_id": 9, "label": "LibriTTS - Karen", "description": "Female, American English, friendly"},
+    {"speaker_id": 10, "label": "LibriTTS - Thomas", "description": "Male, American English, authoritative"},
+    {"speaker_id": 11, "label": "LibriTTS - Lisa", "description": "Female, American English, soft-spoken"},
+    {"speaker_id": 12, "label": "LibriTTS - Robert", "description": "Male, American English, resonant"},
+    {"speaker_id": 13, "label": "LibriTTS - Patricia", "description": "Female, American English, calm"},
+    {"speaker_id": 14, "label": "LibriTTS - William", "description": "Male, American English, deep voice"},
+    {"speaker_id": 15, "label": "LibriTTS - Jennifer", "description": "Female, American English, bright"},
+    {"speaker_id": 16, "label": "LibriTTS - Richard", "description": "Male, American English, neutral"},
+    {"speaker_id": 17, "label": "LibriTTS - Elizabeth", "description": "Female, American English, refined"},
+    {"speaker_id": 18, "label": "LibriTTS - Joseph", "description": "Male, American English, warm"},
+    {"speaker_id": 19, "label": "LibriTTS - Barbara", "description": "Female, American English, pleasant"},
+]
 
 
 @dataclass
@@ -176,11 +202,11 @@ def clear_speaker_cache(file_hash: Optional[str] = None) -> int:
 
 
 def get_model():
-    """Get or initialize the StyleTTS 2 model."""
+    """Get or initialize the StyleTTS 2 LJSpeech (single-speaker) model."""
     global _styletts2_model, _device
 
     if _styletts2_model is None:
-        logger.info("Loading StyleTTS 2 model...")
+        logger.info("Loading StyleTTS 2 LJSpeech model...")
 
         try:
             from styletts2 import tts as styletts2_tts
@@ -189,17 +215,44 @@ def get_model():
             _device = "cuda" if torch.cuda.is_available() else "cpu"
             logger.info(f"Using device: {_device}")
 
-            # Initialize StyleTTS 2
+            # Initialize StyleTTS 2 with LJSpeech (single-speaker) model
             # The model downloads automatically on first use
             _styletts2_model = styletts2_tts.StyleTTS2()
 
-            logger.info("StyleTTS 2 model loaded successfully")
+            logger.info("StyleTTS 2 LJSpeech model loaded successfully")
 
         except Exception as e:
-            logger.error(f"Failed to load StyleTTS 2 model: {e}")
+            logger.error(f"Failed to load StyleTTS 2 LJSpeech model: {e}")
             raise RuntimeError(f"Failed to load StyleTTS 2 model: {e}")
 
     return _styletts2_model
+
+
+def get_libritts_model():
+    """Get or initialize the StyleTTS 2 LibriTTS (multi-speaker) model."""
+    global _libritts_model, _device
+
+    if _libritts_model is None:
+        logger.info("Loading StyleTTS 2 LibriTTS model...")
+
+        try:
+            from styletts2 import tts as styletts2_tts
+
+            # Check for GPU availability
+            _device = "cuda" if torch.cuda.is_available() else "cpu"
+            logger.info(f"Using device: {_device}")
+
+            # Initialize StyleTTS 2 with LibriTTS (multi-speaker) model
+            # model_checkpoint_path=None with target_voice_path=None loads LibriTTS
+            _libritts_model = styletts2_tts.StyleTTS2(model_checkpoint_path=None)
+
+            logger.info("StyleTTS 2 LibriTTS model loaded successfully")
+
+        except Exception as e:
+            logger.error(f"Failed to load StyleTTS 2 LibriTTS model: {e}")
+            raise RuntimeError(f"Failed to load StyleTTS 2 LibriTTS model: {e}")
+
+    return _libritts_model
 
 
 def get_default_voice_embeddings() -> Any:
@@ -324,6 +377,9 @@ async def root():
         "status": "ready" if _styletts2_model is not None else "loading",
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "speaker_cache_size": len(_speaker_embedding_cache),
+        "ljspeech_model_loaded": _styletts2_model is not None,
+        "libritts_model_loaded": _libritts_model is not None,
+        "libritts_voices_count": len(LIBRITTS_VOICES),
     }
 
 
@@ -333,7 +389,9 @@ async def health():
     return {
         "status": "healthy",
         "model_loaded": _styletts2_model is not None,
+        "libritts_model_loaded": _libritts_model is not None,
         "speaker_cache_size": len(_speaker_embedding_cache),
+        "libritts_voices_count": len(LIBRITTS_VOICES),
     }
 
 
@@ -1079,6 +1137,168 @@ async def tts_stream(
         embedding_scale=embedding_scale,
         speed=speed,
     )
+
+
+# ============================================================================
+# LibriTTS Pre-built Voice Endpoints
+# ============================================================================
+
+@app.get("/voices/libritts")
+async def list_libritts_voices():
+    """
+    List all available LibriTTS pre-built voices.
+
+    Returns a list of voices with speaker_id, label, and description.
+    """
+    return {
+        "voices": LIBRITTS_VOICES,
+        "count": len(LIBRITTS_VOICES),
+    }
+
+
+def synthesize_libritts_voice(
+    text: str,
+    speaker_id: int = 0,
+    alpha: float = 0.3,
+    beta: float = 0.7,
+    diffusion_steps: int = 10,
+    embedding_scale: float = 1.0,
+    speed: float = 1.0,
+) -> bytes:
+    """
+    Synthesize speech using a LibriTTS pre-built voice.
+
+    Args:
+        text: Text to synthesize
+        speaker_id: LibriTTS speaker ID (0-19)
+        alpha: Timbre parameter (0-1), higher = more diverse timbre
+        beta: Prosody parameter (0-1), higher = more diverse prosody
+        diffusion_steps: Number of diffusion steps (5-20, higher = better quality but slower)
+        embedding_scale: Classifier free guidance scale
+        speed: Speech speed multiplier (0.5-2.0, 1.0 = normal)
+
+    Returns:
+        WAV audio bytes
+    """
+    try:
+        model = get_libritts_model()
+
+        # Split text into chunks
+        chunks = split_text_into_chunks(text)
+        logger.info(f"Split text into {len(chunks)} chunk(s) for LibriTTS voice (speaker_id={speaker_id})")
+
+        audio_arrays = []
+
+        for i, chunk in enumerate(chunks):
+            logger.info(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:80]}...")
+
+            # Synthesize using LibriTTS model with speaker_id
+            # The LibriTTS model uses speaker_id for multi-speaker synthesis
+            audio_array = model.inference(
+                text=chunk,
+                alpha=alpha,
+                beta=beta,
+                diffusion_steps=diffusion_steps,
+                embedding_scale=embedding_scale,
+                # LibriTTS uses target parameter for speaker selection
+                target=speaker_id,
+            )
+
+            # Convert to numpy array if it's a tensor
+            if hasattr(audio_array, "cpu"):
+                audio_array = audio_array.cpu().numpy()
+
+            logger.info(f"Chunk {i+1} audio shape: {audio_array.shape}, duration: {len(audio_array)/24000:.2f}s")
+            audio_arrays.append(audio_array)
+
+        # Concatenate audio chunks with crossfading for smooth transitions
+        combined_audio = crossfade_chunks(audio_arrays)
+
+        # Apply speed adjustment if not 1.0
+        if speed != 1.0:
+            combined_audio = adjust_audio_speed(combined_audio, speed)
+
+        logger.info(f"Combined audio shape: {combined_audio.shape}, total duration: {len(combined_audio)/24000:.2f}s")
+
+        # StyleTTS 2 outputs at 24kHz
+        sample_rate = 24000
+
+        return numpy_to_wav_bytes(combined_audio, sample_rate)
+
+    except Exception as e:
+        logger.error(f"synthesize_libritts_voice failed: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise
+
+
+@app.post("/tts_libritts")
+async def tts_libritts_voice(
+    text: str = Form(..., description="Text to synthesize"),
+    speaker_id: str = Form("0", description="LibriTTS speaker ID (0-19)"),
+    alpha: str = Form("0.3", description="Timbre parameter (0-1)"),
+    beta: str = Form("0.7", description="Prosody parameter (0-1)"),
+    diffusion_steps: str = Form("10", description="Diffusion steps (5-20)"),
+    embedding_scale: str = Form("1.0", description="Embedding scale"),
+    speed: str = Form("1.0", description="Speech speed (0.5-2.0)"),
+):
+    """
+    Convert text to speech using a LibriTTS pre-built voice.
+
+    Use the /voices/libritts endpoint to get the list of available speaker IDs.
+    """
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+
+    # Parse parameters
+    try:
+        speaker_id_val = int(speaker_id)
+        alpha_val = float(alpha)
+        beta_val = float(beta)
+        diffusion_steps_val = int(diffusion_steps)
+        embedding_scale_val = float(embedding_scale)
+        speed_val = float(speed)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}")
+
+    # Validate parameters
+    if not 0 <= speaker_id_val < len(LIBRITTS_VOICES):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Speaker ID must be between 0 and {len(LIBRITTS_VOICES) - 1}"
+        )
+    if not 0 <= alpha_val <= 1:
+        raise HTTPException(status_code=400, detail="Alpha must be between 0 and 1")
+    if not 0 <= beta_val <= 1:
+        raise HTTPException(status_code=400, detail="Beta must be between 0 and 1")
+    if not 1 <= diffusion_steps_val <= 50:
+        raise HTTPException(status_code=400, detail="Diffusion steps must be between 1 and 50")
+    if not 0.5 <= speed_val <= 2.0:
+        raise HTTPException(status_code=400, detail="Speed must be between 0.5 and 2.0")
+
+    try:
+        logger.info(f"Generating speech with LibriTTS voice (speaker_id={speaker_id_val}) for {len(text)} chars, speed={speed_val}")
+        audio_bytes = synthesize_libritts_voice(
+            text=text,
+            speaker_id=speaker_id_val,
+            alpha=alpha_val,
+            beta=beta_val,
+            diffusion_steps=diffusion_steps_val,
+            embedding_scale=embedding_scale_val,
+            speed=speed_val,
+        )
+
+        logger.info(f"Generated {len(audio_bytes)} bytes of audio")
+
+        return Response(
+            content=audio_bytes,
+            media_type="audio/wav",
+            headers={"Content-Disposition": "inline"},
+        )
+
+    except Exception as e:
+        logger.error(f"LibriTTS TTS generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
 
 
 def create_app() -> FastAPI:

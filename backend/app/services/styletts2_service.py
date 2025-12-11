@@ -28,6 +28,7 @@ class StyleTTS2Service:
         self.voices_dir = Path(settings.styletts2_voices_dir)
         self.voices_file = self.voices_dir / "voices.json"
         self._voices_cache: Optional[List[StyleTTS2VoiceConfig]] = None
+        self._libritts_voices_cache: Optional[List[StyleTTS2VoiceConfig]] = None
 
     def is_configured(self) -> bool:
         """Check if StyleTTS 2 is enabled and configured."""
@@ -113,16 +114,86 @@ class StyleTTS2Service:
         async with aiofiles.open(self.voices_file, "w") as f:
             await f.write(json.dumps(voices_data, indent=2))
 
+    async def _get_libritts_voices(self) -> List[StyleTTS2VoiceConfig]:
+        """Get LibriTTS pre-built voices from the server."""
+        if self._libritts_voices_cache is not None:
+            return self._libritts_voices_cache
+
+        if not self.is_configured():
+            return []
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{self.api_url}/voices/libritts")
+                if response.status_code == 200:
+                    data = response.json()
+                    voices = data.get("voices", [])
+                    self._libritts_voices_cache = [
+                        StyleTTS2VoiceConfig(
+                            voice_id=f"libritts_{v['speaker_id']}",
+                            label=v["label"],
+                            description=v.get("description", ""),
+                            sample_path="",  # Pre-built voices don't have sample paths
+                            voice_type="prebuilt",
+                            speaker_id=v["speaker_id"],
+                        )
+                        for v in voices
+                    ]
+                    return self._libritts_voices_cache
+        except Exception as e:
+            logger.warning(f"Failed to fetch LibriTTS voices: {e}")
+
+        return []
+
+    def _get_default_voice(self) -> StyleTTS2VoiceConfig:
+        """Get the default LJSpeech voice as a pre-built voice config."""
+        return StyleTTS2VoiceConfig(
+            voice_id="default",
+            label="Default (LJSpeech)",
+            description="Default female voice, clear and expressive",
+            sample_path="",
+            voice_type="prebuilt",
+            speaker_id=None,
+        )
+
     async def get_voices(self) -> List[StyleTTS2VoiceConfig]:
-        """Get all configured StyleTTS 2 voices."""
+        """Get all StyleTTS 2 voices (pre-built + cloned)."""
+        # Start with the default LJSpeech voice
+        voices = [self._get_default_voice()]
+
+        # Add LibriTTS pre-built voices
+        libritts_voices = await self._get_libritts_voices()
+        voices.extend(libritts_voices)
+
+        # Add user-cloned voices
+        cloned_voices = await self._load_voices()
+        voices.extend(cloned_voices)
+
+        return voices
+
+    async def get_cloned_voices(self) -> List[StyleTTS2VoiceConfig]:
+        """Get only user-cloned voices (not pre-built)."""
         return await self._load_voices()
 
     async def get_voice(self, voice_id: str) -> Optional[StyleTTS2VoiceConfig]:
-        """Get a specific voice by ID."""
+        """Get a specific voice by ID (searches all voices including pre-built)."""
+        # Check default voice
+        if voice_id == "default":
+            return self._get_default_voice()
+
+        # Check LibriTTS voices
+        if voice_id.startswith("libritts_"):
+            libritts_voices = await self._get_libritts_voices()
+            for voice in libritts_voices:
+                if voice.voice_id == voice_id:
+                    return voice
+
+        # Check cloned voices
         voices = await self._load_voices()
         for voice in voices:
             if voice.voice_id == voice_id:
                 return voice
+
         return None
 
     async def check_server_health(self) -> Dict[str, Any]:
@@ -223,7 +294,14 @@ class StyleTTS2Service:
 
         Returns:
             True if voice was deleted, False if not found
+
+        Raises:
+            ValueError if trying to delete a pre-built voice
         """
+        # Check if this is a pre-built voice (cannot be deleted)
+        if voice_id == "default" or voice_id.startswith("libritts_"):
+            raise ValueError("Cannot delete pre-built voices")
+
         voices = await self._load_voices()
         voice_to_delete = None
 
@@ -234,6 +312,10 @@ class StyleTTS2Service:
 
         if not voice_to_delete:
             return False
+
+        # Double-check voice type (in case of data corruption)
+        if voice_to_delete.voice_type == "prebuilt":
+            raise ValueError("Cannot delete pre-built voices")
 
         # Remove the sample file
         if voice_to_delete.sample_path:
@@ -318,6 +400,9 @@ class StyleTTS2Service:
         Args:
             text: The text to convert to speech
             voice_id: Optional voice ID (uses default LJSpeech voice if not specified)
+                      - "default" or None: Uses default LJSpeech voice
+                      - "libritts_N": Uses LibriTTS pre-built voice with speaker_id N
+                      - Other: Uses cloned voice with sample file
             alpha: Override timbre parameter (0-1), uses voice setting or default if None
             beta: Override prosody parameter (0-1), uses voice setting or default if None
             diffusion_steps: Override quality/speed (1-50), uses voice setting or default if None
@@ -330,15 +415,10 @@ class StyleTTS2Service:
         if not self.is_configured():
             raise ValueError("StyleTTS 2 is not enabled")
 
-        # Get the speaker file path and voice settings
-        speaker_wav = None
+        # Get voice configuration
         voice = None
-        if voice_id:
+        if voice_id and voice_id != "default":
             voice = await self.get_voice(voice_id)
-            if voice and voice.sample_path:
-                speaker_wav = voice.sample_path
-        if not speaker_wav and self.default_speaker:
-            speaker_wav = self.default_speaker
 
         # Get voice parameters: override > voice config > defaults
         alpha = alpha if alpha is not None else (voice.alpha if voice else 0.3)
@@ -348,9 +428,63 @@ class StyleTTS2Service:
         speed = speed if speed is not None else (getattr(voice, 'speed', None) if voice else 1.0) or 1.0
 
         async with httpx.AsyncClient(timeout=120.0) as client:
-            # If no speaker configured, use the default LJSpeech voice
+            # Case 1: Default LJSpeech voice
+            if not voice_id or voice_id == "default":
+                logger.info("Using default LJSpeech voice")
+                url = f"{self.api_url}/tts_default"
+                data = {
+                    "text": text,
+                    "alpha": str(alpha),
+                    "beta": str(beta),
+                    "diffusion_steps": str(diffusion_steps),
+                    "embedding_scale": str(embedding_scale),
+                    "speed": str(speed),
+                }
+
+                try:
+                    response = await client.post(url, data=data)
+                except httpx.ConnectError:
+                    raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}")
+
+                if response.status_code != 200:
+                    error_detail = response.text
+                    logger.error(f"StyleTTS 2 API error: {response.status_code} - {error_detail}")
+                    raise ValueError(f"StyleTTS 2 API error: {response.status_code}")
+
+                return response.content
+
+            # Case 2: LibriTTS pre-built voice
+            if voice and voice.voice_type == "prebuilt" and voice.speaker_id is not None:
+                logger.info(f"Using LibriTTS voice with speaker_id={voice.speaker_id}")
+                url = f"{self.api_url}/tts_libritts"
+                data = {
+                    "text": text,
+                    "speaker_id": str(voice.speaker_id),
+                    "alpha": str(alpha),
+                    "beta": str(beta),
+                    "diffusion_steps": str(diffusion_steps),
+                    "embedding_scale": str(embedding_scale),
+                    "speed": str(speed),
+                }
+
+                try:
+                    response = await client.post(url, data=data)
+                except httpx.ConnectError:
+                    raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}")
+
+                if response.status_code != 200:
+                    error_detail = response.text
+                    logger.error(f"StyleTTS 2 API error: {response.status_code} - {error_detail}")
+                    raise ValueError(f"StyleTTS 2 API error: {response.status_code}")
+
+                return response.content
+
+            # Case 3: Cloned voice with speaker sample file
+            speaker_wav = voice.sample_path if voice and voice.sample_path else self.default_speaker
+
             if not speaker_wav:
-                logger.info("No voice configured, using default LJSpeech voice")
+                # Fall back to default voice if no speaker configured
+                logger.info("No speaker sample found, falling back to default LJSpeech voice")
                 url = f"{self.api_url}/tts_default"
                 data = {
                     "text": text,

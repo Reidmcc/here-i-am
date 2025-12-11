@@ -327,6 +327,7 @@ async def update_voice(voice_id: str, data: VoiceUpdateRequest):
     Update a voice's settings (XTTS/StyleTTS 2 only).
 
     Update the label, description, or synthesis parameters for a cloned voice.
+    Note: Pre-built voices cannot be updated.
     """
     provider = tts_service.get_provider()
 
@@ -335,6 +336,14 @@ async def update_voice(voice_id: str, data: VoiceUpdateRequest):
             status_code=400,
             detail="Voice updates are only available with XTTS or StyleTTS 2 providers"
         )
+
+    # Check if this is a pre-built voice (cannot be updated)
+    if provider == "styletts2":
+        if voice_id == "default" or voice_id.startswith("libritts_"):
+            raise HTTPException(
+                status_code=400,
+                detail="Pre-built voices cannot be updated"
+            )
 
     if provider == "xtts":
         # Validate XTTS parameter ranges if provided
@@ -395,6 +404,8 @@ async def update_voice(voice_id: str, data: VoiceUpdateRequest):
 async def delete_voice(voice_id: str):
     """
     Delete a cloned voice (XTTS/StyleTTS 2 only).
+
+    Note: Pre-built voices cannot be deleted.
     """
     provider = tts_service.get_provider()
 
@@ -404,17 +415,21 @@ async def delete_voice(voice_id: str):
             detail="Voice deletion is only available with XTTS or StyleTTS 2 providers"
         )
 
-    if provider == "xtts":
-        from app.services.xtts_service import xtts_service
-        success = await xtts_service.delete_voice(voice_id)
-    else:  # styletts2
-        from app.services.styletts2_service import styletts2_service
-        success = await styletts2_service.delete_voice(voice_id)
+    try:
+        if provider == "xtts":
+            from app.services.xtts_service import xtts_service
+            success = await xtts_service.delete_voice(voice_id)
+        else:  # styletts2
+            from app.services.styletts2_service import styletts2_service
+            success = await styletts2_service.delete_voice(voice_id)
 
-    if not success:
-        raise HTTPException(status_code=404, detail="Voice not found")
+        if not success:
+            raise HTTPException(status_code=404, detail="Voice not found")
 
-    return {"success": True, "message": "Voice deleted successfully"}
+        return {"success": True, "message": "Voice deleted successfully"}
+    except ValueError as e:
+        # Pre-built voices cannot be deleted
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/xtts/health")

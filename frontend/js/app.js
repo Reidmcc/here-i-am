@@ -360,12 +360,15 @@ class App {
         if (this.ttsVoices.length > 0) {
             this.elements.voiceSelectGroup.style.display = 'block';
 
-            // Populate voice options
-            this.elements.voiceSelect.innerHTML = this.ttsVoices.map(voice => `
+            // Populate voice options, showing voice type for StyleTTS 2
+            this.elements.voiceSelect.innerHTML = this.ttsVoices.map(voice => {
+                const isPrebuilt = voice.voice_type === 'prebuilt' || !voice.is_deletable;
+                const typeLabel = this.ttsProvider === 'styletts2' && isPrebuilt ? ' [Built-in]' : '';
+                return `
                 <option value="${voice.voice_id}" ${voice.voice_id === this.selectedVoiceId ? 'selected' : ''}>
-                    ${voice.label}${voice.description ? ` - ${voice.description}` : ''}
+                    ${voice.label}${typeLabel}${voice.description ? ` - ${voice.description}` : ''}
                 </option>
-            `).join('');
+            `}).join('');
         } else {
             this.elements.voiceSelectGroup.style.display = 'none';
         }
@@ -391,21 +394,32 @@ class App {
             } else {
                 paramsDisplay = `T:${voice.temperature ?? 0.75} S:${voice.speed ?? 1.0}`;
             }
-            return `
-            <div class="voice-item" data-voice-id="${voice.voice_id}">
-                <div class="voice-item-info">
-                    <span class="voice-item-name">${voice.label}</span>
-                    ${voice.description ? `<span class="voice-item-description">${voice.description}</span>` : ''}
-                    <span class="voice-item-params">${paramsDisplay}</span>
-                </div>
+
+            // Check if this is a pre-built voice (StyleTTS 2 only)
+            const isPrebuilt = voice.voice_type === 'prebuilt' || !voice.is_deletable;
+            const voiceTypeBadge = isPrebuilt ? '<span class="voice-type-badge prebuilt">Built-in</span>' : '<span class="voice-type-badge cloned">Cloned</span>';
+
+            // Only show Edit/Delete buttons for cloned voices
+            const actionButtons = isPrebuilt ? '' : `
                 <div class="voice-item-actions">
                     <button class="voice-item-btn settings" title="Edit voice settings" data-action="edit">Edit</button>
                     <button class="voice-item-btn delete" title="Delete voice" data-action="delete">Delete</button>
                 </div>
+            `;
+
+            return `
+            <div class="voice-item ${isPrebuilt ? 'prebuilt' : 'cloned'}" data-voice-id="${voice.voice_id}">
+                <div class="voice-item-info">
+                    <span class="voice-item-name">${voice.label}</span>
+                    ${voiceTypeBadge}
+                    ${voice.description ? `<span class="voice-item-description">${voice.description}</span>` : ''}
+                    <span class="voice-item-params">${paramsDisplay}</span>
+                </div>
+                ${actionButtons}
             </div>
         `}).join('');
 
-        // Add event listeners
+        // Add event listeners for cloned voices only
         this.elements.voiceList.querySelectorAll('.voice-item-btn[data-action="delete"]').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 const voiceId = e.target.closest('.voice-item').dataset.voiceId;
