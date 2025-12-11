@@ -358,9 +358,10 @@ def numpy_to_wav_bytes(audio_array: np.ndarray, sample_rate: int = 24000) -> byt
     return buffer.read()
 
 
-# StyleTTS 2 works best with shorter text segments
-# The model can handle longer text but quality degrades
-MAX_CHUNK_CHARS = 300
+# StyleTTS 2 text encoder (ALBERT) has a 512 token limit
+# Keep chunks small to stay well under this limit
+# 150 chars typically produces ~30-50 tokens, leaving headroom for edge cases
+MAX_CHUNK_CHARS = 150
 
 
 def _normalize_chunk(text: str) -> str:
