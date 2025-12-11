@@ -370,6 +370,9 @@ def _normalize_chunk(text: str) -> str:
     text = re.sub(r'[\[\]]', '', text)
     # Replace newlines with spaces
     text = text.replace('\n', ' ')
+    # Replace standalone dashes (space-dash-space) with comma for natural pause
+    # This prevents static/artifacts from isolated dashes
+    text = re.sub(r'\s+[-–—]\s+', ', ', text)
     # Convert ALL CAPS words (2+ chars) to title case to prevent letter-by-letter spelling
     # This includes common words like "OF", "TO", "IN" that would otherwise be spelled out
     def fix_caps(match):
@@ -462,7 +465,14 @@ def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
         chunks.append(current_chunk)
 
     # Filter out empty chunks
-    return [c for c in chunks if c.strip()]
+    result = [c for c in chunks if c.strip()]
+
+    # Log chunks for debugging
+    logger.info(f"Generated {len(result)} chunks from {len(text)} chars")
+    for i, chunk in enumerate(result):
+        logger.info(f"  Chunk {i+1}: {chunk[:80]}{'...' if len(chunk) > 80 else ''} ({len(chunk)} chars)")
+
+    return result
 
 
 def _split_by_clauses(text: str, max_chars: int, chunks: list, current_chunk: str) -> str:
