@@ -418,6 +418,76 @@ def numpy_to_wav_bytes(audio_array: np.ndarray, sample_rate: int = 24000) -> byt
 # 150 chars typically produces ~30-50 tokens, leaving headroom for edge cases
 MAX_CHUNK_CHARS = 150
 
+# Crossfade duration in samples (at 24kHz) for smooth chunk transitions
+CROSSFADE_SAMPLES = 2400  # 100ms crossfade
+
+
+def crossfade_chunks(audio_arrays: list, crossfade_samples: int = CROSSFADE_SAMPLES) -> np.ndarray:
+    """
+    Concatenate audio arrays with crossfading to eliminate clicks/static at boundaries.
+
+    Args:
+        audio_arrays: List of numpy audio arrays
+        crossfade_samples: Number of samples for the crossfade region
+
+    Returns:
+        Combined audio array with smooth transitions
+    """
+    if len(audio_arrays) == 0:
+        return np.array([], dtype=np.float32)
+
+    if len(audio_arrays) == 1:
+        return audio_arrays[0]
+
+    # Ensure all arrays are float for crossfading
+    arrays = [arr.astype(np.float32) if arr.dtype != np.float32 else arr for arr in audio_arrays]
+
+    # Calculate total length (accounting for overlaps)
+    total_length = sum(len(arr) for arr in arrays) - crossfade_samples * (len(arrays) - 1)
+    result = np.zeros(total_length, dtype=np.float32)
+
+    # Create crossfade curves
+    fade_out = np.linspace(1.0, 0.0, crossfade_samples, dtype=np.float32)
+    fade_in = np.linspace(0.0, 1.0, crossfade_samples, dtype=np.float32)
+
+    position = 0
+    for i, arr in enumerate(arrays):
+        if i == 0:
+            # First chunk: copy all but apply fade_out to the end
+            end_pos = len(arr)
+            result[:end_pos] = arr
+
+            # Apply fade out to last crossfade_samples
+            if len(arr) >= crossfade_samples:
+                result[end_pos - crossfade_samples:end_pos] *= fade_out
+
+            position = end_pos - crossfade_samples
+        else:
+            # Subsequent chunks: crossfade with previous
+            chunk_start = position
+            chunk_end = position + len(arr)
+
+            # Apply fade in to first crossfade_samples of this chunk
+            if len(arr) >= crossfade_samples:
+                # Add crossfaded portion
+                result[chunk_start:chunk_start + crossfade_samples] += arr[:crossfade_samples] * fade_in
+                # Copy the rest
+                result[chunk_start + crossfade_samples:chunk_end] = arr[crossfade_samples:]
+            else:
+                # Chunk is shorter than crossfade, just blend it all
+                blend_len = len(arr)
+                blend_fade_in = np.linspace(0.0, 1.0, blend_len, dtype=np.float32)
+                result[chunk_start:chunk_start + blend_len] += arr * blend_fade_in
+
+            # Apply fade out to end if not the last chunk
+            if i < len(arrays) - 1 and len(arr) >= crossfade_samples:
+                fade_start = chunk_end - crossfade_samples
+                result[fade_start:chunk_end] *= fade_out
+
+            position = chunk_end - crossfade_samples
+
+    return result
+
 
 def _normalize_chunk(text: str) -> str:
     """Normalize text for TTS - remove problematic characters and fix whitespace."""
@@ -585,11 +655,8 @@ def synthesize_with_cached_embeddings(
 
             audio_arrays.append(audio_array)
 
-        # Concatenate all audio chunks
-        if len(audio_arrays) == 1:
-            combined_audio = audio_arrays[0]
-        else:
-            combined_audio = np.concatenate(audio_arrays)
+        # Concatenate audio chunks with crossfading for smooth transitions
+        combined_audio = crossfade_chunks(audio_arrays)
 
         # StyleTTS 2 outputs at 24kHz
         sample_rate = 24000
@@ -661,11 +728,8 @@ def synthesize_default_voice(
             logger.info(f"Chunk {i+1} audio shape: {audio_array.shape}, duration: {len(audio_array)/24000:.2f}s")
             audio_arrays.append(audio_array)
 
-        # Concatenate all audio chunks
-        if len(audio_arrays) == 1:
-            combined_audio = audio_arrays[0]
-        else:
-            combined_audio = np.concatenate(audio_arrays)
+        # Concatenate audio chunks with crossfading for smooth transitions
+        combined_audio = crossfade_chunks(audio_arrays)
 
         logger.info(f"Combined audio shape: {combined_audio.shape}, total duration: {len(combined_audio)/24000:.2f}s")
 
