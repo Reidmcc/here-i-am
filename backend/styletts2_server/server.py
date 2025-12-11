@@ -419,7 +419,7 @@ def numpy_to_wav_bytes(audio_array: np.ndarray, sample_rate: int = 24000) -> byt
 MAX_CHUNK_CHARS = 150
 
 # Crossfade duration in samples (at 24kHz) for smooth chunk transitions
-CROSSFADE_SAMPLES = 2400  # 100ms crossfade
+CROSSFADE_SAMPLES = 6000  # 250ms crossfade
 
 
 def crossfade_chunks(audio_arrays: list, crossfade_samples: int = CROSSFADE_SAMPLES) -> np.ndarray:
