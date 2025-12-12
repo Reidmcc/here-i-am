@@ -128,6 +128,7 @@ class MemoryEntry:
     combined_score: float = 0.0  # Combined score used for ranking
     days_since_creation: float = 0.0  # Age of the memory in days
     days_since_retrieval: float = 0.0  # Days since last retrieval (None if never retrieved)
+    source: str = "unknown"  # Which query retrieved this memory: "user", "assistant", or "both"
 
 
 @dataclass
@@ -687,12 +688,26 @@ class SessionManager:
                 )
                 logger.info(f"[MEMORY] Assistant query retrieved {len(assistant_candidates)} candidates")
 
-            # Combine candidates, keeping higher score for duplicates
+            # Combine candidates, tracking source and keeping higher score for duplicates
             candidates_by_id = {}
+            user_candidate_ids = set(c["id"] for c in user_candidates)
+            assistant_candidate_ids = set(c["id"] for c in assistant_candidates)
+
             for candidate in user_candidates + assistant_candidates:
                 cid = candidate["id"]
                 if cid not in candidates_by_id or candidate["score"] > candidates_by_id[cid]["score"]:
                     candidates_by_id[cid] = candidate
+
+            # Determine source for each candidate
+            for cid in candidates_by_id:
+                in_user = cid in user_candidate_ids
+                in_assistant = cid in assistant_candidate_ids
+                if in_user and in_assistant:
+                    candidates_by_id[cid]["_source"] = "both"
+                elif in_user:
+                    candidates_by_id[cid]["_source"] = "user"
+                else:
+                    candidates_by_id[cid]["_source"] = "assistant"
 
             candidates = list(candidates_by_id.values())
             logger.info(f"[MEMORY] Combined {len(candidates)} unique candidates from both queries")
@@ -743,6 +758,7 @@ class SessionManager:
                         "combined_score": combined_score,
                         "days_since_creation": days_since_creation,
                         "days_since_retrieval": days_since_retrieval,
+                        "source": candidate.get("_source", "unknown"),
                     })
                 except Exception as e:
                     logger.error(f"[MEMORY] Error processing candidate {candidate.get('id', 'unknown')}: {e}")
@@ -771,6 +787,7 @@ class SessionManager:
                     combined_score=item["combined_score"],
                     days_since_creation=item["days_since_creation"],
                     days_since_retrieval=item["days_since_retrieval"],
+                    source=item["source"],
                 )
 
                 added, is_new_retrieval = session.add_memory(memory)
@@ -794,7 +811,7 @@ class SessionManager:
                 for mem in new_memories:
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
                     recency_str = f"{mem.days_since_retrieval:.1f}" if mem.days_since_retrieval >= 0 else "never"
-                    logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str}")
+                    logger.info(f"[MEMORY]   [{retrieval_type}] source={mem.source} combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str}")
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
@@ -805,7 +822,7 @@ class SessionManager:
                 logger.info(f"[MEMORY] {total_unselected} candidates not selected after re-ranking (showing next 5):")
                 for item in unselected_candidates:
                     recency_str = f"{item['days_since_retrieval']:.1f}" if item['days_since_retrieval'] >= 0 else "never"
-                    logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str}")
+                    logger.info(f"[MEMORY]   [NOT SELECTED] source={item['source']} combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str}")
         else:
             # Memory retrieval skipped - log reason
             if not settings.pinecone_api_key:
@@ -987,12 +1004,26 @@ class SessionManager:
                 )
                 logger.info(f"[MEMORY] Assistant query retrieved {len(assistant_candidates)} candidates")
 
-            # Combine candidates, keeping higher score for duplicates
+            # Combine candidates, tracking source and keeping higher score for duplicates
             candidates_by_id = {}
+            user_candidate_ids = set(c["id"] for c in user_candidates)
+            assistant_candidate_ids = set(c["id"] for c in assistant_candidates)
+
             for candidate in user_candidates + assistant_candidates:
                 cid = candidate["id"]
                 if cid not in candidates_by_id or candidate["score"] > candidates_by_id[cid]["score"]:
                     candidates_by_id[cid] = candidate
+
+            # Determine source for each candidate
+            for cid in candidates_by_id:
+                in_user = cid in user_candidate_ids
+                in_assistant = cid in assistant_candidate_ids
+                if in_user and in_assistant:
+                    candidates_by_id[cid]["_source"] = "both"
+                elif in_user:
+                    candidates_by_id[cid]["_source"] = "user"
+                else:
+                    candidates_by_id[cid]["_source"] = "assistant"
 
             candidates = list(candidates_by_id.values())
             logger.info(f"[MEMORY] Combined {len(candidates)} unique candidates from both queries")
@@ -1041,6 +1072,7 @@ class SessionManager:
                         "combined_score": combined_score,
                         "days_since_creation": days_since_creation,
                         "days_since_retrieval": days_since_retrieval,
+                        "source": candidate.get("_source", "unknown"),
                     })
                 except Exception as e:
                     logger.error(f"[MEMORY] Error processing candidate {candidate.get('id', 'unknown')}: {e}")
@@ -1069,6 +1101,7 @@ class SessionManager:
                     combined_score=item["combined_score"],
                     days_since_creation=item["days_since_creation"],
                     days_since_retrieval=item["days_since_retrieval"],
+                    source=item["source"],
                 )
 
                 added, is_new_retrieval = session.add_memory(memory)
@@ -1092,7 +1125,7 @@ class SessionManager:
                 for mem in new_memories:
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
                     recency_str = f"{mem.days_since_retrieval:.1f}" if mem.days_since_retrieval >= 0 else "never"
-                    logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str}")
+                    logger.info(f"[MEMORY]   [{retrieval_type}] source={mem.source} combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str}")
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
@@ -1103,7 +1136,7 @@ class SessionManager:
                 logger.info(f"[MEMORY] {total_unselected} candidates not selected after re-ranking (showing next 5):")
                 for item in unselected_candidates:
                     recency_str = f"{item['days_since_retrieval']:.1f}" if item['days_since_retrieval'] >= 0 else "never"
-                    logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str}")
+                    logger.info(f"[MEMORY]   [NOT SELECTED] source={item['source']} combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str}")
         else:
             # Memory retrieval skipped - log reason
             if not settings.pinecone_api_key:
