@@ -286,6 +286,8 @@ class LLMService:
         is_multi_entity: bool = False,
         entity_labels: Optional[Dict[str, str]] = None,
         responding_entity_label: Optional[str] = None,
+        # Custom role labels for context formatting
+        user_display_name: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build the message list for API call with memory injection.
@@ -317,6 +319,7 @@ class LLMService:
             is_multi_entity: True if this is a multi-entity conversation
             entity_labels: Mapping of entity_id to display label
             responding_entity_label: Label of the entity receiving this context
+            user_display_name: Custom display name for the user/researcher
 
         Returns:
             List of message dicts formatted for the LLM API
@@ -336,6 +339,7 @@ class LLMService:
             is_multi_entity=is_multi_entity,
             entity_labels=entity_labels,
             responding_entity_label=responding_entity_label,
+            user_display_name=user_display_name,
         )
 
 

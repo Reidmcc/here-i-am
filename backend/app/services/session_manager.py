@@ -233,6 +233,9 @@ class ConversationSession:
     entity_labels: Dict[str, str] = field(default_factory=dict)  # entity_id -> label mapping
     responding_entity_label: Optional[str] = None  # Label of the entity receiving this context
 
+    # Custom display name for the user/researcher (used in role labels)
+    user_display_name: Optional[str] = None
+
     # The actual back-and-forth
     conversation_context: List[Dict[str, str]] = field(default_factory=list)
 
@@ -594,6 +597,12 @@ class SessionManager:
             # Get the responding entity's label
             if responding_entity_id and responding_entity_id in entity_labels:
                 responding_entity_label = entity_labels[responding_entity_id]
+        else:
+            # For single-entity conversations, get the entity label from config
+            if conversation.entity_id:
+                entity_config = settings.get_entity_by_index(conversation.entity_id)
+                if entity_config:
+                    responding_entity_label = entity_config.label
 
         # Determine entity_id and model for the session
         entity_id = responding_entity_id if responding_entity_id else conversation.entity_id
@@ -954,6 +963,7 @@ class SessionManager:
             is_multi_entity=session.is_multi_entity,
             entity_labels=session.entity_labels,
             responding_entity_label=session.responding_entity_label,
+            user_display_name=session.user_display_name,
         )
 
         # Step 7: Call LLM API (routes to appropriate provider based on model)
@@ -1290,6 +1300,7 @@ class SessionManager:
             is_multi_entity=session.is_multi_entity,
             entity_labels=session.entity_labels,
             responding_entity_label=session.responding_entity_label,
+            user_display_name=session.user_display_name,
         )
 
         # Step 6: Stream LLM response with caching enabled
