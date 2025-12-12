@@ -251,6 +251,8 @@ class AnthropicService:
         is_multi_entity: bool = False,
         entity_labels: Optional[Dict[str, str]] = None,
         responding_entity_label: Optional[str] = None,
+        # Custom role labels for context formatting
+        user_display_name: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build the message list for API call with conversation-first caching.
@@ -297,6 +299,20 @@ class AnthropicService:
             multi_entity_header += "[MESSAGES ARE EXPLICITLY MARKED BY WHICH PARTICIPANT SENT THE MESSAGE]\n"
             multi_entity_header += f'[MESSAGES LABELED AS FROM "{responding_entity_label}" ARE YOURS]\n\n'
 
+        # Determine display labels for roles
+        # For user: use user_display_name if provided, otherwise "user"
+        # For assistant: use responding_entity_label if provided, otherwise "assistant"
+        user_label = user_display_name if user_display_name else "user"
+        assistant_label = responding_entity_label if responding_entity_label else "assistant"
+
+        def get_role_label(role: str) -> str:
+            """Map API role to display label."""
+            if role == "user":
+                return user_label
+            elif role == "assistant":
+                return assistant_label
+            return role
+
         # Calculate if we should cache conversation history
         has_conversation = bool(cached_context) or bool(new_context)
         cached_history_text = ""
@@ -304,7 +320,7 @@ class AnthropicService:
         will_cache_history = False
 
         if cached_context:
-            cached_history_text = "\n".join(f"{m['role']}: {m['content']}" for m in cached_context)
+            cached_history_text = "\n".join(f"{get_role_label(m['role'])}: {m['content']}" for m in cached_context)
             cached_history_tokens = self.count_tokens(cached_history_text)
             will_cache_history = enable_caching and cached_history_tokens >= 1024
             # Count messages by role for debugging
@@ -356,7 +372,15 @@ class AnthropicService:
         if all_memories:
             memory_block_text = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
             for mem in all_memories:
-                memory_block_text += f"Memory (from {mem['created_at']}):\n"
+                # Map memory role to display label
+                mem_role = mem.get("role", "")
+                if mem_role == "human":
+                    role_display = user_label
+                elif mem_role == "assistant":
+                    role_display = assistant_label
+                else:
+                    role_display = mem_role if mem_role else "unknown"
+                memory_block_text += f"Memory from {role_display} (from {mem['created_at']}):\n"
                 memory_block_text += f'"{mem["content"]}"\n\n'
             memory_block_text += "[/MEMORIES]"
 

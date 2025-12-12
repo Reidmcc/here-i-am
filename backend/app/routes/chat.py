@@ -42,6 +42,8 @@ class ChatRequest(BaseModel):
     verbosity: Optional[str] = None  # Verbosity level for gpt-5.1 models (low, medium, high)
     # For multi-entity conversations: which entity should respond
     responding_entity_id: Optional[str] = None
+    # Custom display name for the user/researcher (used in role labels)
+    user_display_name: Optional[str] = None
 
 
 class MemoryInfo(BaseModel):
@@ -86,6 +88,8 @@ class RegenerateRequest(BaseModel):
     max_tokens: Optional[int] = None
     system_prompt: Optional[str] = None
     verbosity: Optional[str] = None
+    # Custom display name for the user/researcher (used in role labels)
+    user_display_name: Optional[str] = None
 
 
 @router.post("/send", response_model=ChatResponse)
@@ -192,6 +196,8 @@ async def send_message(
         session.system_prompt = data.system_prompt
     if data.verbosity is not None:
         session.verbosity = data.verbosity
+    if data.user_display_name is not None:
+        session.user_display_name = data.user_display_name
 
     # Process the message through the full pipeline
     response = await session_manager.process_message(
@@ -418,6 +424,8 @@ async def stream_message(data: ChatRequest):
                     session.system_prompt = data.system_prompt
                 if data.verbosity is not None:
                     session.verbosity = data.verbosity
+                if data.user_display_name is not None:
+                    session.user_display_name = data.user_display_name
 
                 full_content = ""
                 model_used = session.model
@@ -676,6 +684,8 @@ async def regenerate_response(data: RegenerateRequest):
                     session.system_prompt = data.system_prompt
                 if data.verbosity is not None:
                     session.verbosity = data.verbosity
+                if data.user_display_name is not None:
+                    session.user_display_name = data.user_display_name
 
                 # Delete the old assistant message from DB and Pinecone
                 if assistant_to_delete:

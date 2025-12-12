@@ -19,6 +19,7 @@ class App {
             systemPrompt: null,  // Current entity's system prompt (for display)
             conversationType: 'normal',
             verbosity: 'medium',
+            researcherName: localStorage.getItem('researcher_name') || '',  // Custom display name for user
         };
 
         // Per-entity system prompts: { entity_id: system_prompt, ... }
@@ -79,6 +80,7 @@ class App {
             archivedList: document.getElementById('archived-list'),
 
             // Settings
+            researcherNameInput: document.getElementById('researcher-name-input'),
             modelSelect: document.getElementById('model-select'),
             temperatureInput: document.getElementById('temperature-input'),
             temperatureNumber: document.getElementById('temperature-number'),
@@ -1138,6 +1140,7 @@ class App {
                 system_prompt: this.settings.systemPrompt,
                 verbosity: this.settings.verbosity,
                 responding_entity_id: responderId,
+                user_display_name: this.settings.researcherName || null,
             };
             // Only include model override if NOT in multi-entity mode
             if (!this.isMultiEntityMode) {
@@ -1659,6 +1662,7 @@ class App {
                     max_tokens: this.settings.maxTokens,
                     system_prompt: this.settings.systemPrompt,
                     verbosity: this.settings.verbosity,
+                    user_display_name: this.settings.researcherName || null,
                 },
                 {
                     onMemories: (data) => {
@@ -2428,6 +2432,7 @@ class App {
                     max_tokens: this.settings.maxTokens,
                     system_prompt: this.settings.systemPrompt,
                     verbosity: this.settings.verbosity,
+                    user_display_name: this.settings.researcherName || null,
                 },
                 {
                     onMemories: (data) => {
@@ -2752,6 +2757,7 @@ class App {
 
     showSettingsModal() {
         this.updateTemperatureMax();
+        this.elements.researcherNameInput.value = this.settings.researcherName || '';
         this.elements.modelSelect.value = this.settings.model;
         this.elements.temperatureInput.value = this.settings.temperature;
         this.elements.temperatureNumber.value = this.settings.temperature;
@@ -2808,6 +2814,9 @@ class App {
         this.settings.conversationType = this.elements.conversationTypeSelect.value;
         // Save verbosity value
         this.settings.verbosity = this.elements.verbositySelect.value;
+        // Save researcher name
+        this.settings.researcherName = this.elements.researcherNameInput.value.trim() || '';
+        localStorage.setItem('researcher_name', this.settings.researcherName);
 
         // Save system prompt per-entity (for single-entity mode)
         if (this.selectedEntityId && this.selectedEntityId !== 'multi-entity') {
