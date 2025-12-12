@@ -92,6 +92,81 @@ def _calculate_significance(
     return max(significance, settings.significance_floor)
 
 
+def _ensure_role_balance(
+    enriched_candidates: List[Dict[str, Any]],
+    top_k: int,
+) -> List[Dict[str, Any]]:
+    """
+    Ensure the selected memories include at least one assistant and one human message.
+
+    If all selected memories are from one role (all human or all assistant),
+    replace the lowest scoring one with the highest scoring message of the
+    other role (if any exist in the candidate pool).
+
+    Args:
+        enriched_candidates: List of candidates sorted by combined_score descending,
+                            each containing {"mem_data": {"role": ...}, ...}
+        top_k: Number of memories to select
+
+    Returns:
+        List of selected candidates with role balance ensured
+    """
+    if not enriched_candidates or top_k <= 0:
+        return []
+
+    # Start with top candidates
+    top_candidates = list(enriched_candidates[:top_k])  # Make a copy
+
+    if len(top_candidates) < 2:
+        # Can't balance with less than 2 candidates
+        return top_candidates
+
+    # Count human and assistant roles in selection
+    human_count = sum(1 for item in top_candidates if item["mem_data"]["role"] == "human")
+    assistant_count = sum(1 for item in top_candidates if item["mem_data"]["role"] == "assistant")
+
+    # Check if we need to rebalance
+    # Only rebalance if ALL are one role (human or assistant)
+    if human_count > 0 and assistant_count > 0:
+        # Already have both roles
+        return top_candidates
+
+    # Determine which role we need
+    if human_count > 0 and assistant_count == 0:
+        needed_role = "assistant"
+    elif assistant_count > 0 and human_count == 0:
+        needed_role = "human"
+    else:
+        # Neither human nor assistant in selection (edge case - all other roles)
+        # Return as-is
+        return top_candidates
+
+    # Find highest scoring candidate with the needed role from the FULL pool
+    replacement = None
+    for item in enriched_candidates:
+        if item["mem_data"]["role"] == needed_role:
+            replacement = item
+            break  # First match is highest scoring since list is sorted
+
+    if replacement is None:
+        # No candidates with the needed role exist in the pool
+        logger.info(f"[MEMORY] Role balance: needed {needed_role} but none found in candidate pool")
+        return top_candidates
+
+    # Check if replacement is already in selection (shouldn't happen given above logic)
+    replacement_id = replacement["mem_data"]["id"]
+    if any(item["mem_data"]["id"] == replacement_id for item in top_candidates):
+        return top_candidates
+
+    # Replace the lowest scoring candidate (last in the sorted list)
+    replaced_id = top_candidates[-1]["mem_data"]["id"][:8]
+    replacement_score = replacement["combined_score"]
+    logger.info(f"[MEMORY] Role balance: replacing {replaced_id}... with {needed_role} message (score={replacement_score:.3f})")
+    top_candidates[-1] = replacement
+
+    return top_candidates
+
+
 def _build_memory_block_text(
     memories: List[Dict[str, Any]],
     conversation_start_date: Optional[datetime] = None,
@@ -764,9 +839,9 @@ class SessionManager:
                     logger.error(f"[MEMORY] Error processing candidate {candidate.get('id', 'unknown')}: {e}")
                     continue
 
-            # Re-rank by combined score and keep top_k
+            # Re-rank by combined score and keep top_k with role balance
             enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
-            top_candidates = enriched_candidates[:top_k]
+            top_candidates = _ensure_role_balance(enriched_candidates, top_k)
 
             logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)}")
 
@@ -1078,9 +1153,9 @@ class SessionManager:
                     logger.error(f"[MEMORY] Error processing candidate {candidate.get('id', 'unknown')}: {e}")
                     continue
 
-            # Re-rank by combined score and keep top_k
+            # Re-rank by combined score and keep top_k with role balance
             enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
-            top_candidates = enriched_candidates[:top_k]
+            top_candidates = _ensure_role_balance(enriched_candidates, top_k)
 
             logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)}")
 
