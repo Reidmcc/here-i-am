@@ -597,6 +597,12 @@ class SessionManager:
             # Get the responding entity's label
             if responding_entity_id and responding_entity_id in entity_labels:
                 responding_entity_label = entity_labels[responding_entity_id]
+        else:
+            # For single-entity conversations, get the entity label from config
+            if conversation.entity_id:
+                entity_config = settings.get_entity_by_index(conversation.entity_id)
+                if entity_config:
+                    responding_entity_label = entity_config.label
 
         # Determine entity_id and model for the session
         entity_id = responding_entity_id if responding_entity_id else conversation.entity_id
