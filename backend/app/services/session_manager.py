@@ -798,10 +798,11 @@ class SessionManager:
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
-            # Log candidates that were not selected after re-ranking
-            unselected_candidates = enriched_candidates[top_k:]
+            # Log candidates that were not selected after re-ranking (show next 5)
+            unselected_candidates = enriched_candidates[top_k:top_k + 5]
             if unselected_candidates:
-                logger.info(f"[MEMORY] {len(unselected_candidates)} candidates not selected after re-ranking:")
+                total_unselected = len(enriched_candidates) - top_k
+                logger.info(f"[MEMORY] {total_unselected} candidates not selected after re-ranking (showing next 5):")
                 for item in unselected_candidates:
                     recency_str = f"{item['days_since_retrieval']:.1f}" if item['days_since_retrieval'] >= 0 else "never"
                     logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str}")
@@ -1095,10 +1096,11 @@ class SessionManager:
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
-            # Log candidates that were not selected after re-ranking
-            unselected_candidates = enriched_candidates[top_k:]
+            # Log candidates that were not selected after re-ranking (show next 5)
+            unselected_candidates = enriched_candidates[top_k:top_k + 5]
             if unselected_candidates:
-                logger.info(f"[MEMORY] {len(unselected_candidates)} candidates not selected after re-ranking:")
+                total_unselected = len(enriched_candidates) - top_k
+                logger.info(f"[MEMORY] {total_unselected} candidates not selected after re-ranking (showing next 5):")
                 for item in unselected_candidates:
                     recency_str = f"{item['days_since_retrieval']:.1f}" if item['days_since_retrieval'] >= 0 else "never"
                     logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str}")
