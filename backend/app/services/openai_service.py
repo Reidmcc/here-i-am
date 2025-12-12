@@ -16,6 +16,7 @@ class OpenAIService:
         "o3", "o3-mini",
         "o4-mini",
         "gpt-5.1", "gpt-5-mini", "gpt-5.1-chat-latest",
+        "gpt-5.2",
     }
 
     # Models that don't support the temperature parameter
@@ -24,6 +25,7 @@ class OpenAIService:
         "o3", "o3-mini",
         "o4-mini",
         "gpt-5.1", "gpt-5.1-chat-latest",
+        "gpt-5.2",
     }
 
     # Models that don't support stream_options
@@ -34,6 +36,7 @@ class OpenAIService:
     # Models that support the verbosity parameter
     MODELS_WITH_VERBOSITY = {
         "gpt-5.1", "gpt-5.1-chat-latest",
+        "gpt-5.2",
     }
 
     def __init__(self):

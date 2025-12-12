@@ -1301,7 +1301,7 @@ class App {
                 this.elements.verbosityGroup.title = '';
             } else {
                 this.elements.verbosityGroup.classList.add('disabled');
-                this.elements.verbosityGroup.title = 'Verbosity is only supported by GPT-5.1 models';
+                this.elements.verbosityGroup.title = 'Verbosity is only supported by GPT-5.x models';
             }
         }
     }

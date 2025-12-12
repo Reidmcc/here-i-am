@@ -221,6 +221,7 @@ class Settings(BaseSettings):
     #   - gpt-4-turbo
     #   - gpt-4
     #   - gpt-5.1
+    #   - gpt-5.2
     #   - gpt-5-mini
     #   - gpt-5.1-chat-latest
     #   - o1
