@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Tuple, Any
@@ -181,14 +182,11 @@ def get_model():
             except Exception as e:
                 logger.warning(f"Could not update tokenizer char_limits: {e}")
 
-            # Apply reduce-overhead optimization for GPU (staying in FP32 for stability)
-            if device == "cuda":
-                logger.info("Applying torch.compile with reduce-overhead mode...")
-                _tts_model.synthesizer.tts_model = torch.compile(
-                    _tts_model.synthesizer.tts_model,
-                    mode="reduce-overhead"
-                )
-                logger.info("Model optimizations applied successfully")
+            # Note: We intentionally do NOT use torch.compile here.
+            # The "reduce-overhead" mode uses CUDA graphs which cache GPU execution states
+            # for each unique input shape. With variable-length text chunks, this causes
+            # VRAM to accumulate rapidly as each chunk length creates a new cached graph.
+            # For XTTS inference with variable text lengths, the standard eager mode is safer.
 
             logger.info("XTTS v2 model loaded successfully")
 
@@ -517,28 +515,46 @@ def synthesize_with_cached_latents(
 
         audio_arrays = []
 
-        for i, chunk in enumerate(chunks):
-            logger.debug(f"Processing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
+        # Use no_grad to ensure no gradient computation and reduce memory
+        with torch.no_grad():
+            for i, chunk in enumerate(chunks):
+                chunk_len = len(chunk)
+                # Log full chunk content for debugging audio loss issues
+                logger.info(f"Chunk {i+1}/{len(chunks)} ({chunk_len} chars): {chunk[:100]}{'...' if chunk_len > 100 else ''}")
 
-            # Synthesize using cached latents
-            audio_output = xtts_model.inference(
-                text=chunk,
-                language=language,
-                gpt_cond_latent=gpt_cond_latent,
-                speaker_embedding=speaker_embedding,
-            )
+                # Synthesize using cached latents
+                audio_output = xtts_model.inference(
+                    text=chunk,
+                    language=language,
+                    gpt_cond_latent=gpt_cond_latent,
+                    speaker_embedding=speaker_embedding,
+                )
 
-            # Get the audio waveform from output dict
-            audio_array = audio_output.get("wav")
-            if audio_array is None:
-                logger.error(f"XTTS model returned: {audio_output.keys() if isinstance(audio_output, dict) else type(audio_output)}")
-                raise RuntimeError("XTTS model did not return audio")
+                # Get the audio waveform from output dict
+                audio_array = audio_output.get("wav")
+                if audio_array is None:
+                    logger.error(f"XTTS model returned: {audio_output.keys() if isinstance(audio_output, dict) else type(audio_output)}")
+                    raise RuntimeError("XTTS model did not return audio")
 
-            # Convert to numpy array if it's a tensor
-            if hasattr(audio_array, "cpu"):
-                audio_array = audio_array.cpu().numpy()
+                # Convert to numpy array if it's a tensor - move to CPU immediately
+                if hasattr(audio_array, "cpu"):
+                    audio_array = audio_array.cpu().numpy()
 
-            audio_arrays.append(audio_array)
+                # Log audio duration for this chunk (24kHz sample rate)
+                chunk_duration = len(audio_array) / 24000
+                logger.info(f"Chunk {i+1} produced {len(audio_array)} samples ({chunk_duration:.2f}s)")
+
+                audio_arrays.append(audio_array)
+
+                # Explicitly clear GPU memory after each chunk to prevent VRAM accumulation
+                # This is critical for long texts with many chunks
+                del audio_output
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        # Log total before concatenation
+        total_samples = sum(len(a) for a in audio_arrays)
+        logger.info(f"Total audio: {total_samples} samples ({total_samples/24000:.2f}s) from {len(audio_arrays)} chunks")
 
         # Concatenate all audio chunks
         if len(audio_arrays) == 1:
@@ -598,13 +614,15 @@ async def tts_to_audio(
 
         # Generate speech using cached speaker latents
         logger.info(f"Generating speech for {len(text)} chars, language={language}")
+        start_time = time.time()
         audio_bytes = synthesize_with_cached_latents(
             text=text,
             speaker_wav_path=speaker_path,
             language=language,
         )
+        elapsed = time.time() - start_time
 
-        logger.info(f"Generated {len(audio_bytes)} bytes of audio")
+        logger.info(f"Generated {len(audio_bytes)} bytes of audio in {elapsed:.2f} seconds")
 
         return Response(
             content=audio_bytes,
@@ -650,13 +668,15 @@ async def _tts_with_path(text: str, speaker_wav: str, language: str) -> Response
     try:
         # Generate speech using cached speaker latents
         logger.info(f"Generating speech for {len(text)} chars, language={language}")
+        start_time = time.time()
         audio_bytes = synthesize_with_cached_latents(
             text=text,
             speaker_wav_path=str(speaker_path),
             language=language,
         )
+        elapsed = time.time() - start_time
 
-        logger.info(f"Generated {len(audio_bytes)} bytes of audio")
+        logger.info(f"Generated {len(audio_bytes)} bytes of audio in {elapsed:.2f} seconds")
 
         return Response(
             content=audio_bytes,
