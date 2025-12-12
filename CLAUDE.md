@@ -1254,7 +1254,7 @@ DEFAULT_OPENAI_MODEL = "gpt-5.1"  # OpenAI default
 
 # Supported OpenAI models include:
 #   gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-4
-#   gpt-5.1, gpt-5-mini, gpt-5.1-chat-latest
+#   gpt-5.1, gpt-5.2, gpt-5-mini, gpt-5.1-chat-latest
 #   o1, o1-mini, o1-preview, o3, o3-mini, o4-mini
 
 # Memory settings (config.py)
@@ -1277,8 +1277,8 @@ significance = times_retrieved * recency_factor * half_life_modifier
 # half_life_modifier = 0.5 ^ (days_since_creation / significance_half_life_days)
 # Final significance = max(calculated_significance, significance_floor)
 
-# GPT-5.1 verbosity setting (config.py)
-default_verbosity = "medium"  # Options: "low", "medium", "high" for GPT-5.1 models
+# GPT-5.x verbosity setting (config.py)
+default_verbosity = "medium"  # Options: "low", "medium", "high" for GPT-5.x models
 
 # XTTS defaults (config.py)
 xtts_enabled = False              # Must be explicitly enabled

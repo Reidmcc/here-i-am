@@ -38,6 +38,7 @@ MODEL_PROVIDER_MAP = {
     "gpt-3.5-turbo": ModelProvider.OPENAI,
     # OpenAI GPT-5 models
     "gpt-5.1": ModelProvider.OPENAI,
+    "gpt-5.2": ModelProvider.OPENAI,
     "gpt-5-mini": ModelProvider.OPENAI,
     "gpt-5.1-chat-latest": ModelProvider.OPENAI,
     # OpenAI o-series models
@@ -60,6 +61,7 @@ AVAILABLE_MODELS = {
         {"id": "claude-opus-4-20250514", "name": "Claude Opus 4"},
     ],
     ModelProvider.OPENAI: [
+        {"id": "gpt-5.2", "name": "GPT-5.2"},
         {"id": "gpt-5.1", "name": "GPT-5.1"},
         {"id": "gpt-5-mini", "name": "GPT-5 Mini"},
         {"id": "gpt-5.1-chat-latest", "name": "GPT-5.1 Chat (Latest)"},
