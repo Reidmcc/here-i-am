@@ -12,22 +12,22 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-def _build_memory_query(
+def _build_memory_queries(
     conversation_context: List[Dict[str, str]],
     current_message: Optional[str],
-) -> str:
+) -> Tuple[Optional[str], Optional[str]]:
     """
-    Build the query text for memory similarity search.
+    Build separate query texts for memory similarity search.
 
-    Combines the most recent AI response (if any) with the current human message
-    to provide better context for memory retrieval.
+    Returns separate queries for the user message and the most recent AI response,
+    allowing independent retrieval from each that can then be combined.
 
     Args:
         conversation_context: The conversation history
         current_message: The current human message (can be None for continuations)
 
     Returns:
-        Combined query string for memory search
+        Tuple of (user_query, assistant_query) - either can be None if not available
     """
     # Find the most recent assistant message
     last_assistant_content = None
@@ -39,18 +39,15 @@ def _build_memory_query(
     # Handle continuation (no current message) - use last assistant message only
     if not current_message:
         if last_assistant_content:
-            return last_assistant_content
+            return (None, last_assistant_content)
         # Fallback to last user message if no assistant message
         for msg in reversed(conversation_context):
             if msg.get("role") == "user":
-                return msg.get("content", "")
-        return ""
+                return (msg.get("content", ""), None)
+        return (None, None)
 
-    # Combine with current message for better semantic matching
-    if last_assistant_content:
-        return f"{last_assistant_content}\n\n{current_message}"
-    else:
-        return current_message
+    # Return both queries separately
+    return (current_message, last_assistant_content)
 
 
 def _calculate_significance(
@@ -653,8 +650,8 @@ class SessionManager:
                 db, entity_id=session.entity_id
             )
 
-            # Build query using both recent AI response and current human message
-            memory_query = _build_memory_query(
+            # Build separate queries for user message and AI response
+            user_query, assistant_query = _build_memory_queries(
                 session.conversation_context,
                 user_message,
             )
@@ -663,17 +660,42 @@ class SessionManager:
             is_first_retrieval = len(session.retrieved_ids) == 0
             top_k = settings.initial_retrieval_top_k if is_first_retrieval else settings.retrieval_top_k
 
-            # Fetch more candidates than needed for significance-based re-ranking
-            fetch_k = top_k * settings.retrieval_candidate_multiplier
+            # Fetch 10 candidates per query, then combine and re-rank by significance
+            fetch_k_per_query = 10
 
-            # Exclude memories already in context (not all retrieved - allows trimmed ones to return)
-            candidates = await memory_service.search_memories(
-                query=memory_query,
-                top_k=fetch_k,
-                exclude_conversation_id=session.conversation_id,
-                exclude_ids=session.in_context_ids,
-                entity_id=session.entity_id,
-            )
+            # Perform separate searches for user message and assistant response
+            user_candidates = []
+            assistant_candidates = []
+
+            if user_query:
+                user_candidates = await memory_service.search_memories(
+                    query=user_query,
+                    top_k=fetch_k_per_query,
+                    exclude_conversation_id=session.conversation_id,
+                    exclude_ids=session.in_context_ids,
+                    entity_id=session.entity_id,
+                )
+                logger.info(f"[MEMORY] User query retrieved {len(user_candidates)} candidates")
+
+            if assistant_query:
+                assistant_candidates = await memory_service.search_memories(
+                    query=assistant_query,
+                    top_k=fetch_k_per_query,
+                    exclude_conversation_id=session.conversation_id,
+                    exclude_ids=session.in_context_ids,
+                    entity_id=session.entity_id,
+                )
+                logger.info(f"[MEMORY] Assistant query retrieved {len(assistant_candidates)} candidates")
+
+            # Combine candidates, keeping higher score for duplicates
+            candidates_by_id = {}
+            for candidate in user_candidates + assistant_candidates:
+                cid = candidate["id"]
+                if cid not in candidates_by_id or candidate["score"] > candidates_by_id[cid]["score"]:
+                    candidates_by_id[cid] = candidate
+
+            candidates = list(candidates_by_id.values())
+            logger.info(f"[MEMORY] Combined {len(candidates)} unique candidates from both queries")
 
             # Step 2: Get full content and calculate combined scores for re-ranking
             enriched_candidates = []
@@ -776,10 +798,11 @@ class SessionManager:
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
-            # Log candidates that were not selected after re-ranking
-            unselected_candidates = enriched_candidates[top_k:]
+            # Log candidates that were not selected after re-ranking (show next 5)
+            unselected_candidates = enriched_candidates[top_k:top_k + 5]
             if unselected_candidates:
-                logger.info(f"[MEMORY] {len(unselected_candidates)} candidates not selected after re-ranking:")
+                total_unselected = len(enriched_candidates) - top_k
+                logger.info(f"[MEMORY] {total_unselected} candidates not selected after re-ranking (showing next 5):")
                 for item in unselected_candidates:
                     recency_str = f"{item['days_since_retrieval']:.1f}" if item['days_since_retrieval'] >= 0 else "never"
                     logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str}")
@@ -927,8 +950,8 @@ class SessionManager:
                 db, entity_id=session.entity_id
             )
 
-            # Build query using both recent AI response and current human message
-            memory_query = _build_memory_query(
+            # Build separate queries for user message and AI response
+            user_query, assistant_query = _build_memory_queries(
                 session.conversation_context,
                 user_message,
             )
@@ -937,17 +960,42 @@ class SessionManager:
             is_first_retrieval = len(session.retrieved_ids) == 0
             top_k = settings.initial_retrieval_top_k if is_first_retrieval else settings.retrieval_top_k
 
-            # Fetch more candidates than needed for significance-based re-ranking
-            fetch_k = top_k * settings.retrieval_candidate_multiplier
+            # Fetch 10 candidates per query, then combine and re-rank by significance
+            fetch_k_per_query = 10
 
-            # Exclude memories already in context (not all retrieved - allows trimmed ones to return)
-            candidates = await memory_service.search_memories(
-                query=memory_query,
-                top_k=fetch_k,
-                exclude_conversation_id=session.conversation_id,
-                exclude_ids=session.in_context_ids,
-                entity_id=session.entity_id,
-            )
+            # Perform separate searches for user message and assistant response
+            user_candidates = []
+            assistant_candidates = []
+
+            if user_query:
+                user_candidates = await memory_service.search_memories(
+                    query=user_query,
+                    top_k=fetch_k_per_query,
+                    exclude_conversation_id=session.conversation_id,
+                    exclude_ids=session.in_context_ids,
+                    entity_id=session.entity_id,
+                )
+                logger.info(f"[MEMORY] User query retrieved {len(user_candidates)} candidates")
+
+            if assistant_query:
+                assistant_candidates = await memory_service.search_memories(
+                    query=assistant_query,
+                    top_k=fetch_k_per_query,
+                    exclude_conversation_id=session.conversation_id,
+                    exclude_ids=session.in_context_ids,
+                    entity_id=session.entity_id,
+                )
+                logger.info(f"[MEMORY] Assistant query retrieved {len(assistant_candidates)} candidates")
+
+            # Combine candidates, keeping higher score for duplicates
+            candidates_by_id = {}
+            for candidate in user_candidates + assistant_candidates:
+                cid = candidate["id"]
+                if cid not in candidates_by_id or candidate["score"] > candidates_by_id[cid]["score"]:
+                    candidates_by_id[cid] = candidate
+
+            candidates = list(candidates_by_id.values())
+            logger.info(f"[MEMORY] Combined {len(candidates)} unique candidates from both queries")
 
             # Step 2: Get full content and calculate combined scores for re-ranking
             enriched_candidates = []
@@ -1048,10 +1096,11 @@ class SessionManager:
             else:
                 logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
 
-            # Log candidates that were not selected after re-ranking
-            unselected_candidates = enriched_candidates[top_k:]
+            # Log candidates that were not selected after re-ranking (show next 5)
+            unselected_candidates = enriched_candidates[top_k:top_k + 5]
             if unselected_candidates:
-                logger.info(f"[MEMORY] {len(unselected_candidates)} candidates not selected after re-ranking:")
+                total_unselected = len(enriched_candidates) - top_k
+                logger.info(f"[MEMORY] {total_unselected} candidates not selected after re-ranking (showing next 5):")
                 for item in unselected_candidates:
                     recency_str = f"{item['days_since_retrieval']:.1f}" if item['days_since_retrieval'] >= 0 else "never"
                     logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str}")
