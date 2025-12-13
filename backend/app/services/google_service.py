@@ -1,6 +1,6 @@
 from typing import Optional, List, Dict, Any, AsyncIterator
-from google import genai
-from google.genai import types
+import google.generativeai as genai
+from google.generativeai.types import GenerationConfig, ContentDict
 from app.config import settings
 import tiktoken
 import logging
@@ -27,17 +27,17 @@ class GoogleService:
     MODELS_WITH_TEMPERATURE = SUPPORTED_MODELS
 
     def __init__(self):
-        self._client = None
+        self._configured = False
         self._encoder = None
 
-    def _ensure_client(self) -> genai.Client:
-        """Lazily initialize the Google AI client."""
-        if self._client is None:
+    def _ensure_configured(self):
+        """Ensure the API is configured with the API key."""
+        if not self._configured:
             if settings.google_api_key:
-                self._client = genai.Client(api_key=settings.google_api_key)
+                genai.configure(api_key=settings.google_api_key)
+                self._configured = True
             else:
                 raise ValueError("Google API key not configured")
-        return self._client
 
     def is_configured(self) -> bool:
         """Check if Google AI is configured with an API key."""
@@ -62,12 +62,11 @@ class GoogleService:
     def _convert_messages_to_contents(
         self,
         messages: List[Dict[str, str]],
-        system_prompt: Optional[str] = None,
-    ) -> tuple[List[types.Content], Optional[str]]:
+    ) -> List[ContentDict]:
         """
         Convert messages from standard format to Gemini Content format.
 
-        Returns tuple of (contents, system_instruction).
+        Returns list of content dicts.
         """
         contents = []
 
@@ -83,12 +82,12 @@ class GoogleService:
             # Map roles: 'user' stays 'user', 'assistant' becomes 'model'
             gemini_role = "model" if role == "assistant" else "user"
 
-            contents.append(types.Content(
-                role=gemini_role,
-                parts=[types.Part(text=content)]
-            ))
+            contents.append({
+                "role": gemini_role,
+                "parts": [{"text": content}]
+            })
 
-        return contents, system_prompt
+        return contents
 
     async def send_message(
         self,
@@ -111,40 +110,39 @@ class GoogleService:
         Returns:
             Dict with 'content', 'model', 'usage' keys
         """
-        client = self._ensure_client()
+        self._ensure_configured()
 
-        model = model or settings.default_google_model
+        model_name = model or settings.default_google_model
         temperature = temperature if temperature is not None else settings.default_temperature
         max_tokens = max_tokens or settings.default_max_tokens
 
         # Convert messages to Gemini format
-        contents, system_instruction = self._convert_messages_to_contents(messages, system_prompt)
+        contents = self._convert_messages_to_contents(messages)
 
         # Build generation config
-        config = types.GenerateContentConfig(
+        generation_config = GenerationConfig(
             temperature=temperature,
             max_output_tokens=max_tokens,
         )
 
-        # Add system instruction if provided
-        if system_instruction:
-            config.system_instruction = system_instruction
+        # Create model with optional system instruction
+        model_kwargs = {"model_name": model_name, "generation_config": generation_config}
+        if system_prompt:
+            model_kwargs["system_instruction"] = system_prompt
 
-        logger.info(f"[GOOGLE] Sending {len(contents)} messages to API with model={model}")
+        gemini_model = genai.GenerativeModel(**model_kwargs)
 
-        # Use async client
-        response = await client.aio.models.generate_content(
-            model=model,
-            contents=contents,
-            config=config,
-        )
+        logger.info(f"[GOOGLE] Sending {len(contents)} messages to API with model={model_name}")
+
+        # Use async generation
+        response = await gemini_model.generate_content_async(contents)
 
         # Extract content from response
         content = ""
         if response.candidates and len(response.candidates) > 0:
             candidate = response.candidates[0]
             if candidate.content and candidate.content.parts:
-                content = "".join(part.text for part in candidate.content.parts if hasattr(part, 'text'))
+                content = "".join(part.text for part in candidate.content.parts if hasattr(part, 'text') and part.text)
 
         # Build usage dict
         usage = {
@@ -152,12 +150,13 @@ class GoogleService:
             "output_tokens": 0,
         }
 
-        if response.usage_metadata:
-            usage["input_tokens"] = response.usage_metadata.prompt_token_count or 0
-            usage["output_tokens"] = response.usage_metadata.candidates_token_count or 0
+        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+            usage["input_tokens"] = getattr(response.usage_metadata, 'prompt_token_count', 0) or 0
+            usage["output_tokens"] = getattr(response.usage_metadata, 'candidates_token_count', 0) or 0
             # Include cached tokens if available
-            if hasattr(response.usage_metadata, 'cached_content_token_count') and response.usage_metadata.cached_content_token_count:
-                usage["cached_tokens"] = response.usage_metadata.cached_content_token_count
+            cached = getattr(response.usage_metadata, 'cached_content_token_count', None)
+            if cached:
+                usage["cached_tokens"] = cached
 
         # Determine stop reason
         stop_reason = "end_turn"
@@ -165,7 +164,8 @@ class GoogleService:
             finish_reason = response.candidates[0].finish_reason
             if finish_reason:
                 # Map Gemini finish reasons to standard format
-                finish_reason_str = str(finish_reason).lower()
+                finish_reason_name = finish_reason.name if hasattr(finish_reason, 'name') else str(finish_reason)
+                finish_reason_str = finish_reason_name.lower()
                 if "max_tokens" in finish_reason_str or "length" in finish_reason_str:
                     stop_reason = "max_tokens"
                 elif "safety" in finish_reason_str:
@@ -177,7 +177,7 @@ class GoogleService:
 
         return {
             "content": content,
-            "model": model,
+            "model": model_name,
             "usage": usage,
             "stop_reason": stop_reason,
         }
@@ -199,30 +199,33 @@ class GoogleService:
         - {"type": "done", "content": str, "model": str, "usage": dict, "stop_reason": str}
         - {"type": "error", "error": str}
         """
-        client = self._ensure_client()
+        self._ensure_configured()
 
-        model = model or settings.default_google_model
+        model_name = model or settings.default_google_model
         temperature = temperature if temperature is not None else settings.default_temperature
         max_tokens = max_tokens or settings.default_max_tokens
 
         # Convert messages to Gemini format
-        contents, system_instruction = self._convert_messages_to_contents(messages, system_prompt)
+        contents = self._convert_messages_to_contents(messages)
 
         # Build generation config
-        config = types.GenerateContentConfig(
+        generation_config = GenerationConfig(
             temperature=temperature,
             max_output_tokens=max_tokens,
         )
 
-        # Add system instruction if provided
-        if system_instruction:
-            config.system_instruction = system_instruction
+        # Create model with optional system instruction
+        model_kwargs = {"model_name": model_name, "generation_config": generation_config}
+        if system_prompt:
+            model_kwargs["system_instruction"] = system_prompt
 
-        logger.info(f"[GOOGLE] Streaming {len(contents)} messages to API with model={model}")
+        gemini_model = genai.GenerativeModel(**model_kwargs)
+
+        logger.info(f"[GOOGLE] Streaming {len(contents)} messages to API with model={model_name}")
 
         try:
             # Yield start event
-            yield {"type": "start", "model": model}
+            yield {"type": "start", "model": model_name}
 
             full_content = ""
             stop_reason = "end_turn"
@@ -232,11 +235,9 @@ class GoogleService:
             }
 
             # Use async streaming
-            async for chunk in await client.aio.models.generate_content_stream(
-                model=model,
-                contents=contents,
-                config=config,
-            ):
+            response = await gemini_model.generate_content_async(contents, stream=True)
+
+            async for chunk in response:
                 # Extract text from chunk
                 if chunk.candidates and len(chunk.candidates) > 0:
                     candidate = chunk.candidates[0]
@@ -248,7 +249,8 @@ class GoogleService:
 
                     # Check finish reason
                     if candidate.finish_reason:
-                        finish_reason_str = str(candidate.finish_reason).lower()
+                        finish_reason_name = candidate.finish_reason.name if hasattr(candidate.finish_reason, 'name') else str(candidate.finish_reason)
+                        finish_reason_str = finish_reason_name.lower()
                         if "max_tokens" in finish_reason_str or "length" in finish_reason_str:
                             stop_reason = "max_tokens"
                         elif "safety" in finish_reason_str:
@@ -256,12 +258,13 @@ class GoogleService:
                         elif "stop" in finish_reason_str:
                             stop_reason = "end_turn"
 
-                # Extract usage metadata from final chunk
-                if chunk.usage_metadata:
-                    usage["input_tokens"] = chunk.usage_metadata.prompt_token_count or 0
-                    usage["output_tokens"] = chunk.usage_metadata.candidates_token_count or 0
-                    if hasattr(chunk.usage_metadata, 'cached_content_token_count') and chunk.usage_metadata.cached_content_token_count:
-                        usage["cached_tokens"] = chunk.usage_metadata.cached_content_token_count
+                # Extract usage metadata from chunks (usually in final chunk)
+                if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
+                    usage["input_tokens"] = getattr(chunk.usage_metadata, 'prompt_token_count', 0) or 0
+                    usage["output_tokens"] = getattr(chunk.usage_metadata, 'candidates_token_count', 0) or 0
+                    cached = getattr(chunk.usage_metadata, 'cached_content_token_count', None)
+                    if cached:
+                        usage["cached_tokens"] = cached
 
             logger.info(f"[GOOGLE] Stream API Response - input: {usage.get('input_tokens')}, output: {usage.get('output_tokens')}")
 
@@ -269,7 +272,7 @@ class GoogleService:
             yield {
                 "type": "done",
                 "content": full_content,
-                "model": model,
+                "model": model_name,
                 "usage": usage,
                 "stop_reason": stop_reason,
             }
