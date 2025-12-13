@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2025-12-11
+**Last Updated:** 2025-12-13
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -53,14 +53,15 @@ The application supports multiple AI entities, each with its own:
 - **Separate Pinecone Index** - Isolated memory space per entity
 - **Separate Conversation History** - Conversations are associated with entities
 - **Independent Memory Retrieval** - Each entity only retrieves from its own memories
-- **Model Provider Configuration** - Each entity can use Anthropic (Claude) or OpenAI (GPT) models
+- **Model Provider Configuration** - Each entity can use Anthropic (Claude), OpenAI (GPT), or Google (Gemini) models
 
 **Configuration:**
 ```bash
 # Configure entities via JSON array (required for memory features)
 PINECONE_INDEXES='[
   {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929", "host": "https://claude-main-xxxxx.svc.xxx.pinecone.io"},
-  {"index_name": "gpt-research", "label": "GPT Research", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-5.1", "host": "https://gpt-research-xxxxx.svc.xxx.pinecone.io"}
+  {"index_name": "gpt-research", "label": "GPT Research", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-5.1", "host": "https://gpt-research-xxxxx.svc.xxx.pinecone.io"},
+  {"index_name": "gemini-research", "label": "Gemini", "description": "Google for comparison", "llm_provider": "google", "default_model": "gemini-2.5-flash", "host": "https://gemini-research-xxxxx.svc.xxx.pinecone.io"}
 ]'
 ```
 
@@ -68,7 +69,7 @@ PINECONE_INDEXES='[
 - `index_name`: Pinecone index name (required)
 - `label`: Display name in UI (required)
 - `description`: Optional description
-- `llm_provider`: `"anthropic"` or `"openai"` (default: `"anthropic"`)
+- `llm_provider`: `"anthropic"`, `"openai"`, or `"google"` (default: `"anthropic"`)
 - `default_model`: Model ID to use (optional, uses provider default if not set)
 - `host`: Pinecone index host URL (required for serverless indexes)
 
@@ -76,7 +77,7 @@ PINECONE_INDEXES='[
 - Research with multiple AI "personalities" or contexts
 - Parallel experiments with isolated memory spaces
 - Different research phases with separate continuity
-- Comparative research between Claude and GPT models
+- Comparative research between Claude, GPT, and Gemini models
 
 ### Multi-Entity Conversations
 
@@ -135,6 +136,7 @@ here-i-am/
 │   │   ├── services/          # Business logic layer
 │   │   │   ├── anthropic_service.py
 │   │   │   ├── openai_service.py
+│   │   │   ├── google_service.py  # Google Gemini API client
 │   │   │   ├── llm_service.py     # Unified LLM abstraction
 │   │   │   ├── memory_service.py
 │   │   │   ├── session_manager.py
@@ -191,6 +193,7 @@ here-i-am/
 | ORM | SQLAlchemy | 2.0.25 | Async database operations |
 | AI Integration | Anthropic SDK | 0.18.1 | Claude API client |
 | AI Integration | OpenAI SDK | 1.12.0 | GPT API client |
+| AI Integration | Google GenAI SDK | 1.0.0+ | Gemini API client |
 | Vector DB | Pinecone | 6.0.0 | Semantic memory storage |
 | Validation | Pydantic | 2.6.1 | Request/response schemas |
 | Database | aiosqlite / asyncpg | - | SQLite dev / PostgreSQL prod |
@@ -369,6 +372,7 @@ ANTHROPIC_API_KEY=sk-ant-...  # Required for Anthropic/Claude models
 **Optional Variables:**
 ```bash
 OPENAI_API_KEY=sk-...                   # Enables OpenAI/GPT models
+GOOGLE_API_KEY=...                      # Enables Google/Gemini models
 PINECONE_API_KEY=...                    # Enables memory system
 PINECONE_INDEXES='[...]'                # Entity configuration (JSON array, see below)
 HERE_I_AM_DATABASE_URL=sqlite+aiosqlite:///./here_i_am.db  # Database URL
@@ -405,7 +409,8 @@ ELEVENLABS_MODEL_ID=eleven_multilingual_v2  # TTS model
 # Each entity requires a pre-created Pinecone index with dimension=1024 and integrated inference (llama-text-embed-v2)
 PINECONE_INDEXES='[
   {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929", "host": "https://claude-main-xxxxx.svc.xxx.pinecone.io"},
-  {"index_name": "gpt-research", "label": "GPT", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-5.1", "host": "https://gpt-research-xxxxx.svc.xxx.pinecone.io"}
+  {"index_name": "gpt-research", "label": "GPT", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-5.1", "host": "https://gpt-research-xxxxx.svc.xxx.pinecone.io"},
+  {"index_name": "gemini-research", "label": "Gemini", "description": "Google for comparison", "llm_provider": "google", "default_model": "gemini-2.5-flash", "host": "https://gemini-research-xxxxx.svc.xxx.pinecone.io"}
 ]'
 ```
 
@@ -1202,6 +1207,7 @@ conversation: Conversation
 - LLM service (unified): `backend/app/services/llm_service.py`
 - Anthropic service: `backend/app/services/anthropic_service.py`
 - OpenAI service: `backend/app/services/openai_service.py`
+- Google service: `backend/app/services/google_service.py`
 - Message model: `backend/app/models/message.py`
 - Messages routes: `backend/app/routes/messages.py`
 
@@ -1251,11 +1257,17 @@ conversation: Conversation
 # Default models
 DEFAULT_MODEL = "claude-sonnet-4-5-20250929"  # Anthropic default
 DEFAULT_OPENAI_MODEL = "gpt-5.1"  # OpenAI default
+DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"  # Google default
 
 # Supported OpenAI models include:
 #   gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-4
 #   gpt-5.1, gpt-5.2, gpt-5-mini, gpt-5.1-chat-latest
 #   o1, o1-mini, o1-preview, o3, o3-mini, o4-mini
+
+# Supported Google models include:
+#   gemini-3.0-pro, gemini-3.0-flash
+#   gemini-2.5-pro, gemini-2.5-flash
+#   gemini-2.0-flash, gemini-2.0-flash-lite
 
 # Memory settings (config.py)
 initial_retrieval_top_k = 5  # First retrieval in conversation

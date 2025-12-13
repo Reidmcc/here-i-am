@@ -12,6 +12,7 @@ from enum import Enum
 
 from app.services import anthropic_service, openai_service
 from app.services.openai_service import OpenAIService
+from app.services.google_service import google_service, GoogleService
 from app.config import settings
 
 
@@ -19,6 +20,7 @@ class ModelProvider(str, Enum):
     """Supported LLM providers."""
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
+    GOOGLE = "google"
 
 
 # Model to provider mapping
@@ -48,6 +50,14 @@ MODEL_PROVIDER_MAP = {
     "o3": ModelProvider.OPENAI,
     "o3-mini": ModelProvider.OPENAI,
     "o4-mini": ModelProvider.OPENAI,
+    # Google Gemini 3 models
+    "gemini-3.0-flash": ModelProvider.GOOGLE,
+    "gemini-3.0-pro": ModelProvider.GOOGLE,
+    # Google Gemini 2.x models
+    "gemini-2.5-pro": ModelProvider.GOOGLE,
+    "gemini-2.5-flash": ModelProvider.GOOGLE,
+    "gemini-2.0-flash": ModelProvider.GOOGLE,
+    "gemini-2.0-flash-lite": ModelProvider.GOOGLE,
 }
 
 
@@ -74,6 +84,14 @@ AVAILABLE_MODELS = {
         {"id": "o1", "name": "o1"},
         {"id": "o1-mini", "name": "o1 Mini"},
     ],
+    ModelProvider.GOOGLE: [
+        {"id": "gemini-3.0-pro", "name": "Gemini 3.0 Pro"},
+        {"id": "gemini-3.0-flash", "name": "Gemini 3.0 Flash"},
+        {"id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro"},
+        {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash"},
+        {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash"},
+        {"id": "gemini-2.0-flash-lite", "name": "Gemini 2.0 Flash Lite"},
+    ],
 }
 
 
@@ -92,6 +110,8 @@ class LLMService:
             return bool(settings.anthropic_api_key)
         elif provider == ModelProvider.OPENAI:
             return openai_service.is_configured()
+        elif provider == ModelProvider.GOOGLE:
+            return google_service.is_configured()
         return False
 
     def get_available_providers(self) -> List[Dict[str, Any]]:
@@ -114,6 +134,14 @@ class LLMService:
                 "default_model": settings.default_openai_model,
             })
 
+        if self.is_provider_configured(ModelProvider.GOOGLE):
+            providers.append({
+                "id": ModelProvider.GOOGLE.value,
+                "name": "Google",
+                "models": AVAILABLE_MODELS[ModelProvider.GOOGLE],
+                "default_model": settings.default_google_model,
+            })
+
         return providers
 
     def get_all_available_models(self) -> List[Dict[str, Any]]:
@@ -122,11 +150,14 @@ class LLMService:
         for provider_info in self.get_available_providers():
             for model in provider_info["models"]:
                 # Check if model supports temperature
-                # All Anthropic models support temperature
+                # All Anthropic and Google models support temperature
                 # OpenAI models check against MODELS_WITHOUT_TEMPERATURE
                 if provider_info["id"] == ModelProvider.OPENAI.value:
                     supports_temp = model["id"] not in OpenAIService.MODELS_WITHOUT_TEMPERATURE
                     supports_verbosity = model["id"] in OpenAIService.MODELS_WITH_VERBOSITY
+                elif provider_info["id"] == ModelProvider.GOOGLE.value:
+                    supports_temp = True  # All Gemini models support temperature
+                    supports_verbosity = False
                 else:
                     supports_temp = True
                     supports_verbosity = False
@@ -183,6 +214,8 @@ class LLMService:
                 provider = ModelProvider.ANTHROPIC
             elif model.startswith("gpt") or model.startswith("o"):
                 provider = ModelProvider.OPENAI
+            elif model.startswith("gemini"):
+                provider = ModelProvider.GOOGLE
             else:
                 raise ValueError(f"Unknown model: {model}")
 
@@ -206,6 +239,14 @@ class LLMService:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 verbosity=verbosity,
+            )
+        elif provider == ModelProvider.GOOGLE:
+            return await google_service.send_message(
+                messages=messages,
+                system_prompt=system_prompt,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
         else:
             raise ValueError(f"Unsupported provider: {provider}")
@@ -240,6 +281,8 @@ class LLMService:
                 provider = ModelProvider.ANTHROPIC
             elif model.startswith("gpt") or model.startswith("o"):
                 provider = ModelProvider.OPENAI
+            elif model.startswith("gemini"):
+                provider = ModelProvider.GOOGLE
             else:
                 yield {"type": "error", "error": f"Unknown model: {model}"}
                 return
@@ -266,6 +309,15 @@ class LLMService:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 verbosity=verbosity,
+            ):
+                yield event
+        elif provider == ModelProvider.GOOGLE:
+            async for event in google_service.send_message_stream(
+                messages=messages,
+                system_prompt=system_prompt,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
             ):
                 yield event
         else:
