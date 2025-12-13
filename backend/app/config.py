@@ -115,7 +115,7 @@ class EntityConfig:
         self.index_name = index_name
         self.label = label
         self.description = description
-        self.llm_provider = llm_provider  # "anthropic" or "openai"
+        self.llm_provider = llm_provider  # "anthropic", "openai", or "google"
         self.default_model = default_model  # If None, uses global default for provider
         self.host = host  # Pinecone index host URL (required for serverless indexes)
 
@@ -134,6 +134,7 @@ class Settings(BaseSettings):
     # API Keys
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+    google_api_key: str = ""
     pinecone_api_key: str = ""
     elevenlabs_api_key: str = ""
 
@@ -200,6 +201,7 @@ class Settings(BaseSettings):
     # API defaults
     default_model: str = "claude-sonnet-4-5-20250929"  # Default Anthropic model
     default_openai_model: str = "gpt-5.1"  # Default OpenAI model
+    default_google_model: str = "gemini-2.5-flash"  # Default Google model
     default_temperature: float = 1.0
     default_max_tokens: int = 4096
     default_verbosity: str = "medium"  # Default verbosity for GPT-5.1 models (low, medium, high)
@@ -231,8 +233,17 @@ class Settings(BaseSettings):
     #   - o3-mini
     #   - o4-mini
     #
-    # To use a model, set it as default_model or default_openai_model above,
-    # or specify it in the entity configuration via PINECONE_INDEXES.
+    # GOOGLE MODELS:
+    #   - gemini-3.0-pro
+    #   - gemini-3.0-flash
+    #   - gemini-2.5-pro
+    #   - gemini-2.5-flash
+    #   - gemini-2.0-flash
+    #   - gemini-2.0-flash-lite
+    #
+    # To use a model, set it as default_model, default_openai_model, or
+    # default_google_model above, or specify it in the entity configuration
+    # via PINECONE_INDEXES.
     # =========================================================================
 
     # Context window limits (in tokens)
@@ -280,6 +291,8 @@ class Settings(BaseSettings):
         """Get the default model for a given provider."""
         if provider == "openai":
             return self.default_openai_model
+        elif provider == "google":
+            return self.default_google_model
         return self.default_model  # anthropic is the default
 
     def get_entity_by_index(self, index_name: str) -> Optional[EntityConfig]:
