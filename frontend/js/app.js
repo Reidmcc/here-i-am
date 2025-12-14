@@ -2371,6 +2371,9 @@ class App {
                 }
             }
 
+            // Reset loading state before regenerating - regenerateMessage manages its own loading state
+            this.isLoading = false;
+
             // Now regenerate the response
             await this.regenerateMessage(messageId);
 
@@ -2382,7 +2385,6 @@ class App {
             messageElement.classList.remove('editing');
             const bubble = messageElement.querySelector('.message-bubble');
             bubble.innerHTML = this.renderMarkdown(newContent);
-        } finally {
             this.isLoading = false;
             this.handleInputChange();
         }
