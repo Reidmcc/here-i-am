@@ -2103,6 +2103,7 @@ class App {
 
         const message = document.createElement('div');
         message.className = `message ${role}`;
+        message.dataset.role = role;
 
         const bubble = document.createElement('div');
         bubble.className = 'message-bubble streaming';
