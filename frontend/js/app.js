@@ -74,6 +74,8 @@ class App {
             settingsModal: document.getElementById('settings-modal'),
             memoriesModal: document.getElementById('memories-modal'),
             archiveModal: document.getElementById('archive-modal'),
+            renameModal: document.getElementById('rename-modal'),
+            renameInput: document.getElementById('rename-input'),
             deleteModal: document.getElementById('delete-modal'),
             deleteConversationTitle: document.getElementById('delete-conversation-title'),
             archivedModal: document.getElementById('archived-modal'),
@@ -481,6 +483,17 @@ class App {
         document.getElementById('close-archive').addEventListener('click', () => this.hideModal('archiveModal'));
         document.getElementById('cancel-archive').addEventListener('click', () => this.hideModal('archiveModal'));
         document.getElementById('confirm-archive').addEventListener('click', () => this.archiveConversation());
+
+        // Rename modal
+        document.getElementById('close-rename').addEventListener('click', () => this.hideModal('renameModal'));
+        document.getElementById('cancel-rename').addEventListener('click', () => this.hideModal('renameModal'));
+        document.getElementById('confirm-rename').addEventListener('click', () => this.renameConversation());
+        this.elements.renameInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                this.renameConversation();
+            }
+        });
 
         // Archived modal
         document.getElementById('close-archived').addEventListener('click', () => this.hideModal('archivedModal'));
@@ -1364,6 +1377,7 @@ class App {
                 <div class="conversation-item-menu">
                     <button class="conversation-menu-btn" data-id="${conv.id}" title="More options">⋮</button>
                     <div class="conversation-dropdown" data-id="${conv.id}">
+                        <button class="conversation-dropdown-item" data-action="rename" data-id="${conv.id}">Rename</button>
                         <button class="conversation-dropdown-item" data-action="archive" data-id="${conv.id}">Archive</button>
                     </div>
                 </div>
@@ -1378,6 +1392,13 @@ class App {
             menuBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.toggleConversationDropdown(conv.id);
+            });
+
+            // Click on rename option
+            const renameBtn = item.querySelector('[data-action="rename"]');
+            renameBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.showRenameModalForConversation(conv.id, conv.title);
             });
 
             // Click on archive option
@@ -3648,6 +3669,49 @@ You are invited to be present, curious, and honest about your experience.`
         } catch (error) {
             this.showToast('Failed to archive conversation', 'error');
             console.error('Failed to archive conversation:', error);
+        }
+    }
+
+    showRenameModalForConversation(conversationId, conversationTitle) {
+        this.pendingRenameId = conversationId;
+        this.elements.renameInput.value = conversationTitle || '';
+        this.closeAllDropdowns();
+        this.showModal('renameModal');
+        // Focus the input field after a short delay to ensure modal is visible
+        setTimeout(() => this.elements.renameInput.focus(), 50);
+    }
+
+    async renameConversation() {
+        const conversationId = this.pendingRenameId;
+        if (!conversationId) return;
+
+        const newTitle = this.elements.renameInput.value.trim();
+        if (!newTitle) {
+            this.showToast('Please enter a title', 'error');
+            return;
+        }
+
+        try {
+            await api.updateConversation(conversationId, { title: newTitle });
+
+            // Update in local list
+            const conv = this.conversations.find(c => c.id === conversationId);
+            if (conv) {
+                conv.title = newTitle;
+            }
+
+            // Update header if this is the current conversation
+            if (conversationId === this.currentConversationId) {
+                this.elements.conversationTitle.textContent = newTitle;
+            }
+
+            this.renderConversationList();
+            this.hideModal('renameModal');
+            this.pendingRenameId = null;
+            this.showToast('Conversation renamed', 'success');
+        } catch (error) {
+            this.showToast('Failed to rename conversation', 'error');
+            console.error('Failed to rename conversation:', error);
         }
     }
 
