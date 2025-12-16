@@ -820,6 +820,9 @@ class App {
             this.isMultiEntityMode = true;
             this.selectedEntityId = 'multi-entity';
             this.currentConversationEntities = [];  // Will be set when creating new conversation
+            // Clear system prompt so it doesn't carry over from the previous single-entity selection
+            // Multi-entity conversations use entity_system_prompts, not this fallback
+            this.settings.systemPrompt = null;
 
             // Clear current conversation
             this.currentConversationId = null;
