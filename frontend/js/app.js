@@ -36,6 +36,7 @@ class App {
         this.pendingResponderId = null;  // Entity selected to respond next
         this.pendingActionAfterEntitySelection = null;  // 'createConversation' or 'sendMessage'
         this.pendingMessageForEntitySelection = null;  // Message to send after entity selection
+        this.pendingRegenerateMessageId = null;  // Message ID to regenerate (for multi-entity regeneration)
         this.constructedAt = Date.now();  // Used to detect browser form restoration
 
         // Request tracking to prevent race conditions
@@ -1047,12 +1048,17 @@ class App {
         this.showToast(`Multi-entity mode: ${labels}`, 'success');
     }
 
-    showEntityResponderSelector(isContinuation = false) {
+    /**
+     * Show the entity responder selector modal.
+     * @param {string} mode - 'respond' (default), 'continuation', or 'regenerate'
+     */
+    showEntityResponderSelector(mode = 'respond') {
         console.log('[MULTI-ENTITY] showEntityResponderSelector called:', {
-            isContinuation,
+            mode,
             isMultiEntityMode: this.isMultiEntityMode,
             entitiesCount: this.currentConversationEntities?.length,
-            entities: this.currentConversationEntities
+            entities: this.currentConversationEntities,
+            pendingRegenerateMessageId: this.pendingRegenerateMessageId
         });
 
         if (!this.isMultiEntityMode || this.currentConversationEntities.length === 0) {
@@ -1060,15 +1066,20 @@ class App {
             return;
         }
 
-        // Store whether this is continuation mode (can also be determined by !pendingMessageContent)
-        this.responderSelectorContinuationMode = isContinuation;
+        // Store the mode for legacy compatibility
+        this.responderSelectorContinuationMode = (mode === 'continuation');
+        this.responderSelectorMode = mode;
 
         // Update prompt text based on mode
         const promptEl = this.elements.entityResponderSelector.querySelector('.responder-prompt');
         if (promptEl) {
-            promptEl.textContent = isContinuation
-                ? 'Select an entity to continue the conversation:'
-                : 'Select which entity should respond:';
+            if (mode === 'continuation') {
+                promptEl.textContent = 'Select an entity to continue the conversation:';
+            } else if (mode === 'regenerate') {
+                promptEl.textContent = 'Select which entity should regenerate the response:';
+            } else {
+                promptEl.textContent = 'Select which entity should respond:';
+            }
         }
 
         // Populate responder buttons
@@ -1078,12 +1089,17 @@ class App {
             </button>
         `).join('');
 
-        // Add click handlers
+        // Add click handlers based on mode
         this.elements.entityResponderButtons.querySelectorAll('.entity-responder-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 this.pendingResponderId = btn.dataset.entityId;
                 this.hideEntityResponderSelector();
-                this.sendMessageWithResponder();
+
+                if (this.responderSelectorMode === 'regenerate') {
+                    this.regenerateMessageWithEntity();
+                } else {
+                    this.sendMessageWithResponder();
+                }
             });
         });
 
@@ -1114,7 +1130,7 @@ class App {
         this.pendingUserMessageEl = null;
 
         // Show the responder selector in continuation mode
-        this.showEntityResponderSelector(true);
+        this.showEntityResponderSelector('continuation');
     }
 
     async sendMessageWithResponder() {
@@ -2416,6 +2432,7 @@ class App {
 
     /**
      * Regenerate an AI response for a given message.
+     * In multi-entity mode, prompts user to select which entity should respond.
      * @param {string} messageId - ID of the message to regenerate from
      */
     async regenerateMessage(messageId) {
@@ -2424,6 +2441,43 @@ class App {
             return;
         }
 
+        // In multi-entity mode, show entity selector first
+        if (this.isMultiEntityMode && this.currentConversationEntities.length > 0) {
+            this.pendingRegenerateMessageId = messageId;
+            this.showEntityResponderSelector('regenerate');
+            return;
+        }
+
+        // Single-entity mode: proceed with regeneration directly
+        await this.performRegeneration(messageId);
+    }
+
+    /**
+     * Regenerate a message after entity selection in multi-entity mode.
+     * Called by the entity responder selector when in regenerate mode.
+     */
+    async regenerateMessageWithEntity() {
+        const messageId = this.pendingRegenerateMessageId;
+        const responderId = this.pendingResponderId;
+
+        // Clear pending state
+        this.pendingRegenerateMessageId = null;
+        this.pendingResponderId = null;
+
+        if (!messageId || !responderId) {
+            this.showToast('Missing message or entity selection', 'error');
+            return;
+        }
+
+        await this.performRegeneration(messageId, responderId);
+    }
+
+    /**
+     * Perform the actual message regeneration.
+     * @param {string} messageId - ID of the message to regenerate from
+     * @param {string|null} respondingEntityId - Entity to generate response (multi-entity only)
+     */
+    async performRegeneration(messageId, respondingEntityId = null) {
         this.isLoading = true;
         this.elements.sendBtn.disabled = true;
 
@@ -2447,20 +2501,38 @@ class App {
             assistantEl.remove();
         }
 
-        // Create streaming message element
-        const streamingMessage = this.createStreamingMessage('assistant');
+        // Get the responding entity's label for multi-entity mode
+        let responderLabel = null;
+        if (this.isMultiEntityMode && respondingEntityId) {
+            const responderEntity = this.currentConversationEntities.find(e => e.index_name === respondingEntityId);
+            responderLabel = responderEntity?.label || respondingEntityId;
+        }
+
+        // Create streaming message element (with speaker label for multi-entity)
+        const streamingMessage = this.createStreamingMessage('assistant', responderLabel);
 
         try {
+            const requestData = {
+                message_id: messageId,
+                temperature: this.settings.temperature,
+                max_tokens: this.settings.maxTokens,
+                system_prompt: this.settings.systemPrompt,
+                verbosity: this.settings.verbosity,
+                user_display_name: this.settings.researcherName || null,
+            };
+
+            // Only include model override for single-entity mode
+            if (!this.isMultiEntityMode) {
+                requestData.model = this.settings.model;
+            }
+
+            // Include responding_entity_id for multi-entity mode
+            if (respondingEntityId) {
+                requestData.responding_entity_id = respondingEntityId;
+            }
+
             await api.regenerateStream(
-                {
-                    message_id: messageId,
-                    model: this.settings.model,
-                    temperature: this.settings.temperature,
-                    max_tokens: this.settings.maxTokens,
-                    system_prompt: this.settings.systemPrompt,
-                    verbosity: this.settings.verbosity,
-                    user_display_name: this.settings.researcherName || null,
-                },
+                requestData,
                 {
                     onMemories: (data) => {
                         this.handleMemoryUpdate(data);
@@ -2483,6 +2555,11 @@ class App {
                     onStored: (data) => {
                         // Update the message element with the new ID
                         streamingMessage.element.dataset.messageId = data.assistant_message_id;
+
+                        // Update speaker entity ID if provided (multi-entity mode)
+                        if (data.speaker_entity_id) {
+                            streamingMessage.element.dataset.speakerEntityId = data.speaker_entity_id;
+                        }
 
                         // Remove regenerate buttons from any previous assistant messages
                         this.removeRegenerateButtons();
@@ -2541,6 +2618,11 @@ class App {
                                     this.speakMessage(messageContent, speakBtn, msgId);
                                 });
                             }
+                        }
+
+                        // In multi-entity mode, show responder selector for next turn
+                        if (this.isMultiEntityMode) {
+                            this.showEntityResponderSelector('continuation');
                         }
 
                         this.showToast('Response regenerated', 'success');
