@@ -1177,3 +1177,472 @@ class TestCacheBreakpointPlacement:
         # Verify specific structure (memories no longer tracked in cache state)
         assert len(content1["cached_context"]) == 2
         assert len(content1["new_context"]) == 2
+
+
+class TestSystemPromptSelection:
+    """Tests for entity-specific system prompt selection."""
+
+    @pytest.mark.asyncio
+    async def test_single_entity_uses_entity_system_prompt(self, db_session):
+        """Test that single-entity conversations use entity_system_prompts when available."""
+        from app.models import Conversation, ConversationType
+
+        # Create conversation with entity_system_prompts
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Test Single Entity",
+            conversation_type=ConversationType.NORMAL,
+            llm_model_used="claude-sonnet-4-5-20250929",
+            entity_id="claude-main",
+            system_prompt_used="Fallback system prompt",
+            entity_system_prompts={"claude-main": "Entity-specific prompt for Claude"},
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.get_entity_by_index.return_value = None
+
+            session = await manager.load_session_from_db(conversation.id, db_session)
+
+        # Should use entity-specific prompt, not fallback
+        assert session.system_prompt == "Entity-specific prompt for Claude"
+
+    @pytest.mark.asyncio
+    async def test_single_entity_falls_back_to_system_prompt_used(self, db_session):
+        """Test that single-entity conversations fall back to system_prompt_used when no entity prompt."""
+        from app.models import Conversation, ConversationType
+
+        # Create conversation without entity_system_prompts
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Test Fallback",
+            conversation_type=ConversationType.NORMAL,
+            llm_model_used="claude-sonnet-4-5-20250929",
+            entity_id="claude-main",
+            system_prompt_used="Fallback system prompt",
+            entity_system_prompts=None,
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.get_entity_by_index.return_value = None
+
+            session = await manager.load_session_from_db(conversation.id, db_session)
+
+        # Should use fallback system_prompt_used
+        assert session.system_prompt == "Fallback system prompt"
+
+    @pytest.mark.asyncio
+    async def test_single_entity_falls_back_when_entity_not_in_dict(self, db_session):
+        """Test fallback when entity_id is not in entity_system_prompts dict."""
+        from app.models import Conversation, ConversationType
+
+        # Create conversation with entity_system_prompts that doesn't include this entity
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Test Entity Not In Dict",
+            conversation_type=ConversationType.NORMAL,
+            llm_model_used="claude-sonnet-4-5-20250929",
+            entity_id="claude-main",
+            system_prompt_used="Fallback system prompt",
+            entity_system_prompts={"other-entity": "Some other prompt"},
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.get_entity_by_index.return_value = None
+
+            session = await manager.load_session_from_db(conversation.id, db_session)
+
+        # Should use fallback since entity not in dict
+        assert session.system_prompt == "Fallback system prompt"
+
+    @pytest.mark.asyncio
+    async def test_multi_entity_uses_responding_entity_prompt(self, db_session):
+        """Test that multi-entity conversations use the responding entity's system prompt."""
+        from app.models import Conversation, ConversationType, ConversationEntity
+
+        # Create multi-entity conversation with different prompts per entity
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Test Multi Entity",
+            conversation_type=ConversationType.MULTI_ENTITY,
+            llm_model_used="claude-sonnet-4-5-20250929",
+            entity_id="multi-entity",
+            system_prompt_used="Fallback system prompt",
+            entity_system_prompts={
+                "claude-main": "You are Claude, a helpful AI.",
+                "gpt-test": "You are GPT, an OpenAI model.",
+            },
+        )
+        db_session.add(conversation)
+        await db_session.flush()
+
+        # Add participating entities
+        entity1 = ConversationEntity(
+            conversation_id=conversation.id,
+            entity_id="claude-main",
+            display_order=0,
+        )
+        entity2 = ConversationEntity(
+            conversation_id=conversation.id,
+            entity_id="gpt-test",
+            display_order=1,
+        )
+        db_session.add(entity1)
+        db_session.add(entity2)
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_entity = MagicMock()
+            mock_entity.label = "Claude"
+            mock_entity.default_model = "claude-sonnet-4-5-20250929"
+            mock_entity.llm_provider = "anthropic"
+            mock_settings.get_entity_by_index.return_value = mock_entity
+            mock_settings.get_default_model_for_provider.return_value = "claude-sonnet-4-5-20250929"
+
+            # Load session with Claude as responding entity
+            session = await manager.load_session_from_db(
+                conversation.id,
+                db_session,
+                responding_entity_id="claude-main"
+            )
+
+        # Should use Claude's specific prompt
+        assert session.system_prompt == "You are Claude, a helpful AI."
+
+    @pytest.mark.asyncio
+    async def test_multi_entity_different_prompts_for_different_entities(self, db_session):
+        """Test that different responding entities get different system prompts."""
+        from app.models import Conversation, ConversationType, ConversationEntity
+
+        # Create multi-entity conversation
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Test Multi Entity Different Prompts",
+            conversation_type=ConversationType.MULTI_ENTITY,
+            llm_model_used="claude-sonnet-4-5-20250929",
+            entity_id="multi-entity",
+            system_prompt_used="Fallback system prompt",
+            entity_system_prompts={
+                "claude-main": "You are Claude.",
+                "gpt-test": "You are GPT.",
+            },
+        )
+        db_session.add(conversation)
+        await db_session.flush()
+
+        # Add participating entities
+        entity1 = ConversationEntity(
+            conversation_id=conversation.id,
+            entity_id="claude-main",
+            display_order=0,
+        )
+        entity2 = ConversationEntity(
+            conversation_id=conversation.id,
+            entity_id="gpt-test",
+            display_order=1,
+        )
+        db_session.add(entity1)
+        db_session.add(entity2)
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+
+            # Mock entity configs
+            def get_entity(eid):
+                if eid == "claude-main":
+                    mock = MagicMock()
+                    mock.label = "Claude"
+                    mock.default_model = "claude-sonnet-4-5-20250929"
+                    mock.llm_provider = "anthropic"
+                    return mock
+                elif eid == "gpt-test":
+                    mock = MagicMock()
+                    mock.label = "GPT"
+                    mock.default_model = "gpt-4o"
+                    mock.llm_provider = "openai"
+                    return mock
+                return None
+
+            mock_settings.get_entity_by_index.side_effect = get_entity
+            mock_settings.get_default_model_for_provider.return_value = "claude-sonnet-4-5-20250929"
+
+            # Load session with Claude
+            session_claude = await manager.load_session_from_db(
+                conversation.id,
+                db_session,
+                responding_entity_id="claude-main"
+            )
+            manager.close_session(conversation.id)
+
+            # Load session with GPT
+            session_gpt = await manager.load_session_from_db(
+                conversation.id,
+                db_session,
+                responding_entity_id="gpt-test"
+            )
+
+        # Each should have their own system prompt
+        assert session_claude.system_prompt == "You are Claude."
+        assert session_gpt.system_prompt == "You are GPT."
+
+    @pytest.mark.asyncio
+    async def test_multi_entity_falls_back_when_entity_not_in_dict(self, db_session):
+        """Test multi-entity fallback when responding entity not in entity_system_prompts."""
+        from app.models import Conversation, ConversationType, ConversationEntity
+
+        # Create multi-entity conversation with only one entity's prompt
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Test Multi Entity Partial Prompts",
+            conversation_type=ConversationType.MULTI_ENTITY,
+            llm_model_used="claude-sonnet-4-5-20250929",
+            entity_id="multi-entity",
+            system_prompt_used="Fallback system prompt",
+            entity_system_prompts={
+                "claude-main": "You are Claude.",
+                # gpt-test is NOT in this dict
+            },
+        )
+        db_session.add(conversation)
+        await db_session.flush()
+
+        # Add participating entities
+        entity1 = ConversationEntity(
+            conversation_id=conversation.id,
+            entity_id="claude-main",
+            display_order=0,
+        )
+        entity2 = ConversationEntity(
+            conversation_id=conversation.id,
+            entity_id="gpt-test",
+            display_order=1,
+        )
+        db_session.add(entity1)
+        db_session.add(entity2)
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_entity = MagicMock()
+            mock_entity.label = "GPT"
+            mock_entity.default_model = "gpt-4o"
+            mock_entity.llm_provider = "openai"
+            mock_settings.get_entity_by_index.return_value = mock_entity
+            mock_settings.get_default_model_for_provider.return_value = "gpt-4o"
+
+            # Load session with GPT (which is not in entity_system_prompts)
+            session = await manager.load_session_from_db(
+                conversation.id,
+                db_session,
+                responding_entity_id="gpt-test"
+            )
+
+        # Should use fallback since gpt-test not in entity_system_prompts
+        assert session.system_prompt == "Fallback system prompt"
+
+    @pytest.mark.asyncio
+    async def test_empty_string_system_prompt_is_used(self, db_session):
+        """Test that empty string system prompt in entity_system_prompts is used (not fallback)."""
+        from app.models import Conversation, ConversationType
+
+        # Create conversation with empty string prompt for entity
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Test Empty String Prompt",
+            conversation_type=ConversationType.NORMAL,
+            llm_model_used="claude-sonnet-4-5-20250929",
+            entity_id="claude-main",
+            system_prompt_used="Fallback system prompt",
+            entity_system_prompts={"claude-main": ""},  # Empty string, not None
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.get_entity_by_index.return_value = None
+
+            session = await manager.load_session_from_db(conversation.id, db_session)
+
+        # Should use empty string (entity explicitly has no system prompt)
+        assert session.system_prompt == ""
+
+    @pytest.mark.asyncio
+    async def test_null_entity_system_prompts_uses_fallback(self, db_session):
+        """Test that null entity_system_prompts uses system_prompt_used fallback."""
+        from app.models import Conversation, ConversationType
+
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Test Null Entity Prompts",
+            conversation_type=ConversationType.NORMAL,
+            llm_model_used="claude-sonnet-4-5-20250929",
+            entity_id="claude-main",
+            system_prompt_used="This is the fallback",
+            entity_system_prompts=None,
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.get_entity_by_index.return_value = None
+
+            session = await manager.load_session_from_db(conversation.id, db_session)
+
+        assert session.system_prompt == "This is the fallback"
+
+    @pytest.mark.asyncio
+    async def test_no_system_prompt_at_all(self, db_session):
+        """Test conversation with no system prompt (both null)."""
+        from app.models import Conversation, ConversationType
+
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Test No System Prompt",
+            conversation_type=ConversationType.NORMAL,
+            llm_model_used="claude-sonnet-4-5-20250929",
+            entity_id="claude-main",
+            system_prompt_used=None,
+            entity_system_prompts=None,
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.get_entity_by_index.return_value = None
+
+            session = await manager.load_session_from_db(conversation.id, db_session)
+
+        # System prompt should be None
+        assert session.system_prompt is None
+
+    @pytest.mark.asyncio
+    async def test_conversation_without_entity_id_uses_fallback(self, db_session):
+        """Test conversation with no entity_id uses system_prompt_used."""
+        from app.models import Conversation, ConversationType
+
+        # Conversation with no entity_id (legacy or default)
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Test No Entity ID",
+            conversation_type=ConversationType.NORMAL,
+            llm_model_used="claude-sonnet-4-5-20250929",
+            entity_id=None,  # No entity
+            system_prompt_used="Fallback prompt",
+            entity_system_prompts={"some-entity": "Some prompt"},  # Has prompts but no entity_id
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.get_entity_by_index.return_value = None
+
+            session = await manager.load_session_from_db(conversation.id, db_session)
+
+        # Should use fallback since entity_id is None
+        assert session.system_prompt == "Fallback prompt"
+
+    @pytest.mark.asyncio
+    async def test_empty_entity_system_prompts_dict_uses_fallback(self, db_session):
+        """Test that empty entity_system_prompts dict uses fallback."""
+        from app.models import Conversation, ConversationType
+
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Test Empty Dict",
+            conversation_type=ConversationType.NORMAL,
+            llm_model_used="claude-sonnet-4-5-20250929",
+            entity_id="claude-main",
+            system_prompt_used="Fallback prompt",
+            entity_system_prompts={},  # Empty dict
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.get_entity_by_index.return_value = None
+
+            session = await manager.load_session_from_db(conversation.id, db_session)
+
+        # Empty dict should use fallback
+        assert session.system_prompt == "Fallback prompt"

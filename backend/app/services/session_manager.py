@@ -614,11 +614,24 @@ class SessionManager:
             if entity:
                 model = entity.default_model or settings.get_default_model_for_provider(entity.llm_provider)
 
+        # Determine system prompt: use entity-specific prompt if available, else fallback
+        system_prompt = conversation.system_prompt_used
+        if conversation.entity_system_prompts:
+            # Check for entity-specific system prompt
+            # For multi-entity: use responding_entity_id
+            # For single-entity: use conversation.entity_id
+            prompt_entity_id = responding_entity_id or conversation.entity_id
+            if prompt_entity_id:
+                entity_prompt = conversation.entity_system_prompts.get(prompt_entity_id)
+                if entity_prompt is not None:
+                    system_prompt = entity_prompt
+                    logger.info(f"[SESSION] Using entity-specific system prompt for {prompt_entity_id}")
+
         # Create session with conversation settings
         session = self.create_session(
             conversation_id=conversation_id,
             model=model,
-            system_prompt=conversation.system_prompt_used,
+            system_prompt=system_prompt,
             entity_id=entity_id,
             conversation_start_date=conversation.created_at,
         )

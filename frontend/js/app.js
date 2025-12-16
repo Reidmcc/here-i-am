@@ -820,6 +820,9 @@ class App {
             this.isMultiEntityMode = true;
             this.selectedEntityId = 'multi-entity';
             this.currentConversationEntities = [];  // Will be set when creating new conversation
+            // Clear system prompt so it doesn't carry over from the previous single-entity selection
+            // Multi-entity conversations use entity_system_prompts, not this fallback
+            this.settings.systemPrompt = null;
 
             // Clear current conversation
             this.currentConversationId = null;
@@ -1466,7 +1469,7 @@ class App {
                 }
                 conversationData = {
                     model: this.settings.model,
-                    system_prompt: this.settings.systemPrompt,  // Fallback
+                    system_prompt: null,  // Multi-entity conversations use entity_system_prompts, not a fallback
                     conversation_type: 'multi_entity',
                     entity_ids: this.currentConversationEntities.map(e => e.index_name),
                     entity_system_prompts: Object.keys(entityPrompts).length > 0 ? entityPrompts : null,
