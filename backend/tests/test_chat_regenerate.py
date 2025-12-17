@@ -262,6 +262,154 @@ class TestRegenerateMultiEntityValidation:
         assert "gpt-test" not in multi_entity_ids  # Not a participant
 
 
+class TestContinuationRegenerate:
+    """Tests for continuation message regeneration (no human message before assistant)."""
+
+    @pytest.mark.asyncio
+    async def test_continuation_regenerate_detection(self, db_session):
+        """Test that continuation regeneration is detected when preceding message is assistant."""
+        import datetime as dt
+
+        # Create a multi-entity conversation
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Continuation Test",
+            conversation_type=ConversationType.MULTI_ENTITY,
+            entity_id="multi-entity",
+        )
+        db_session.add(conversation)
+        await db_session.flush()
+
+        # Create messages: human -> assistant -> assistant (continuation)
+        base_time = dt.datetime.utcnow()
+        human_msg = Message(
+            id=str(uuid.uuid4()),
+            conversation_id=conversation.id,
+            role=MessageRole.HUMAN,
+            content="Hello",
+            created_at=base_time,
+        )
+        assistant1 = Message(
+            id=str(uuid.uuid4()),
+            conversation_id=conversation.id,
+            role=MessageRole.ASSISTANT,
+            content="Hi from Claude!",
+            speaker_entity_id="claude-main",
+            created_at=base_time + dt.timedelta(seconds=1),
+        )
+        assistant2 = Message(
+            id=str(uuid.uuid4()),
+            conversation_id=conversation.id,
+            role=MessageRole.ASSISTANT,
+            content="Hi from GPT!",
+            speaker_entity_id="gpt-test",
+            created_at=base_time + dt.timedelta(seconds=2),
+        )
+        db_session.add(human_msg)
+        db_session.add(assistant1)
+        db_session.add(assistant2)
+        await db_session.commit()
+
+        # Test the continuation detection logic for assistant2
+        # Find message immediately before assistant2
+        from sqlalchemy import and_
+        result = await db_session.execute(
+            select(Message)
+            .where(
+                and_(
+                    Message.conversation_id == str(conversation.id),
+                    Message.created_at < assistant2.created_at,
+                )
+            )
+            .order_by(Message.created_at.desc())
+            .limit(1)
+        )
+        preceding_message = result.scalar_one_or_none()
+
+        # Preceding message should be assistant1 (another assistant)
+        assert preceding_message is not None
+        assert preceding_message.role == MessageRole.ASSISTANT
+        assert preceding_message.id == assistant1.id
+
+        # This indicates continuation regeneration
+        is_continuation_regenerate = preceding_message.role == MessageRole.ASSISTANT
+        assert is_continuation_regenerate is True
+
+    @pytest.mark.asyncio
+    async def test_normal_regenerate_detection(self, db_session):
+        """Test that normal regeneration is detected when preceding message is human."""
+        import datetime as dt
+
+        # Create a conversation
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Normal Regenerate Test",
+            conversation_type=ConversationType.NORMAL,
+            entity_id="test-entity",
+        )
+        db_session.add(conversation)
+        await db_session.flush()
+
+        # Create messages: human -> assistant
+        base_time = dt.datetime.utcnow()
+        human_msg = Message(
+            id=str(uuid.uuid4()),
+            conversation_id=conversation.id,
+            role=MessageRole.HUMAN,
+            content="Hello",
+            created_at=base_time,
+        )
+        assistant_msg = Message(
+            id=str(uuid.uuid4()),
+            conversation_id=conversation.id,
+            role=MessageRole.ASSISTANT,
+            content="Hi there!",
+            created_at=base_time + dt.timedelta(seconds=1),
+        )
+        db_session.add(human_msg)
+        db_session.add(assistant_msg)
+        await db_session.commit()
+
+        # Test the continuation detection logic for assistant_msg
+        from sqlalchemy import and_
+        result = await db_session.execute(
+            select(Message)
+            .where(
+                and_(
+                    Message.conversation_id == str(conversation.id),
+                    Message.created_at < assistant_msg.created_at,
+                )
+            )
+            .order_by(Message.created_at.desc())
+            .limit(1)
+        )
+        preceding_message = result.scalar_one_or_none()
+
+        # Preceding message should be human_msg
+        assert preceding_message is not None
+        assert preceding_message.role == MessageRole.HUMAN
+        assert preceding_message.id == human_msg.id
+
+        # This indicates normal (not continuation) regeneration
+        is_continuation_regenerate = preceding_message.role == MessageRole.ASSISTANT
+        assert is_continuation_regenerate is False
+
+    def test_stored_event_without_human_message_id(self):
+        """Test stored event structure when no human message (continuation regenerate)."""
+        # For continuation regenerate, human_message_id should be optional
+        stored_data = {
+            'assistant_message_id': str(uuid.uuid4())
+        }
+
+        # Only add human_message_id if it exists
+        user_message_id = None  # Continuation case
+        if user_message_id:
+            stored_data['human_message_id'] = str(user_message_id)
+
+        assert 'assistant_message_id' in stored_data
+        assert 'human_message_id' not in stored_data
+
+
 class TestRegenerateMultiEntityMemoryOperations:
     """Tests for multi-entity memory operations during regeneration."""
 

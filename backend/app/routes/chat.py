@@ -640,22 +640,48 @@ async def regenerate_response(data: RegenerateRequest):
                         return
 
                 # Determine the human message and assistant message to regenerate
+                is_continuation_regenerate = False
+
                 if target_message.role == MessageRole.ASSISTANT:
-                    # Find the human message before this assistant message
+                    assistant_to_delete = target_message
+
+                    # Find the message immediately before this assistant message
                     result = await db.execute(
                         select(Message)
                         .where(
                             and_(
                                 Message.conversation_id == conversation_id,
                                 Message.created_at < target_message.created_at,
-                                Message.role == MessageRole.HUMAN
                             )
                         )
                         .order_by(Message.created_at.desc())
                         .limit(1)
                     )
-                    human_message = result.scalar_one_or_none()
-                    assistant_to_delete = target_message
+                    preceding_message = result.scalar_one_or_none()
+
+                    if preceding_message and preceding_message.role == MessageRole.HUMAN:
+                        # Normal case: human message directly before assistant
+                        human_message = preceding_message
+                    elif preceding_message and preceding_message.role == MessageRole.ASSISTANT:
+                        # Continuation case: another assistant message before this one
+                        # This is a continuation regenerate - no human message to include
+                        is_continuation_regenerate = True
+                        human_message = None
+                    else:
+                        # Look for any human message in the conversation
+                        result = await db.execute(
+                            select(Message)
+                            .where(
+                                and_(
+                                    Message.conversation_id == conversation_id,
+                                    Message.created_at < target_message.created_at,
+                                    Message.role == MessageRole.HUMAN
+                                )
+                            )
+                            .order_by(Message.created_at.desc())
+                            .limit(1)
+                        )
+                        human_message = result.scalar_one_or_none()
                 else:
                     # Target is human message, find the subsequent assistant message
                     human_message = target_message
@@ -673,12 +699,13 @@ async def regenerate_response(data: RegenerateRequest):
                     )
                     assistant_to_delete = result.scalar_one_or_none()
 
-                if not human_message:
+                # For non-continuation regeneration, we need a human message
+                if not is_continuation_regenerate and not human_message:
                     yield f"event: error\ndata: {json.dumps({'error': 'Cannot find human message to regenerate from'})}\n\n"
                     return
 
-                user_message_content = human_message.content
-                user_message_id = human_message.id
+                user_message_content = human_message.content if human_message else None
+                user_message_id = human_message.id if human_message else None
 
                 # Close existing session to force reload with truncated context
                 session_manager.close_session(conversation_id)
@@ -710,13 +737,26 @@ async def regenerate_response(data: RegenerateRequest):
                         session.model = settings.get_default_model_for_provider(entity.llm_provider)
 
                 # Truncate session context to exclude the message being regenerated and everything after
-                # Find the index of the human message in the context
                 truncate_index = None
-                for i, msg in enumerate(session.conversation_context):
-                    # The context uses "user" role, but we stored "human" in DB
-                    if msg.get("role") == "user" and msg.get("content") == user_message_content:
-                        truncate_index = i
-                        break
+
+                if is_continuation_regenerate:
+                    # For continuation regenerate, find the assistant message to remove
+                    # In multi-entity, messages are labeled like "[Claude]: content"
+                    assistant_content = assistant_to_delete.content if assistant_to_delete else None
+                    for i, msg in enumerate(session.conversation_context):
+                        if msg.get("role") == "assistant":
+                            # Check if content matches (may have speaker label prefix)
+                            ctx_content = msg.get("content", "")
+                            if assistant_content and (ctx_content == assistant_content or ctx_content.endswith(assistant_content)):
+                                truncate_index = i
+                                break
+                else:
+                    # For normal regenerate, find the human message in the context
+                    for i, msg in enumerate(session.conversation_context):
+                        # The context uses "user" role, but we stored "human" in DB
+                        if msg.get("role") == "user" and msg.get("content") == user_message_content:
+                            truncate_index = i
+                            break
 
                 if truncate_index is not None:
                     # Remove this message and everything after it
@@ -841,9 +881,11 @@ async def regenerate_response(data: RegenerateRequest):
 
                 # Send stored event with message IDs
                 stored_data = {
-                    'human_message_id': str(user_message_id),
                     'assistant_message_id': str(assistant_msg.id)
                 }
+                # Only include human_message_id if this wasn't a continuation regenerate
+                if user_message_id:
+                    stored_data['human_message_id'] = str(user_message_id)
                 if is_multi_entity:
                     stored_data['speaker_entity_id'] = responding_entity_id
                     stored_data['speaker_label'] = get_entity_label(responding_entity_id)
