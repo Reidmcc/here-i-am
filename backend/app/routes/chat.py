@@ -641,11 +641,27 @@ async def regenerate_response(data: RegenerateRequest):
 
                 # Determine the human message and assistant message to regenerate
                 is_continuation_regenerate = False
+                human_message = None
 
                 if target_message.role == MessageRole.ASSISTANT:
                     assistant_to_delete = target_message
 
-                    # Find the message immediately before this assistant message
+                    # First, find the most recent human message before this assistant message
+                    result = await db.execute(
+                        select(Message)
+                        .where(
+                            and_(
+                                Message.conversation_id == conversation_id,
+                                Message.created_at < target_message.created_at,
+                                Message.role == MessageRole.HUMAN
+                            )
+                        )
+                        .order_by(Message.created_at.desc())
+                        .limit(1)
+                    )
+                    human_message = result.scalar_one_or_none()
+
+                    # Now check if this is a continuation (another assistant message immediately before)
                     result = await db.execute(
                         select(Message)
                         .where(
@@ -659,29 +675,10 @@ async def regenerate_response(data: RegenerateRequest):
                     )
                     preceding_message = result.scalar_one_or_none()
 
-                    if preceding_message and preceding_message.role == MessageRole.HUMAN:
-                        # Normal case: human message directly before assistant
-                        human_message = preceding_message
-                    elif preceding_message and preceding_message.role == MessageRole.ASSISTANT:
-                        # Continuation case: another assistant message before this one
-                        # This is a continuation regenerate - no human message to include
+                    if preceding_message and preceding_message.role == MessageRole.ASSISTANT:
+                        # The message immediately before is an assistant - this is continuation
                         is_continuation_regenerate = True
-                        human_message = None
-                    else:
-                        # Look for any human message in the conversation
-                        result = await db.execute(
-                            select(Message)
-                            .where(
-                                and_(
-                                    Message.conversation_id == conversation_id,
-                                    Message.created_at < target_message.created_at,
-                                    Message.role == MessageRole.HUMAN
-                                )
-                            )
-                            .order_by(Message.created_at.desc())
-                            .limit(1)
-                        )
-                        human_message = result.scalar_one_or_none()
+                        human_message = None  # Don't include human message for continuation
                 else:
                     # Target is human message, find the subsequent assistant message
                     human_message = target_message
