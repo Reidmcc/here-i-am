@@ -646,13 +646,18 @@ async def regenerate_response(data: RegenerateRequest):
                 if target_message.role == MessageRole.ASSISTANT:
                     assistant_to_delete = target_message
 
+                    # Store conversation_id as string for consistent comparison
+                    conv_id_str = str(conversation_id)
+
                     # First, find the most recent human message before this assistant message
+                    # Use <= for timestamp and exclude by ID to handle same-timestamp edge cases
                     result = await db.execute(
                         select(Message)
                         .where(
                             and_(
-                                Message.conversation_id == conversation_id,
-                                Message.created_at < target_message.created_at,
+                                Message.conversation_id == conv_id_str,
+                                Message.created_at <= target_message.created_at,
+                                Message.id != str(target_message.id),
                                 Message.role == MessageRole.HUMAN
                             )
                         )
@@ -666,8 +671,9 @@ async def regenerate_response(data: RegenerateRequest):
                         select(Message)
                         .where(
                             and_(
-                                Message.conversation_id == conversation_id,
-                                Message.created_at < target_message.created_at,
+                                Message.conversation_id == conv_id_str,
+                                Message.created_at <= target_message.created_at,
+                                Message.id != str(target_message.id),
                             )
                         )
                         .order_by(Message.created_at.desc())
@@ -682,12 +688,14 @@ async def regenerate_response(data: RegenerateRequest):
                 else:
                     # Target is human message, find the subsequent assistant message
                     human_message = target_message
+                    conv_id_str = str(conversation_id)
                     result = await db.execute(
                         select(Message)
                         .where(
                             and_(
-                                Message.conversation_id == conversation_id,
-                                Message.created_at > target_message.created_at,
+                                Message.conversation_id == conv_id_str,
+                                Message.created_at >= target_message.created_at,
+                                Message.id != str(target_message.id),
                                 Message.role == MessageRole.ASSISTANT
                             )
                         )
