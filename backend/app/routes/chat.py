@@ -88,6 +88,8 @@ class RegenerateRequest(BaseModel):
     max_tokens: Optional[int] = None
     system_prompt: Optional[str] = None
     verbosity: Optional[str] = None
+    # For multi-entity conversations: which entity should respond (allows changing from original)
+    responding_entity_id: Optional[str] = None
     # Custom display name for the user/researcher (used in role labels)
     user_display_name: Optional[str] = None
 
@@ -579,6 +581,11 @@ async def regenerate_response(data: RegenerateRequest):
 
     The old assistant message is deleted and replaced with the new one.
 
+    For multi-entity conversations:
+    - responding_entity_id can be provided to change which entity responds
+    - This allows correcting misclicks on entity selection
+    - Messages are stored to ALL participating entities' indexes
+
     Returns SSE stream with same events as /stream endpoint.
     """
     from sqlalchemy import and_
@@ -609,15 +616,48 @@ async def regenerate_response(data: RegenerateRequest):
                     yield f"event: error\ndata: {json.dumps({'error': 'Conversation not found'})}\n\n"
                     return
 
+                # Check if this is a multi-entity conversation
+                is_multi_entity = conversation.conversation_type == ConversationType.MULTI_ENTITY
+                responding_entity_id = data.responding_entity_id
+                multi_entity_ids = []
+
+                if is_multi_entity:
+                    # Get participating entities
+                    multi_entity_ids = await get_multi_entity_ids(str(conversation_id), db)
+
+                    if not multi_entity_ids:
+                        yield f"event: error\ndata: {json.dumps({'error': 'Multi-entity conversation has no entities'})}\n\n"
+                        return
+
+                    # Validate responding_entity_id
+                    if not responding_entity_id:
+                        yield f"event: error\ndata: {json.dumps({'error': 'responding_entity_id is required for multi-entity conversations'})}\n\n"
+                        return
+
+                    if responding_entity_id not in multi_entity_ids:
+                        error_msg = f"Entity '{responding_entity_id}' is not part of this conversation"
+                        yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
+                        return
+
                 # Determine the human message and assistant message to regenerate
+                is_continuation_regenerate = False
+                human_message = None
+
                 if target_message.role == MessageRole.ASSISTANT:
-                    # Find the human message before this assistant message
+                    assistant_to_delete = target_message
+
+                    # Store conversation_id as string for consistent comparison
+                    conv_id_str = str(conversation_id)
+
+                    # First, find the most recent human message before this assistant message
+                    # Use <= for timestamp and exclude by ID to handle same-timestamp edge cases
                     result = await db.execute(
                         select(Message)
                         .where(
                             and_(
-                                Message.conversation_id == conversation_id,
-                                Message.created_at < target_message.created_at,
+                                Message.conversation_id == conv_id_str,
+                                Message.created_at <= target_message.created_at,
+                                Message.id != str(target_message.id),
                                 Message.role == MessageRole.HUMAN
                             )
                         )
@@ -625,16 +665,37 @@ async def regenerate_response(data: RegenerateRequest):
                         .limit(1)
                     )
                     human_message = result.scalar_one_or_none()
-                    assistant_to_delete = target_message
-                else:
-                    # Target is human message, find the subsequent assistant message
-                    human_message = target_message
+
+                    # Now check if this is a continuation (another assistant message immediately before)
                     result = await db.execute(
                         select(Message)
                         .where(
                             and_(
-                                Message.conversation_id == conversation_id,
-                                Message.created_at > target_message.created_at,
+                                Message.conversation_id == conv_id_str,
+                                Message.created_at <= target_message.created_at,
+                                Message.id != str(target_message.id),
+                            )
+                        )
+                        .order_by(Message.created_at.desc())
+                        .limit(1)
+                    )
+                    preceding_message = result.scalar_one_or_none()
+
+                    if preceding_message and preceding_message.role == MessageRole.ASSISTANT:
+                        # The message immediately before is an assistant - this is continuation
+                        is_continuation_regenerate = True
+                        human_message = None  # Don't include human message for continuation
+                else:
+                    # Target is human message, find the subsequent assistant message
+                    human_message = target_message
+                    conv_id_str = str(conversation_id)
+                    result = await db.execute(
+                        select(Message)
+                        .where(
+                            and_(
+                                Message.conversation_id == conv_id_str,
+                                Message.created_at >= target_message.created_at,
+                                Message.id != str(target_message.id),
                                 Message.role == MessageRole.ASSISTANT
                             )
                         )
@@ -643,38 +704,82 @@ async def regenerate_response(data: RegenerateRequest):
                     )
                     assistant_to_delete = result.scalar_one_or_none()
 
-                if not human_message:
+                # For non-continuation regeneration, we need a human message
+                if not is_continuation_regenerate and not human_message:
                     yield f"event: error\ndata: {json.dumps({'error': 'Cannot find human message to regenerate from'})}\n\n"
                     return
 
-                user_message_content = human_message.content
-                user_message_id = human_message.id
+                user_message_content = human_message.content if human_message else None
+                user_message_id = human_message.id if human_message else None
 
                 # Close existing session to force reload with truncated context
                 session_manager.close_session(conversation_id)
 
                 # Load a fresh session from the database
-                session = await session_manager.load_session_from_db(conversation_id, db)
+                # For multi-entity, load with the responding entity
+                session = await session_manager.load_session_from_db(
+                    conversation_id,
+                    db,
+                    responding_entity_id=responding_entity_id if is_multi_entity else None,
+                )
 
                 if not session:
                     yield f"event: error\ndata: {json.dumps({'error': 'Failed to load session'})}\n\n"
                     return
 
+                # For multi-entity, update session's multi-entity fields
+                if is_multi_entity and responding_entity_id:
+                    session.entity_id = responding_entity_id
+                    session.is_multi_entity = True
+                    # Build entity_labels mapping from participating entities
+                    session.entity_labels = {eid: get_entity_label(eid) or eid for eid in multi_entity_ids}
+                    session.responding_entity_label = get_entity_label(responding_entity_id)
+                    # Update model to use the responding entity's default model
+                    entity = settings.get_entity_by_index(responding_entity_id)
+                    if entity and entity.default_model:
+                        session.model = entity.default_model
+                    elif entity:
+                        session.model = settings.get_default_model_for_provider(entity.llm_provider)
+
                 # Truncate session context to exclude the message being regenerated and everything after
-                # Find the index of the human message in the context
                 truncate_index = None
-                for i, msg in enumerate(session.conversation_context):
-                    # The context uses "user" role, but we stored "human" in DB
-                    if msg.get("role") == "user" and msg.get("content") == user_message_content:
-                        truncate_index = i
-                        break
+
+                if is_continuation_regenerate:
+                    # For continuation regenerate, find the assistant message to remove
+                    # In multi-entity, messages are labeled like "[Claude]: content"
+                    assistant_content = assistant_to_delete.content if assistant_to_delete else None
+                    for i, msg in enumerate(session.conversation_context):
+                        if msg.get("role") == "assistant":
+                            # Check if content matches (may have speaker label prefix)
+                            ctx_content = msg.get("content", "")
+                            if assistant_content and (ctx_content == assistant_content or ctx_content.endswith(assistant_content)):
+                                truncate_index = i
+                                break
+                else:
+                    # For normal regenerate, find the human message in the context
+                    # In multi-entity mode, messages are labeled like "[Human]: content"
+                    for i, msg in enumerate(session.conversation_context):
+                        # The context uses "user" role, but we stored "human" in DB
+                        if msg.get("role") == "user":
+                            ctx_content = msg.get("content", "")
+                            # Check for exact match or labeled match (multi-entity format)
+                            if ctx_content == user_message_content:
+                                truncate_index = i
+                                break
+                            elif is_multi_entity and ctx_content == f"[Human]: {user_message_content}":
+                                truncate_index = i
+                                break
+                            elif ctx_content.endswith(user_message_content):
+                                # Fallback: check if content ends with the message
+                                truncate_index = i
+                                break
 
                 if truncate_index is not None:
                     # Remove this message and everything after it
                     session.conversation_context = session.conversation_context[:truncate_index]
 
-                # Apply any overrides
-                if data.model:
+                # Apply any overrides (but don't override model in multi-entity mode)
+                if data.model and not is_multi_entity:
                     session.model = data.model
                 if data.temperature is not None:
                     session.temperature = data.temperature
@@ -694,10 +799,18 @@ async def regenerate_response(data: RegenerateRequest):
                     await db.commit()
 
                     if memory_service.is_configured():
-                        await memory_service.delete_memory(
-                            old_assistant_id,
-                            entity_id=session.entity_id
-                        )
+                        if is_multi_entity:
+                            # For multi-entity, delete from ALL participating entities
+                            for entity_id in multi_entity_ids:
+                                await memory_service.delete_memory(
+                                    old_assistant_id,
+                                    entity_id=entity_id
+                                )
+                        else:
+                            await memory_service.delete_memory(
+                                old_assistant_id,
+                                entity_id=session.entity_id
+                            )
 
                 full_content = ""
                 model_used = session.model
@@ -736,6 +849,7 @@ async def regenerate_response(data: RegenerateRequest):
                     role=MessageRole.ASSISTANT,
                     content=full_content,
                     token_count=llm_service.count_tokens(full_content),
+                    speaker_entity_id=responding_entity_id if is_multi_entity else None,
                 )
                 db.add(assistant_msg)
 
@@ -747,17 +861,51 @@ async def regenerate_response(data: RegenerateRequest):
 
                 # Store new assistant message as memory
                 if memory_service.is_configured():
-                    await memory_service.store_memory(
-                        message_id=assistant_msg.id,
-                        conversation_id=conversation_id,
-                        role="assistant",
-                        content=full_content,
-                        created_at=assistant_msg.created_at,
-                        entity_id=session.entity_id,
-                    )
+                    if is_multi_entity:
+                        # For multi-entity conversations, store to ALL participating entities
+                        responding_label = get_entity_label(responding_entity_id)
+                        for entity_id in multi_entity_ids:
+                            # For the responding entity: role is "assistant"
+                            # For other entities: role is the responding entity's label
+                            if entity_id == responding_entity_id:
+                                await memory_service.store_memory(
+                                    message_id=assistant_msg.id,
+                                    conversation_id=conversation_id,
+                                    role="assistant",
+                                    content=full_content,
+                                    created_at=assistant_msg.created_at,
+                                    entity_id=entity_id,
+                                )
+                            else:
+                                await memory_service.store_memory(
+                                    message_id=assistant_msg.id,
+                                    conversation_id=conversation_id,
+                                    role=responding_label,
+                                    content=full_content,
+                                    created_at=assistant_msg.created_at,
+                                    entity_id=entity_id,
+                                )
+                    else:
+                        await memory_service.store_memory(
+                            message_id=assistant_msg.id,
+                            conversation_id=conversation_id,
+                            role="assistant",
+                            content=full_content,
+                            created_at=assistant_msg.created_at,
+                            entity_id=session.entity_id,
+                        )
 
                 # Send stored event with message IDs
-                yield f"event: stored\ndata: {json.dumps({'human_message_id': str(user_message_id), 'assistant_message_id': str(assistant_msg.id)})}\n\n"
+                stored_data = {
+                    'assistant_message_id': str(assistant_msg.id)
+                }
+                # Only include human_message_id if this wasn't a continuation regenerate
+                if user_message_id:
+                    stored_data['human_message_id'] = str(user_message_id)
+                if is_multi_entity:
+                    stored_data['speaker_entity_id'] = responding_entity_id
+                    stored_data['speaker_label'] = get_entity_label(responding_entity_id)
+                yield f"event: stored\ndata: {json.dumps(stored_data)}\n\n"
 
             except Exception as e:
                 yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
