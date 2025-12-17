@@ -757,11 +757,22 @@ async def regenerate_response(data: RegenerateRequest):
                                 break
                 else:
                     # For normal regenerate, find the human message in the context
+                    # In multi-entity mode, messages are labeled like "[Human]: content"
                     for i, msg in enumerate(session.conversation_context):
                         # The context uses "user" role, but we stored "human" in DB
-                        if msg.get("role") == "user" and msg.get("content") == user_message_content:
-                            truncate_index = i
-                            break
+                        if msg.get("role") == "user":
+                            ctx_content = msg.get("content", "")
+                            # Check for exact match or labeled match (multi-entity format)
+                            if ctx_content == user_message_content:
+                                truncate_index = i
+                                break
+                            elif is_multi_entity and ctx_content == f"[Human]: {user_message_content}":
+                                truncate_index = i
+                                break
+                            elif ctx_content.endswith(user_message_content):
+                                # Fallback: check if content ends with the message
+                                truncate_index = i
+                                break
 
                 if truncate_index is not None:
                     # Remove this message and everything after it
