@@ -1646,3 +1646,438 @@ class TestSystemPromptSelection:
 
         # Empty dict should use fallback
         assert session.system_prompt == "Fallback prompt"
+
+
+class TestAgenticToolLoopMemoryOptimization:
+    """Tests for memory optimization in the agentic tool loop.
+
+    When tools are used, the first iteration should include memories,
+    but subsequent iterations should exclude the memory block to reduce
+    context size and token costs.
+    """
+
+    @pytest.mark.asyncio
+    async def test_first_iteration_includes_memories(self, db_session, sample_conversation):
+        """Test that the first tool loop iteration includes memories."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            # Configure mocks
+            mock_memory.is_configured.return_value = False
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
+            mock_settings.tool_use_max_iterations = 10
+
+            # Track what messages are built
+            build_calls = []
+
+            def track_build_messages(memories, **kwargs):
+                build_calls.append({"memories": memories, "kwargs": kwargs})
+                return [{"role": "user", "content": "test"}]
+
+            mock_llm.build_messages_with_memories.side_effect = track_build_messages
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            # Simple response without tool use
+            async def mock_stream(*args, **kwargs):
+                yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                yield {"type": "token", "content": "Hello"}
+                yield {
+                    "type": "done",
+                    "content": "Hello",
+                    "model": "claude-sonnet-4-5-20250929",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                    "stop_reason": "end_turn",
+                    "content_blocks": [{"type": "text", "text": "Hello"}],
+                }
+
+            mock_llm.send_message_stream = mock_stream
+
+            session = manager.create_session(sample_conversation.id)
+            # Add a mock memory to the session
+            memory = MemoryEntry(
+                id="mem-1",
+                conversation_id="old-conv",
+                role="assistant",
+                content="Test memory",
+                created_at="2024-01-01",
+                times_retrieved=1,
+            )
+            session.add_memory(memory)
+
+            # Process message
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Hello", db_session, tool_schemas=[]
+            ):
+                events.append(event)
+
+        # Should have built messages twice: once with memories, once without
+        assert len(build_calls) == 2
+
+        # First call (with memories) should have the memory
+        assert len(build_calls[0]["memories"]) == 1
+        assert build_calls[0]["memories"][0]["id"] == "mem-1"
+
+        # Second call (base without memories) should have empty memories
+        assert len(build_calls[1]["memories"]) == 0
+
+    @pytest.mark.asyncio
+    async def test_subsequent_iterations_exclude_memories(self, db_session, sample_conversation):
+        """Test that subsequent tool loop iterations exclude memory block."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            # Configure mocks
+            mock_memory.is_configured.return_value = False
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
+            mock_settings.tool_use_max_iterations = 10
+
+            # Track messages sent to LLM
+            sent_messages = []
+
+            def build_messages(memories, **kwargs):
+                if memories:
+                    return [{"role": "user", "content": "with_memories"}]
+                else:
+                    return [{"role": "user", "content": "without_memories"}]
+
+            mock_llm.build_messages_with_memories.side_effect = build_messages
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            call_count = [0]
+
+            async def mock_stream(messages, **kwargs):
+                sent_messages.append(list(messages))  # Copy the messages
+                call_count[0] += 1
+
+                if call_count[0] == 1:
+                    # First call: return tool use
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {
+                        "type": "done",
+                        "content": "",
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {"input_tokens": 10, "output_tokens": 5},
+                        "stop_reason": "tool_use",
+                        "content_blocks": [
+                            {"type": "tool_use", "id": "tool-1", "name": "web_search", "input": {"query": "test"}}
+                        ],
+                        "tool_use": [{"id": "tool-1", "name": "web_search", "input": {"query": "test"}}],
+                    }
+                else:
+                    # Second call: return final response
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {"type": "token", "content": "Done"}
+                    yield {
+                        "type": "done",
+                        "content": "Done",
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {"input_tokens": 20, "output_tokens": 10},
+                        "stop_reason": "end_turn",
+                        "content_blocks": [{"type": "text", "text": "Done"}],
+                    }
+
+            mock_llm.send_message_stream = mock_stream
+
+            # Mock tool execution
+            mock_tool_result = MagicMock()
+            mock_tool_result.tool_use_id = "tool-1"
+            mock_tool_result.content = "Search results"
+            mock_tool_result.is_error = False
+            mock_tool.execute_tool = AsyncMock(return_value=mock_tool_result)
+
+            session = manager.create_session(sample_conversation.id)
+            # Add a mock memory
+            memory = MemoryEntry(
+                id="mem-1",
+                conversation_id="old-conv",
+                role="assistant",
+                content="Test memory",
+                created_at="2024-01-01",
+                times_retrieved=1,
+            )
+            session.add_memory(memory)
+
+            # Process message
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Search for something", db_session, tool_schemas=[{"name": "web_search"}]
+            ):
+                events.append(event)
+
+        # Should have two LLM calls
+        assert len(sent_messages) == 2
+
+        # First iteration should use messages with memories
+        assert sent_messages[0][0]["content"] == "with_memories"
+
+        # Second iteration should use messages without memories (plus tool exchanges)
+        assert sent_messages[1][0]["content"] == "without_memories"
+        # Should also have tool exchange messages appended
+        assert len(sent_messages[1]) == 3  # base message + assistant tool_use + user tool_result
+        assert sent_messages[1][1]["role"] == "assistant"
+        assert sent_messages[1][2]["role"] == "user"
+
+    @pytest.mark.asyncio
+    async def test_tool_exchanges_accumulated_correctly(self, db_session, sample_conversation):
+        """Test that tool exchanges are properly accumulated across iterations."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            # Configure mocks
+            mock_memory.is_configured.return_value = False
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
+            mock_settings.tool_use_max_iterations = 10
+
+            sent_messages = []
+
+            def build_messages(memories, **kwargs):
+                return [{"role": "user", "content": "base"}]
+
+            mock_llm.build_messages_with_memories.side_effect = build_messages
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            call_count = [0]
+
+            async def mock_stream(messages, **kwargs):
+                sent_messages.append(list(messages))
+                call_count[0] += 1
+
+                if call_count[0] == 1:
+                    # First tool use
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {
+                        "type": "done",
+                        "stop_reason": "tool_use",
+                        "content_blocks": [
+                            {"type": "tool_use", "id": "tool-1", "name": "web_search", "input": {"query": "first"}}
+                        ],
+                        "tool_use": [{"id": "tool-1", "name": "web_search", "input": {"query": "first"}}],
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {},
+                    }
+                elif call_count[0] == 2:
+                    # Second tool use
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {
+                        "type": "done",
+                        "stop_reason": "tool_use",
+                        "content_blocks": [
+                            {"type": "tool_use", "id": "tool-2", "name": "web_fetch", "input": {"url": "http://example.com"}}
+                        ],
+                        "tool_use": [{"id": "tool-2", "name": "web_fetch", "input": {"url": "http://example.com"}}],
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {},
+                    }
+                else:
+                    # Final response
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {"type": "token", "content": "Final"}
+                    yield {
+                        "type": "done",
+                        "content": "Final",
+                        "stop_reason": "end_turn",
+                        "content_blocks": [{"type": "text", "text": "Final"}],
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {},
+                    }
+
+            mock_llm.send_message_stream = mock_stream
+
+            # Mock tool execution
+            tool_call_count = [0]
+
+            async def mock_execute(tool_use_id, tool_name, tool_input):
+                tool_call_count[0] += 1
+                result = MagicMock()
+                result.tool_use_id = tool_use_id
+                result.content = f"Result {tool_call_count[0]}"
+                result.is_error = False
+                return result
+
+            mock_tool.execute_tool = mock_execute
+
+            session = manager.create_session(sample_conversation.id)
+
+            # Process message
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Multi-tool query", db_session, tool_schemas=[{"name": "web_search"}, {"name": "web_fetch"}]
+            ):
+                events.append(event)
+
+        # Should have three LLM calls
+        assert len(sent_messages) == 3
+
+        # First iteration: just base message
+        assert len(sent_messages[0]) == 1
+
+        # Second iteration: base + 1 tool exchange (2 messages)
+        assert len(sent_messages[1]) == 3
+        assert sent_messages[1][1]["role"] == "assistant"
+        assert sent_messages[1][2]["role"] == "user"
+
+        # Third iteration: base + 2 tool exchanges (4 messages)
+        assert len(sent_messages[2]) == 5
+        # Verify all tool exchanges are present
+        assert sent_messages[2][1]["role"] == "assistant"  # First tool use
+        assert sent_messages[2][2]["role"] == "user"       # First tool result
+        assert sent_messages[2][3]["role"] == "assistant"  # Second tool use
+        assert sent_messages[2][4]["role"] == "user"       # Second tool result
+
+    @pytest.mark.asyncio
+    async def test_no_tool_use_single_iteration(self, db_session, sample_conversation):
+        """Test that without tool use, only one iteration occurs with memories."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            # Configure mocks
+            mock_memory.is_configured.return_value = False
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
+            mock_settings.tool_use_max_iterations = 10
+
+            sent_messages = []
+
+            def build_messages(memories, **kwargs):
+                if memories:
+                    return [{"role": "user", "content": "with_memories"}]
+                else:
+                    return [{"role": "user", "content": "without_memories"}]
+
+            mock_llm.build_messages_with_memories.side_effect = build_messages
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            async def mock_stream(messages, **kwargs):
+                sent_messages.append(list(messages))
+                yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                yield {"type": "token", "content": "Response"}
+                yield {
+                    "type": "done",
+                    "content": "Response",
+                    "stop_reason": "end_turn",
+                    "content_blocks": [{"type": "text", "text": "Response"}],
+                    "model": "claude-sonnet-4-5-20250929",
+                    "usage": {},
+                }
+
+            mock_llm.send_message_stream = mock_stream
+
+            session = manager.create_session(sample_conversation.id)
+            memory = MemoryEntry(
+                id="mem-1",
+                conversation_id="old-conv",
+                role="assistant",
+                content="Test memory",
+                created_at="2024-01-01",
+                times_retrieved=1,
+            )
+            session.add_memory(memory)
+
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Hello", db_session, tool_schemas=[]
+            ):
+                events.append(event)
+
+        # Should have only one LLM call
+        assert len(sent_messages) == 1
+        # That call should use messages with memories
+        assert sent_messages[0][0]["content"] == "with_memories"
+
+    @pytest.mark.asyncio
+    async def test_base_messages_built_without_memories(self, db_session, sample_conversation):
+        """Test that base_messages_no_memories is built with empty memories list."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
+            mock_settings.tool_use_max_iterations = 10
+
+            build_calls = []
+
+            def track_build(memories, **kwargs):
+                build_calls.append({
+                    "memories_count": len(memories),
+                    "memories": list(memories),
+                })
+                return [{"role": "user", "content": "test"}]
+
+            mock_llm.build_messages_with_memories.side_effect = track_build
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            async def mock_stream(messages, **kwargs):
+                yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                yield {"type": "token", "content": "Done"}
+                yield {
+                    "type": "done",
+                    "content": "Done",
+                    "stop_reason": "end_turn",
+                    "content_blocks": [],
+                    "model": "claude-sonnet-4-5-20250929",
+                    "usage": {},
+                }
+
+            mock_llm.send_message_stream = mock_stream
+
+            session = manager.create_session(sample_conversation.id)
+            # Add multiple memories
+            for i in range(3):
+                memory = MemoryEntry(
+                    id=f"mem-{i}",
+                    conversation_id="old-conv",
+                    role="assistant",
+                    content=f"Memory {i}",
+                    created_at="2024-01-01",
+                    times_retrieved=1,
+                )
+                session.add_memory(memory)
+
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Test", db_session, tool_schemas=[]
+            ):
+                events.append(event)
+
+        # Should have two build calls
+        assert len(build_calls) == 2
+
+        # First: with all 3 memories
+        assert build_calls[0]["memories_count"] == 3
+
+        # Second: with no memories (base for subsequent iterations)
+        assert build_calls[1]["memories_count"] == 0
+        assert build_calls[1]["memories"] == []
