@@ -43,6 +43,23 @@ async def web_search(query: str, num_results: int = DEFAULT_NUM_RESULTS) -> str:
     if not api_key:
         return "Error: Web search is not configured. The BRAVE_SEARCH_API_KEY environment variable is not set."
 
+    # Validate query - Brave API has strict limits
+    if not query or not query.strip():
+        return "Error: Search query cannot be empty."
+
+    query = query.strip()
+
+    # Brave API limits: max 400 characters, max 50 words
+    if len(query) > 400:
+        logger.warning(f"Query too long ({len(query)} chars), truncating to 400")
+        query = query[:400]
+
+    word_count = len(query.split())
+    if word_count > 50:
+        logger.warning(f"Query has too many words ({word_count}), truncating to 50")
+        words = query.split()[:50]
+        query = " ".join(words)
+
     try:
         async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT) as client:
             response = await client.get(
@@ -50,6 +67,7 @@ async def web_search(query: str, num_results: int = DEFAULT_NUM_RESULTS) -> str:
                 headers={
                     "X-Subscription-Token": api_key,
                     "Accept": "application/json",
+                    "Accept-Encoding": "gzip",
                 },
                 params={
                     "q": query,
@@ -61,6 +79,15 @@ async def web_search(query: str, num_results: int = DEFAULT_NUM_RESULTS) -> str:
                 return "Error: Invalid Brave Search API key."
             elif response.status_code == 429:
                 return "Error: Brave Search API rate limit exceeded. Please try again later."
+            elif response.status_code == 422:
+                # 422 Unprocessable Entity - usually validation error
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get("message", error_data.get("detail", str(error_data)))
+                except Exception:
+                    error_msg = response.text[:500] if response.text else "Unknown validation error"
+                logger.error(f"Brave Search 422 error for query '{query[:100]}...': {error_msg}")
+                return f"Error: Search query validation failed - {error_msg}"
             elif response.status_code != 200:
                 return f"Error: Brave Search API returned status {response.status_code}"
 
