@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2025-12-13
+**Last Updated:** 2025-12-22
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -111,6 +111,43 @@ Beyond separate entity workspaces, the application supports **multi-entity conve
 - Actual participating entities stored in `ConversationEntities` junction table
 - Messages track speaker via `speaker_entity_id` field
 
+### Tool Use System (Web Search & Fetch)
+
+The application supports **agentic tool use** for Anthropic/Claude models, allowing the AI to search the web and fetch content from URLs during conversations.
+
+**Available Tools:**
+- **web_search** - Search the web using Brave Search API (returns up to 20 results)
+- **web_fetch** - Fetch and extract content from URLs (smart HTML parsing, 50KB limit)
+
+**How Tool Use Works:**
+
+1. **Agentic Loop**: When Claude responds with a tool request, the system executes the tool and feeds results back to Claude in a loop (max 10 iterations)
+2. **Streaming**: Tool execution is streamed in real-time with visual indicators in the UI
+3. **Provider Gating**: Tool use is **only available for Anthropic models** (Claude) - OpenAI and Google models do not currently support tool use in this application
+
+**Configuration:**
+```bash
+# Enable tool use (default: true)
+TOOLS_ENABLED=true
+
+# Required for web_search functionality
+BRAVE_SEARCH_API_KEY=your_brave_api_key
+
+# Max agentic loop iterations (default: 10)
+TOOL_USE_MAX_ITERATIONS=10
+```
+
+**UI Indicators:**
+- Tool use is displayed with a 🔧 icon and collapsible input/output details
+- Status indicators show loading (animated), success (✓), or error (✗)
+- Tool results are truncated to 2000 chars in UI (full content sent to AI)
+
+**Technical Notes:**
+- Tools are registered at module load time via `register_web_tools()`
+- Tool schemas are converted to Anthropic API format automatically
+- Tool execution is async with proper error handling
+- web_search uses 10-second timeout; web_fetch uses 15-second timeout
+
 ---
 
 ## Codebase Architecture
@@ -141,6 +178,8 @@ here-i-am/
 │   │   │   ├── memory_service.py
 │   │   │   ├── session_manager.py
 │   │   │   ├── cache_service.py   # TTL-based in-memory caching
+│   │   │   ├── tool_service.py    # Tool registration and execution
+│   │   │   ├── web_tools.py       # Web search/fetch tool implementations
 │   │   │   ├── tts_service.py     # Unified TTS (ElevenLabs/XTTS/StyleTTS2)
 │   │   │   ├── xtts_service.py    # Local XTTS v2 client service
 │   │   │   └── styletts2_service.py  # Local StyleTTS 2 client service
@@ -197,7 +236,8 @@ here-i-am/
 | Vector DB | Pinecone | 6.0.0 | Semantic memory storage |
 | Validation | Pydantic | 2.6.1 | Request/response schemas |
 | Database | aiosqlite / asyncpg | - | SQLite dev / PostgreSQL prod |
-| HTTP Client | httpx | - | Async HTTP for TTS service |
+| HTTP Client | httpx | - | Async HTTP for TTS and web tools |
+| Web Search | Brave Search API | - | Web search for tool use (optional) |
 | Local TTS | Coqui TTS (coqui-tts) | - | XTTS v2 voice cloning (optional) |
 | Local TTS | StyleTTS 2 (styletts2) | - | StyleTTS 2 voice cloning (optional) |
 | Utilities | tiktoken, numpy, scipy | - | Token counting, embeddings, audio |
@@ -335,6 +375,47 @@ Current date: 2025-12-07
 - Memories are placed AFTER conversation history, so new memory retrievals don't invalidate the conversation cache
 - Periodic consolidation grows the cached history (causes one cache miss to create larger cache)
 
+### 7. Agentic Tool Loop Pattern
+
+**Location:** `backend/app/services/session_manager.py` (process_message_stream)
+
+```python
+# Agentic loop with max iterations
+while iteration < max_iterations:
+    response = await llm_service.send_message_stream(messages, tools=tool_schemas)
+
+    if response.stop_reason == "tool_use":
+        # Execute tools and add results to messages
+        for tool_use in response.tool_use:
+            result = await tool_service.execute_tool(tool_use)
+            messages.append({"role": "user", "content": [tool_result_block]})
+        iteration += 1
+    else:
+        break  # No more tools, return final response
+```
+
+**How It Works:**
+1. Tool schemas passed to Anthropic API when `tools_enabled=True`
+2. If Claude returns `stop_reason="tool_use"`, tools are executed
+3. Tool results appended as user messages with `tool_result` content blocks
+4. Loop continues until Claude responds with text or max iterations reached
+
+**Tool Registration:**
+```python
+# In services/tool_service.py
+tool_service.register_tool(
+    name="web_search",
+    description="Search the web for information",
+    input_schema={"type": "object", "properties": {...}},
+    executor=web_search,  # Async function
+    category=ToolCategory.WEB
+)
+```
+
+**Provider Support:**
+- **Anthropic**: Full tool use support
+- **OpenAI/Google**: Tools not passed (architectural decision)
+
 ---
 
 ## Development Workflows
@@ -377,6 +458,11 @@ PINECONE_API_KEY=...                    # Enables memory system
 PINECONE_INDEXES='[...]'                # Entity configuration (JSON array, see below)
 HERE_I_AM_DATABASE_URL=sqlite+aiosqlite:///./here_i_am.db  # Database URL
 DEBUG=true                              # Development mode
+
+# Tool Use (web search/fetch for Claude models)
+TOOLS_ENABLED=true                      # Enable tool use (default: true)
+BRAVE_SEARCH_API_KEY=...                # Required for web_search tool
+TOOL_USE_MAX_ITERATIONS=10              # Max agentic loop iterations (default: 10)
 
 # ElevenLabs TTS (optional, cloud-based text-to-speech)
 ELEVENLABS_API_KEY=...                  # Enables TTS feature
@@ -797,6 +883,51 @@ PRESETS = {
 }
 ```
 
+### Adding a New Tool
+
+**Key Files:**
+- Tool definitions: `backend/app/services/web_tools.py` (example)
+- Tool service: `backend/app/services/tool_service.py`
+- Registration: `backend/app/services/__init__.py`
+
+**Steps:**
+
+1. **Create the tool executor function** (async):
+   ```python
+   async def my_tool(param1: str, param2: int = 5) -> str:
+       """Execute the tool and return result as string."""
+       # Implementation
+       return "Tool result"
+   ```
+
+2. **Register the tool** (in `__init__.py` or dedicated file):
+   ```python
+   from app.services.tool_service import tool_service, ToolCategory
+
+   tool_service.register_tool(
+       name="my_tool",
+       description="Description shown to Claude",
+       input_schema={
+           "type": "object",
+           "properties": {
+               "param1": {"type": "string", "description": "..."},
+               "param2": {"type": "integer", "description": "..."}
+           },
+           "required": ["param1"]
+       },
+       executor=my_tool,
+       category=ToolCategory.UTILITY,  # WEB, MEMORY, or UTILITY
+       enabled=True
+   )
+   ```
+
+3. **Handle errors gracefully** - Return error messages as strings, don't raise exceptions
+
+**Notes:**
+- Tools are only available for Anthropic models
+- Tool schemas are auto-converted to Anthropic API format
+- Tools execute in the agentic loop (max 10 iterations by default)
+
 ---
 
 ## Database Schema
@@ -1039,6 +1170,7 @@ conversation: Conversation
 15. **Message Actions** - Copy button, edit/delete for human messages
 16. **Voice Selection** - Choose from configured or cloned voices in settings
 17. **Voice Cloning** - Clone custom voices from audio samples (XTTS/StyleTTS 2)
+18. **Tool Use Display** - Real-time tool execution with collapsible input/output details (Claude only)
 
 ---
 
@@ -1134,6 +1266,18 @@ conversation: Conversation
     - A special header is injected to identify participants to each entity
     - Continuation mode (no human message) supported for entity-to-entity flow
 
+16. **Tool Use is Provider-Gated**
+    - Tools (web_search, web_fetch) only work with Anthropic/Claude models
+    - OpenAI and Google models do not receive tool schemas
+    - This is an architectural decision, not a limitation of those APIs
+    - Tool results are not persisted to database (visible in conversation but not stored separately)
+
+17. **Web Tools Require External API**
+    - `web_search` requires `BRAVE_SEARCH_API_KEY` to function
+    - `web_fetch` works independently (uses httpx to fetch URLs)
+    - Both tools have timeouts (10s for search, 15s for fetch)
+    - web_fetch includes smart HTML content extraction (removes nav, footer, scripts)
+
 ### Common Pitfalls
 
 **When modifying memory retrieval:**
@@ -1210,6 +1354,14 @@ conversation: Conversation
 - Google service: `backend/app/services/google_service.py`
 - Message model: `backend/app/models/message.py`
 - Messages routes: `backend/app/routes/messages.py`
+
+**Tool Use (Web Search/Fetch):**
+- Tool service: `backend/app/services/tool_service.py`
+- Web tools: `backend/app/services/web_tools.py`
+- Tool registration: `backend/app/services/__init__.py`
+- Agentic loop: `backend/app/services/session_manager.py` (process_message_stream)
+- Frontend tool display: `frontend/js/app.js` (addToolMessage)
+- Tool CSS styles: `frontend/css/styles.css` (.tool-message, .tool-indicator)
 
 **Text-to-Speech:**
 - TTS service (unified): `backend/app/services/tts_service.py`
@@ -1291,6 +1443,17 @@ significance = times_retrieved * recency_factor * half_life_modifier
 
 # GPT-5.x verbosity setting (config.py)
 default_verbosity = "medium"  # Options: "low", "medium", "high" for GPT-5.x models
+
+# Tool use settings (config.py)
+tools_enabled = True                  # Master switch for tool use
+tool_use_max_iterations = 10          # Max agentic loop iterations
+brave_search_api_key = ""             # Required for web_search tool
+
+# Web tool limits (web_tools.py)
+web_search_max_results = 20           # Brave API limit
+web_search_timeout = 10               # Seconds
+web_fetch_max_length = 50000          # Characters (50KB)
+web_fetch_timeout = 15                # Seconds
 
 # XTTS defaults (config.py)
 xtts_enabled = False              # Must be explicitly enabled
