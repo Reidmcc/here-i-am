@@ -1350,8 +1350,12 @@ class SessionManager:
                 tools=tool_schemas,
             ):
                 if event["type"] == "token":
-                    iteration_content += event["content"]
-                    yield event
+                    content = event["content"]
+                    # Add space before first token after tool use if needed
+                    if iteration > 1 and not iteration_content and full_content and not full_content[-1].isspace():
+                        content = " " + content
+                    iteration_content += content
+                    yield {"type": "token", "content": content}
                 elif event["type"] == "tool_use_start":
                     # Yield tool start event to frontend
                     yield {
