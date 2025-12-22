@@ -1193,6 +1193,12 @@ class App {
                             streamingMessage.updateContent(data.content);
                         }
                     },
+                    onToolStart: (data) => {
+                        this.addToolMessage('start', data.tool_name, data);
+                    },
+                    onToolResult: (data) => {
+                        this.addToolMessage('result', data.tool_name, data);
+                    },
                     onDone: (data) => {
                         streamingMessage.finalize({
                             showTimestamp: true,
@@ -1717,6 +1723,12 @@ class App {
                             streamingMessage.updateContent(data.content);
                         }
                     },
+                    onToolStart: (data) => {
+                        this.addToolMessage('start', data.tool_name, data);
+                    },
+                    onToolResult: (data) => {
+                        this.addToolMessage('result', data.tool_name, data);
+                    },
                     onDone: (data) => {
                         // Stream complete - finalize message
                         streamingMessage.finalize({ showTimestamp: true });
@@ -1943,6 +1955,86 @@ class App {
 
         this.elements.messages.appendChild(message);
         return message;
+    }
+
+    /**
+     * Add a tool message to the chat (tool start or result).
+     * @param {string} type - 'start' or 'result'
+     * @param {string} toolName - Name of the tool
+     * @param {Object} data - Tool data (input for start, content/is_error for result)
+     * @returns {HTMLElement|null} - The tool message element (only for start) or null
+     */
+    addToolMessage(type, toolName, data) {
+        const message = document.createElement('div');
+        message.className = 'tool-message';
+        message.dataset.toolId = data.tool_id || '';
+        message.dataset.toolName = toolName;
+
+        if (type === 'start') {
+            // Format tool name for display
+            const displayName = toolName.replace(/_/g, ' ');
+
+            // Create collapsible structure
+            let inputContent = '';
+            if (data.input && Object.keys(data.input).length > 0) {
+                const inputStr = JSON.stringify(data.input, null, 2);
+                inputContent = `
+                    <details class="tool-input-details">
+                        <summary>Input</summary>
+                        <pre class="tool-input">${this.escapeHtml(inputStr)}</pre>
+                    </details>
+                `;
+            }
+
+            message.innerHTML = `
+                <div class="tool-indicator">
+                    <span class="tool-icon">🔧</span>
+                    <span class="tool-name">Using: ${this.escapeHtml(displayName)}</span>
+                    <span class="tool-status loading">...</span>
+                </div>
+                ${inputContent}
+            `;
+
+            this.elements.messages.appendChild(message);
+            this.scrollToBottom();
+            return message;
+        } else if (type === 'result') {
+            // Find the corresponding start message
+            const startMessage = this.elements.messages.querySelector(
+                `.tool-message[data-tool-id="${data.tool_id}"]`
+            );
+
+            if (startMessage) {
+                // Update the status indicator
+                const statusEl = startMessage.querySelector('.tool-status');
+                if (statusEl) {
+                    statusEl.classList.remove('loading');
+                    statusEl.classList.add(data.is_error ? 'error' : 'success');
+                    statusEl.textContent = data.is_error ? '✗' : '✓';
+                }
+
+                // Add result content in collapsible
+                const resultDetails = document.createElement('details');
+                resultDetails.className = 'tool-result-details';
+
+                // Truncate very long results for display
+                let resultContent = data.content || '';
+                const maxDisplayLength = 2000;
+                if (resultContent.length > maxDisplayLength) {
+                    resultContent = resultContent.substring(0, maxDisplayLength) + '\n...[truncated]';
+                }
+
+                resultDetails.innerHTML = `
+                    <summary>Result${data.is_error ? ' (Error)' : ''}</summary>
+                    <pre class="tool-result ${data.is_error ? 'error' : ''}">${this.escapeHtml(resultContent)}</pre>
+                `;
+
+                startMessage.appendChild(resultDetails);
+                this.scrollToBottom();
+            }
+            return null;
+        }
+        return null;
     }
 
     /**
@@ -2544,6 +2636,12 @@ class App {
                         if (data.content) {
                             streamingMessage.updateContent(data.content);
                         }
+                    },
+                    onToolStart: (data) => {
+                        this.addToolMessage('start', data.tool_name, data);
+                    },
+                    onToolResult: (data) => {
+                        this.addToolMessage('result', data.tool_name, data);
                     },
                     onDone: (data) => {
                         streamingMessage.finalize({ showTimestamp: true });

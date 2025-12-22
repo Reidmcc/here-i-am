@@ -185,6 +185,7 @@ class LLMService:
         max_tokens: Optional[int] = None,
         enable_caching: bool = True,
         verbosity: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Send a message to the appropriate LLM provider based on model.
@@ -197,11 +198,13 @@ class LLMService:
             max_tokens: Max tokens in response
             enable_caching: Enable Anthropic prompt caching (default True, ignored for OpenAI)
             verbosity: Verbosity level for gpt-5.1 models (low, medium, high)
+            tools: Optional list of tool definitions (Anthropic format, only used for Anthropic)
 
         Returns:
             Dict with 'content', 'model', 'usage', 'stop_reason' keys.
             For Anthropic with caching, usage may include cache_creation_input_tokens
             and cache_read_input_tokens.
+            For Anthropic with tools, response may include 'content_blocks' and 'tool_use'.
 
         Raises:
             ValueError: If model provider not configured or unknown model
@@ -230,8 +233,10 @@ class LLMService:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 enable_caching=enable_caching,
+                tools=tools,
             )
         elif provider == ModelProvider.OPENAI:
+            # Tool use not currently supported for OpenAI in this implementation
             return await openai_service.send_message(
                 messages=messages,
                 system_prompt=system_prompt,
@@ -241,6 +246,7 @@ class LLMService:
                 verbosity=verbosity,
             )
         elif provider == ModelProvider.GOOGLE:
+            # Tool use not currently supported for Google in this implementation
             return await google_service.send_message(
                 messages=messages,
                 system_prompt=system_prompt,
@@ -260,6 +266,7 @@ class LLMService:
         max_tokens: Optional[int] = None,
         enable_caching: bool = True,
         verbosity: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Send a message to the appropriate LLM provider with streaming response.
@@ -267,7 +274,8 @@ class LLMService:
         Yields events with type and data:
         - {"type": "start", "model": str}
         - {"type": "token", "content": str}
-        - {"type": "done", "content": str, "model": str, "usage": dict, "stop_reason": str}
+        - {"type": "tool_use_start", "tool_use": dict} - Start of a tool use block (Anthropic only)
+        - {"type": "done", "content": str, "content_blocks": list, "tool_use": list|None, "model": str, "usage": dict, "stop_reason": str}
         - {"type": "error", "error": str}
 
         For Anthropic with caching enabled, the "done" event's usage dict may include:
@@ -299,9 +307,11 @@ class LLMService:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 enable_caching=enable_caching,
+                tools=tools,
             ):
                 yield event
         elif provider == ModelProvider.OPENAI:
+            # Tool use not currently supported for OpenAI in this implementation
             async for event in openai_service.send_message_stream(
                 messages=messages,
                 system_prompt=system_prompt,
@@ -312,6 +322,7 @@ class LLMService:
             ):
                 yield event
         elif provider == ModelProvider.GOOGLE:
+            # Tool use not currently supported for Google in this implementation
             async for event in google_service.send_message_stream(
                 messages=messages,
                 system_prompt=system_prompt,

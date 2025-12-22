@@ -59,9 +59,10 @@ class AnthropicService:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         enable_caching: bool = True,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
-        Send a message to Claude API with optional prompt caching.
+        Send a message to Claude API with optional prompt caching and tool use.
 
         Args:
             messages: List of message dicts with 'role' and 'content'
@@ -70,9 +71,14 @@ class AnthropicService:
             temperature: Temperature setting (defaults to config default)
             max_tokens: Max tokens in response (defaults to config default)
             enable_caching: Whether to enable Anthropic prompt caching (default True)
+            tools: Optional list of tool definitions in Anthropic format
 
         Returns:
-            Dict with 'content', 'model', 'usage' keys. Usage includes cache info when available.
+            Dict with:
+            - 'content': Text content (string) for backwards compatibility
+            - 'content_blocks': Full list of content blocks (text and tool_use)
+            - 'tool_use': List of tool_use blocks if any, else None
+            - 'model', 'usage', 'stop_reason' keys
         """
         model = model or settings.default_model
         temperature = temperature if temperature is not None else settings.default_temperature
@@ -100,13 +106,35 @@ class AnthropicService:
             else:
                 api_params["system"] = system_prompt
 
+        # Add tools if provided
+        if tools:
+            api_params["tools"] = tools
+            logger.info(f"[TOOLS] Sending request with {len(tools)} tools")
+
         response = await self.client.messages.create(**api_params)
 
-        # Extract text content
+        # Parse response content blocks
         content = ""
+        content_blocks = []
+        tool_use_blocks = []
+
         for block in response.content:
             if hasattr(block, "text"):
                 content += block.text
+                content_blocks.append({
+                    "type": "text",
+                    "text": block.text,
+                })
+            elif block.type == "tool_use":
+                tool_use_block = {
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                }
+                content_blocks.append(tool_use_block)
+                tool_use_blocks.append(tool_use_block)
+                logger.info(f"[TOOLS] Tool use detected: {block.name} (id={block.id})")
 
         # Build usage dict with cache information when available
         usage = {
@@ -124,8 +152,13 @@ class AnthropicService:
         logger.info(f"[CACHE] API Response - input: {usage.get('input_tokens')}, output: {usage.get('output_tokens')}")
         logger.info(f"[CACHE] Cache write: {usage.get('cache_creation_input_tokens', 0)}, Cache read: {usage.get('cache_read_input_tokens', 0)}")
 
+        if tool_use_blocks:
+            logger.info(f"[TOOLS] Stop reason: {response.stop_reason}, {len(tool_use_blocks)} tool calls")
+
         return {
             "content": content,
+            "content_blocks": content_blocks,
+            "tool_use": tool_use_blocks if tool_use_blocks else None,
             "model": response.model,
             "usage": usage,
             "stop_reason": response.stop_reason,
@@ -139,6 +172,7 @@ class AnthropicService:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         enable_caching: bool = True,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Send a message to Claude API with streaming response and optional prompt caching.
@@ -146,7 +180,9 @@ class AnthropicService:
         Yields events with type and data:
         - {"type": "start", "model": str}
         - {"type": "token", "content": str}
-        - {"type": "done", "content": str, "model": str, "usage": dict, "stop_reason": str}
+        - {"type": "tool_use_start", "tool_use": dict} - Start of a tool use block
+        - {"type": "tool_use_delta", "tool_use_id": str, "input_delta": str} - JSON input delta
+        - {"type": "done", "content": str, "content_blocks": list, "tool_use": list|None, "model": str, "usage": dict, "stop_reason": str}
         - {"type": "error", "error": str}
 
         The usage dict in the "done" event includes cache metrics when caching is enabled:
@@ -177,11 +213,20 @@ class AnthropicService:
             else:
                 api_params["system"] = system_prompt
 
+        # Add tools if provided
+        if tools:
+            api_params["tools"] = tools
+            logger.info(f"[TOOLS] Streaming request with {len(tools)} tools")
+
         try:
             # Yield start event
             yield {"type": "start", "model": model}
 
             full_content = ""
+            content_blocks = []
+            tool_use_blocks = []
+            current_tool_use = None
+            current_tool_input_json = ""
             input_tokens = 0
             output_tokens = 0
             cache_creation_input_tokens = 0
@@ -198,16 +243,61 @@ class AnthropicService:
                                 cache_creation_input_tokens = event.message.usage.cache_creation_input_tokens
                             if hasattr(event.message.usage, "cache_read_input_tokens"):
                                 cache_read_input_tokens = event.message.usage.cache_read_input_tokens
+
+                    elif event.type == "content_block_start":
+                        # Check if this is a tool_use block
+                        if hasattr(event.content_block, "type"):
+                            if event.content_block.type == "tool_use":
+                                current_tool_use = {
+                                    "type": "tool_use",
+                                    "id": event.content_block.id,
+                                    "name": event.content_block.name,
+                                    "input": {},
+                                }
+                                current_tool_input_json = ""
+                                logger.info(f"[TOOLS] Tool use started: {event.content_block.name} (id={event.content_block.id})")
+                                yield {
+                                    "type": "tool_use_start",
+                                    "tool_use": {
+                                        "id": event.content_block.id,
+                                        "name": event.content_block.name,
+                                    }
+                                }
+
                     elif event.type == "content_block_delta":
                         if hasattr(event.delta, "text"):
+                            # Regular text delta
                             text = event.delta.text
                             full_content += text
                             yield {"type": "token", "content": text}
+                        elif hasattr(event.delta, "partial_json"):
+                            # Tool use input JSON delta
+                            current_tool_input_json += event.delta.partial_json
+
+                    elif event.type == "content_block_stop":
+                        # If we were building a tool use block, finalize it
+                        if current_tool_use is not None:
+                            try:
+                                current_tool_use["input"] = json.loads(current_tool_input_json) if current_tool_input_json else {}
+                            except json.JSONDecodeError:
+                                logger.error(f"[TOOLS] Failed to parse tool input JSON: {current_tool_input_json}")
+                                current_tool_use["input"] = {}
+
+                            content_blocks.append(current_tool_use)
+                            tool_use_blocks.append(current_tool_use)
+                            logger.info(f"[TOOLS] Tool use complete: {current_tool_use['name']}")
+                            current_tool_use = None
+                            current_tool_input_json = ""
+
                     elif event.type == "message_delta":
                         if hasattr(event, "usage"):
                             output_tokens = event.usage.output_tokens
                         if hasattr(event.delta, "stop_reason"):
                             stop_reason = event.delta.stop_reason
+
+            # Add text content to content_blocks if we have any
+            if full_content:
+                content_blocks.insert(0, {"type": "text", "text": full_content})
 
             # Build usage dict with cache information when available
             usage = {
@@ -223,16 +313,22 @@ class AnthropicService:
             logger.info(f"[CACHE] Stream API Response - input: {input_tokens}, output: {output_tokens}")
             logger.info(f"[CACHE] Cache write: {cache_creation_input_tokens}, Cache read: {cache_read_input_tokens}")
 
+            if tool_use_blocks:
+                logger.info(f"[TOOLS] Stream complete with {len(tool_use_blocks)} tool calls, stop_reason: {stop_reason}")
+
             # Yield final done event with complete data
             yield {
                 "type": "done",
                 "content": full_content,
+                "content_blocks": content_blocks,
+                "tool_use": tool_use_blocks if tool_use_blocks else None,
                 "model": model,
                 "usage": usage,
                 "stop_reason": stop_reason,
             }
 
         except Exception as e:
+            logger.exception(f"[TOOLS] Stream error: {e}")
             yield {"type": "error", "error": str(e)}
 
     def build_messages_with_memories(

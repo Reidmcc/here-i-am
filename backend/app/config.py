@@ -170,6 +170,14 @@ class Settings(BaseSettings):
     # Phonemizer backend: "gruut" (MIT licensed, no system deps) or "espeak" (requires espeak-ng)
     styletts2_phonemizer: str = "gruut"
 
+    # Tool Use settings
+    # Enable tool use (web search, content fetching) for AI entities
+    tools_enabled: bool = True
+    # Maximum number of tool use iterations before forcing a final response
+    tool_use_max_iterations: int = 10
+    # Brave Search API key (for web search tool)
+    brave_search_api_key: str = ""
+
     # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, llm_provider, default_model)
     # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'
     pinecone_indexes: str = ""

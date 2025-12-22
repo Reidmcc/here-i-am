@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity
 from app.services import memory_service, llm_service
+from app.services.tool_service import tool_service, ToolResult
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -1036,11 +1037,14 @@ class SessionManager:
         session: ConversationSession,
         user_message: Optional[str],
         db: AsyncSession,
+        tool_schemas: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Process a user message through the full pipeline with streaming response.
 
         This performs memory retrieval first, then streams the LLM response.
+        If tools are provided and the LLM requests tool use, executes tools and
+        loops until a final response is received.
 
         If user_message is None (multi-entity continuation), the entity responds
         based on existing conversation context without a new human message.
@@ -1049,7 +1053,9 @@ class SessionManager:
         - {"type": "memories", "new_memories": [...], "total_in_context": int}
         - {"type": "start", "model": str}
         - {"type": "token", "content": str}
-        - {"type": "done", "content": str, "model": str, "usage": dict, "stop_reason": str}
+        - {"type": "tool_start", "tool_name": str, "tool_id": str, "input": dict}
+        - {"type": "tool_result", "tool_name": str, "tool_id": str, "content": str, "is_error": bool}
+        - {"type": "done", "content": str, "model": str, "usage": dict, "stop_reason": str, "tool_uses": list|None}
         - {"type": "error", "error": str}
         """
         new_memories = []
@@ -1317,34 +1323,167 @@ class SessionManager:
         )
 
         # Step 6: Stream LLM response with caching enabled
+        # This includes a tool use loop if tools are provided
         full_content = ""
-        async for event in llm_service.send_message_stream(
-            messages=messages,
-            model=session.model,
-            system_prompt=session.system_prompt,
-            temperature=session.temperature,
-            max_tokens=session.max_tokens,
-            enable_caching=True,
-            verbosity=session.verbosity,
-        ):
-            if event["type"] == "token":
-                full_content += event["content"]
-            elif event["type"] == "done":
-                # Update conversation context and cache state
-                session.add_exchange(user_message, full_content)
+        accumulated_tool_uses = []  # Track all tool uses across iterations
+        iteration = 0
+        max_iterations = settings.tool_use_max_iterations
 
-                # Update cache state for conversation history (memories don't affect cache hits)
-                if should_consolidate:
-                    new_cached_ctx_len = len(session.conversation_context) - 2
-                elif session.last_cached_context_length == 0 and len(session.conversation_context) > 0:
-                    # Bootstrap: start caching with all current content
-                    new_cached_ctx_len = len(session.conversation_context)
-                else:
-                    # Keep stable for cache hits
-                    new_cached_ctx_len = session.last_cached_context_length
+        # Working copy of messages for tool loop
+        working_messages = list(messages)
 
-                session.update_cache_state(new_cached_ctx_len)
-            yield event
+        while iteration < max_iterations:
+            iteration += 1
+            iteration_content = ""
+            iteration_tool_use = None
+            iteration_content_blocks = []
+            stop_reason = None
+
+            async for event in llm_service.send_message_stream(
+                messages=working_messages,
+                model=session.model,
+                system_prompt=session.system_prompt,
+                temperature=session.temperature,
+                max_tokens=session.max_tokens,
+                enable_caching=True,
+                verbosity=session.verbosity,
+                tools=tool_schemas,
+            ):
+                if event["type"] == "token":
+                    iteration_content += event["content"]
+                    yield event
+                elif event["type"] == "tool_use_start":
+                    # Yield tool start event to frontend
+                    yield {
+                        "type": "tool_start",
+                        "tool_name": event["tool_use"]["name"],
+                        "tool_id": event["tool_use"]["id"],
+                        "input": {},  # Input comes later when block completes
+                    }
+                elif event["type"] == "done":
+                    stop_reason = event.get("stop_reason")
+                    iteration_content_blocks = event.get("content_blocks", [])
+                    iteration_tool_use = event.get("tool_use")
+
+                    # If no tool use, this is the final response
+                    if stop_reason != "tool_use" or not iteration_tool_use:
+                        full_content += iteration_content
+
+                        # Update conversation context and cache state
+                        session.add_exchange(user_message, full_content)
+
+                        # Update cache state for conversation history (memories don't affect cache hits)
+                        if should_consolidate:
+                            new_cached_ctx_len = len(session.conversation_context) - 2
+                        elif session.last_cached_context_length == 0 and len(session.conversation_context) > 0:
+                            # Bootstrap: start caching with all current content
+                            new_cached_ctx_len = len(session.conversation_context)
+                        else:
+                            # Keep stable for cache hits
+                            new_cached_ctx_len = session.last_cached_context_length
+
+                        session.update_cache_state(new_cached_ctx_len)
+
+                        # Add tool_uses to done event if any tools were used
+                        final_event = dict(event)
+                        if accumulated_tool_uses:
+                            final_event["tool_uses"] = accumulated_tool_uses
+                        yield final_event
+                        return
+                elif event["type"] == "error":
+                    yield event
+                    return
+                elif event["type"] == "start":
+                    # Only yield start on first iteration
+                    if iteration == 1:
+                        yield event
+
+            # If we get here, we have tool_use to process
+            if iteration_tool_use:
+                logger.info(f"[TOOLS] Iteration {iteration}: Processing {len(iteration_tool_use)} tool calls")
+
+                # Execute tools and collect results
+                tool_results = []
+                for tool_call in iteration_tool_use:
+                    tool_name = tool_call["name"]
+                    tool_id = tool_call["id"]
+                    tool_input = tool_call.get("input", {})
+
+                    # Yield updated tool_start with actual input
+                    yield {
+                        "type": "tool_start",
+                        "tool_name": tool_name,
+                        "tool_id": tool_id,
+                        "input": tool_input,
+                    }
+
+                    # Execute the tool
+                    result = await tool_service.execute_tool(
+                        tool_use_id=tool_id,
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                    )
+
+                    # Yield tool result to frontend
+                    yield {
+                        "type": "tool_result",
+                        "tool_name": tool_name,
+                        "tool_id": tool_id,
+                        "content": result.content,
+                        "is_error": result.is_error,
+                    }
+
+                    tool_results.append(result)
+
+                    # Track for final response
+                    accumulated_tool_uses.append({
+                        "call": {
+                            "name": tool_name,
+                            "id": tool_id,
+                            "input": tool_input,
+                        },
+                        "result": {
+                            "content": result.content,
+                            "is_error": result.is_error,
+                        },
+                    })
+
+                # Append assistant message with tool use content blocks
+                working_messages.append({
+                    "role": "assistant",
+                    "content": iteration_content_blocks,
+                })
+
+                # Append user message with tool results
+                tool_result_content = []
+                for result in tool_results:
+                    tool_result_content.append({
+                        "type": "tool_result",
+                        "tool_use_id": result.tool_use_id,
+                        "content": result.content,
+                        "is_error": result.is_error,
+                    })
+
+                working_messages.append({
+                    "role": "user",
+                    "content": tool_result_content,
+                })
+
+                # Accumulate any text content from this iteration
+                full_content += iteration_content
+
+        # If we've exhausted iterations, yield what we have
+        logger.warning(f"[TOOLS] Max iterations ({max_iterations}) reached")
+        session.add_exchange(user_message, full_content)
+
+        yield {
+            "type": "done",
+            "content": full_content,
+            "model": session.model,
+            "usage": {},
+            "stop_reason": "max_iterations",
+            "tool_uses": accumulated_tool_uses if accumulated_tool_uses else None,
+        }
 
     def close_session(self, conversation_id: str):
         """Remove a session from active sessions."""
