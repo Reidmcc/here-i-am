@@ -1322,15 +1322,30 @@ class SessionManager:
             user_display_name=session.user_display_name,
         )
 
+        # Build messages WITHOUT memories for subsequent tool iterations (memory optimization)
+        # This reduces context size on iterations after the first
+        base_messages_no_memories = llm_service.build_messages_with_memories(
+            memories=[],  # No memories for subsequent iterations
+            conversation_context=session.conversation_context,
+            current_message=user_message,
+            model=session.model,
+            conversation_start_date=session.conversation_start_date,
+            enable_caching=True,
+            cached_context=cache_content["cached_context"],
+            new_context=cache_content["new_context"],
+            is_multi_entity=session.is_multi_entity,
+            entity_labels=session.entity_labels,
+            responding_entity_label=session.responding_entity_label,
+            user_display_name=session.user_display_name,
+        )
+
         # Step 6: Stream LLM response with caching enabled
         # This includes a tool use loop if tools are provided
         full_content = ""
         accumulated_tool_uses = []  # Track all tool uses across iterations
+        tool_exchanges = []  # Track tool exchanges for rebuilding messages without memories
         iteration = 0
         max_iterations = settings.tool_use_max_iterations
-
-        # Working copy of messages for tool loop
-        working_messages = list(messages)
 
         while iteration < max_iterations:
             iteration += 1
@@ -1338,6 +1353,19 @@ class SessionManager:
             iteration_tool_use = None
             iteration_content_blocks = []
             stop_reason = None
+
+            # Build working messages for this iteration
+            # First iteration: include memories for full context
+            # Subsequent iterations: use base messages without memories (memory optimization)
+            if iteration == 1:
+                working_messages = list(messages)  # Include memories
+            else:
+                # Rebuild from base (no memories) + accumulated tool exchanges
+                working_messages = list(base_messages_no_memories)
+                for exchange in tool_exchanges:
+                    working_messages.append(exchange["assistant"])
+                    working_messages.append(exchange["user"])
+                logger.info(f"[TOOLS] Iteration {iteration}: Using messages without memory block ({len(working_messages)} messages)")
 
             async for event in llm_service.send_message_stream(
                 messages=working_messages,
@@ -1452,13 +1480,12 @@ class SessionManager:
                         },
                     })
 
-                # Append assistant message with tool use content blocks
-                working_messages.append({
+                # Build tool exchange messages for tracking
+                assistant_msg = {
                     "role": "assistant",
                     "content": iteration_content_blocks,
-                })
+                }
 
-                # Append user message with tool results
                 tool_result_content = []
                 for result in tool_results:
                     tool_result_content.append({
@@ -1468,9 +1495,15 @@ class SessionManager:
                         "is_error": result.is_error,
                     })
 
-                working_messages.append({
+                user_msg = {
                     "role": "user",
                     "content": tool_result_content,
+                }
+
+                # Store exchange for rebuilding messages without memories on next iteration
+                tool_exchanges.append({
+                    "assistant": assistant_msg,
+                    "user": user_msg,
                 })
 
                 # Accumulate any text content from this iteration
