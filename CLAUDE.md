@@ -113,7 +113,7 @@ Beyond separate entity workspaces, the application supports **multi-entity conve
 
 ### Tool Use System (Web Search & Fetch)
 
-The application supports **agentic tool use** for Anthropic/Claude models, allowing the AI to search the web and fetch content from URLs during conversations.
+The application supports **agentic tool use** for Anthropic (Claude) and OpenAI (GPT) models, allowing the AI to search the web and fetch content from URLs during conversations.
 
 **Available Tools:**
 - **web_search** - Search the web using Brave Search API (returns up to 20 results)
@@ -121,9 +121,9 @@ The application supports **agentic tool use** for Anthropic/Claude models, allow
 
 **How Tool Use Works:**
 
-1. **Agentic Loop**: When Claude responds with a tool request, the system executes the tool and feeds results back to Claude in a loop (max 10 iterations)
+1. **Agentic Loop**: When the AI responds with a tool request, the system executes the tool and feeds results back in a loop (max 10 iterations)
 2. **Streaming**: Tool execution is streamed in real-time with visual indicators in the UI
-3. **Provider Gating**: Tool use is **only available for Anthropic models** (Claude) - OpenAI and Google models do not currently support tool use in this application
+3. **Provider Support**: Tool use is available for **Anthropic (Claude) and OpenAI (GPT)** models - Google models do not currently support tool use in this application
 
 **Configuration:**
 ```bash
@@ -144,7 +144,7 @@ TOOL_USE_MAX_ITERATIONS=10
 
 **Technical Notes:**
 - Tools are registered at module load time via `register_web_tools()`
-- Tool schemas are converted to Anthropic API format automatically
+- Tool schemas are defined in Anthropic format and automatically converted for OpenAI
 - Tool execution is async with proper error handling
 - web_search uses 10-second timeout; web_fetch uses 15-second timeout
 
@@ -924,8 +924,8 @@ PRESETS = {
 3. **Handle errors gracefully** - Return error messages as strings, don't raise exceptions
 
 **Notes:**
-- Tools are only available for Anthropic models
-- Tool schemas are auto-converted to Anthropic API format
+- Tools are available for Anthropic (Claude) and OpenAI (GPT) models
+- Tool schemas are defined in Anthropic format, auto-converted for OpenAI
 - Tools execute in the agentic loop (max 10 iterations by default)
 
 ---
@@ -1266,10 +1266,10 @@ conversation: Conversation
     - A special header is injected to identify participants to each entity
     - Continuation mode (no human message) supported for entity-to-entity flow
 
-16. **Tool Use is Provider-Gated**
-    - Tools (web_search, web_fetch) only work with Anthropic/Claude models
-    - OpenAI and Google models do not receive tool schemas
-    - This is an architectural decision, not a limitation of those APIs
+16. **Tool Use Provider Support**
+    - Tools (web_search, web_fetch) work with Anthropic (Claude) and OpenAI (GPT) models
+    - Google models do not currently receive tool schemas
+    - Tool schemas are defined in Anthropic format, auto-converted for OpenAI
     - Tool results are not persisted to database (visible in conversation but not stored separately)
 
 17. **Web Tools Require External API**
