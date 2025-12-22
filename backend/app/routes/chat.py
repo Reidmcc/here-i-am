@@ -9,7 +9,8 @@ from pydantic import BaseModel
 
 from app.database import get_db, async_session_maker
 from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity
-from app.services import session_manager, memory_service, llm_service
+from app.services import session_manager, memory_service, llm_service, tool_service
+from app.services.llm_service import ModelProvider
 from app.config import settings
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -434,10 +435,19 @@ async def stream_message(data: ChatRequest):
                 usage_data = {}
                 stop_reason = None
 
+                # Get tool schemas if tools are enabled and using Anthropic
+                tool_schemas = None
+                if settings.tools_enabled:
+                    # Check if the model is an Anthropic model (tool use only supported for Anthropic)
+                    provider = llm_service.get_provider_for_model(session.model)
+                    if provider == ModelProvider.ANTHROPIC:
+                        tool_schemas = tool_service.get_tool_schemas()
+
                 async for event in session_manager.process_message_stream(
                     session=session,
                     user_message=data.message,
                     db=db,
+                    tool_schemas=tool_schemas,
                 ):
                     event_type = event.get("type")
 
@@ -449,6 +459,10 @@ async def stream_message(data: ChatRequest):
                     elif event_type == "token":
                         full_content += event.get("content", "")
                         yield f"event: token\ndata: {json.dumps(event)}\n\n"
+                    elif event_type == "tool_start":
+                        yield f"event: tool_start\ndata: {json.dumps(event)}\n\n"
+                    elif event_type == "tool_result":
+                        yield f"event: tool_result\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "done":
                         full_content = event.get("content", full_content)
                         model_used = event.get("model", model_used)
@@ -817,11 +831,19 @@ async def regenerate_response(data: RegenerateRequest):
                 usage_data = {}
                 stop_reason = None
 
+                # Get tool schemas if tools are enabled and using Anthropic
+                tool_schemas = None
+                if settings.tools_enabled:
+                    provider = llm_service.get_provider_for_model(session.model)
+                    if provider == ModelProvider.ANTHROPIC:
+                        tool_schemas = tool_service.get_tool_schemas()
+
                 # Stream the new response
                 async for event in session_manager.process_message_stream(
                     session=session,
                     user_message=user_message_content,
                     db=db,
+                    tool_schemas=tool_schemas,
                 ):
                     event_type = event.get("type")
 
@@ -833,6 +855,10 @@ async def regenerate_response(data: RegenerateRequest):
                     elif event_type == "token":
                         full_content += event.get("content", "")
                         yield f"event: token\ndata: {json.dumps(event)}\n\n"
+                    elif event_type == "tool_start":
+                        yield f"event: tool_start\ndata: {json.dumps(event)}\n\n"
+                    elif event_type == "tool_result":
+                        yield f"event: tool_result\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "done":
                         full_content = event.get("content", full_content)
                         model_used = event.get("model", model_used)

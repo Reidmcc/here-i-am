@@ -904,6 +904,97 @@ h4.md-header {
     51%, 100% { opacity: 0; }
 }
 
+/* Tool Use Messages */
+.tool-message {
+    margin: 8px auto;
+    max-width: 800px;
+    padding: 8px 12px;
+    background-color: var(--bg-tertiary);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.tool-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.tool-icon {
+    font-size: 1rem;
+    opacity: 0.8;
+}
+
+.tool-name {
+    font-weight: 500;
+    color: var(--text-primary);
+    text-transform: capitalize;
+}
+
+.tool-status {
+    margin-left: auto;
+    font-size: 0.9rem;
+}
+
+.tool-status.loading {
+    color: var(--accent);
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+.tool-status.success {
+    color: var(--success);
+}
+
+.tool-status.error {
+    color: var(--danger);
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+}
+
+.tool-input-details,
+.tool-result-details {
+    margin-top: 8px;
+}
+
+.tool-input-details summary,
+.tool-result-details summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    user-select: none;
+}
+
+.tool-input-details summary:hover,
+.tool-result-details summary:hover {
+    color: var(--text-secondary);
+}
+
+.tool-input,
+.tool-result {
+    margin-top: 6px;
+    padding: 8px;
+    background-color: var(--bg-secondary);
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.4;
+    overflow-x: auto;
+    max-height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.tool-result.error {
+    border-left: 2px solid var(--danger);
+    color: var(--danger);
+}
+
 /* Input Area */
 .input-area {
     padding: 16px 24px;

@@ -242,6 +242,8 @@ class ApiClient {
      * @param {Function} callbacks.onMemories - Called with memory retrieval info
      * @param {Function} callbacks.onStart - Called when streaming starts
      * @param {Function} callbacks.onToken - Called for each token
+     * @param {Function} callbacks.onToolStart - Called when a tool starts executing
+     * @param {Function} callbacks.onToolResult - Called with tool execution result
      * @param {Function} callbacks.onDone - Called when streaming completes
      * @param {Function} callbacks.onStored - Called when messages are stored
      * @param {Function} callbacks.onError - Called on error
@@ -335,6 +337,12 @@ class ApiClient {
                 break;
             case 'token':
                 if (callbacks.onToken) callbacks.onToken(data);
+                break;
+            case 'tool_start':
+                if (callbacks.onToolStart) callbacks.onToolStart(data);
+                break;
+            case 'tool_result':
+                if (callbacks.onToolResult) callbacks.onToolResult(data);
                 break;
             case 'done':
                 if (callbacks.onDone) callbacks.onDone(data);
