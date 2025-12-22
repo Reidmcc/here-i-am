@@ -198,7 +198,7 @@ class LLMService:
             max_tokens: Max tokens in response
             enable_caching: Enable Anthropic prompt caching (default True, ignored for OpenAI)
             verbosity: Verbosity level for gpt-5.1 models (low, medium, high)
-            tools: Optional list of tool definitions (Anthropic format, only used for Anthropic)
+            tools: Optional list of tool definitions (Anthropic format, converted for OpenAI)
 
         Returns:
             Dict with 'content', 'model', 'usage', 'stop_reason' keys.
@@ -236,7 +236,6 @@ class LLMService:
                 tools=tools,
             )
         elif provider == ModelProvider.OPENAI:
-            # Tool use not currently supported for OpenAI in this implementation
             return await openai_service.send_message(
                 messages=messages,
                 system_prompt=system_prompt,
@@ -244,6 +243,7 @@ class LLMService:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 verbosity=verbosity,
+                tools=tools,
             )
         elif provider == ModelProvider.GOOGLE:
             # Tool use not currently supported for Google in this implementation
@@ -311,7 +311,6 @@ class LLMService:
             ):
                 yield event
         elif provider == ModelProvider.OPENAI:
-            # Tool use not currently supported for OpenAI in this implementation
             async for event in openai_service.send_message_stream(
                 messages=messages,
                 system_prompt=system_prompt,
@@ -319,6 +318,7 @@ class LLMService:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 verbosity=verbosity,
+                tools=tools,
             ):
                 yield event
         elif provider == ModelProvider.GOOGLE:
