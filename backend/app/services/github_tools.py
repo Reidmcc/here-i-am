@@ -3,19 +3,35 @@ GitHub tools for AI entities.
 
 Provides repository operations that AI entities can use during conversations
 to read code, create branches, commit changes, and manage PRs/issues.
+
+Includes composite tools for efficient multi-file operations:
+- github_tree: Get full repository tree structure in one call
+- github_get_files: Fetch multiple files in a single call
+- github_explore: Comprehensive first look at a repository
 """
 
+import asyncio
 import logging
+import re
 from typing import List, Optional, TYPE_CHECKING
 
 from app.config import settings
 from app.services.github_service import github_service
 from app.services.tool_service import ToolCategory, ToolService
+from app.services.cache_service import cache_service
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+# Constants for efficiency
+DEFAULT_MAX_LINES = 500
+DEFAULT_TREE_DEPTH = 3
+MAX_TREE_DEPTH = 10
+MAX_FILES_PER_REQUEST = 10
+MAX_SEARCH_RESULTS = 10
+SEARCH_CONTEXT_LINES = 2
 
 
 def _format_available_repos() -> str:
@@ -48,6 +64,184 @@ def _repo_not_found_error(repo_label: str) -> str:
     if available:
         return f"Error: Repository '{repo_label}' not found. Available repositories: {available}"
     return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format file size in human-readable format."""
+    if size_bytes >= 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f}MB"
+    elif size_bytes >= 1024:
+        return f"{size_bytes / 1024:.1f}KB"
+    return f"{size_bytes}B"
+
+
+def _build_tree_view(
+    tree_items: List[dict],
+    max_depth: int = DEFAULT_TREE_DEPTH,
+    include_sizes: bool = True,
+) -> tuple[str, int, int]:
+    """
+    Build a formatted tree view from GitHub tree API response.
+
+    Args:
+        tree_items: List of tree items from GitHub API
+        max_depth: Maximum depth to display
+        include_sizes: Whether to include file sizes
+
+    Returns:
+        Tuple of (formatted_tree_string, file_count, dir_count)
+    """
+    # Build tree structure
+    tree: dict = {}
+    file_count = 0
+    dir_count = 0
+
+    for item in tree_items:
+        path = item.get("path", "")
+        item_type = item.get("type", "")  # "blob" or "tree"
+        size = item.get("size", 0)
+
+        parts = path.split("/")
+        depth = len(parts)
+
+        # Skip items beyond max depth
+        if depth > max_depth:
+            continue
+
+        # Build nested dict
+        current = tree
+        for i, part in enumerate(parts[:-1]):
+            if part not in current:
+                current[part] = {"_type": "dir", "_children": {}}
+                dir_count += 1
+            current = current[part]["_children"]
+
+        # Add leaf node
+        if item_type == "blob":
+            current[parts[-1]] = {"_type": "file", "_size": size}
+            file_count += 1
+        elif item_type == "tree" and parts[-1] not in current:
+            current[parts[-1]] = {"_type": "dir", "_children": {}}
+            dir_count += 1
+
+    # Format output
+    lines = []
+
+    def format_node(node: dict, prefix: str = "", is_last: bool = True) -> None:
+        items = sorted(node.items(), key=lambda x: (x[1].get("_type") == "file", x[0].lower()))
+        for i, (name, data) in enumerate(items):
+            if name.startswith("_"):
+                continue
+
+            is_last_item = i == len([k for k in node.keys() if not k.startswith("_")]) - 1
+            current_prefix = "└── " if is_last_item else "├── "
+            next_prefix = "    " if is_last_item else "│   "
+
+            if data.get("_type") == "dir":
+                lines.append(f"{prefix}{current_prefix}{name}/")
+                children = data.get("_children", {})
+                if children:
+                    format_node(children, prefix + next_prefix, is_last_item)
+            else:
+                size_str = f" ({_format_size(data.get('_size', 0))})" if include_sizes else ""
+                lines.append(f"{prefix}{current_prefix}{name}{size_str}")
+
+    format_node(tree)
+    return "\n".join(lines), file_count, dir_count
+
+
+def _count_code_structures(content: str, file_path: str) -> dict:
+    """
+    Count code structures (functions, classes) using simple regex patterns.
+
+    Args:
+        content: File content
+        file_path: File path for language detection
+
+    Returns:
+        Dict with counts: {"functions": N, "classes": N}
+    """
+    counts = {"functions": 0, "classes": 0}
+    ext = file_path.split(".")[-1].lower() if "." in file_path else ""
+
+    if ext in ("py", "pyw"):
+        # Python: def and class at start of line
+        counts["functions"] = len(re.findall(r"^\s*def\s+\w+", content, re.MULTILINE))
+        counts["classes"] = len(re.findall(r"^\s*class\s+\w+", content, re.MULTILINE))
+    elif ext in ("js", "jsx", "ts", "tsx", "mjs", "cjs"):
+        # JavaScript/TypeScript: function, class, const/let with arrow
+        counts["functions"] = len(re.findall(r"\bfunction\s+\w+", content))
+        counts["functions"] += len(re.findall(r"(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\(", content))
+        counts["classes"] = len(re.findall(r"\bclass\s+\w+", content))
+    elif ext in ("java", "kt", "scala"):
+        # Java/Kotlin/Scala
+        counts["functions"] = len(re.findall(r"(?:public|private|protected|static|\s)+\w+\s+\w+\s*\(", content))
+        counts["classes"] = len(re.findall(r"\bclass\s+\w+", content))
+    elif ext in ("go",):
+        # Go
+        counts["functions"] = len(re.findall(r"\bfunc\s+", content))
+        counts["classes"] = len(re.findall(r"\btype\s+\w+\s+struct\s*\{", content))
+    elif ext in ("rs",):
+        # Rust
+        counts["functions"] = len(re.findall(r"\bfn\s+\w+", content))
+        counts["classes"] = len(re.findall(r"\b(?:struct|impl)\s+\w+", content))
+    elif ext in ("rb",):
+        # Ruby
+        counts["functions"] = len(re.findall(r"\bdef\s+\w+", content))
+        counts["classes"] = len(re.findall(r"\bclass\s+\w+", content))
+    elif ext in ("php",):
+        # PHP
+        counts["functions"] = len(re.findall(r"\bfunction\s+\w+", content))
+        counts["classes"] = len(re.findall(r"\bclass\s+\w+", content))
+    elif ext in ("c", "cpp", "cc", "h", "hpp"):
+        # C/C++
+        counts["functions"] = len(re.findall(r"\w+\s+\w+\s*\([^)]*\)\s*\{", content))
+        counts["classes"] = len(re.findall(r"\bclass\s+\w+", content))
+
+    return counts
+
+
+def _truncate_file_content(
+    content: str,
+    max_lines: int,
+    file_path: str,
+) -> tuple[str, bool, str]:
+    """
+    Truncate file content with smart summarization.
+
+    Args:
+        content: Full file content
+        max_lines: Maximum lines to include
+        file_path: File path for structure analysis
+
+    Returns:
+        Tuple of (truncated_content, was_truncated, summary_footer)
+    """
+    lines = content.split("\n")
+    total_lines = len(lines)
+
+    if total_lines <= max_lines:
+        return content, False, ""
+
+    truncated = "\n".join(lines[:max_lines])
+
+    # Build summary
+    summary_parts = [
+        f"[... File truncated. Showing lines 1-{max_lines} of {total_lines} total.]",
+        "[To read more, use github_get_file with start_line and end_line parameters.]",
+    ]
+
+    # Add structure summary for code files
+    structures = _count_code_structures(content, file_path)
+    if structures["functions"] > 0 or structures["classes"] > 0:
+        struct_parts = []
+        if structures["functions"] > 0:
+            struct_parts.append(f"{structures['functions']} functions")
+        if structures["classes"] > 0:
+            struct_parts.append(f"{structures['classes']} classes")
+        summary_parts.append(f"[File structure summary: {', '.join(struct_parts)} detected]")
+
+    return truncated, True, "\n".join(summary_parts)
 
 
 # =============================================================================
@@ -175,9 +369,14 @@ async def github_get_file(
     ref: Optional[str] = None,
     start_line: Optional[int] = None,
     end_line: Optional[int] = None,
+    max_lines: Optional[int] = None,
+    bypass_cache: bool = False,
 ) -> str:
     """
     Get file contents from the repository.
+
+    For reading a single file or specific line ranges. If you need multiple files,
+    prefer github_get_files. Files over 500 lines are automatically truncated.
 
     Args:
         repo_label: The label of the configured repository
@@ -185,6 +384,8 @@ async def github_get_file(
         ref: Git reference (branch, tag, commit SHA). Defaults to default branch.
         start_line: Optional starting line number (1-indexed, inclusive)
         end_line: Optional ending line number (1-indexed, inclusive)
+        max_lines: Maximum lines to return (default 500). Ignored if start_line/end_line specified.
+        bypass_cache: Set to true to fetch fresh data instead of cached
 
     Returns:
         File contents or error message. For binary files, returns metadata only.
@@ -196,36 +397,53 @@ async def github_get_file(
     if not repo.has_capability("read"):
         return f"Error: Read capability is not enabled for repository '{repo_label}'."
 
+    # Default max_lines
+    if max_lines is None:
+        max_lines = DEFAULT_MAX_LINES
+
     try:
-        # Try local clone first if available and no specific ref requested
-        source = "GitHub API"
-        if not ref and github_service.has_local_clone(repo):
-            logger.info(f"[{repo_label}] Reading file '{path}' from LOCAL CLONE at {repo.local_clone_path}")
-            success, data = github_service.get_file_contents_local(repo, path)
-            source = "local clone"
+        # Check cache first (unless bypassing or using line ranges)
+        cached_data = None
+        if not bypass_cache and start_line is None and end_line is None:
+            cached_data = cache_service.get_github_file(repo_label, path, ref)
+            if cached_data:
+                logger.info(f"[{repo_label}] Cache HIT for file '{path}'")
+
+        if cached_data:
+            data = cached_data
+            source = "cache"
+            success = True
         else:
-            if ref:
-                logger.info(f"[{repo_label}] Reading file '{path}' from GitHub API (ref={ref} specified)")
+            # Try local clone first if available and no specific ref requested
+            source = "GitHub API"
+            if not ref and github_service.has_local_clone(repo):
+                logger.info(f"[{repo_label}] Reading file '{path}' from LOCAL CLONE at {repo.local_clone_path}")
+                success, data = github_service.get_file_contents_local(repo, path)
+                source = "local clone"
             else:
-                logger.info(f"[{repo_label}] Reading file '{path}' from GitHub API (no local clone)")
-            success, data = await github_service.get_file_contents(repo, path, ref)
+                if ref:
+                    logger.info(f"[{repo_label}] Reading file '{path}' from GitHub API (ref={ref} specified)")
+                else:
+                    logger.info(f"[{repo_label}] Reading file '{path}' from GitHub API (no local clone)")
+                success, data = await github_service.get_file_contents(repo, path, ref)
+
+            # Cache the result on success
+            if success and data.get("type") != "binary":
+                cache_service.set_github_file(repo_label, path, ref, data)
 
         if not success:
             return f"Error: {data.get('message', 'Failed to get file')}"
 
         if data.get("type") == "binary":
+            size = data.get('size', 0)
             lines = [
                 f"Binary file: {data.get('name')}",
-                f"Size: {data.get('size'):,} bytes",
+                f"Size: {_format_size(size)}",
             ]
-            if data.get("sha"):
-                lines.append(f"SHA: {data.get('sha')}")
-            if data.get("download_url"):
-                lines.append(f"Download URL: {data.get('download_url')}")
-            lines.append(f"[source: {source}]")
             return "\n".join(lines)
 
         content = data.get("content", "")
+        total_lines = len(content.split("\n"))
 
         # Apply line range if specified
         if start_line is not None or end_line is not None:
@@ -242,7 +460,7 @@ async def github_get_file(
             header = f"File: {path}"
             if ref:
                 header += f" (ref: {ref})"
-            header += f" [lines {start_idx + 1}-{end_idx} of {len(lines)}] [source: {source}]"
+            header += f" [lines {start_idx + 1}-{end_idx} of {total_lines}]"
 
             # Add line numbers
             numbered_lines = [
@@ -252,13 +470,22 @@ async def github_get_file(
 
             return f"{header}\n\n" + "\n".join(numbered_lines)
 
-        # Return full content with header
+        # Apply truncation if needed
+        truncated_content, was_truncated, summary = _truncate_file_content(content, max_lines, path)
+
+        # Build header
+        size = data.get('size', len(content))
         header = f"File: {path}"
         if ref:
             header += f" (ref: {ref})"
-        header += f" ({data.get('size'):,} bytes) [source: {source}]"
+        header += f" ({_format_size(size)}, {total_lines} lines)"
+        if source == "cache":
+            header += " [cached]"
 
-        return f"{header}\n\n{content}"
+        if was_truncated:
+            return f"{header}\n\n{truncated_content}\n\n{summary}"
+
+        return f"{header}\n\n{truncated_content}"
 
     except Exception as e:
         logger.exception(f"Error getting file: {e}")
@@ -269,12 +496,15 @@ async def github_search_code(repo_label: str, query: str) -> str:
     """
     Search for code in the repository.
 
+    Returns max 10 matches with file paths. For more detailed results,
+    use github_get_file to read specific files.
+
     Args:
         repo_label: The label of the configured repository
         query: Search query (supports GitHub code search syntax)
 
     Returns:
-        Search results with file paths and snippets, or error message
+        Search results with file paths (max 10), or error message
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
@@ -294,13 +524,23 @@ async def github_search_code(repo_label: str, query: str) -> str:
         if not results:
             return f"No results found for query: {query}"
 
-        lines = [f"Search results for '{query}' ({len(results)} matches):"]
+        total_results = len(results)
+        # Limit to MAX_SEARCH_RESULTS
+        displayed_results = results[:MAX_SEARCH_RESULTS]
+
+        lines = [f"Search results for '{query}':"]
+        if total_results > MAX_SEARCH_RESULTS:
+            lines[0] += f" (showing {MAX_SEARCH_RESULTS} of {total_results} matches)"
+        else:
+            lines[0] += f" ({total_results} matches)"
         lines.append("")
 
-        for i, result in enumerate(results, 1):
+        for i, result in enumerate(displayed_results, 1):
             lines.append(f"{i}. {result.get('path')}")
-            if result.get("html_url"):
-                lines.append(f"   URL: {result.get('html_url')}")
+
+        if total_results > MAX_SEARCH_RESULTS:
+            lines.append("")
+            lines.append(f"[{total_results - MAX_SEARCH_RESULTS} more matches not shown. Refine your query for more specific results.]")
 
         return "\n".join(lines)
 
@@ -353,6 +593,383 @@ async def github_list_branches(repo_label: str) -> str:
 
     except Exception as e:
         logger.exception(f"Error listing branches: {e}")
+        return f"Error: An unexpected error occurred: {str(e)}"
+
+
+# =============================================================================
+# Composite Tools (capability: "read") - Efficiency optimized
+# =============================================================================
+
+async def github_tree(
+    repo_label: str,
+    ref: Optional[str] = None,
+    max_depth: int = DEFAULT_TREE_DEPTH,
+    include_sizes: bool = True,
+    bypass_cache: bool = False,
+) -> str:
+    """
+    Get the full repository tree structure in a single call.
+
+    Use this first when exploring a new repository. Returns the complete file
+    structure in one call, eliminating the need for multiple list_contents calls.
+
+    Args:
+        repo_label: The label of the configured repository
+        ref: Branch, tag, or commit SHA. Defaults to the repo's default branch.
+        max_depth: How deep to traverse (default 3, max 10).
+        include_sizes: Include file sizes (default true).
+        bypass_cache: Set to true to fetch fresh data instead of cached.
+
+    Returns:
+        Formatted tree view with file/directory structure.
+    """
+    repo = github_service.get_repo_by_label(repo_label)
+    if not repo:
+        return _repo_not_found_error(repo_label)
+
+    if not repo.has_capability("read"):
+        return f"Error: Read capability is not enabled for repository '{repo_label}'."
+
+    # Clamp max_depth
+    max_depth = min(max(1, max_depth), MAX_TREE_DEPTH)
+
+    try:
+        # Check cache first
+        if not bypass_cache:
+            cached = cache_service.get_github_tree(repo_label, ref)
+            if cached:
+                logger.info(f"[{repo_label}] Cache HIT for tree (ref={ref or 'HEAD'})")
+                tree_data = cached
+                from_cache = True
+            else:
+                from_cache = False
+        else:
+            from_cache = False
+
+        if not from_cache:
+            # Get default branch if needed
+            if not ref:
+                default_branch = await github_service.get_default_branch(repo)
+                ref = default_branch
+
+            success, tree_data = await github_service.get_tree(repo, ref, recursive=True)
+
+            if not success:
+                return f"Error: {tree_data.get('message', 'Failed to get tree')}"
+
+            # Cache the tree
+            cache_service.set_github_tree(repo_label, ref, tree_data)
+
+        # Build formatted tree view
+        tree_items = tree_data.get("tree", [])
+        tree_view, file_count, dir_count = _build_tree_view(
+            tree_items, max_depth=max_depth, include_sizes=include_sizes
+        )
+
+        # Build header
+        header_parts = [f"Repository: {repo.owner}/{repo.repo}"]
+        if ref:
+            header_parts.append(f"(branch: {ref})")
+        if from_cache:
+            header_parts.append("[cached]")
+
+        header = " ".join(header_parts)
+
+        # Build footer
+        footer = f"\nTotal: {file_count} files, {dir_count} directories"
+        if tree_data.get("truncated"):
+            footer += " (tree truncated by GitHub API)"
+        if max_depth < MAX_TREE_DEPTH:
+            footer += f" (depth limited to {max_depth})"
+
+        return f"{header}\n\n{tree_view}\n{footer}"
+
+    except Exception as e:
+        logger.exception(f"Error getting tree: {e}")
+        return f"Error: An unexpected error occurred: {str(e)}"
+
+
+async def github_get_files(
+    repo_label: str,
+    paths: List[str],
+    ref: Optional[str] = None,
+    max_lines_per_file: int = DEFAULT_MAX_LINES,
+    bypass_cache: bool = False,
+) -> str:
+    """
+    Fetch multiple files in a single tool call.
+
+    More efficient than multiple github_get_file calls when you know which files
+    you need. Fetches files in parallel.
+
+    Args:
+        repo_label: The label of the configured repository
+        paths: List of file paths to fetch (max 10)
+        ref: Branch, tag, or commit SHA. Defaults to the repo's default branch.
+        max_lines_per_file: Truncate files to this many lines (default 500).
+        bypass_cache: Set to true to fetch fresh data instead of cached.
+
+    Returns:
+        Concatenated file contents with clear separators.
+    """
+    repo = github_service.get_repo_by_label(repo_label)
+    if not repo:
+        return _repo_not_found_error(repo_label)
+
+    if not repo.has_capability("read"):
+        return f"Error: Read capability is not enabled for repository '{repo_label}'."
+
+    # Limit number of files
+    if len(paths) > MAX_FILES_PER_REQUEST:
+        return f"Error: Maximum {MAX_FILES_PER_REQUEST} files per request. Requested: {len(paths)}"
+
+    if not paths:
+        return "Error: No file paths specified."
+
+    try:
+        # Fetch files in parallel
+        async def fetch_file(path: str) -> tuple[str, str, bool]:
+            """Fetch a single file and return (path, content, is_error)."""
+            # Check cache first
+            if not bypass_cache:
+                cached = cache_service.get_github_file(repo_label, path, ref)
+                if cached:
+                    logger.info(f"[{repo_label}] Cache HIT for file '{path}'")
+                    return path, cached, False
+
+            # Try local clone first
+            if not ref and github_service.has_local_clone(repo):
+                success, data = github_service.get_file_contents_local(repo, path)
+            else:
+                success, data = await github_service.get_file_contents(repo, path, ref)
+
+            if not success:
+                return path, data, True
+
+            # Cache on success
+            if data.get("type") != "binary":
+                cache_service.set_github_file(repo_label, path, ref, data)
+
+            return path, data, False
+
+        # Execute in parallel
+        results = await asyncio.gather(*[fetch_file(p) for p in paths], return_exceptions=True)
+
+        # Format output
+        output_parts = []
+        for result in results:
+            if isinstance(result, Exception):
+                output_parts.append(f"Error: {str(result)}")
+                continue
+
+            path, data, is_error = result
+
+            if is_error:
+                output_parts.append(f"===== {path} (ERROR) =====\n{data.get('message', 'Failed to get file')}\n")
+                continue
+
+            if data.get("type") == "binary":
+                size = data.get('size', 0)
+                output_parts.append(f"===== {path} (binary, {_format_size(size)}) =====\n[Binary file - content not shown]\n")
+                continue
+
+            content = data.get("content", "")
+            lines = content.split("\n")
+            total_lines = len(lines)
+            size = data.get("size", len(content))
+
+            # Truncate if needed
+            truncated_content, was_truncated, _ = _truncate_file_content(
+                content, max_lines_per_file, path
+            )
+
+            header = f"===== {path} ({_format_size(size)}, {total_lines} lines"
+            if was_truncated:
+                header += f", TRUNCATED to first {max_lines_per_file} lines"
+            header += ") ====="
+
+            output_parts.append(f"{header}\n\n{truncated_content}")
+
+            if was_truncated:
+                omitted = total_lines - max_lines_per_file
+                output_parts.append(f"\n[... {omitted} lines omitted. Use github_get_file with start_line/end_line to read specific sections.]\n")
+            else:
+                output_parts.append("\n")
+
+        return "\n".join(output_parts)
+
+    except Exception as e:
+        logger.exception(f"Error getting files: {e}")
+        return f"Error: An unexpected error occurred: {str(e)}"
+
+
+async def github_explore(
+    repo_label: str,
+    ref: Optional[str] = None,
+    bypass_cache: bool = False,
+) -> str:
+    """
+    Get a comprehensive first look at a repository in a single call.
+
+    Best starting point for a new repository. Returns metadata, file structure,
+    and key documentation files in one call. Useful for orientation before
+    deeper work.
+
+    Args:
+        repo_label: The label of the configured repository
+        ref: Branch, tag, or commit SHA. Defaults to the repo's default branch.
+        bypass_cache: Set to true to fetch fresh data instead of cached.
+
+    Returns:
+        Combined response with repo metadata, tree structure (depth 2), and
+        contents of key files (README.md, CLAUDE.md, etc.) if they exist.
+    """
+    repo = github_service.get_repo_by_label(repo_label)
+    if not repo:
+        return _repo_not_found_error(repo_label)
+
+    if not repo.has_capability("read"):
+        return f"Error: Read capability is not enabled for repository '{repo_label}'."
+
+    MAX_DOC_LINES = 200
+    KEY_FILES = [
+        "README.md",
+        "CLAUDE.md",
+        "CONTRIBUTING.md",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+    ]
+    PROJECT_FILES = [
+        "pyproject.toml",
+        "package.json",
+        "Cargo.toml",
+        "go.mod",
+        "pom.xml",
+        "build.gradle",
+        "Gemfile",
+        "composer.json",
+    ]
+
+    try:
+        output_parts = []
+
+        # 1. Repository metadata
+        success, repo_info = await github_service.get_repo_info(repo)
+        if success:
+            output_parts.append("=== Repository Info ===")
+            output_parts.append(f"Name: {repo_info.get('full_name')}")
+            output_parts.append(f"Description: {repo_info.get('description') or 'No description'}")
+            output_parts.append(f"Default Branch: {repo_info.get('default_branch')}")
+            output_parts.append(f"Visibility: {repo_info.get('visibility')}")
+            output_parts.append(f"Language: {repo_info.get('language') or 'Not specified'}")
+            output_parts.append(f"Stars: {repo_info.get('stars', 0):,}")
+            output_parts.append("")
+
+            # Use default branch if ref not specified
+            if not ref:
+                ref = repo_info.get('default_branch', 'main')
+
+        # 2. Tree structure (depth 2)
+        if not bypass_cache:
+            cached_tree = cache_service.get_github_tree(repo_label, ref)
+        else:
+            cached_tree = None
+
+        if cached_tree:
+            tree_data = cached_tree
+            tree_from_cache = True
+        else:
+            success, tree_data = await github_service.get_tree(repo, ref, recursive=True)
+            tree_from_cache = False
+            if success:
+                cache_service.set_github_tree(repo_label, ref, tree_data)
+
+        if tree_data and not tree_data.get("error"):
+            tree_items = tree_data.get("tree", [])
+            tree_view, file_count, dir_count = _build_tree_view(
+                tree_items, max_depth=2, include_sizes=True
+            )
+
+            output_parts.append("=== File Structure (depth 2) ===")
+            if tree_from_cache:
+                output_parts.append("[cached]")
+            output_parts.append(tree_view)
+            output_parts.append(f"\nTotal: {file_count} files, {dir_count} directories")
+            output_parts.append("")
+
+        # 3. Key documentation files
+        docs_found = []
+
+        async def try_get_file(path: str) -> Optional[dict]:
+            """Try to get a file, return None if not found."""
+            # Check cache first
+            if not bypass_cache:
+                cached = cache_service.get_github_file(repo_label, path, ref)
+                if cached:
+                    return cached
+
+            if not ref and github_service.has_local_clone(repo):
+                success, data = github_service.get_file_contents_local(repo, path)
+            else:
+                success, data = await github_service.get_file_contents(repo, path, ref)
+
+            if success and data.get("type") == "text":
+                cache_service.set_github_file(repo_label, path, ref, data)
+                return data
+            return None
+
+        # Fetch key docs in parallel
+        doc_tasks = [try_get_file(path) for path in KEY_FILES]
+        doc_results = await asyncio.gather(*doc_tasks, return_exceptions=True)
+
+        for path, result in zip(KEY_FILES, doc_results):
+            if isinstance(result, Exception) or result is None:
+                continue
+
+            content = result.get("content", "")
+            lines = content.split("\n")
+
+            if len(lines) <= MAX_DOC_LINES:
+                docs_found.append((path, content, False))
+            else:
+                truncated = "\n".join(lines[:MAX_DOC_LINES])
+                docs_found.append((path, truncated, True))
+
+        # Try to find project file
+        project_tasks = [try_get_file(path) for path in PROJECT_FILES]
+        project_results = await asyncio.gather(*project_tasks, return_exceptions=True)
+
+        for path, result in zip(PROJECT_FILES, project_results):
+            if isinstance(result, Exception) or result is None:
+                continue
+
+            content = result.get("content", "")
+            lines = content.split("\n")
+
+            if len(lines) <= MAX_DOC_LINES:
+                docs_found.append((path, content, False))
+            else:
+                truncated = "\n".join(lines[:MAX_DOC_LINES])
+                docs_found.append((path, truncated, True))
+            break  # Only include first project file found
+
+        # Add documentation files to output
+        if docs_found:
+            output_parts.append("=== Key Files ===")
+            for path, content, was_truncated in docs_found:
+                lines_count = len(content.split("\n"))
+                header = f"\n--- {path}"
+                if was_truncated:
+                    header += f" (first {MAX_DOC_LINES} of {lines_count}+ lines)"
+                header += " ---"
+                output_parts.append(header)
+                output_parts.append(content)
+                if was_truncated:
+                    output_parts.append(f"[... truncated. Use github_get_file to read full content.]")
+
+        return "\n".join(output_parts)
+
+    except Exception as e:
+        logger.exception(f"Error exploring repository: {e}")
         return f"Error: An unexpected error occurred: {str(e)}"
 
 
@@ -434,6 +1051,10 @@ async def github_commit_file(
         if not success:
             return f"Error: {data.get('message', 'Failed to commit file')}"
 
+        # Invalidate cache for this file and tree (commit changes the repo state)
+        cache_service.invalidate_github_file(repo_label, path, branch)
+        cache_service.invalidate_github_tree(repo_label, branch)
+
         action = data.get("action", "committed")
         lines = [
             f"Successfully {action} file: {path}",
@@ -480,6 +1101,10 @@ async def github_delete_file(
 
         if not success:
             return f"Error: {data.get('message', 'Failed to delete file')}"
+
+        # Invalidate cache for this file and tree (delete changes the repo state)
+        cache_service.invalidate_github_file(repo_label, path, branch)
+        cache_service.invalidate_github_tree(repo_label, branch)
 
         return f"Successfully deleted file: {path}\nBranch: {branch}\nCommit SHA: {data.get('sha')}"
 
@@ -876,6 +1501,121 @@ def register_github_tools(tool_service: ToolService) -> None:
 
     # Read tools
     if "read" in all_capabilities:
+        # Composite/efficiency tools - register first for better discovery
+        tool_service.register_tool(
+            name="github_explore",
+            description=(
+                "Best starting point for a new repository. Returns metadata, file structure "
+                "(depth 2), and key documentation files (README.md, CLAUDE.md, etc.) in one call. "
+                "Use this first to understand a repository before deeper exploration."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "repo_label": {
+                        "type": "string",
+                        "description": repo_label_description,
+                    },
+                    "ref": {
+                        "type": "string",
+                        "description": "Branch, tag, or commit SHA. Defaults to default branch.",
+                    },
+                    "bypass_cache": {
+                        "type": "boolean",
+                        "description": "Set to true to fetch fresh data instead of cached.",
+                        "default": False,
+                    },
+                },
+                "required": ["repo_label"],
+            },
+            executor=github_explore,
+            category=ToolCategory.GITHUB,
+            enabled=True,
+        )
+
+        tool_service.register_tool(
+            name="github_tree",
+            description=(
+                "Get the full repository tree structure in a single call. Use this instead of "
+                "repeated github_list_contents calls to see the complete directory structure. "
+                "Returns a formatted tree view with file sizes."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "repo_label": {
+                        "type": "string",
+                        "description": repo_label_description,
+                    },
+                    "ref": {
+                        "type": "string",
+                        "description": "Branch, tag, or commit SHA. Defaults to default branch.",
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "How deep to traverse (default 3, max 10).",
+                        "default": 3,
+                    },
+                    "include_sizes": {
+                        "type": "boolean",
+                        "description": "Include file sizes in output (default true).",
+                        "default": True,
+                    },
+                    "bypass_cache": {
+                        "type": "boolean",
+                        "description": "Set to true to fetch fresh data instead of cached.",
+                        "default": False,
+                    },
+                },
+                "required": ["repo_label"],
+            },
+            executor=github_tree,
+            category=ToolCategory.GITHUB,
+            enabled=True,
+        )
+
+        tool_service.register_tool(
+            name="github_get_files",
+            description=(
+                "Fetch up to 10 files in a single call. More efficient than multiple "
+                "github_get_file calls when you know which files you need. Files are "
+                "fetched in parallel and returned with clear separators."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "repo_label": {
+                        "type": "string",
+                        "description": repo_label_description,
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of file paths to fetch (max 10).",
+                    },
+                    "ref": {
+                        "type": "string",
+                        "description": "Branch, tag, or commit SHA. Defaults to default branch.",
+                    },
+                    "max_lines_per_file": {
+                        "type": "integer",
+                        "description": "Truncate files to this many lines (default 500).",
+                        "default": 500,
+                    },
+                    "bypass_cache": {
+                        "type": "boolean",
+                        "description": "Set to true to fetch fresh data instead of cached.",
+                        "default": False,
+                    },
+                },
+                "required": ["repo_label", "paths"],
+            },
+            executor=github_get_files,
+            category=ToolCategory.GITHUB,
+            enabled=True,
+        )
+
+        # Standard read tools
         tool_service.register_tool(
             name="github_repo_info",
             description=(
@@ -900,8 +1640,8 @@ def register_github_tools(tool_service: ToolService) -> None:
         tool_service.register_tool(
             name="github_list_contents",
             description=(
-                "List files and directories at a path in a GitHub repository. "
-                "Use an empty path to list the root directory."
+                "List files and directories at a path. For a complete tree view, prefer "
+                "github_tree which returns the full structure in one call."
             ),
             input_schema={
                 "type": "object",
@@ -930,9 +1670,9 @@ def register_github_tools(tool_service: ToolService) -> None:
         tool_service.register_tool(
             name="github_get_file",
             description=(
-                "Get the contents of a file from a GitHub repository. "
-                "For text files, returns the content. For binary files, returns metadata. "
-                "Supports optional line range for reading specific portions."
+                "Read a single file or specific line ranges. If you need multiple files, "
+                "prefer github_get_files. Files over 500 lines are automatically truncated "
+                "with a structure summary."
             ),
             input_schema={
                 "type": "object",
@@ -957,6 +1697,16 @@ def register_github_tools(tool_service: ToolService) -> None:
                         "type": "integer",
                         "description": "Ending line number (1-indexed, inclusive)",
                     },
+                    "max_lines": {
+                        "type": "integer",
+                        "description": "Maximum lines to return (default 500). Ignored if start_line/end_line specified.",
+                        "default": 500,
+                    },
+                    "bypass_cache": {
+                        "type": "boolean",
+                        "description": "Set to true to fetch fresh data instead of cached.",
+                        "default": False,
+                    },
                 },
                 "required": ["repo_label", "path"],
             },
@@ -968,8 +1718,8 @@ def register_github_tools(tool_service: ToolService) -> None:
         tool_service.register_tool(
             name="github_search_code",
             description=(
-                "Search for code in a GitHub repository. "
-                "Supports GitHub code search syntax for advanced queries."
+                "Search for code patterns in a repository. Returns max 10 file paths matching "
+                "the query. Use github_get_file or github_get_files to read the matched files."
             ),
             input_schema={
                 "type": "object",

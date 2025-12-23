@@ -184,6 +184,9 @@ class CacheService:
     - token_cache: For token counting results (long TTL, rarely changes)
     - search_cache: For memory search results (short TTL, may change)
     - content_cache: For full memory content (medium TTL)
+    - github_tree_cache: For GitHub repository tree structure
+    - github_file_cache: For GitHub file contents
+    - github_metadata_cache: For GitHub repository/branch metadata
     """
 
     def __init__(self):
@@ -206,6 +209,34 @@ class CacheService:
         self.content_cache: TTLCache[Dict[str, Any]] = TTLCache(
             default_ttl_seconds=300,  # 5 minutes
             max_size=5000,
+        )
+
+        # GitHub tree structure cache - repository file trees
+        # 5 minute TTL since tree doesn't change frequently
+        self.github_tree_cache: TTLCache[Dict[str, Any]] = TTLCache(
+            default_ttl_seconds=300,  # 5 minutes
+            max_size=100,
+        )
+
+        # GitHub file contents cache - individual files
+        # 10 minute TTL since files rarely change during a conversation
+        self.github_file_cache: TTLCache[Dict[str, Any]] = TTLCache(
+            default_ttl_seconds=600,  # 10 minutes
+            max_size=500,
+        )
+
+        # GitHub metadata cache - repo info, branch lists
+        # 10 minute TTL
+        self.github_metadata_cache: TTLCache[Dict[str, Any]] = TTLCache(
+            default_ttl_seconds=600,  # 10 minutes
+            max_size=200,
+        )
+
+        # GitHub PR/issue list cache - more frequently changing
+        # 2 minute TTL
+        self.github_list_cache: TTLCache[List[Dict[str, Any]]] = TTLCache(
+            default_ttl_seconds=120,  # 2 minutes
+            max_size=100,
         )
 
     # Token counting helpers
@@ -266,6 +297,119 @@ class CacheService:
         key = f"mem:{message_id}"
         return self.content_cache.delete(key)
 
+    # GitHub cache helpers
+    def get_github_tree(
+        self,
+        repo_label: str,
+        ref: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get cached GitHub tree."""
+        key = f"gh_tree:{repo_label}:{ref or 'HEAD'}"
+        return self.github_tree_cache.get(key)
+
+    def set_github_tree(
+        self,
+        repo_label: str,
+        ref: Optional[str],
+        tree_data: Dict[str, Any],
+    ) -> None:
+        """Cache GitHub tree."""
+        key = f"gh_tree:{repo_label}:{ref or 'HEAD'}"
+        self.github_tree_cache.set(key, tree_data)
+
+    def get_github_file(
+        self,
+        repo_label: str,
+        path: str,
+        ref: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get cached GitHub file contents."""
+        key = f"gh_file:{repo_label}:{ref or 'HEAD'}:{path}"
+        return self.github_file_cache.get(key)
+
+    def set_github_file(
+        self,
+        repo_label: str,
+        path: str,
+        ref: Optional[str],
+        file_data: Dict[str, Any],
+    ) -> None:
+        """Cache GitHub file contents."""
+        key = f"gh_file:{repo_label}:{ref or 'HEAD'}:{path}"
+        self.github_file_cache.set(key, file_data)
+
+    def get_github_metadata(
+        self,
+        repo_label: str,
+        metadata_type: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get cached GitHub metadata (repo info, branches, etc.)."""
+        key = f"gh_meta:{repo_label}:{metadata_type}"
+        return self.github_metadata_cache.get(key)
+
+    def set_github_metadata(
+        self,
+        repo_label: str,
+        metadata_type: str,
+        data: Dict[str, Any],
+    ) -> None:
+        """Cache GitHub metadata."""
+        key = f"gh_meta:{repo_label}:{metadata_type}"
+        self.github_metadata_cache.set(key, data)
+
+    def get_github_list(
+        self,
+        repo_label: str,
+        list_type: str,
+        state: Optional[str] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Get cached GitHub list (PRs, issues, etc.)."""
+        key = f"gh_list:{repo_label}:{list_type}:{state or 'all'}"
+        return self.github_list_cache.get(key)
+
+    def set_github_list(
+        self,
+        repo_label: str,
+        list_type: str,
+        state: Optional[str],
+        data: List[Dict[str, Any]],
+    ) -> None:
+        """Cache GitHub list."""
+        key = f"gh_list:{repo_label}:{list_type}:{state or 'all'}"
+        self.github_list_cache.set(key, data)
+
+    def invalidate_github_cache_for_repo(self, repo_label: str) -> int:
+        """Invalidate all GitHub cache entries for a repository."""
+        count = 0
+        count += self.github_tree_cache.invalidate_by_prefix(f"gh_tree:{repo_label}:")
+        count += self.github_file_cache.invalidate_by_prefix(f"gh_file:{repo_label}:")
+        count += self.github_metadata_cache.invalidate_by_prefix(f"gh_meta:{repo_label}:")
+        count += self.github_list_cache.invalidate_by_prefix(f"gh_list:{repo_label}:")
+        return count
+
+    def invalidate_github_tree(self, repo_label: str, ref: Optional[str] = None) -> int:
+        """Invalidate GitHub tree cache for a repo/ref."""
+        if ref:
+            key = f"gh_tree:{repo_label}:{ref}"
+            return 1 if self.github_tree_cache.delete(key) else 0
+        return self.github_tree_cache.invalidate_by_prefix(f"gh_tree:{repo_label}:")
+
+    def invalidate_github_file(
+        self,
+        repo_label: str,
+        path: str,
+        ref: Optional[str] = None,
+    ) -> int:
+        """Invalidate GitHub file cache for a specific path."""
+        if ref:
+            key = f"gh_file:{repo_label}:{ref}:{path}"
+            return 1 if self.github_file_cache.delete(key) else 0
+        # Invalidate for all refs
+        count = 0
+        # We can't easily invalidate by path without ref, so invalidate all files for this repo
+        count += self.github_file_cache.invalidate_by_prefix(f"gh_file:{repo_label}:")
+        return count
+
     # Utility methods
     def clear_all(self) -> Dict[str, int]:
         """Clear all caches. Returns count of entries cleared per cache."""
@@ -273,6 +417,10 @@ class CacheService:
             "token_cache": self.token_cache.clear(),
             "search_cache": self.search_cache.clear(),
             "content_cache": self.content_cache.clear(),
+            "github_tree_cache": self.github_tree_cache.clear(),
+            "github_file_cache": self.github_file_cache.clear(),
+            "github_metadata_cache": self.github_metadata_cache.clear(),
+            "github_list_cache": self.github_list_cache.clear(),
         }
 
     def get_all_stats(self) -> Dict[str, Dict[str, Any]]:
@@ -281,6 +429,10 @@ class CacheService:
             "token_cache": self.token_cache.get_stats(),
             "search_cache": self.search_cache.get_stats(),
             "content_cache": self.content_cache.get_stats(),
+            "github_tree_cache": self.github_tree_cache.get_stats(),
+            "github_file_cache": self.github_file_cache.get_stats(),
+            "github_metadata_cache": self.github_metadata_cache.get_stats(),
+            "github_list_cache": self.github_list_cache.get_stats(),
         }
 
 

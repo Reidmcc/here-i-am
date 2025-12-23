@@ -414,6 +414,56 @@ class GitHubService:
             "html_url": data.get("html_url"),
         }
 
+    async def get_tree(
+        self,
+        repo: GitHubRepoConfig,
+        ref: Optional[str] = None,
+        recursive: bool = True,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Get the full repository tree using the Git Trees API.
+
+        This is more efficient than multiple list_contents calls.
+
+        Args:
+            repo: Repository configuration
+            ref: Git reference (branch, tag, SHA). Defaults to default branch.
+            recursive: Whether to get the full tree recursively
+
+        Returns:
+            Tuple of (success, data)
+            On success: {"tree": [...], "sha": "...", "truncated": bool}
+            On failure: {"error": "...", "message": "..."}
+        """
+        # Get the ref SHA first
+        tree_ref = ref or "HEAD"
+        endpoint = f"/repos/{repo.owner}/{repo.repo}/git/trees/{tree_ref}"
+        params = {"recursive": "1"} if recursive else {}
+
+        status, data = await self._request("GET", endpoint, repo.token, params=params)
+
+        if status == 404:
+            return False, {"error": "not_found", "message": f"Tree not found for ref: {tree_ref}"}
+
+        if status != 200:
+            return False, {
+                "error": f"api_error_{status}",
+                "message": data.get("message", f"GitHub API returned {status}"),
+            }
+
+        return True, {
+            "sha": data.get("sha"),
+            "tree": data.get("tree", []),
+            "truncated": data.get("truncated", False),
+        }
+
+    async def get_default_branch(self, repo: GitHubRepoConfig) -> str:
+        """Get the default branch for a repository."""
+        success, repo_info = await self.get_repo_info(repo)
+        if success:
+            return repo_info.get("default_branch", "main")
+        return "main"
+
     async def list_contents(
         self,
         repo: GitHubRepoConfig,
