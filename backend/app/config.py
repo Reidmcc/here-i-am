@@ -1,3 +1,4 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import Optional, List
@@ -150,7 +151,15 @@ class GitHubRepoConfig:
         self.token = token
         self.protected_branches = protected_branches or ["main", "master"]
         self.capabilities = capabilities or ["read", "branch", "commit", "pr", "issue"]
-        self.local_clone_path = local_clone_path
+        # Normalize local_clone_path to handle Windows paths (backslashes)
+        # First normalize backslashes to forward slashes for cross-platform compatibility,
+        # then use Path to resolve the path correctly on the current OS
+        if local_clone_path:
+            # Convert Windows backslashes to forward slashes first
+            normalized = local_clone_path.replace("\\", "/")
+            self.local_clone_path = str(Path(normalized))
+        else:
+            self.local_clone_path = None
         self.commit_author_name = commit_author_name
         self.commit_author_email = commit_author_email
 

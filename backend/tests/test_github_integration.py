@@ -72,6 +72,49 @@ class TestGitHubRepoConfig:
         assert config.capabilities == ["read", "branch"]
         assert config.local_clone_path == "/path/to/clone"
 
+    def test_github_repo_config_windows_path_backslashes(self):
+        """Test GitHubRepoConfig normalizes Windows paths with backslashes."""
+        config = GitHubRepoConfig(
+            owner="test-owner",
+            repo="test-repo",
+            label="Test Project",
+            token="ghp_test",
+            local_clone_path="C:\\Users\\developer\\repos\\my-project",
+        )
+
+        # Backslashes should be converted to forward slashes
+        assert "\\" not in config.local_clone_path
+        assert "C:/Users/developer/repos/my-project" in config.local_clone_path or \
+               config.local_clone_path.endswith("Users/developer/repos/my-project")
+
+    def test_github_repo_config_windows_path_forward_slashes(self):
+        """Test GitHubRepoConfig handles Windows paths with forward slashes."""
+        config = GitHubRepoConfig(
+            owner="test-owner",
+            repo="test-repo",
+            label="Test Project",
+            token="ghp_test",
+            local_clone_path="C:/Users/developer/repos/my-project",
+        )
+
+        # Path should be preserved (forward slashes are valid on Windows too)
+        assert "Users/developer/repos/my-project" in config.local_clone_path
+
+    def test_github_repo_config_windows_unc_path(self):
+        """Test GitHubRepoConfig handles Windows UNC paths."""
+        config = GitHubRepoConfig(
+            owner="test-owner",
+            repo="test-repo",
+            label="Test Project",
+            token="ghp_test",
+            local_clone_path="\\\\server\\share\\repos\\my-project",
+        )
+
+        # UNC paths should be normalized (backslashes converted)
+        assert "\\" not in config.local_clone_path
+        # The exact format depends on OS, but it should be valid
+        assert "my-project" in config.local_clone_path
+
     def test_github_repo_config_to_dict_without_token(self):
         """Test to_dict excludes token by default."""
         config = GitHubRepoConfig(
