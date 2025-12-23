@@ -153,10 +153,17 @@ TOOL_USE_MAX_ITERATIONS=10
 The application supports **GitHub repository integration**, allowing AI entities to interact with GitHub repositories during conversations.
 
 **Available GitHub Tools:**
+
+*Composite Tools (Efficiency Optimized):*
+- **github_explore** - Best starting point for new repos. Returns metadata, file tree, and key documentation in one call
+- **github_tree** - Get full repository tree structure in a single call (replaces multiple list_contents calls)
+- **github_get_files** - Fetch up to 10 files in parallel in a single call
+
+*Standard Tools:*
 - **github_repo_info** - Get repository metadata (description, stars, issues, etc.)
-- **github_list_contents** - List files and directories in a repository
-- **github_get_file** - Read file contents (with binary detection and large file handling)
-- **github_search_code** - Search for code patterns within a repository
+- **github_list_contents** - List files and directories at a specific path
+- **github_get_file** - Read file contents (auto-truncated at 500 lines with smart summarization)
+- **github_search_code** - Search for code patterns (returns max 10 matches)
 - **github_list_branches** - List all branches in a repository
 - **github_create_branch** - Create new branches from existing refs
 - **github_commit_file** - Commit file changes (create, update, or delete)
@@ -224,6 +231,26 @@ GITHUB_REPOS='[
 - Tools are registered at module load time via `register_github_tools()`
 - All API requests use Bearer token authentication
 - Large files (>1MB) are fetched via Git Data API to avoid content limits
+
+**GitHub Tool Efficiency:**
+
+The GitHub tools are designed to minimize API calls and token usage:
+
+- **Start with github_explore** when working with a new repository. It provides repo metadata, file tree (depth 2), and key documentation files (README.md, CLAUDE.md, etc.) in one call.
+
+- **Use github_tree** instead of repeated github_list_contents calls to see the full directory structure. Returns a formatted tree view with file sizes.
+
+- **Batch file reads** with github_get_files when you need to read multiple files. Fetches up to 10 files in parallel, more efficient than multiple github_get_file calls.
+
+- **Large files are automatically truncated** to 500 lines with a structure summary (function/class counts). Use start_line/end_line parameters to read specific sections.
+
+- **Responses are cached** within a conversation session:
+  - Tree structure: 5 minutes TTL
+  - File contents: 10 minutes TTL
+  - Repository metadata: 10 minutes TTL
+  - PR/Issue lists: 2 minutes TTL
+
+- **Use bypass_cache=true** if you need fresh data after making changes. Cache is automatically invalidated when you commit or delete files.
 
 ---
 

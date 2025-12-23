@@ -9,13 +9,15 @@ This service provides:
 """
 
 import base64
+import fnmatch
 import hashlib
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 
@@ -39,6 +41,64 @@ BINARY_EXTENSIONS = {
     '.woff', '.woff2', '.ttf', '.eot', '.otf',
     '.pyc', '.pyo', '.class', '.o', '.a',
     '.db', '.sqlite', '.sqlite3',
+}
+
+# Sensitive files that should ALWAYS be blocked from local clone operations
+# These are blocked regardless of .gitignore content for security
+SENSITIVE_FILE_PATTERNS = {
+    # Environment files
+    '.env',
+    '.env.*',
+    '*.env',
+    '.env.local',
+    '.env.development',
+    '.env.production',
+    '.env.test',
+    '.env.staging',
+    # Credentials and secrets
+    'credentials.json',
+    'credentials.yaml',
+    'credentials.yml',
+    'secrets.json',
+    'secrets.yaml',
+    'secrets.yml',
+    '.secrets',
+    '*.pem',
+    '*.key',
+    '*.p12',
+    '*.pfx',
+    'id_rsa',
+    'id_rsa.*',
+    'id_dsa',
+    'id_dsa.*',
+    'id_ecdsa',
+    'id_ecdsa.*',
+    'id_ed25519',
+    'id_ed25519.*',
+    # API keys and tokens
+    '*_api_key*',
+    '*_secret*',
+    '*_token*',
+    'api_key*',
+    'apikey*',
+    # Cloud provider credentials
+    '.aws/credentials',
+    '.aws/config',
+    'gcloud*.json',
+    'service_account*.json',
+    'serviceaccount*.json',
+    # Database files
+    '*.sqlite',
+    '*.sqlite3',
+    '*.db',
+    # Other sensitive files
+    '.npmrc',
+    '.pypirc',
+    '.netrc',
+    '.htpasswd',
+    '.pgpass',
+    'shadow',
+    'passwd',
 }
 
 
@@ -413,6 +473,56 @@ class GitHubService:
             "updated_at": data.get("updated_at"),
             "html_url": data.get("html_url"),
         }
+
+    async def get_tree(
+        self,
+        repo: GitHubRepoConfig,
+        ref: Optional[str] = None,
+        recursive: bool = True,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Get the full repository tree using the Git Trees API.
+
+        This is more efficient than multiple list_contents calls.
+
+        Args:
+            repo: Repository configuration
+            ref: Git reference (branch, tag, SHA). Defaults to default branch.
+            recursive: Whether to get the full tree recursively
+
+        Returns:
+            Tuple of (success, data)
+            On success: {"tree": [...], "sha": "...", "truncated": bool}
+            On failure: {"error": "...", "message": "..."}
+        """
+        # Get the ref SHA first
+        tree_ref = ref or "HEAD"
+        endpoint = f"/repos/{repo.owner}/{repo.repo}/git/trees/{tree_ref}"
+        params = {"recursive": "1"} if recursive else {}
+
+        status, data = await self._request("GET", endpoint, repo.token, params=params)
+
+        if status == 404:
+            return False, {"error": "not_found", "message": f"Tree not found for ref: {tree_ref}"}
+
+        if status != 200:
+            return False, {
+                "error": f"api_error_{status}",
+                "message": data.get("message", f"GitHub API returned {status}"),
+            }
+
+        return True, {
+            "sha": data.get("sha"),
+            "tree": data.get("tree", []),
+            "truncated": data.get("truncated", False),
+        }
+
+    async def get_default_branch(self, repo: GitHubRepoConfig) -> str:
+        """Get the default branch for a repository."""
+        success, repo_info = await self.get_repo_info(repo)
+        if success:
+            return repo_info.get("default_branch", "main")
+        return "main"
 
     async def list_contents(
         self,
@@ -1026,6 +1136,179 @@ class GitHubService:
         }
 
     # =========================================================================
+    # Gitignore and Sensitive File Handling
+    # =========================================================================
+
+    def _is_sensitive_file(self, path: str) -> bool:
+        """
+        Check if a file path matches sensitive file patterns.
+
+        These patterns are ALWAYS blocked regardless of .gitignore content
+        to prevent accidental exposure of secrets.
+
+        Args:
+            path: File path relative to repository root
+
+        Returns:
+            True if the file should be blocked
+        """
+        # Get just the filename for simple pattern matching
+        filename = Path(path).name
+        path_lower = path.lower()
+        filename_lower = filename.lower()
+
+        for pattern in SENSITIVE_FILE_PATTERNS:
+            pattern_lower = pattern.lower()
+            # Check if pattern contains a path separator
+            if '/' in pattern:
+                # Match against full path
+                if fnmatch.fnmatch(path_lower, pattern_lower):
+                    return True
+            else:
+                # Match against filename only
+                if fnmatch.fnmatch(filename_lower, pattern_lower):
+                    return True
+
+        return False
+
+    def _parse_gitignore(self, local_root: Path) -> List[str]:
+        """
+        Parse .gitignore file and return list of patterns.
+
+        Args:
+            local_root: Path to the repository root
+
+        Returns:
+            List of gitignore patterns (comments and empty lines removed)
+        """
+        gitignore_path = local_root / ".gitignore"
+        patterns = []
+
+        if not gitignore_path.exists():
+            return patterns
+
+        try:
+            content = gitignore_path.read_text(encoding="utf-8")
+            for line in content.splitlines():
+                line = line.strip()
+                # Skip empty lines and comments
+                if not line or line.startswith('#'):
+                    continue
+                patterns.append(line)
+        except (OSError, UnicodeDecodeError) as e:
+            logger.warning(f"Could not read .gitignore: {e}")
+
+        return patterns
+
+    def _matches_gitignore(self, path: str, patterns: List[str]) -> bool:
+        """
+        Check if a path matches any gitignore pattern.
+
+        Implements a simplified version of gitignore pattern matching:
+        - Patterns ending with / only match directories
+        - Patterns starting with / are anchored to root
+        - ** matches any number of directories
+        - * matches anything except /
+        - Negation patterns (starting with !) are supported
+
+        Args:
+            path: File path relative to repository root
+            patterns: List of gitignore patterns
+
+        Returns:
+            True if the path should be ignored
+        """
+        # Track if we should ignore (can be negated)
+        should_ignore = False
+        path_parts = Path(path).parts
+        filename = path_parts[-1] if path_parts else ""
+
+        for pattern in patterns:
+            # Handle negation
+            negated = pattern.startswith('!')
+            if negated:
+                pattern = pattern[1:]
+
+            # Handle directory-only patterns (ending with /)
+            dir_only = pattern.endswith('/')
+            if dir_only:
+                pattern = pattern[:-1]
+
+            # Handle anchored patterns (starting with /)
+            anchored = pattern.startswith('/')
+            if anchored:
+                pattern = pattern[1:]
+
+            # Convert gitignore pattern to fnmatch pattern
+            # ** matches any number of directories
+            fnmatch_pattern = pattern.replace('**/', '**/').replace('/**', '/**')
+
+            # Check if pattern matches
+            matched = False
+
+            if '/' in pattern or anchored:
+                # Pattern with path separator - match against full path
+                # Convert ** to match any path segments
+                regex_pattern = fnmatch_pattern
+                regex_pattern = regex_pattern.replace('**/', '(.*/)?')
+                regex_pattern = regex_pattern.replace('/**', '(/.*)?')
+                regex_pattern = regex_pattern.replace('*', '[^/]*')
+                regex_pattern = regex_pattern.replace('?', '[^/]')
+                regex_pattern = f'^{regex_pattern}$' if anchored else f'(^|.*/){regex_pattern}$'
+
+                try:
+                    if re.match(regex_pattern, path):
+                        matched = True
+                except re.error:
+                    # Fall back to simple fnmatch
+                    if fnmatch.fnmatch(path, fnmatch_pattern):
+                        matched = True
+            else:
+                # Pattern without path separator - match against filename
+                if fnmatch.fnmatch(filename, pattern):
+                    matched = True
+                # Also check if any directory component matches
+                for part in path_parts[:-1]:
+                    if fnmatch.fnmatch(part, pattern):
+                        matched = True
+                        break
+
+            if matched:
+                should_ignore = not negated
+
+        return should_ignore
+
+    def _should_exclude_path(
+        self,
+        path: str,
+        gitignore_patterns: List[str],
+        is_directory: bool = False,
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Check if a path should be excluded from local clone operations.
+
+        Checks both sensitive file patterns and .gitignore patterns.
+
+        Args:
+            path: File path relative to repository root
+            gitignore_patterns: Parsed .gitignore patterns
+            is_directory: Whether the path is a directory
+
+        Returns:
+            Tuple of (should_exclude, reason)
+            reason is None if not excluded, otherwise a string explaining why
+        """
+        # Check sensitive files first (always blocked, highest priority)
+        if not is_directory and self._is_sensitive_file(path):
+            return True, "sensitive_file"
+
+        # Check gitignore patterns
+        if self._matches_gitignore(path, gitignore_patterns):
+            return True, "gitignore"
+
+        return False, None
+
+    # =========================================================================
     # Local Clone Operations
     # =========================================================================
 
@@ -1063,6 +1346,17 @@ class GitHubService:
             file_path.resolve().relative_to(local_root.resolve())
         except ValueError:
             return False, {"error": "invalid_path", "message": "Path escapes repository root"}
+
+        # Security: Check if file is sensitive or gitignored
+        gitignore_patterns = self._parse_gitignore(local_root)
+        should_exclude, reason = self._should_exclude_path(path, gitignore_patterns, is_directory=False)
+        if should_exclude:
+            if reason == "sensitive_file":
+                logger.warning(f"Blocked access to sensitive file: {path}")
+                return False, {"error": "sensitive_file", "message": f"Access blocked: '{path}' is a sensitive file that cannot be read"}
+            else:
+                logger.info(f"Blocked access to gitignored file: {path}")
+                return False, {"error": "gitignored", "message": f"Access blocked: '{path}' is excluded by .gitignore"}
 
         if not file_path.exists():
             return False, {"error": "not_found", "message": f"File not found: {path}"}
@@ -1150,8 +1444,18 @@ class GitHubService:
         if not target_path.exists():
             return False, [{"error": "not_found", "message": f"Path not found: {path or '/'}"}]
 
+        # Parse gitignore once for the directory listing
+        gitignore_patterns = self._parse_gitignore(local_root)
+
         if not target_path.is_dir():
-            # Single file - return it as a list with one item
+            # Single file - check if it should be excluded
+            should_exclude, reason = self._should_exclude_path(path, gitignore_patterns, is_directory=False)
+            if should_exclude:
+                if reason == "sensitive_file":
+                    return False, [{"error": "sensitive_file", "message": f"Access blocked: '{path}' is a sensitive file"}]
+                else:
+                    return False, [{"error": "gitignored", "message": f"Access blocked: '{path}' is excluded by .gitignore"}]
+
             try:
                 file_size = target_path.stat().st_size
             except OSError:
@@ -1173,8 +1477,14 @@ class GitHubService:
                     continue
 
                 rel_path = str(entry.relative_to(local_root))
+                is_dir = entry.is_dir()
 
-                if entry.is_dir():
+                # Check if this path should be excluded
+                should_exclude, _ = self._should_exclude_path(rel_path, gitignore_patterns, is_directory=is_dir)
+                if should_exclude:
+                    continue
+
+                if is_dir:
                     items.append({
                         "type": "dir",
                         "name": entry.name,
@@ -1200,6 +1510,94 @@ class GitHubService:
         # Sort: directories first, then files, alphabetically
         items.sort(key=lambda x: (0 if x["type"] == "dir" else 1, x["name"].lower()))
         return True, items
+
+    def get_tree_local(
+        self,
+        repo: GitHubRepoConfig,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Get the full repository tree from a local clone.
+
+        Walks the local filesystem recursively to build a tree structure
+        matching the GitHub Git Trees API format.
+
+        Args:
+            repo: Repository configuration with local_clone_path
+
+        Returns:
+            Tuple of (success, data)
+            On success: {"tree": [...], "sha": None, "truncated": False, "source": "local"}
+            On failure: {"error": "...", "message": "..."}
+        """
+        if not repo.local_clone_path:
+            return False, {"error": "no_local_clone", "message": "No local clone configured"}
+
+        local_root = Path(repo.local_clone_path)
+
+        if not local_root.is_dir():
+            return False, {"error": "not_found", "message": f"Local clone path does not exist: {repo.local_clone_path}"}
+
+        # Parse gitignore once for the entire tree walk
+        gitignore_patterns = self._parse_gitignore(local_root)
+
+        # Track excluded directories to skip their children
+        excluded_dirs: Set[str] = set()
+        tree_items = []
+
+        try:
+            for entry in local_root.rglob("*"):
+                # Skip hidden files/directories and .git
+                parts = entry.relative_to(local_root).parts
+                if any(part.startswith('.') for part in parts):
+                    continue
+
+                rel_path = str(entry.relative_to(local_root))
+                is_dir = entry.is_dir()
+
+                # Check if any parent directory was excluded
+                parent_excluded = False
+                for excluded_dir in excluded_dirs:
+                    if rel_path.startswith(excluded_dir + "/") or rel_path.startswith(excluded_dir + "\\"):
+                        parent_excluded = True
+                        break
+                if parent_excluded:
+                    continue
+
+                # Check if this path should be excluded
+                should_exclude, _ = self._should_exclude_path(rel_path, gitignore_patterns, is_directory=is_dir)
+                if should_exclude:
+                    if is_dir:
+                        excluded_dirs.add(rel_path)
+                    continue
+
+                if is_dir:
+                    tree_items.append({
+                        "path": rel_path,
+                        "type": "tree",
+                        "size": None,
+                    })
+                else:
+                    try:
+                        file_size = entry.stat().st_size
+                    except OSError:
+                        file_size = 0
+                    tree_items.append({
+                        "path": rel_path,
+                        "type": "blob",
+                        "size": file_size,
+                    })
+        except OSError as e:
+            return False, {"error": "read_error", "message": f"Could not read directory tree: {e}"}
+
+        # Sort by path for consistent output
+        tree_items.sort(key=lambda x: x["path"].lower())
+
+        return True, {
+            "sha": None,  # No SHA available for local clone
+            "tree": tree_items,
+            "truncated": False,
+            "source": "local",
+        }
 
 
 # Singleton instance
