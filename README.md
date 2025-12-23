@@ -45,7 +45,7 @@ However, the application is not locked into that specific use case. Here I Am gi
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/here-i-am.git
+git clone https://github.com/Reidmcc/here-i-am.git
 cd here-i-am
 ```
 
