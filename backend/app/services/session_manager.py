@@ -1395,20 +1395,18 @@ class SessionManager:
                 working_messages = list(messages)  # Include memories
             else:
                 # Rebuild from base (no memories) + accumulated tool exchanges
-                # Add cache_control to the last tool result for caching between iterations
+                # Add cache_control to ALL tool results for caching between iterations
+                # This ensures the prefix matches across iterations for cache hits:
+                # - Iteration 2: [base_cache, asst_1, user_1_cache]
+                # - Iteration 3: [base_cache, asst_1, user_1_cache, asst_2, user_2_cache]
+                # The prefix in iteration 3 matches iteration 2, enabling cache hits
                 working_messages = list(base_messages_no_memories)
-                for i, exchange in enumerate(tool_exchanges):
+                for exchange in tool_exchanges:
                     working_messages.append(exchange["assistant"])
-                    is_last_exchange = (i == len(tool_exchanges) - 1)
-                    if is_last_exchange:
-                        # Add cache_control to the last tool result message
-                        # This enables caching of all previous tool exchanges for subsequent iterations
-                        user_msg = _add_cache_control_to_tool_result(exchange["user"])
-                        working_messages.append(user_msg)
-                        logger.info(f"[CACHE] Added cache_control to tool result message (iteration {iteration})")
-                    else:
-                        working_messages.append(exchange["user"])
-                logger.info(f"[TOOLS] Iteration {iteration}: Using messages without memory block ({len(working_messages)} messages)")
+                    # Add cache_control to each tool result for consistent caching
+                    user_msg = _add_cache_control_to_tool_result(exchange["user"])
+                    working_messages.append(user_msg)
+                logger.info(f"[TOOLS] Iteration {iteration}: Using messages without memory block ({len(working_messages)} messages, {len(tool_exchanges)} tool exchanges with cache_control)")
 
             async for event in llm_service.send_message_stream(
                 messages=working_messages,

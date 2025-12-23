@@ -2431,15 +2431,17 @@ class TestToolIterationCaching:
         last_block = second_call_tool_result["content"][-1]
         assert last_block.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
 
-        # Third iteration: should have cache_control only on LAST tool result
-        # Messages: base, assistant, user (NO cache_control), assistant, user (WITH cache_control)
-        # The first tool_result should NOT have cache_control anymore (it's not the last exchange)
+        # Third iteration: should have cache_control on ALL tool results
+        # This ensures prefix consistency for cache hits:
+        # - Iteration 2 sent: [base_cache, asst_1, user_1_cache]
+        # - Iteration 3 sends: [base_cache, asst_1, user_1_cache, asst_2, user_2_cache]
+        # The prefix matches, enabling cache hit on the first tool exchange
         third_call_first_tool_result = sent_messages[2][2]
         assert third_call_first_tool_result["role"] == "user"
         first_block = third_call_first_tool_result["content"][-1]
-        assert "cache_control" not in first_block  # Not the last exchange
+        assert first_block.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}  # All have cache_control
 
-        # The second (last) tool_result SHOULD have cache_control
+        # The second tool_result also has cache_control
         third_call_second_tool_result = sent_messages[2][4]
         assert third_call_second_tool_result["role"] == "user"
         last_block = third_call_second_tool_result["content"][-1]
