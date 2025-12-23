@@ -336,11 +336,23 @@ class ConversationSession:
             for m in memories
         ]
 
-    def add_exchange(self, human_message: Optional[str], assistant_response: str):
+    def add_exchange(
+        self,
+        human_message: Optional[str],
+        assistant_response: str,
+        tool_exchanges: Optional[List[Dict[str, Any]]] = None,
+    ):
         """Add a human/assistant exchange to the conversation context.
 
         If human_message is None (continuation), only the assistant response is added.
         For multi-entity conversations, messages are labeled with participant names.
+
+        Args:
+            human_message: The human's message (None for continuations)
+            assistant_response: The final text response from the assistant
+            tool_exchanges: Optional list of tool exchanges that occurred during this response.
+                Each exchange is a dict with "assistant" and "user" keys containing
+                the tool_use and tool_result messages respectively.
         """
         if human_message:
             if self.is_multi_entity:
@@ -349,6 +361,24 @@ class ConversationSession:
             else:
                 self.conversation_context.append({"role": "user", "content": human_message})
 
+        # Add tool exchanges if any occurred during this response
+        # These go between the user message and the final assistant response
+        if tool_exchanges:
+            for exchange in tool_exchanges:
+                # Assistant's tool_use message (content is a list of content blocks)
+                self.conversation_context.append({
+                    "role": "assistant",
+                    "content": exchange["assistant"]["content"],
+                    "is_tool_use": True,
+                })
+                # User's tool_result message (content is a list of tool_result blocks)
+                self.conversation_context.append({
+                    "role": "user",
+                    "content": exchange["user"]["content"],
+                    "is_tool_result": True,
+                })
+
+        # Add the final assistant response (text only)
         if self.is_multi_entity and self.responding_entity_label:
             labeled_content = f"[{self.responding_entity_label}]: {assistant_response}"
             self.conversation_context.append({"role": "assistant", "content": labeled_content})
@@ -706,6 +736,21 @@ class SessionManager:
                     session.conversation_context.append({"role": "assistant", "content": labeled_content})
                 else:
                     session.conversation_context.append({"role": "assistant", "content": msg.content})
+            elif msg.role == MessageRole.TOOL_USE:
+                # Tool use messages store content blocks as JSON
+                # Reconstruct the proper format for API calls
+                session.conversation_context.append({
+                    "role": "assistant",
+                    "content": msg.content_blocks,  # Uses the property that parses JSON
+                    "is_tool_use": True,
+                })
+            elif msg.role == MessageRole.TOOL_RESULT:
+                # Tool result messages store content blocks as JSON
+                session.conversation_context.append({
+                    "role": "user",
+                    "content": msg.content_blocks,  # Uses the property that parses JSON
+                    "is_tool_result": True,
+                })
             else:
                 logger.warning(f"[SESSION] Skipping message with unexpected role: {msg.role}")
 
@@ -1443,7 +1488,12 @@ class SessionManager:
                         full_content += iteration_content
 
                         # Update conversation context and cache state
-                        session.add_exchange(user_message, full_content)
+                        # Include tool exchanges so they're persisted in conversation history
+                        session.add_exchange(
+                            user_message,
+                            full_content,
+                            tool_exchanges=tool_exchanges if tool_exchanges else None,
+                        )
 
                         # Update cache state for conversation history (memories don't affect cache hits)
                         if should_consolidate:
@@ -1457,10 +1507,13 @@ class SessionManager:
 
                         session.update_cache_state(new_cached_ctx_len)
 
-                        # Add tool_uses to done event if any tools were used
+                        # Add tool data to done event if any tools were used
                         final_event = dict(event)
                         if accumulated_tool_uses:
                             final_event["tool_uses"] = accumulated_tool_uses
+                        if tool_exchanges:
+                            # Include full tool exchanges for DB persistence
+                            final_event["tool_exchanges"] = tool_exchanges
                         yield final_event
                         return
                 elif event["type"] == "error":
@@ -1552,7 +1605,11 @@ class SessionManager:
 
         # If we've exhausted iterations, yield what we have
         logger.warning(f"[TOOLS] Max iterations ({max_iterations}) reached")
-        session.add_exchange(user_message, full_content)
+        session.add_exchange(
+            user_message,
+            full_content,
+            tool_exchanges=tool_exchanges if tool_exchanges else None,
+        )
 
         yield {
             "type": "done",
@@ -1561,6 +1618,7 @@ class SessionManager:
             "usage": {},
             "stop_reason": "max_iterations",
             "tool_uses": accumulated_tool_uses if accumulated_tool_uses else None,
+            "tool_exchanges": tool_exchanges if tool_exchanges else None,
         }
 
     def close_session(self, conversation_id: str):

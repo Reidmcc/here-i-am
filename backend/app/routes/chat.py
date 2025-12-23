@@ -434,6 +434,7 @@ async def stream_message(data: ChatRequest):
                 model_used = session.model
                 usage_data = {}
                 stop_reason = None
+                tool_exchanges = []
 
                 # Get tool schemas if tools are enabled and using a supported provider
                 tool_schemas = None
@@ -468,6 +469,7 @@ async def stream_message(data: ChatRequest):
                         model_used = event.get("model", model_used)
                         usage_data = event.get("usage", {})
                         stop_reason = event.get("stop_reason")
+                        tool_exchanges = event.get("tool_exchanges", [])
                         yield f"event: done\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "error":
                         yield f"event: error\ndata: {json.dumps(event)}\n\n"
@@ -484,6 +486,34 @@ async def stream_message(data: ChatRequest):
                         token_count=llm_service.count_tokens(data.message),
                     )
                     db.add(human_msg)
+
+                # Store tool exchanges as separate messages (between human and final assistant)
+                # This preserves tool results for future responses
+                tool_exchange_msgs = []
+                if tool_exchanges:
+                    for exchange in tool_exchanges:
+                        # Tool use message (assistant's request to use a tool)
+                        tool_use_content = Message.serialize_content_blocks(exchange["assistant"]["content"])
+                        tool_use_msg = Message(
+                            conversation_id=data.conversation_id,
+                            role=MessageRole.TOOL_USE,
+                            content=tool_use_content,
+                            token_count=llm_service.count_tokens(tool_use_content),
+                            speaker_entity_id=responding_entity_id if is_multi_entity else None,
+                        )
+                        db.add(tool_use_msg)
+                        tool_exchange_msgs.append(tool_use_msg)
+
+                        # Tool result message (the tool's response)
+                        tool_result_content = Message.serialize_content_blocks(exchange["user"]["content"])
+                        tool_result_msg = Message(
+                            conversation_id=data.conversation_id,
+                            role=MessageRole.TOOL_RESULT,
+                            content=tool_result_content,
+                            token_count=llm_service.count_tokens(tool_result_content),
+                        )
+                        db.add(tool_result_msg)
+                        tool_exchange_msgs.append(tool_result_msg)
 
                 assistant_msg = Message(
                     conversation_id=data.conversation_id,
@@ -830,6 +860,7 @@ async def regenerate_response(data: RegenerateRequest):
                 model_used = session.model
                 usage_data = {}
                 stop_reason = None
+                tool_exchanges = []
 
                 # Get tool schemas if tools are enabled and using a supported provider
                 tool_schemas = None
@@ -865,12 +896,40 @@ async def regenerate_response(data: RegenerateRequest):
                         model_used = event.get("model", model_used)
                         usage_data = event.get("usage", {})
                         stop_reason = event.get("stop_reason")
+                        tool_exchanges = event.get("tool_exchanges", [])
                         yield f"event: done\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "error":
                         yield f"event: error\ndata: {json.dumps(event)}\n\n"
                         return
 
-                # Store only the new assistant message (human message already exists)
+                # Store tool exchanges as separate messages (between human and final assistant)
+                tool_exchange_msgs = []
+                if tool_exchanges:
+                    for exchange in tool_exchanges:
+                        # Tool use message (assistant's request to use a tool)
+                        tool_use_content = Message.serialize_content_blocks(exchange["assistant"]["content"])
+                        tool_use_msg = Message(
+                            conversation_id=conversation_id,
+                            role=MessageRole.TOOL_USE,
+                            content=tool_use_content,
+                            token_count=llm_service.count_tokens(tool_use_content),
+                            speaker_entity_id=responding_entity_id if is_multi_entity else None,
+                        )
+                        db.add(tool_use_msg)
+                        tool_exchange_msgs.append(tool_use_msg)
+
+                        # Tool result message (the tool's response)
+                        tool_result_content = Message.serialize_content_blocks(exchange["user"]["content"])
+                        tool_result_msg = Message(
+                            conversation_id=conversation_id,
+                            role=MessageRole.TOOL_RESULT,
+                            content=tool_result_content,
+                            token_count=llm_service.count_tokens(tool_result_content),
+                        )
+                        db.add(tool_result_msg)
+                        tool_exchange_msgs.append(tool_result_msg)
+
+                # Store the new assistant message
                 assistant_msg = Message(
                     conversation_id=conversation_id,
                     role=MessageRole.ASSISTANT,
