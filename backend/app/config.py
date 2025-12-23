@@ -141,6 +141,8 @@ class GitHubRepoConfig:
         protected_branches: Optional[List[str]] = None,
         capabilities: Optional[List[str]] = None,
         local_clone_path: Optional[str] = None,
+        commit_author_name: Optional[str] = None,
+        commit_author_email: Optional[str] = None,
     ):
         self.owner = owner
         self.repo = repo
@@ -149,6 +151,8 @@ class GitHubRepoConfig:
         self.protected_branches = protected_branches or ["main", "master"]
         self.capabilities = capabilities or ["read", "branch", "commit", "pr", "issue"]
         self.local_clone_path = local_clone_path
+        self.commit_author_name = commit_author_name
+        self.commit_author_email = commit_author_email
 
     def to_dict(self, include_token: bool = False):
         """Convert to dict, optionally excluding the token for security."""
@@ -159,6 +163,8 @@ class GitHubRepoConfig:
             "protected_branches": self.protected_branches,
             "capabilities": self.capabilities,
             "local_clone_path": self.local_clone_path,
+            "commit_author_name": self.commit_author_name,
+            "commit_author_email": self.commit_author_email,
         }
         if include_token:
             result["token"] = self.token
@@ -385,6 +391,8 @@ class Settings(BaseSettings):
                     protected_branches=repo.get("protected_branches"),
                     capabilities=repo.get("capabilities"),
                     local_clone_path=repo.get("local_clone_path"),
+                    commit_author_name=repo.get("commit_author_name"),
+                    commit_author_email=repo.get("commit_author_email"),
                 )
                 for repo in repos_data
                 if repo.get("owner") and repo.get("repo") and repo.get("token")
