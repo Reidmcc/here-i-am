@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any, AsyncIterator, Set
+from typing import Optional, List, Dict, Any, AsyncIterator, Set, Union
 from datetime import datetime
 from anthropic import AsyncAnthropic
 from app.config import settings
@@ -7,6 +7,38 @@ import json
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _get_content_text(content: Union[str, List[Dict[str, Any]]]) -> str:
+    """
+    Extract text representation from content (string or content blocks).
+
+    For string content, returns the string directly.
+    For content blocks (tool_use, tool_result, text), extracts text/content fields.
+    """
+    if isinstance(content, str):
+        return content
+
+    # Content blocks - extract text from each block
+    text_parts = []
+    for block in content:
+        block_type = block.get("type", "")
+        if block_type == "text":
+            text_parts.append(block.get("text", ""))
+        elif block_type == "tool_use":
+            # Summarize tool use for display/token counting
+            tool_name = block.get("name", "unknown")
+            tool_input = json.dumps(block.get("input", {}))
+            text_parts.append(f"[Tool use: {tool_name}({tool_input})]")
+        elif block_type == "tool_result":
+            # Tool result content
+            result_content = block.get("content", "")
+            if isinstance(result_content, str):
+                text_parts.append(f"[Tool result: {result_content}]")
+            else:
+                text_parts.append(f"[Tool result: {json.dumps(result_content)}]")
+
+    return "\n".join(text_parts)
 
 
 class AnthropicService:
@@ -413,50 +445,82 @@ class AnthropicService:
         will_cache_history = False
 
         if cached_context:
-            cached_history_text = "\n".join(f"{get_role_label(m['role'])}: {m['content']}" for m in cached_context)
+            # Extract text from content (handles both strings and content blocks)
+            cached_history_text = "\n".join(
+                f"{get_role_label(m['role'])}: {_get_content_text(m['content'])}"
+                for m in cached_context
+            )
             cached_history_tokens = self.count_tokens(cached_history_text)
             will_cache_history = enable_caching and cached_history_tokens >= 1024
             # Count messages by role for debugging
             user_count = sum(1 for m in cached_context if m.get('role') == 'user')
             assistant_count = sum(1 for m in cached_context if m.get('role') == 'assistant')
-            logger.info(f"[CACHE] Cached history: {len(cached_context)} msgs ({user_count} user, {assistant_count} assistant), {cached_history_tokens} tokens, will cache: {will_cache_history}")
+            tool_count = sum(1 for m in cached_context if m.get('is_tool_use') or m.get('is_tool_result'))
+            logger.info(f"[CACHE] Cached history: {len(cached_context)} msgs ({user_count} user, {assistant_count} assistant, {tool_count} tool), {cached_history_tokens} tokens, will cache: {will_cache_history}")
 
         # STEP 1: Add cached conversation history with cache breakpoint on last message
         if cached_context:
             for i, msg in enumerate(cached_context):
                 is_first = (i == 0)
                 is_last = (i == len(cached_context) - 1)
+                is_tool_exchange = msg.get("is_tool_use") or msg.get("is_tool_result")
 
-                # First message gets [CONVERSATION HISTORY] marker and multi-entity header
-                content = msg["content"]
-                if is_first:
-                    content = "[CONVERSATION HISTORY]\n" + multi_entity_header + "\n" + content
-
-                if is_last and will_cache_history:
-                    # Put cache_control on the last cached history message
-                    messages.append({
-                        "role": msg["role"],
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": content,
-                                "cache_control": {"type": "ephemeral", "ttl": "1h"}
-                            }
-                        ]
-                    })
-                    logger.info(f"[CACHE] Added cached history WITH cache_control on last message")
+                if is_tool_exchange:
+                    # Tool exchange messages have content blocks, pass them directly
+                    content_blocks = msg["content"]
+                    if is_last and will_cache_history:
+                        # Add cache_control to the last content block
+                        if isinstance(content_blocks, list) and content_blocks:
+                            cached_blocks = list(content_blocks)
+                            last_block = dict(cached_blocks[-1])
+                            last_block["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+                            cached_blocks[-1] = last_block
+                            messages.append({"role": msg["role"], "content": cached_blocks})
+                        else:
+                            messages.append({"role": msg["role"], "content": content_blocks})
+                        logger.info(f"[CACHE] Added cached tool exchange WITH cache_control on last message")
+                    else:
+                        messages.append({"role": msg["role"], "content": content_blocks})
                 else:
-                    messages.append({"role": msg["role"], "content": content})
+                    # Regular messages have string content
+                    content = msg["content"]
+                    if is_first:
+                        # First message gets [CONVERSATION HISTORY] marker and multi-entity header
+                        content = "[CONVERSATION HISTORY]\n" + multi_entity_header + "\n" + content
+
+                    if is_last and will_cache_history:
+                        # Put cache_control on the last cached history message
+                        messages.append({
+                            "role": msg["role"],
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": content,
+                                    "cache_control": {"type": "ephemeral", "ttl": "1h"}
+                                }
+                            ]
+                        })
+                        logger.info(f"[CACHE] Added cached history WITH cache_control on last message")
+                    else:
+                        messages.append({"role": msg["role"], "content": content})
 
         # STEP 2: Add new conversation history (uncached, grows until consolidation)
         if new_context:
-            logger.info(f"[CACHE] New history: {len(new_context)} messages (uncached)")
+            tool_count = sum(1 for m in new_context if m.get('is_tool_use') or m.get('is_tool_result'))
+            logger.info(f"[CACHE] New history: {len(new_context)} messages (uncached, {tool_count} tool)")
             for i, msg in enumerate(new_context):
-                content = msg["content"]
-                # If there's no cached context, first new message gets the conversation header
-                if i == 0 and not cached_context:
-                    content = "[CONVERSATION HISTORY]\n" + multi_entity_header + "\n" + content
-                messages.append({"role": msg["role"], "content": content})
+                is_tool_exchange = msg.get("is_tool_use") or msg.get("is_tool_result")
+
+                if is_tool_exchange:
+                    # Tool exchange messages have content blocks, pass them directly
+                    messages.append({"role": msg["role"], "content": msg["content"]})
+                else:
+                    # Regular messages have string content
+                    content = msg["content"]
+                    # If there's no cached context, first new message gets the conversation header
+                    if i == 0 and not cached_context:
+                        content = "[CONVERSATION HISTORY]\n" + multi_entity_header + "\n" + content
+                    messages.append({"role": msg["role"], "content": content})
 
         # STEP 3: Build the memories block text (after conversation history)
         # Memories go after conversation so new retrievals don't invalidate conversation cache

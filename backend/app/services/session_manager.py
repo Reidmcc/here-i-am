@@ -1,6 +1,7 @@
 from typing import Dict, List, Set, Optional, Any, AsyncIterator, Callable, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
+import json
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -190,6 +191,85 @@ def _build_memory_block_text(
     return memory_block
 
 
+def _add_cache_control_to_tool_result(user_msg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Add cache_control to the last tool_result block in a user message.
+
+    This enables Anthropic's prompt caching between tool iterations, so that
+    previous tool exchanges are cached when making the next API call.
+
+    Args:
+        user_msg: The user message containing tool_result content blocks
+
+    Returns:
+        A new message dict with cache_control added to the last content block
+    """
+    # Make a shallow copy to avoid mutating the original
+    result = dict(user_msg)
+
+    content = result.get("content")
+    if isinstance(content, list) and content:
+        # Copy the content list and its blocks
+        content_copy = []
+        for i, block in enumerate(content):
+            is_last = (i == len(content) - 1)
+            if is_last:
+                # Add cache_control to the last block
+                block_copy = dict(block)
+                block_copy["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+                content_copy.append(block_copy)
+            else:
+                content_copy.append(block)
+        result["content"] = content_copy
+
+    return result
+
+
+def _estimate_tool_exchange_tokens(
+    exchange: Dict[str, Any],
+    count_tokens_fn: Callable[[str], int]
+) -> int:
+    """
+    Estimate the token count for a tool exchange (assistant tool_use + user tool_result).
+
+    Args:
+        exchange: Dict with "assistant" and "user" message dicts
+        count_tokens_fn: Function to count tokens in text
+
+    Returns:
+        Estimated token count for the exchange
+    """
+    total = 0
+
+    # Count tokens in assistant's tool_use content
+    assistant_content = exchange.get("assistant", {}).get("content", [])
+    if isinstance(assistant_content, list):
+        for block in assistant_content:
+            if block.get("type") == "tool_use":
+                # Count tool name and input
+                total += count_tokens_fn(block.get("name", ""))
+                input_json = json.dumps(block.get("input", {}))
+                total += count_tokens_fn(input_json)
+            elif block.get("type") == "text":
+                total += count_tokens_fn(block.get("text", ""))
+
+    # Count tokens in user's tool_result content
+    user_content = exchange.get("user", {}).get("content", [])
+    if isinstance(user_content, list):
+        for block in user_content:
+            if block.get("type") == "tool_result":
+                content = block.get("content", "")
+                if isinstance(content, str):
+                    total += count_tokens_fn(content)
+                elif isinstance(content, list):
+                    # Content can be a list of content blocks
+                    for sub_block in content:
+                        if isinstance(sub_block, dict) and sub_block.get("type") == "text":
+                            total += count_tokens_fn(sub_block.get("text", ""))
+
+    return total
+
+
 @dataclass
 class MemoryEntry:
     """A memory retrieved during a session."""
@@ -302,11 +382,23 @@ class ConversationSession:
             for m in memories
         ]
 
-    def add_exchange(self, human_message: Optional[str], assistant_response: str):
+    def add_exchange(
+        self,
+        human_message: Optional[str],
+        assistant_response: str,
+        tool_exchanges: Optional[List[Dict[str, Any]]] = None,
+    ):
         """Add a human/assistant exchange to the conversation context.
 
         If human_message is None (continuation), only the assistant response is added.
         For multi-entity conversations, messages are labeled with participant names.
+
+        Args:
+            human_message: The human's message (None for continuations)
+            assistant_response: The final text response from the assistant
+            tool_exchanges: Optional list of tool exchanges that occurred during this response.
+                Each exchange is a dict with "assistant" and "user" keys containing
+                the tool_use and tool_result messages respectively.
         """
         if human_message:
             if self.is_multi_entity:
@@ -315,6 +407,24 @@ class ConversationSession:
             else:
                 self.conversation_context.append({"role": "user", "content": human_message})
 
+        # Add tool exchanges if any occurred during this response
+        # These go between the user message and the final assistant response
+        if tool_exchanges:
+            for exchange in tool_exchanges:
+                # Assistant's tool_use message (content is a list of content blocks)
+                self.conversation_context.append({
+                    "role": "assistant",
+                    "content": exchange["assistant"]["content"],
+                    "is_tool_use": True,
+                })
+                # User's tool_result message (content is a list of tool_result blocks)
+                self.conversation_context.append({
+                    "role": "user",
+                    "content": exchange["user"]["content"],
+                    "is_tool_result": True,
+                })
+
+        # Add the final assistant response (text only)
         if self.is_multi_entity and self.responding_entity_label:
             labeled_content = f"[{self.responding_entity_label}]: {assistant_response}"
             self.conversation_context.append({"role": "assistant", "content": labeled_content})
@@ -672,6 +782,21 @@ class SessionManager:
                     session.conversation_context.append({"role": "assistant", "content": labeled_content})
                 else:
                     session.conversation_context.append({"role": "assistant", "content": msg.content})
+            elif msg.role == MessageRole.TOOL_USE:
+                # Tool use messages store content blocks as JSON
+                # Reconstruct the proper format for API calls
+                session.conversation_context.append({
+                    "role": "assistant",
+                    "content": msg.content_blocks,  # Uses the property that parses JSON
+                    "is_tool_use": True,
+                })
+            elif msg.role == MessageRole.TOOL_RESULT:
+                # Tool result messages store content blocks as JSON
+                session.conversation_context.append({
+                    "role": "user",
+                    "content": msg.content_blocks,  # Uses the property that parses JSON
+                    "is_tool_result": True,
+                })
             else:
                 logger.warning(f"[SESSION] Skipping message with unexpected role: {msg.role}")
 
@@ -1324,26 +1449,21 @@ class SessionManager:
 
         # Build messages WITHOUT memories for subsequent tool iterations (memory optimization)
         # This reduces context size on iterations after the first
-        base_messages_no_memories = llm_service.build_messages_with_memories(
-            memories=[],  # No memories for subsequent iterations
-            conversation_context=session.conversation_context,
-            current_message=user_message,
-            model=session.model,
-            conversation_start_date=session.conversation_start_date,
-            enable_caching=True,
-            cached_context=cache_content["cached_context"],
-            new_context=cache_content["new_context"],
-            is_multi_entity=session.is_multi_entity,
-            entity_labels=session.entity_labels,
-            responding_entity_label=session.responding_entity_label,
-            user_display_name=session.user_display_name,
-        )
+        # Lazy initialization - only built when tool use is detected
+        base_messages_no_memories = None
 
         # Step 6: Stream LLM response with caching enabled
         # This includes a tool use loop if tools are provided
         full_content = ""
         accumulated_tool_uses = []  # Track all tool uses across iterations
         tool_exchanges = []  # Track tool exchanges for rebuilding messages without memories
+        tool_exchange_tokens = []  # Token count for each exchange (parallel to tool_exchanges)
+        # Single moving cache breakpoint (like conversation history caching)
+        # Only moves when enough new tokens accumulate, ensuring cache hits on prefix
+        tool_cache_breakpoint_index: Optional[int] = None  # Index of exchange with cache_control
+        total_tool_tokens = 0  # Total tokens across all tool exchanges
+        tokens_at_last_breakpoint = 0  # Total tokens when breakpoint was last set/moved
+        TOOL_CACHE_TOKEN_THRESHOLD = 2048  # Move breakpoint after N new tokens
         iteration = 0
         max_iterations = settings.tool_use_max_iterations
 
@@ -1360,12 +1480,37 @@ class SessionManager:
             if iteration == 1:
                 working_messages = list(messages)  # Include memories
             else:
+                # Lazy build base messages without memories (only when tool use actually happens)
+                if base_messages_no_memories is None:
+                    base_messages_no_memories = llm_service.build_messages_with_memories(
+                        memories=[],  # No memories for subsequent iterations
+                        conversation_context=session.conversation_context,
+                        current_message=user_message,
+                        model=session.model,
+                        conversation_start_date=session.conversation_start_date,
+                        enable_caching=True,
+                        cached_context=cache_content["cached_context"],
+                        new_context=cache_content["new_context"],
+                        is_multi_entity=session.is_multi_entity,
+                        entity_labels=session.entity_labels,
+                        responding_entity_label=session.responding_entity_label,
+                        user_display_name=session.user_display_name,
+                    )
+
                 # Rebuild from base (no memories) + accumulated tool exchanges
+                # Use single moving cache breakpoint (like conversation history)
+                # Only the exchange at the breakpoint index gets cache_control
                 working_messages = list(base_messages_no_memories)
-                for exchange in tool_exchanges:
+                for i, exchange in enumerate(tool_exchanges):
                     working_messages.append(exchange["assistant"])
-                    working_messages.append(exchange["user"])
-                logger.info(f"[TOOLS] Iteration {iteration}: Using messages without memory block ({len(working_messages)} messages)")
+                    # Only add cache_control at the single breakpoint position
+                    if i == tool_cache_breakpoint_index:
+                        user_msg = _add_cache_control_to_tool_result(exchange["user"])
+                    else:
+                        user_msg = exchange["user"]
+                    working_messages.append(user_msg)
+                breakpoint_info = f"breakpoint at {tool_cache_breakpoint_index}" if tool_cache_breakpoint_index is not None else "no breakpoint"
+                logger.info(f"[TOOLS] Iteration {iteration}: Using messages without memory block ({len(working_messages)} messages, {len(tool_exchanges)} tool exchanges, {breakpoint_info})")
 
             async for event in llm_service.send_message_stream(
                 messages=working_messages,
@@ -1402,7 +1547,12 @@ class SessionManager:
                         full_content += iteration_content
 
                         # Update conversation context and cache state
-                        session.add_exchange(user_message, full_content)
+                        # Include tool exchanges so they're persisted in conversation history
+                        session.add_exchange(
+                            user_message,
+                            full_content,
+                            tool_exchanges=tool_exchanges if tool_exchanges else None,
+                        )
 
                         # Update cache state for conversation history (memories don't affect cache hits)
                         if should_consolidate:
@@ -1416,10 +1566,13 @@ class SessionManager:
 
                         session.update_cache_state(new_cached_ctx_len)
 
-                        # Add tool_uses to done event if any tools were used
+                        # Add tool data to done event if any tools were used
                         final_event = dict(event)
                         if accumulated_tool_uses:
                             final_event["tool_uses"] = accumulated_tool_uses
+                        if tool_exchanges:
+                            # Include full tool exchanges for DB persistence
+                            final_event["tool_exchanges"] = tool_exchanges
                         yield final_event
                         return
                 elif event["type"] == "error":
@@ -1501,17 +1654,37 @@ class SessionManager:
                 }
 
                 # Store exchange for rebuilding messages without memories on next iteration
-                tool_exchanges.append({
+                exchange = {
                     "assistant": assistant_msg,
                     "user": user_msg,
-                })
+                }
+                tool_exchanges.append(exchange)
+
+                # Track tokens and determine if breakpoint should move (single moving breakpoint)
+                exchange_tokens = _estimate_tool_exchange_tokens(exchange, llm_service.count_tokens)
+                tool_exchange_tokens.append(exchange_tokens)
+                total_tool_tokens += exchange_tokens
+
+                # Move breakpoint when enough new tokens have accumulated since last breakpoint
+                # This uses a single cache breakpoint that moves forward, like conversation history
+                tokens_since_breakpoint = total_tool_tokens - tokens_at_last_breakpoint
+                if tokens_since_breakpoint >= TOOL_CACHE_TOKEN_THRESHOLD:
+                    exchange_index = len(tool_exchanges) - 1
+                    old_breakpoint = tool_cache_breakpoint_index
+                    tool_cache_breakpoint_index = exchange_index
+                    tokens_at_last_breakpoint = total_tool_tokens
+                    logger.debug(f"[TOOLS] Moved cache breakpoint: {old_breakpoint} -> {exchange_index} ({total_tool_tokens} total tokens)")
 
                 # Accumulate any text content from this iteration
                 full_content += iteration_content
 
         # If we've exhausted iterations, yield what we have
         logger.warning(f"[TOOLS] Max iterations ({max_iterations}) reached")
-        session.add_exchange(user_message, full_content)
+        session.add_exchange(
+            user_message,
+            full_content,
+            tool_exchanges=tool_exchanges if tool_exchanges else None,
+        )
 
         yield {
             "type": "done",
@@ -1520,6 +1693,7 @@ class SessionManager:
             "usage": {},
             "stop_reason": "max_iterations",
             "tool_uses": accumulated_tool_uses if accumulated_tool_uses else None,
+            "tool_exchanges": tool_exchanges if tool_exchanges else None,
         }
 
     def close_session(self, conversation_id: str):
