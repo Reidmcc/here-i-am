@@ -101,6 +101,7 @@ class App {
             memoriesBtn: document.getElementById('memories-btn'),
             archivedBtn: document.getElementById('archived-btn'),
             continueBtn: document.getElementById('continue-btn'),
+            stopBtn: document.getElementById('stop-btn'),
             exportBtn: document.getElementById('export-btn'),
             archiveBtn: document.getElementById('archive-btn'),
 
@@ -187,12 +188,22 @@ class App {
             closeMultiEntityBtn: document.getElementById('close-multi-entity'),
             entityResponderSelector: document.getElementById('entity-responder-selector'),
             entityResponderButtons: document.getElementById('entity-responder-buttons'),
+
+            // GitHub Integration
+            githubNotConfigured: document.getElementById('github-not-configured'),
+            githubReposContainer: document.getElementById('github-repos-container'),
+            githubReposList: document.getElementById('github-repos-list'),
+            githubRateLimits: document.getElementById('github-rate-limits'),
+            refreshRateLimitsBtn: document.getElementById('refresh-rate-limits-btn'),
         };
 
         // Import state
         this.importFileContent = null;
         this.importPreviewData = null;
         this.importAbortController = null;
+
+        // Stream abort controller for stop generation
+        this.streamAbortController = null;
 
         // Voice dictation state
         this.recognition = null;
@@ -434,6 +445,7 @@ class App {
         this.elements.messageInput.addEventListener('input', () => this.handleInputChange());
         this.elements.messageInput.addEventListener('keydown', (e) => this.handleKeyDown(e));
         this.elements.sendBtn.addEventListener('click', () => this.sendMessage());
+        this.elements.stopBtn.addEventListener('click', () => this.stopGeneration());
         this.elements.voiceBtn.addEventListener('click', () => this.toggleVoiceDictation());
 
         // Conversation management
@@ -530,6 +542,11 @@ class App {
         document.getElementById('close-voice-edit').addEventListener('click', () => this.hideVoiceEditModal());
         this.elements.cancelVoiceEditBtn.addEventListener('click', () => this.hideVoiceEditModal());
         this.elements.saveVoiceEditBtn.addEventListener('click', () => this.saveVoiceEdit());
+
+        // GitHub Integration
+        if (this.elements.refreshRateLimitsBtn) {
+            this.elements.refreshRateLimitsBtn.addEventListener('click', () => this.loadGitHubRateLimits());
+        }
     }
 
     handleInputChange() {
@@ -1687,8 +1704,13 @@ class App {
         // Standard single-entity flow
         this.isLoading = true;
         this.elements.sendBtn.disabled = true;
+        this.elements.sendBtn.style.display = 'none';
+        this.elements.stopBtn.style.display = 'flex';
         this.elements.messageInput.value = '';
         this.elements.messageInput.style.height = 'auto';
+
+        // Create abort controller for stop functionality
+        this.streamAbortController = new AbortController();
 
         // Add user message (without ID initially - will be updated when stored)
         const userMessageEl = this.addMessage('human', content);
@@ -1716,6 +1738,10 @@ class App {
                     },
                     onStart: (data) => {
                         // Stream has started
+                    },
+                    onAborted: () => {
+                        // Stream was aborted by user
+                        streamingMessage.finalize({ showTimestamp: true, aborted: true });
                     },
                     onToken: (data) => {
                         // Update message content progressively
@@ -1850,20 +1876,41 @@ class App {
                         this.showToast('Failed to send message', 'error');
                         console.error('Streaming error:', data.error);
                     },
-                }
+                },
+                this.streamAbortController.signal
             );
 
             this.scrollToBottom();
 
         } catch (error) {
-            streamingMessage.element.remove();
-            this.addMessage('assistant', `Error: ${error.message}`, { isError: true });
-            this.showToast('Failed to send message', 'error');
-            console.error('Failed to send message:', error);
+            // Don't show error for abort
+            if (error.name !== 'AbortError') {
+                streamingMessage.element.remove();
+                this.addMessage('assistant', `Error: ${error.message}`, { isError: true });
+                this.showToast('Failed to send message', 'error');
+                console.error('Failed to send message:', error);
+            }
         } finally {
             this.isLoading = false;
+            this.streamAbortController = null;
+            this.elements.stopBtn.style.display = 'none';
+            this.elements.sendBtn.style.display = 'flex';
             this.handleInputChange();
         }
+    }
+
+    /**
+     * Stop the current generation/stream.
+     */
+    stopGeneration() {
+        if (this.streamAbortController) {
+            this.streamAbortController.abort();
+            this.streamAbortController = null;
+        }
+        this.elements.stopBtn.style.display = 'none';
+        this.elements.sendBtn.style.display = 'flex';
+        this.isLoading = false;
+        this.handleInputChange();
     }
 
     addMessage(role, content, options = {}) {
@@ -2998,7 +3045,132 @@ class App {
             this.elements.systemPromptHelp.textContent = 'This prompt applies to the currently selected entity and will be used for new conversations.';
         }
 
+        // Load GitHub settings
+        this.loadGitHubSettings();
+
         this.showModal('settingsModal');
+    }
+
+    /**
+     * Load GitHub integration settings and display in the settings modal.
+     */
+    async loadGitHubSettings() {
+        try {
+            const repos = await api.listGitHubRepos();
+
+            if (!repos || repos.length === 0) {
+                // No repos configured
+                if (this.elements.githubNotConfigured) {
+                    this.elements.githubNotConfigured.style.display = 'block';
+                }
+                if (this.elements.githubReposContainer) {
+                    this.elements.githubReposContainer.style.display = 'none';
+                }
+                return;
+            }
+
+            // Show repos container, hide not configured message
+            if (this.elements.githubNotConfigured) {
+                this.elements.githubNotConfigured.style.display = 'none';
+            }
+            if (this.elements.githubReposContainer) {
+                this.elements.githubReposContainer.style.display = 'block';
+            }
+
+            // Render repos list
+            if (this.elements.githubReposList) {
+                this.elements.githubReposList.innerHTML = repos.map(repo => `
+                    <div class="github-repo-item">
+                        <div class="github-repo-header">
+                            <span class="github-repo-label">${this.escapeHtml(repo.label)}</span>
+                            <span class="github-repo-name">${this.escapeHtml(repo.owner)}/${this.escapeHtml(repo.repo)}</span>
+                        </div>
+                        <div class="github-repo-capabilities">
+                            ${this.renderCapabilities(repo.capabilities)}
+                        </div>
+                        <div class="github-repo-protected">
+                            <span class="protected-label">Protected branches:</span>
+                            <span class="protected-branches">${repo.protected_branches.map(b => this.escapeHtml(b)).join(', ')}</span>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            // Load rate limits
+            await this.loadGitHubRateLimits();
+
+        } catch (error) {
+            console.warn('Failed to load GitHub settings:', error);
+            if (this.elements.githubNotConfigured) {
+                this.elements.githubNotConfigured.style.display = 'block';
+            }
+            if (this.elements.githubReposContainer) {
+                this.elements.githubReposContainer.style.display = 'none';
+            }
+        }
+    }
+
+    /**
+     * Render capability indicators for a GitHub repo.
+     */
+    renderCapabilities(capabilities) {
+        const allCapabilities = ['read', 'branch', 'commit', 'pr', 'issue'];
+        return allCapabilities.map(cap => {
+            const enabled = capabilities.includes(cap);
+            const icon = enabled ? '✓' : '○';
+            const className = enabled ? 'capability-enabled' : 'capability-disabled';
+            return `<span class="github-capability ${className}">${icon} ${cap}</span>`;
+        }).join('');
+    }
+
+    /**
+     * Load and display GitHub rate limit status.
+     */
+    async loadGitHubRateLimits() {
+        if (!this.elements.githubRateLimits) return;
+
+        try {
+            const data = await api.getGitHubRateLimits();
+
+            if (!data.enabled) {
+                this.elements.githubRateLimits.innerHTML = '<span class="rate-limit-disabled">GitHub tools disabled</span>';
+                return;
+            }
+
+            const repos = Object.entries(data.repos);
+            if (repos.length === 0) {
+                this.elements.githubRateLimits.innerHTML = '<span class="rate-limit-none">No repositories configured</span>';
+                return;
+            }
+
+            this.elements.githubRateLimits.innerHTML = repos.map(([label, info]) => {
+                if (info.remaining === null) {
+                    return `
+                        <div class="rate-limit-item">
+                            <span class="rate-limit-label">${this.escapeHtml(label)}</span>
+                            <span class="rate-limit-status unknown">No data yet</span>
+                        </div>
+                    `;
+                }
+
+                const percentage = (info.remaining / info.limit) * 100;
+                const statusClass = percentage < 10 ? 'danger' : percentage < 25 ? 'warning' : 'good';
+
+                return `
+                    <div class="rate-limit-item">
+                        <span class="rate-limit-label">${this.escapeHtml(label)}</span>
+                        <div class="rate-limit-bar">
+                            <div class="rate-limit-bar-fill ${statusClass}" style="width: ${percentage}%"></div>
+                        </div>
+                        <span class="rate-limit-text ${statusClass}">${info.remaining}/${info.limit}</span>
+                    </div>
+                `;
+            }).join('');
+
+        } catch (error) {
+            console.warn('Failed to load GitHub rate limits:', error);
+            this.elements.githubRateLimits.innerHTML = '<span class="rate-limit-error">Failed to load rate limits</span>';
+        }
     }
 
     resetImportToStep1() {

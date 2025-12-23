@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2025-12-22
+**Last Updated:** 2025-12-23
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -148,6 +148,79 @@ TOOL_USE_MAX_ITERATIONS=10
 - Tool execution is async with proper error handling
 - web_search uses 10-second timeout; web_fetch uses 15-second timeout
 
+### GitHub Repository Integration
+
+The application supports **GitHub repository integration**, allowing AI entities to interact with GitHub repositories during conversations.
+
+**Available GitHub Tools:**
+- **github_repo_info** - Get repository metadata (description, stars, issues, etc.)
+- **github_list_contents** - List files and directories in a repository
+- **github_get_file** - Read file contents (with binary detection and large file handling)
+- **github_search_code** - Search for code patterns within a repository
+- **github_list_branches** - List all branches in a repository
+- **github_create_branch** - Create new branches from existing refs
+- **github_commit_file** - Commit file changes (create, update, or delete)
+- **github_delete_file** - Delete files from a repository
+- **github_list_pull_requests** - List pull requests with filtering
+- **github_get_pull_request** - Get detailed PR information including diff
+- **github_create_pull_request** - Create new pull requests
+- **github_list_issues** - List issues with filtering
+- **github_get_issue** - Get detailed issue information
+- **github_create_issue** - Create new issues
+- **github_add_comment** - Add comments to issues or pull requests
+
+**Configuration:**
+```bash
+# Enable GitHub tools
+GITHUB_TOOLS_ENABLED=true
+
+# Configure repositories (JSON array)
+GITHUB_REPOS='[
+  {
+    "owner": "your-username",
+    "repo": "your-repo",
+    "label": "My Project",
+    "token": "ghp_xxxxxxxxxxxx",
+    "protected_branches": ["main", "master"],
+    "capabilities": ["read", "branch", "commit", "pr", "issue"]
+  }
+]'
+```
+
+**Repository Configuration Fields:**
+- `owner`: GitHub username or organization (required)
+- `repo`: Repository name (required)
+- `label`: Display name in UI (required)
+- `token`: GitHub Personal Access Token (required)
+- `protected_branches`: Branches that cannot be committed to (default: `["main", "master"]`)
+- `capabilities`: Allowed operations (default: `["read", "branch", "commit", "pr", "issue"]`)
+- `local_clone_path`: Path to local clone for faster operations (optional)
+
+**Capabilities:**
+- `read`: Read files, list contents, search code, view PRs/issues
+- `branch`: Create new branches
+- `commit`: Commit file changes (blocked on protected branches)
+- `pr`: Create and manage pull requests
+- `issue`: Create and manage issues
+
+**Security Features:**
+- Protected branch enforcement (cannot commit directly to main/master)
+- Per-repository capability restrictions
+- Rate limit tracking per token
+- Binary file detection (returns info instead of content)
+- Large file handling via Git Data API (files > 1MB)
+
+**Rate Limiting:**
+- Rate limits are tracked per-token using response headers
+- Current limits visible in settings modal with progress bars
+- Automatic rate limit info attached to tool responses
+
+**Technical Notes:**
+- GitHub tools are only available for Anthropic (Claude) and OpenAI (GPT) models
+- Tools are registered at module load time via `register_github_tools()`
+- All API requests use Bearer token authentication
+- Large files (>1MB) are fetched via Git Data API to avoid content limits
+
 ---
 
 ## Codebase Architecture
@@ -169,7 +242,8 @@ here-i-am/
 │   │   │   ├── memories.py
 │   │   │   ├── entities.py
 │   │   │   ├── messages.py    # Individual message edit/delete
-│   │   │   └── tts.py         # Text-to-speech endpoints
+│   │   │   ├── tts.py         # Text-to-speech endpoints
+│   │   │   └── github.py      # GitHub integration endpoints
 │   │   ├── services/          # Business logic layer
 │   │   │   ├── anthropic_service.py
 │   │   │   ├── openai_service.py
@@ -180,6 +254,8 @@ here-i-am/
 │   │   │   ├── cache_service.py   # TTL-based in-memory caching
 │   │   │   ├── tool_service.py    # Tool registration and execution
 │   │   │   ├── web_tools.py       # Web search/fetch tool implementations
+│   │   │   ├── github_service.py  # GitHub API client
+│   │   │   ├── github_tools.py    # GitHub tool implementations
 │   │   │   ├── tts_service.py     # Unified TTS (ElevenLabs/XTTS/StyleTTS2)
 │   │   │   ├── xtts_service.py    # Local XTTS v2 client service
 │   │   │   └── styletts2_service.py  # Local StyleTTS 2 client service
@@ -463,6 +539,10 @@ DEBUG=true                              # Development mode
 TOOLS_ENABLED=true                      # Enable tool use (default: true)
 BRAVE_SEARCH_API_KEY=...                # Required for web_search tool
 TOOL_USE_MAX_ITERATIONS=10              # Max agentic loop iterations (default: 10)
+
+# GitHub Integration (optional, repository access for AI entities)
+GITHUB_TOOLS_ENABLED=true               # Enable GitHub tools
+GITHUB_REPOS='[...]'                    # Repository configuration (JSON array, see below)
 
 # ElevenLabs TTS (optional, cloud-based text-to-speech)
 ELEVENLABS_API_KEY=...                  # Enables TTS feature
@@ -1081,6 +1161,13 @@ conversation: Conversation
 | GET | `/api/tts/xtts/health` | Check XTTS server health |
 | GET | `/api/tts/styletts2/health` | Check StyleTTS 2 server health |
 
+### GitHub
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/github/repos` | List configured repositories (without tokens) |
+| GET | `/api/github/rate-limit` | Get rate limit status for all repositories |
+
 ### Configuration
 
 | Method | Endpoint | Description |
@@ -1171,6 +1258,8 @@ conversation: Conversation
 16. **Voice Selection** - Choose from configured or cloned voices in settings
 17. **Voice Cloning** - Clone custom voices from audio samples (XTTS/StyleTTS 2)
 18. **Tool Use Display** - Real-time tool execution with collapsible input/output details (Claude only)
+19. **Stop Generation** - Cancel AI response mid-stream
+20. **GitHub Settings** - View configured repositories and rate limits in settings modal
 
 ---
 
@@ -1278,6 +1367,13 @@ conversation: Conversation
     - Both tools have timeouts (10s for search, 15s for fetch)
     - web_fetch includes smart HTML content extraction (removes nav, footer, scripts)
 
+18. **GitHub Integration is Optional**
+    - Set `GITHUB_TOOLS_ENABLED=true` and configure `GITHUB_REPOS` to enable
+    - Each repository requires its own Personal Access Token
+    - Protected branches (main/master by default) cannot be committed to directly
+    - Rate limits are tracked per-token and displayed in settings
+    - GitHub tools work with Anthropic (Claude) and OpenAI (GPT) models only
+
 ### Common Pitfalls
 
 **When modifying memory retrieval:**
@@ -1374,6 +1470,13 @@ conversation: Conversation
 - StyleTTS 2 server: `backend/styletts2_server/server.py`
 - StyleTTS 2 entry point: `backend/run_styletts2.py`
 - StyleTTS 2 dependencies: `backend/requirements-styletts2.txt`
+
+**GitHub Integration:**
+- GitHub service: `backend/app/services/github_service.py`
+- GitHub tools: `backend/app/services/github_tools.py`
+- GitHub routes: `backend/app/routes/github.py`
+- Tool registration: `backend/app/services/__init__.py`
+- Configuration: `backend/app/config.py` (GitHubRepoConfig class)
 
 **Configuration:**
 - Settings: `backend/app/config.py`

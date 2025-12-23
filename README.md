@@ -15,6 +15,9 @@ However, the application is not locked into that specific use case. Here I Am gi
 - No system prompt default
 - Seed conversation import capability
 - Optional text-to-speech via ElevenLabs (cloud) or XTTS v2 (local with voice cloning)
+- Stop generation button to cancel AI responses mid-stream
+- Web search and content fetching tools (requires Brave Search API key)
+- GitHub repository integration for AI entities to read, commit, and manage repos
 
 ### Memory System
 - Pinecone vector database with integrated inference (llama-text-embed-v2 embeddings)
@@ -37,6 +40,8 @@ However, the application is not locked into that specific use case. Here I Am gi
 ### Optional API Keys
 - **Pinecone API key** - Enables semantic memory features (uses integrated llama-text-embed-v2 for embeddings. The Pincone index(s), set to the llama embeddings, must be pre-created via the Pinecone dashboard)
 - **ElevenLabs API key** - Enables cloud text-to-speech for AI responses
+- **Brave Search API key** - Enables web search tool for AI entities
+- **GitHub Personal Access Tokens** - Enables GitHub repository integration (configured per-repository)
 
 ### Optional Local Services
 - **XTTS v2** - Local GPU-accelerated text-to-speech with voice cloning (no API key required, runs locally)
@@ -87,6 +92,9 @@ python run.py
 | `XTTS_API_URL` | XTTS server URL | No (default: http://localhost:8020) |
 | `XTTS_LANGUAGE` | Default language for XTTS | No (default: en) |
 | `XTTS_VOICES_DIR` | Directory for cloned voice samples | No (default: ./xtts_voices) |
+| `BRAVE_SEARCH_API_KEY` | Brave Search API key for web search tool | No |
+| `GITHUB_TOOLS_ENABLED` | Enable GitHub integration (true/false) | No (default: false) |
+| `GITHUB_REPOS` | JSON array of repository configurations | No |
 | `HERE_I_AM_DATABASE_URL` | Database connection URL | No (default: SQLite) |
 
 ### Multi-Entity Configuration
@@ -152,6 +160,36 @@ XTTS_API_URL=http://localhost:8020
 **Voice Cloning:**
 Upload a 6-30 second WAV file via `/api/tts/voices/clone` or through the UI to create custom voices. XTTS supports 17 languages including English, Spanish, French, German, Japanese, Chinese, and more.
 
+### GitHub Repository Integration (Optional)
+
+GitHub integration allows AI entities to interact with repositories during conversations - reading files, creating branches, making commits, managing pull requests, and more.
+
+**Configuration:**
+```bash
+GITHUB_TOOLS_ENABLED=true
+GITHUB_REPOS='[
+  {
+    "owner": "your-username",
+    "repo": "your-repo",
+    "label": "My Project",
+    "token": "ghp_xxxxxxxxxxxx",
+    "protected_branches": ["main", "master"],
+    "capabilities": ["read", "branch", "commit", "pr", "issue"]
+  }
+]'
+```
+
+**Repository fields:**
+- `owner`, `repo`, `label`, `token` - Required repository identification and access
+- `protected_branches` - Branches that cannot be committed to directly (default: main, master)
+- `capabilities` - Allowed operations: `read`, `branch`, `commit`, `pr`, `issue` (default: all)
+
+**Available GitHub Tools:**
+- Read: `github_repo_info`, `github_list_contents`, `github_get_file`, `github_search_code`, `github_list_branches`
+- Write: `github_create_branch`, `github_commit_file`, `github_delete_file`
+- PRs: `github_list_pull_requests`, `github_get_pull_request`, `github_create_pull_request`
+- Issues: `github_list_issues`, `github_get_issue`, `github_create_issue`, `github_add_comment`
+
 ## API Endpoints
 
 ### Conversations
@@ -194,6 +232,10 @@ Upload a 6-30 second WAV file via `/api/tts/voices/clone` or through the UI to c
 - `DELETE /api/tts/voices/{id}` - Delete cloned voice (XTTS only)
 - `GET /api/tts/xtts/health` - Check XTTS server health
 
+### GitHub
+- `GET /api/github/repos` - List configured repositories (tokens excluded)
+- `GET /api/github/rate-limit` - Get rate limit status for all repositories
+
 ## Memory System Architecture
 
 The memory system uses a **session memory accumulator pattern**:
@@ -219,8 +261,12 @@ here-i-am/
 ├── backend/
 │   ├── app/
 │   │   ├── models/          # SQLAlchemy models
-│   │   ├── routes/          # API endpoints
-│   │   ├── services/        # Business logic (includes tts_service.py, xtts_service.py)
+│   │   ├── routes/          # API endpoints (includes github.py)
+│   │   ├── services/        # Business logic
+│   │   │   ├── github_service.py   # GitHub API client
+│   │   │   ├── github_tools.py     # GitHub tool implementations
+│   │   │   ├── tts_service.py      # Unified TTS service
+│   │   │   └── xtts_service.py     # XTTS client service
 │   │   ├── config.py        # Configuration
 │   │   ├── database.py      # Database setup
 │   │   └── main.py          # FastAPI app

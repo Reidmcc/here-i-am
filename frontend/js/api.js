@@ -247,9 +247,11 @@ class ApiClient {
      * @param {Function} callbacks.onDone - Called when streaming completes
      * @param {Function} callbacks.onStored - Called when messages are stored
      * @param {Function} callbacks.onError - Called on error
+     * @param {Function} callbacks.onAborted - Called when request is aborted
+     * @param {AbortSignal} signal - Optional AbortSignal for cancellation
      * @returns {Promise<void>}
      */
-    async sendMessageStream(data, callbacks = {}) {
+    async sendMessageStream(data, callbacks = {}, signal = null) {
         const url = `${API_BASE}/chat/stream`;
 
         const response = await fetch(url, {
@@ -258,6 +260,7 @@ class ApiClient {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify(data),
+            signal: signal,
         });
 
         if (!response.ok) {
@@ -269,60 +272,68 @@ class ApiClient {
         const decoder = new TextDecoder();
         let buffer = '';
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
 
-            buffer += decoder.decode(value, { stream: true });
+                buffer += decoder.decode(value, { stream: true });
 
-            // Process complete SSE events in buffer
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || ''; // Keep incomplete line in buffer
+                // Process complete SSE events in buffer
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || ''; // Keep incomplete line in buffer
 
-            let eventType = null;
-            let eventData = null;
+                let eventType = null;
+                let eventData = null;
 
-            for (const line of lines) {
-                if (line.startsWith('event: ')) {
-                    eventType = line.slice(7).trim();
-                } else if (line.startsWith('data: ')) {
-                    eventData = line.slice(6);
-                } else if (line === '' && eventType && eventData) {
-                    // Empty line marks end of event
+                for (const line of lines) {
+                    if (line.startsWith('event: ')) {
+                        eventType = line.slice(7).trim();
+                    } else if (line.startsWith('data: ')) {
+                        eventData = line.slice(6);
+                    } else if (line === '' && eventType && eventData) {
+                        // Empty line marks end of event
+                        try {
+                            const parsedData = JSON.parse(eventData);
+                            this._handleStreamEvent(eventType, parsedData, callbacks);
+                        } catch (e) {
+                            console.error('Failed to parse SSE data:', e, eventData);
+                        }
+                        eventType = null;
+                        eventData = null;
+                    }
+                }
+            }
+
+            // Process any remaining data in buffer
+            if (buffer.trim()) {
+                const lines = buffer.split('\n');
+                let eventType = null;
+                let eventData = null;
+
+                for (const line of lines) {
+                    if (line.startsWith('event: ')) {
+                        eventType = line.slice(7).trim();
+                    } else if (line.startsWith('data: ')) {
+                        eventData = line.slice(6);
+                    }
+                }
+
+                if (eventType && eventData) {
                     try {
                         const parsedData = JSON.parse(eventData);
                         this._handleStreamEvent(eventType, parsedData, callbacks);
                     } catch (e) {
-                        console.error('Failed to parse SSE data:', e, eventData);
+                        console.error('Failed to parse final SSE data:', e, eventData);
                     }
-                    eventType = null;
-                    eventData = null;
                 }
             }
-        }
-
-        // Process any remaining data in buffer
-        if (buffer.trim()) {
-            const lines = buffer.split('\n');
-            let eventType = null;
-            let eventData = null;
-
-            for (const line of lines) {
-                if (line.startsWith('event: ')) {
-                    eventType = line.slice(7).trim();
-                } else if (line.startsWith('data: ')) {
-                    eventData = line.slice(6);
-                }
+        } catch (e) {
+            if (e.name === 'AbortError') {
+                if (callbacks.onAborted) callbacks.onAborted({ status: 'aborted' });
+                return;
             }
-
-            if (eventType && eventData) {
-                try {
-                    const parsedData = JSON.parse(eventData);
-                    this._handleStreamEvent(eventType, parsedData, callbacks);
-                } catch (e) {
-                    console.error('Failed to parse final SSE data:', e, eventData);
-                }
-            }
+            throw e;
         }
     }
 
@@ -552,6 +563,15 @@ class ApiClient {
 
     async getXTTSHealth() {
         return this.request('/tts/xtts/health');
+    }
+
+    // GitHub Integration
+    async listGitHubRepos() {
+        return this.request('/github/repos');
+    }
+
+    async getGitHubRateLimits() {
+        return this.request('/github/rate-limit');
     }
 
     async regenerateStream(data, callbacks = {}) {

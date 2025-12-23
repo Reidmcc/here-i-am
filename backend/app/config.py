@@ -130,6 +130,45 @@ class EntityConfig:
         }
 
 
+class GitHubRepoConfig:
+    """Configuration for a GitHub repository integration."""
+    def __init__(
+        self,
+        owner: str,
+        repo: str,
+        label: str,
+        token: str,
+        protected_branches: Optional[List[str]] = None,
+        capabilities: Optional[List[str]] = None,
+        local_clone_path: Optional[str] = None,
+    ):
+        self.owner = owner
+        self.repo = repo
+        self.label = label
+        self.token = token
+        self.protected_branches = protected_branches or ["main", "master"]
+        self.capabilities = capabilities or ["read", "branch", "commit", "pr", "issue"]
+        self.local_clone_path = local_clone_path
+
+    def to_dict(self, include_token: bool = False):
+        """Convert to dict, optionally excluding the token for security."""
+        result = {
+            "owner": self.owner,
+            "repo": self.repo,
+            "label": self.label,
+            "protected_branches": self.protected_branches,
+            "capabilities": self.capabilities,
+            "local_clone_path": self.local_clone_path,
+        }
+        if include_token:
+            result["token"] = self.token
+        return result
+
+    def has_capability(self, capability: str) -> bool:
+        """Check if this repo has a specific capability enabled."""
+        return capability in self.capabilities
+
+
 class Settings(BaseSettings):
     # API Keys
     anthropic_api_key: str = ""
@@ -177,6 +216,14 @@ class Settings(BaseSettings):
     tool_use_max_iterations: int = 10
     # Brave Search API key (for web search tool)
     brave_search_api_key: str = ""
+
+    # GitHub Tools settings
+    # Enable GitHub repository tools for AI entities
+    github_tools_enabled: bool = False
+    # GitHub repositories configuration (JSON array)
+    # Each repo: {"owner": "...", "repo": "...", "label": "...", "token": "ghp_...",
+    #             "protected_branches": ["main", "master"], "capabilities": ["read", "branch", "commit", "pr", "issue"]}
+    github_repos: str = ""
 
     # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, llm_provider, default_model)
     # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'
@@ -315,6 +362,46 @@ class Settings(BaseSettings):
         """Get the first (default) entity, or None if no entities configured."""
         entities = self.get_entities()
         return entities[0] if entities else None
+
+    def get_github_repos(self) -> List[GitHubRepoConfig]:
+        """
+        Parse and return the list of configured GitHub repositories.
+
+        Requires GITHUB_REPOS to be set as a JSON array.
+        Returns empty list if not configured.
+        Raises ValueError if GITHUB_REPOS contains invalid JSON.
+        """
+        if not self.github_repos:
+            return []
+
+        try:
+            repos_data = json.loads(self.github_repos)
+            return [
+                GitHubRepoConfig(
+                    owner=repo.get("owner", ""),
+                    repo=repo.get("repo", ""),
+                    label=repo.get("label", f"{repo.get('owner', '')}/{repo.get('repo', '')}"),
+                    token=repo.get("token", ""),
+                    protected_branches=repo.get("protected_branches"),
+                    capabilities=repo.get("capabilities"),
+                    local_clone_path=repo.get("local_clone_path"),
+                )
+                for repo in repos_data
+                if repo.get("owner") and repo.get("repo") and repo.get("token")
+            ]
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Invalid JSON in GITHUB_REPOS environment variable: {e}"
+            )
+
+    def get_github_repo_by_label(self, label: str) -> Optional[GitHubRepoConfig]:
+        """Get a GitHub repo configuration by its label (case-insensitive)."""
+        repos = self.get_github_repos()
+        label_lower = label.lower()
+        for repo in repos:
+            if repo.label.lower() == label_lower:
+                return repo
+        return None
 
     def get_voices(self) -> List[VoiceConfig]:
         """

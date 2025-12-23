@@ -22,6 +22,7 @@ class ToolCategory(str, Enum):
     WEB = "web"
     MEMORY = "memory"
     UTILITY = "utility"
+    GITHUB = "github"
 
 
 @dataclass
