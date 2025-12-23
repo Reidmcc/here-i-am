@@ -1,3 +1,5 @@
+import re
+
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import text
@@ -55,10 +57,23 @@ async def _migrate_messages_role_enum(conn):
     # The constraint looks like: CHECK (role IN ('human', 'assistant', 'system'))
     has_check = 'CHECK' in table_sql.upper()
     has_tool_use = 'tool_use' in table_sql.lower()
+
+    # Also check if role column is too narrow (VARCHAR(9) can't fit 'tool_result' which is 11 chars)
+    # Look for patterns like "role VARCHAR(9)" or "role VARCHAR(10)"
+    role_varchar_match = re.search(r'role\s+VARCHAR\((\d+)\)', table_sql, re.IGNORECASE)
+    role_too_narrow = False
+    if role_varchar_match:
+        varchar_size = int(role_varchar_match.group(1))
+        role_too_narrow = varchar_size < 11  # 'tool_result' is 11 chars
+        print(f"Migration check: role column VARCHAR size: {varchar_size}, too narrow: {role_too_narrow}")
+
     print(f"Migration check: has CHECK constraint: {has_check}, has tool_use: {has_tool_use}")
 
-    if has_check and not has_tool_use:
-        print("Migrating: Updating messages.role enum to support tool_use and tool_result...")
+    needs_migration = (has_check and not has_tool_use) or role_too_narrow
+
+    if needs_migration:
+        reason = "CHECK constraint" if (has_check and not has_tool_use) else "VARCHAR too narrow"
+        print(f"Migrating: Updating messages table for tool_use/tool_result support (reason: {reason})...")
 
         # Check which columns exist in the old table
         result = await conn.execute(text("PRAGMA table_info(messages)"))
@@ -109,7 +124,7 @@ async def _migrate_messages_role_enum(conn):
             "CREATE INDEX IF NOT EXISTS ix_messages_conversation_id ON messages(conversation_id)"
         ))
 
-        print("  ✓ Updated messages.role enum to include tool_use and tool_result")
+        print("  ✓ Updated messages table to support tool_use and tool_result roles")
 
 
 async def run_migrations(conn):
