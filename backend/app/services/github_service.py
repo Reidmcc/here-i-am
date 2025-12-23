@@ -5,13 +5,16 @@ This service provides:
 - GitHub API client with rate limit tracking
 - Repository configuration management
 - Binary file detection and large file handling
+- Local clone file reading for faster operations
 """
 
 import base64
 import hashlib
 import logging
+import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -1021,6 +1024,182 @@ class GitHubService:
             "html_url": data.get("html_url"),
             "issue_number": number,
         }
+
+    # =========================================================================
+    # Local Clone Operations
+    # =========================================================================
+
+    def has_local_clone(self, repo: GitHubRepoConfig) -> bool:
+        """Check if a repository has a valid local clone configured."""
+        if not repo.local_clone_path:
+            return False
+        local_path = Path(repo.local_clone_path)
+        # Check if the directory exists and contains a .git folder
+        return local_path.is_dir() and (local_path / ".git").is_dir()
+
+    def get_file_contents_local(
+        self,
+        repo: GitHubRepoConfig,
+        path: str,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Get file contents from a local clone.
+
+        Args:
+            repo: Repository configuration with local_clone_path
+            path: Path to the file relative to repository root
+
+        Returns:
+            Tuple of (success, data) matching the API response format
+        """
+        if not repo.local_clone_path:
+            return False, {"error": "no_local_clone", "message": "No local clone configured"}
+
+        local_root = Path(repo.local_clone_path)
+        file_path = local_root / path
+
+        # Security: Ensure the path doesn't escape the repository root
+        try:
+            file_path.resolve().relative_to(local_root.resolve())
+        except ValueError:
+            return False, {"error": "invalid_path", "message": "Path escapes repository root"}
+
+        if not file_path.exists():
+            return False, {"error": "not_found", "message": f"File not found: {path}"}
+
+        if file_path.is_dir():
+            return False, {"error": "not_a_file", "message": f"Path is a directory, not a file"}
+
+        # Get file stats
+        try:
+            file_size = file_path.stat().st_size
+        except OSError as e:
+            return False, {"error": "stat_error", "message": f"Could not stat file: {e}"}
+
+        if file_size > MAX_FILE_SIZE:
+            return False, {
+                "error": "file_too_large",
+                "message": f"File is too large ({file_size} bytes, max {MAX_FILE_SIZE})",
+            }
+
+        # Read file content
+        try:
+            content_bytes = file_path.read_bytes()
+        except OSError as e:
+            return False, {"error": "read_error", "message": f"Could not read file: {e}"}
+
+        # Check if binary
+        if self.is_binary_file(path, content_bytes):
+            return True, {
+                "type": "binary",
+                "size": file_size,
+                "name": file_path.name,
+                "path": path,
+                "source": "local",
+            }
+
+        # Decode as text
+        try:
+            content_text = content_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return True, {
+                "type": "binary",
+                "size": file_size,
+                "name": file_path.name,
+                "path": path,
+                "source": "local",
+            }
+
+        return True, {
+            "type": "text",
+            "content": content_text,
+            "encoding": "utf-8",
+            "size": file_size,
+            "name": file_path.name,
+            "path": path,
+            "source": "local",
+        }
+
+    def list_contents_local(
+        self,
+        repo: GitHubRepoConfig,
+        path: str = "",
+    ) -> Tuple[bool, List[Dict[str, Any]]]:
+        """
+        List files and directories from a local clone.
+
+        Args:
+            repo: Repository configuration with local_clone_path
+            path: Path within the repository (empty for root)
+
+        Returns:
+            Tuple of (success, items) matching the API response format
+        """
+        if not repo.local_clone_path:
+            return False, [{"error": "no_local_clone", "message": "No local clone configured"}]
+
+        local_root = Path(repo.local_clone_path)
+        target_path = local_root / path if path else local_root
+
+        # Security: Ensure the path doesn't escape the repository root
+        try:
+            target_path.resolve().relative_to(local_root.resolve())
+        except ValueError:
+            return False, [{"error": "invalid_path", "message": "Path escapes repository root"}]
+
+        if not target_path.exists():
+            return False, [{"error": "not_found", "message": f"Path not found: {path or '/'}"}]
+
+        if not target_path.is_dir():
+            # Single file - return it as a list with one item
+            try:
+                file_size = target_path.stat().st_size
+            except OSError:
+                file_size = 0
+            return True, [{
+                "type": "file",
+                "name": target_path.name,
+                "path": path,
+                "size": file_size,
+                "source": "local",
+            }]
+
+        # List directory contents
+        items = []
+        try:
+            for entry in target_path.iterdir():
+                # Skip hidden files and .git directory
+                if entry.name.startswith('.'):
+                    continue
+
+                rel_path = str(entry.relative_to(local_root))
+
+                if entry.is_dir():
+                    items.append({
+                        "type": "dir",
+                        "name": entry.name,
+                        "path": rel_path,
+                        "size": None,
+                        "source": "local",
+                    })
+                else:
+                    try:
+                        file_size = entry.stat().st_size
+                    except OSError:
+                        file_size = 0
+                    items.append({
+                        "type": "file",
+                        "name": entry.name,
+                        "path": rel_path,
+                        "size": file_size,
+                        "source": "local",
+                    })
+        except OSError as e:
+            return False, [{"error": "read_error", "message": f"Could not read directory: {e}"}]
+
+        # Sort: directories first, then files, alphabetically
+        items.sort(key=lambda x: (0 if x["type"] == "dir" else 1, x["name"].lower()))
+        return True, items
 
 
 # Singleton instance

@@ -121,7 +121,18 @@ async def github_list_contents(
         return f"Error: Read capability is not enabled for repository '{repo_label}'."
 
     try:
-        success, items = await github_service.list_contents(repo, path, ref)
+        # Try local clone first if available and no specific ref requested
+        source = "GitHub API"
+        if not ref and github_service.has_local_clone(repo):
+            logger.info(f"[{repo_label}] Reading directory '{path or '/'}' from LOCAL CLONE at {repo.local_clone_path}")
+            success, items = github_service.list_contents_local(repo, path)
+            source = "local clone"
+        else:
+            if ref:
+                logger.info(f"[{repo_label}] Reading directory '{path or '/'}' from GitHub API (ref={ref} specified)")
+            else:
+                logger.info(f"[{repo_label}] Reading directory '{path or '/'}' from GitHub API (no local clone)")
+            success, items = await github_service.list_contents(repo, path, ref)
 
         if not success:
             if items and items[0].get("error"):
@@ -131,14 +142,18 @@ async def github_list_contents(
         if not items:
             return f"Directory '{path or '/'}' is empty."
 
-        lines = [f"Contents of {path or '/'}" + (f" (ref: {ref})" if ref else "") + ":"]
+        header = f"Contents of {path or '/'}"
+        if ref:
+            header += f" (ref: {ref})"
+        header += f" [source: {source}]:"
+        lines = [header]
         lines.append("")
 
         for item in items:
             if item.get("type") == "dir":
                 lines.append(f"📁 {item.get('name')}/")
             else:
-                size = item.get("size", 0)
+                size = item.get("size", 0) or 0
                 if size >= 1024 * 1024:
                     size_str = f"{size / (1024 * 1024):.1f}MB"
                 elif size >= 1024:
@@ -182,7 +197,18 @@ async def github_get_file(
         return f"Error: Read capability is not enabled for repository '{repo_label}'."
 
     try:
-        success, data = await github_service.get_file_contents(repo, path, ref)
+        # Try local clone first if available and no specific ref requested
+        source = "GitHub API"
+        if not ref and github_service.has_local_clone(repo):
+            logger.info(f"[{repo_label}] Reading file '{path}' from LOCAL CLONE at {repo.local_clone_path}")
+            success, data = github_service.get_file_contents_local(repo, path)
+            source = "local clone"
+        else:
+            if ref:
+                logger.info(f"[{repo_label}] Reading file '{path}' from GitHub API (ref={ref} specified)")
+            else:
+                logger.info(f"[{repo_label}] Reading file '{path}' from GitHub API (no local clone)")
+            success, data = await github_service.get_file_contents(repo, path, ref)
 
         if not success:
             return f"Error: {data.get('message', 'Failed to get file')}"
@@ -191,10 +217,12 @@ async def github_get_file(
             lines = [
                 f"Binary file: {data.get('name')}",
                 f"Size: {data.get('size'):,} bytes",
-                f"SHA: {data.get('sha')}",
             ]
+            if data.get("sha"):
+                lines.append(f"SHA: {data.get('sha')}")
             if data.get("download_url"):
                 lines.append(f"Download URL: {data.get('download_url')}")
+            lines.append(f"[source: {source}]")
             return "\n".join(lines)
 
         content = data.get("content", "")
@@ -214,7 +242,7 @@ async def github_get_file(
             header = f"File: {path}"
             if ref:
                 header += f" (ref: {ref})"
-            header += f" [lines {start_idx + 1}-{end_idx} of {len(lines)}]"
+            header += f" [lines {start_idx + 1}-{end_idx} of {len(lines)}] [source: {source}]"
 
             # Add line numbers
             numbered_lines = [
@@ -228,7 +256,7 @@ async def github_get_file(
         header = f"File: {path}"
         if ref:
             header += f" (ref: {ref})"
-        header += f" ({data.get('size'):,} bytes)"
+        header += f" ({data.get('size'):,} bytes) [source: {source}]"
 
         return f"{header}\n\n{content}"
 
