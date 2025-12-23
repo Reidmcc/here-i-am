@@ -605,6 +605,175 @@ class TestGitHubServiceFileOperations:
 
 
 # =============================================================================
+# GitHubService Local Clone Tests
+# =============================================================================
+
+class TestGitHubServiceLocalClone:
+    """Tests for GitHubService local clone operations."""
+
+    @pytest.fixture
+    def temp_repo_dir(self, tmp_path):
+        """Create a temporary directory with .git folder to simulate a repo."""
+        repo_dir = tmp_path / "test-repo"
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+        return repo_dir
+
+    @pytest.fixture
+    def mock_repo_with_local(self, temp_repo_dir):
+        """Create a mock repo config with local_clone_path."""
+        return GitHubRepoConfig(
+            owner="test-owner",
+            repo="test-repo",
+            label="Test",
+            token="ghp_test",
+            local_clone_path=str(temp_repo_dir),
+        )
+
+    @pytest.fixture
+    def mock_repo_no_local(self):
+        """Create a mock repo config without local_clone_path."""
+        return GitHubRepoConfig(
+            owner="test-owner",
+            repo="test-repo",
+            label="Test",
+            token="ghp_test",
+        )
+
+    def test_has_local_clone_true(self, mock_repo_with_local):
+        """Test has_local_clone returns True for valid local clone."""
+        service = GitHubService()
+        assert service.has_local_clone(mock_repo_with_local) is True
+
+    def test_has_local_clone_false_no_path(self, mock_repo_no_local):
+        """Test has_local_clone returns False when no path configured."""
+        service = GitHubService()
+        assert service.has_local_clone(mock_repo_no_local) is False
+
+    def test_has_local_clone_false_invalid_path(self):
+        """Test has_local_clone returns False for invalid path."""
+        service = GitHubService()
+        repo = GitHubRepoConfig(
+            owner="test",
+            repo="test",
+            label="Test",
+            token="ghp_test",
+            local_clone_path="/nonexistent/path/to/repo",
+        )
+        assert service.has_local_clone(repo) is False
+
+    def test_get_file_contents_local_text_file(self, mock_repo_with_local, temp_repo_dir):
+        """Test reading a text file from local clone."""
+        service = GitHubService()
+
+        # Create a test file
+        test_file = temp_repo_dir / "test.txt"
+        test_file.write_text("Hello, World!")
+
+        success, data = service.get_file_contents_local(mock_repo_with_local, "test.txt")
+
+        assert success is True
+        assert data["type"] == "text"
+        assert data["content"] == "Hello, World!"
+        assert data["source"] == "local"
+        assert data["name"] == "test.txt"
+
+    def test_get_file_contents_local_binary_file(self, mock_repo_with_local, temp_repo_dir):
+        """Test reading a binary file from local clone."""
+        service = GitHubService()
+
+        # Create a binary file (PNG signature)
+        binary_file = temp_repo_dir / "image.png"
+        binary_file.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00")
+
+        success, data = service.get_file_contents_local(mock_repo_with_local, "image.png")
+
+        assert success is True
+        assert data["type"] == "binary"
+        assert data["source"] == "local"
+
+    def test_get_file_contents_local_not_found(self, mock_repo_with_local):
+        """Test reading nonexistent file from local clone."""
+        service = GitHubService()
+
+        success, data = service.get_file_contents_local(mock_repo_with_local, "nonexistent.txt")
+
+        assert success is False
+        assert data["error"] == "not_found"
+
+    def test_get_file_contents_local_path_escape(self, mock_repo_with_local):
+        """Test that path traversal attacks are blocked."""
+        service = GitHubService()
+
+        success, data = service.get_file_contents_local(mock_repo_with_local, "../../../etc/passwd")
+
+        assert success is False
+        assert data["error"] == "invalid_path"
+        assert "escapes" in data["message"].lower()
+
+    def test_list_contents_local_directory(self, mock_repo_with_local, temp_repo_dir):
+        """Test listing directory contents from local clone."""
+        service = GitHubService()
+
+        # Create some files and directories
+        (temp_repo_dir / "src").mkdir()
+        (temp_repo_dir / "README.md").write_text("# Test")
+        (temp_repo_dir / "main.py").write_text("print('hello')")
+        (temp_repo_dir / "src" / "app.py").write_text("# app")
+
+        success, items = service.list_contents_local(mock_repo_with_local, "")
+
+        assert success is True
+        assert len(items) == 3  # src/, README.md, main.py
+        # Directories come first
+        assert items[0]["type"] == "dir"
+        assert items[0]["name"] == "src"
+        # Files after directories
+        assert items[1]["type"] == "file"
+        assert items[2]["type"] == "file"
+
+    def test_list_contents_local_subdirectory(self, mock_repo_with_local, temp_repo_dir):
+        """Test listing subdirectory contents from local clone."""
+        service = GitHubService()
+
+        # Create a subdirectory with files
+        src_dir = temp_repo_dir / "src"
+        src_dir.mkdir()
+        (src_dir / "app.py").write_text("# app")
+        (src_dir / "utils.py").write_text("# utils")
+
+        success, items = service.list_contents_local(mock_repo_with_local, "src")
+
+        assert success is True
+        assert len(items) == 2
+        assert all(item["type"] == "file" for item in items)
+
+    def test_list_contents_local_not_found(self, mock_repo_with_local):
+        """Test listing nonexistent directory from local clone."""
+        service = GitHubService()
+
+        success, items = service.list_contents_local(mock_repo_with_local, "nonexistent")
+
+        assert success is False
+        assert items[0]["error"] == "not_found"
+
+    def test_list_contents_local_skips_hidden_files(self, mock_repo_with_local, temp_repo_dir):
+        """Test that hidden files are skipped in directory listing."""
+        service = GitHubService()
+
+        # Create visible and hidden files
+        (temp_repo_dir / "visible.txt").write_text("visible")
+        (temp_repo_dir / ".hidden").write_text("hidden")
+        (temp_repo_dir / ".gitignore").write_text("*.pyc")
+
+        success, items = service.list_contents_local(mock_repo_with_local, "")
+
+        assert success is True
+        assert len(items) == 1  # Only visible.txt
+        assert items[0]["name"] == "visible.txt"
+
+
+# =============================================================================
 # GitHub Tools Tests
 # =============================================================================
 
@@ -622,6 +791,8 @@ class TestGitHubTools:
     def mock_github_service(self):
         """Mock GitHub service."""
         with patch('app.services.github_tools.github_service') as mock_service:
+            # Default to no local clone to avoid local file reading in tests
+            mock_service.has_local_clone.return_value = False
             yield mock_service
 
     @pytest.mark.asyncio
