@@ -81,12 +81,16 @@ async def _migrate_messages_role_enum(conn):
         has_speaker_entity_id = 'speaker_entity_id' in existing_columns
 
         # SQLite migration: recreate table with updated schema
-        # Step 1: Create new table with all enum values
+        # Step 0: Clean up any leftover from failed migration
+        await conn.execute(text("DROP TABLE IF EXISTS messages_new"))
+
+        # Step 1: Create new table with wider role column (no CHECK constraint)
+        # Multi-entity conversations can have speaker labels as roles (e.g., "Claude", "GPT")
         await conn.execute(text("""
             CREATE TABLE messages_new (
                 id VARCHAR(36) PRIMARY KEY,
                 conversation_id VARCHAR(36) NOT NULL REFERENCES conversations(id),
-                role VARCHAR(20) NOT NULL CHECK (role IN ('human', 'assistant', 'system', 'tool_use', 'tool_result')),
+                role VARCHAR(50) NOT NULL,
                 content TEXT NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 token_count INTEGER,
@@ -97,11 +101,10 @@ async def _migrate_messages_role_enum(conn):
         """))
 
         # Step 2: Copy data from old table (handle missing speaker_entity_id column)
-        # Use LOWER(role) to normalize case - old data may have 'HUMAN'/'ASSISTANT' but new schema uses lowercase
         if has_speaker_entity_id:
             await conn.execute(text("""
                 INSERT INTO messages_new
-                SELECT id, conversation_id, LOWER(role), content, created_at, token_count,
+                SELECT id, conversation_id, role, content, created_at, token_count,
                        times_retrieved, last_retrieved_at, speaker_entity_id
                 FROM messages
             """))
@@ -109,7 +112,7 @@ async def _migrate_messages_role_enum(conn):
             await conn.execute(text("""
                 INSERT INTO messages_new (id, conversation_id, role, content, created_at,
                                          token_count, times_retrieved, last_retrieved_at)
-                SELECT id, conversation_id, LOWER(role), content, created_at, token_count,
+                SELECT id, conversation_id, role, content, created_at, token_count,
                        times_retrieved, last_retrieved_at
                 FROM messages
             """))
