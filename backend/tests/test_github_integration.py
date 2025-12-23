@@ -1188,3 +1188,705 @@ class TestGitHubRoutes:
         assert result["enabled"] is True
         assert result["repos"]["Test"]["remaining"] is None
         assert result["repos"]["Test"]["status"] == "unknown"
+
+
+# =============================================================================
+# GitHub Tools Efficiency Helper Functions Tests
+# =============================================================================
+
+class TestGitHubToolsHelperFunctions:
+    """Tests for GitHub tools helper functions."""
+
+    def test_format_size_bytes(self):
+        """Test _format_size for bytes."""
+        from app.services.github_tools import _format_size
+
+        assert _format_size(0) == "0B"
+        assert _format_size(100) == "100B"
+        assert _format_size(1023) == "1023B"
+
+    def test_format_size_kilobytes(self):
+        """Test _format_size for kilobytes."""
+        from app.services.github_tools import _format_size
+
+        assert _format_size(1024) == "1.0KB"
+        assert _format_size(2048) == "2.0KB"
+        assert _format_size(1536) == "1.5KB"
+        assert _format_size(1024 * 1024 - 1) == "1024.0KB"
+
+    def test_format_size_megabytes(self):
+        """Test _format_size for megabytes."""
+        from app.services.github_tools import _format_size
+
+        assert _format_size(1024 * 1024) == "1.0MB"
+        assert _format_size(5 * 1024 * 1024) == "5.0MB"
+        assert _format_size(int(1.5 * 1024 * 1024)) == "1.5MB"
+
+    def test_count_code_structures_python(self):
+        """Test _count_code_structures for Python files."""
+        from app.services.github_tools import _count_code_structures
+
+        python_code = """
+class MyClass:
+    def __init__(self):
+        pass
+
+    def method(self):
+        pass
+
+def standalone_function():
+    pass
+
+class AnotherClass:
+    pass
+"""
+        counts = _count_code_structures(python_code, "test.py")
+        assert counts["functions"] == 3  # __init__, method, standalone_function
+        assert counts["classes"] == 2  # MyClass, AnotherClass
+
+    def test_count_code_structures_javascript(self):
+        """Test _count_code_structures for JavaScript files."""
+        from app.services.github_tools import _count_code_structures
+
+        js_code = """
+function namedFunction() {}
+
+const arrowFunc = () => {};
+
+class MyClass {
+    method() {}
+}
+
+let anotherArrow = async () => {};
+"""
+        counts = _count_code_structures(js_code, "test.js")
+        assert counts["functions"] >= 2  # namedFunction plus arrow functions
+        assert counts["classes"] == 1  # MyClass
+
+    def test_count_code_structures_unsupported_extension(self):
+        """Test _count_code_structures for unsupported file types."""
+        from app.services.github_tools import _count_code_structures
+
+        content = "some random text content"
+        counts = _count_code_structures(content, "test.txt")
+        assert counts["functions"] == 0
+        assert counts["classes"] == 0
+
+    def test_truncate_file_content_no_truncation(self):
+        """Test _truncate_file_content when file fits within limit."""
+        from app.services.github_tools import _truncate_file_content
+
+        content = "line1\nline2\nline3"
+        result, was_truncated, summary = _truncate_file_content(content, 10, "test.txt")
+
+        assert result == content
+        assert was_truncated is False
+        assert summary == ""
+
+    def test_truncate_file_content_with_truncation(self):
+        """Test _truncate_file_content when file exceeds limit."""
+        from app.services.github_tools import _truncate_file_content
+
+        content = "\n".join([f"line{i}" for i in range(100)])
+        result, was_truncated, summary = _truncate_file_content(content, 10, "test.txt")
+
+        assert was_truncated is True
+        assert len(result.split("\n")) == 10
+        assert "truncated" in summary.lower()
+        assert "100" in summary  # total lines
+
+    def test_truncate_file_content_with_code_structure_summary(self):
+        """Test _truncate_file_content includes structure summary for code files."""
+        from app.services.github_tools import _truncate_file_content
+
+        python_content = "\n".join([
+            "def func1(): pass",
+            "def func2(): pass",
+            "class MyClass: pass",
+        ] + [f"# comment line {i}" for i in range(100)])
+
+        result, was_truncated, summary = _truncate_file_content(python_content, 10, "test.py")
+
+        assert was_truncated is True
+        assert "functions" in summary.lower()
+        assert "classes" in summary.lower()
+
+    def test_build_tree_view_basic(self):
+        """Test _build_tree_view with basic structure."""
+        from app.services.github_tools import _build_tree_view
+
+        tree_items = [
+            {"path": "README.md", "type": "blob", "size": 1000},
+            {"path": "src", "type": "tree"},
+            {"path": "src/main.py", "type": "blob", "size": 500},
+        ]
+
+        tree_view, file_count, dir_count = _build_tree_view(tree_items, max_depth=3)
+
+        assert "README.md" in tree_view
+        assert "src/" in tree_view
+        assert "main.py" in tree_view
+        assert file_count == 2  # README.md, main.py
+        assert dir_count == 1  # src
+
+    def test_build_tree_view_respects_max_depth(self):
+        """Test _build_tree_view respects max_depth limit."""
+        from app.services.github_tools import _build_tree_view
+
+        tree_items = [
+            {"path": "level1", "type": "tree"},
+            {"path": "level1/level2", "type": "tree"},
+            {"path": "level1/level2/level3", "type": "tree"},
+            {"path": "level1/level2/level3/deep.txt", "type": "blob", "size": 100},
+        ]
+
+        tree_view, file_count, dir_count = _build_tree_view(tree_items, max_depth=2)
+
+        assert "level1/" in tree_view
+        assert "level2/" in tree_view
+        # level3 should be excluded (depth 3)
+        assert "level3" not in tree_view
+        assert "deep.txt" not in tree_view
+
+    def test_build_tree_view_with_sizes(self):
+        """Test _build_tree_view includes file sizes when enabled."""
+        from app.services.github_tools import _build_tree_view
+
+        tree_items = [
+            {"path": "small.txt", "type": "blob", "size": 100},
+            {"path": "large.bin", "type": "blob", "size": 1024 * 1024 * 2},
+        ]
+
+        tree_view, _, _ = _build_tree_view(tree_items, include_sizes=True)
+
+        assert "100B" in tree_view
+        assert "2.0MB" in tree_view
+
+    def test_build_tree_view_without_sizes(self):
+        """Test _build_tree_view excludes file sizes when disabled."""
+        from app.services.github_tools import _build_tree_view
+
+        tree_items = [
+            {"path": "file.txt", "type": "blob", "size": 1024},
+        ]
+
+        tree_view, _, _ = _build_tree_view(tree_items, include_sizes=False)
+
+        assert "1.0KB" not in tree_view
+
+
+# =============================================================================
+# GitHub Composite Tools Tests
+# =============================================================================
+
+class TestGitHubCompositeTools:
+    """Tests for GitHub composite tools (github_tree, github_get_files, github_explore)."""
+
+    @pytest.fixture
+    def mock_github_service(self):
+        """Mock GitHub service."""
+        with patch('app.services.github_tools.github_service') as mock_service:
+            mock_service.has_local_clone.return_value = False
+            yield mock_service
+
+    @pytest.fixture
+    def mock_cache_service(self):
+        """Mock cache service."""
+        with patch('app.services.github_tools.cache_service') as mock_cache:
+            # Default to cache miss
+            mock_cache.get_github_tree.return_value = None
+            mock_cache.get_github_file.return_value = None
+            yield mock_cache
+
+    @pytest.mark.asyncio
+    async def test_github_tree_repo_not_found(self, mock_github_service, mock_cache_service):
+        """Test github_tree when repository not found."""
+        from app.services.github_tools import github_tree
+
+        mock_github_service.get_repo_by_label.return_value = None
+        mock_github_service.get_repos.return_value = []
+
+        result = await github_tree("Nonexistent")
+
+        assert "Error" in result
+        assert "not found" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_github_tree_no_capability(self, mock_github_service, mock_cache_service):
+        """Test github_tree when read capability disabled."""
+        from app.services.github_tools import github_tree
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = False
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+
+        result = await github_tree("Test")
+
+        assert "Error" in result
+        assert "capability" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_github_tree_success(self, mock_github_service, mock_cache_service):
+        """Test github_tree success."""
+        from app.services.github_tools import github_tree
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_repo.owner = "test-owner"
+        mock_repo.repo = "test-repo"
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.get_default_branch = AsyncMock(return_value="main")
+        mock_github_service.get_tree = AsyncMock(return_value=(True, {
+            "sha": "abc123",
+            "tree": [
+                {"path": "README.md", "type": "blob", "size": 1000},
+                {"path": "src", "type": "tree"},
+                {"path": "src/main.py", "type": "blob", "size": 500},
+            ],
+            "truncated": False,
+        }))
+
+        result = await github_tree("Test")
+
+        assert "test-owner/test-repo" in result
+        assert "README.md" in result
+        assert "main.py" in result
+        mock_cache_service.set_github_tree.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_github_tree_uses_cache(self, mock_github_service, mock_cache_service):
+        """Test github_tree uses cached data."""
+        from app.services.github_tools import github_tree
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_repo.owner = "test-owner"
+        mock_repo.repo = "test-repo"
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+
+        # Return cached data
+        mock_cache_service.get_github_tree.return_value = {
+            "sha": "cached123",
+            "tree": [{"path": "cached.txt", "type": "blob", "size": 100}],
+            "truncated": False,
+        }
+
+        result = await github_tree("Test", ref="main")
+
+        assert "[cached]" in result
+        assert "cached.txt" in result
+        # Should not call get_tree since cache hit
+        mock_github_service.get_tree.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_github_tree_bypass_cache(self, mock_github_service, mock_cache_service):
+        """Test github_tree bypasses cache when requested."""
+        from app.services.github_tools import github_tree
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_repo.owner = "test-owner"
+        mock_repo.repo = "test-repo"
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.get_default_branch = AsyncMock(return_value="main")
+        mock_github_service.get_tree = AsyncMock(return_value=(True, {
+            "sha": "fresh123",
+            "tree": [{"path": "fresh.txt", "type": "blob", "size": 100}],
+            "truncated": False,
+        }))
+
+        result = await github_tree("Test", bypass_cache=True)
+
+        assert "fresh.txt" in result
+        # Should not check cache when bypassing
+        mock_cache_service.get_github_tree.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_github_get_files_repo_not_found(self, mock_github_service, mock_cache_service):
+        """Test github_get_files when repository not found."""
+        from app.services.github_tools import github_get_files
+
+        mock_github_service.get_repo_by_label.return_value = None
+        mock_github_service.get_repos.return_value = []
+
+        result = await github_get_files("Nonexistent", ["file.txt"])
+
+        assert "Error" in result
+        assert "not found" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_github_get_files_too_many_files(self, mock_github_service, mock_cache_service):
+        """Test github_get_files rejects too many files."""
+        from app.services.github_tools import github_get_files
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+
+        paths = [f"file{i}.txt" for i in range(15)]  # More than MAX_FILES_PER_REQUEST
+        result = await github_get_files("Test", paths)
+
+        assert "Error" in result
+        assert "Maximum" in result
+
+    @pytest.mark.asyncio
+    async def test_github_get_files_empty_paths(self, mock_github_service, mock_cache_service):
+        """Test github_get_files rejects empty paths."""
+        from app.services.github_tools import github_get_files
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+
+        result = await github_get_files("Test", [])
+
+        assert "Error" in result
+        assert "No file paths" in result
+
+    @pytest.mark.asyncio
+    async def test_github_get_files_success(self, mock_github_service, mock_cache_service):
+        """Test github_get_files success with multiple files."""
+        from app.services.github_tools import github_get_files
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.get_file_contents = AsyncMock(side_effect=[
+            (True, {"type": "text", "content": "file 1 content", "size": 14, "name": "file1.txt"}),
+            (True, {"type": "text", "content": "file 2 content", "size": 14, "name": "file2.txt"}),
+        ])
+
+        result = await github_get_files("Test", ["file1.txt", "file2.txt"])
+
+        assert "file1.txt" in result
+        assert "file2.txt" in result
+        assert "file 1 content" in result
+        assert "file 2 content" in result
+
+    @pytest.mark.asyncio
+    async def test_github_get_files_handles_errors(self, mock_github_service, mock_cache_service):
+        """Test github_get_files handles file fetch errors gracefully."""
+        from app.services.github_tools import github_get_files
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.get_file_contents = AsyncMock(side_effect=[
+            (True, {"type": "text", "content": "good content", "size": 12, "name": "good.txt"}),
+            (False, {"error": "not_found", "message": "File not found"}),
+        ])
+
+        result = await github_get_files("Test", ["good.txt", "bad.txt"])
+
+        assert "good.txt" in result
+        assert "good content" in result
+        assert "bad.txt" in result
+        assert "ERROR" in result
+        assert "not found" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_github_explore_success(self, mock_github_service, mock_cache_service):
+        """Test github_explore success."""
+        from app.services.github_tools import github_explore
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_repo.owner = "test-owner"
+        mock_repo.repo = "test-repo"
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.get_repo_info = AsyncMock(return_value=(True, {
+            "full_name": "test-owner/test-repo",
+            "description": "Test description",
+            "default_branch": "main",
+            "visibility": "public",
+            "language": "Python",
+            "stars": 100,
+        }))
+        mock_github_service.get_tree = AsyncMock(return_value=(True, {
+            "sha": "abc123",
+            "tree": [
+                {"path": "README.md", "type": "blob", "size": 500},
+                {"path": "src", "type": "tree"},
+            ],
+            "truncated": False,
+        }))
+        mock_github_service.get_file_contents = AsyncMock(return_value=(True, {
+            "type": "text",
+            "content": "# Test README\n\nProject description.",
+        }))
+
+        result = await github_explore("Test")
+
+        assert "Repository Info" in result
+        assert "test-owner/test-repo" in result
+        assert "File Structure" in result
+        assert "README.md" in result
+
+
+# =============================================================================
+# GitHub Modified Tools Tests
+# =============================================================================
+
+class TestGitHubModifiedTools:
+    """Tests for modified GitHub tools (github_get_file with truncation, github_search_code with limit)."""
+
+    @pytest.fixture
+    def mock_github_service(self):
+        """Mock GitHub service."""
+        with patch('app.services.github_tools.github_service') as mock_service:
+            mock_service.has_local_clone.return_value = False
+            yield mock_service
+
+    @pytest.fixture
+    def mock_cache_service(self):
+        """Mock cache service."""
+        with patch('app.services.github_tools.cache_service') as mock_cache:
+            mock_cache.get_github_file.return_value = None
+            yield mock_cache
+
+    @pytest.mark.asyncio
+    async def test_github_get_file_truncates_large_file(self, mock_github_service, mock_cache_service):
+        """Test github_get_file truncates files over max_lines."""
+        from app.services.github_tools import github_get_file
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+
+        # Create a file with 1000 lines
+        large_content = "\n".join([f"def func{i}(): pass" for i in range(1000)])
+        mock_github_service.get_file_contents = AsyncMock(return_value=(True, {
+            "type": "text",
+            "content": large_content,
+            "size": len(large_content),
+            "name": "large.py",
+            "path": "large.py",
+        }))
+
+        result = await github_get_file("Test", "large.py", max_lines=100)
+
+        assert "truncated" in result.lower()
+        assert "1000" in result  # total lines
+        assert "100" in result  # truncated to
+
+    @pytest.mark.asyncio
+    async def test_github_get_file_uses_cache(self, mock_github_service, mock_cache_service):
+        """Test github_get_file uses cached data."""
+        from app.services.github_tools import github_get_file
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+
+        # Return cached data
+        mock_cache_service.get_github_file.return_value = {
+            "type": "text",
+            "content": "cached content",
+            "size": 14,
+            "name": "cached.txt",
+            "path": "cached.txt",
+        }
+
+        result = await github_get_file("Test", "cached.txt")
+
+        assert "cached content" in result
+        assert "[cached]" in result
+        mock_github_service.get_file_contents.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_github_get_file_bypass_cache(self, mock_github_service, mock_cache_service):
+        """Test github_get_file bypasses cache when requested."""
+        from app.services.github_tools import github_get_file
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.get_file_contents = AsyncMock(return_value=(True, {
+            "type": "text",
+            "content": "fresh content",
+            "size": 13,
+            "name": "fresh.txt",
+            "path": "fresh.txt",
+        }))
+
+        result = await github_get_file("Test", "fresh.txt", bypass_cache=True)
+
+        assert "fresh content" in result
+        mock_cache_service.get_github_file.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_github_get_file_caches_result(self, mock_github_service, mock_cache_service):
+        """Test github_get_file caches the result."""
+        from app.services.github_tools import github_get_file
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.get_file_contents = AsyncMock(return_value=(True, {
+            "type": "text",
+            "content": "new content",
+            "size": 11,
+            "name": "new.txt",
+            "path": "new.txt",
+        }))
+
+        await github_get_file("Test", "new.txt")
+
+        mock_cache_service.set_github_file.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_github_search_code_limits_results(self, mock_github_service, mock_cache_service):
+        """Test github_search_code limits results to MAX_SEARCH_RESULTS."""
+        from app.services.github_tools import github_search_code, MAX_SEARCH_RESULTS
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+
+        # Return more results than MAX_SEARCH_RESULTS
+        many_results = [{"path": f"file{i}.py"} for i in range(25)]
+        mock_github_service.search_code = AsyncMock(return_value=(True, many_results))
+
+        result = await github_search_code("Test", "function")
+
+        # Should show limited results
+        assert f"showing {MAX_SEARCH_RESULTS}" in result
+        assert "25" in result  # total matches
+        assert "more matches not shown" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_github_search_code_shows_all_when_under_limit(self, mock_github_service, mock_cache_service):
+        """Test github_search_code shows all results when under limit."""
+        from app.services.github_tools import github_search_code
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+
+        results = [{"path": f"file{i}.py"} for i in range(5)]
+        mock_github_service.search_code = AsyncMock(return_value=(True, results))
+
+        result = await github_search_code("Test", "function")
+
+        assert "5 matches" in result
+        assert "more matches not shown" not in result.lower()
+
+
+# =============================================================================
+# GitHub Cache Invalidation Tests
+# =============================================================================
+
+class TestGitHubCacheInvalidation:
+    """Tests for GitHub cache invalidation on write operations."""
+
+    @pytest.fixture
+    def mock_github_service(self):
+        """Mock GitHub service."""
+        with patch('app.services.github_tools.github_service') as mock_service:
+            mock_service.has_local_clone.return_value = False
+            yield mock_service
+
+    @pytest.fixture
+    def mock_cache_service(self):
+        """Mock cache service."""
+        with patch('app.services.github_tools.cache_service') as mock_cache:
+            yield mock_cache
+
+    @pytest.mark.asyncio
+    async def test_github_commit_file_invalidates_cache(self, mock_github_service, mock_cache_service):
+        """Test github_commit_file invalidates file and tree cache."""
+        from app.services.github_tools import github_commit_file
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.commit_file = AsyncMock(return_value=(True, {
+            "sha": "abc123",
+            "action": "updated",
+            "html_url": "https://github.com/test/test/commit/abc123",
+        }))
+
+        await github_commit_file("Test", "file.txt", "content", "commit msg", "feature-branch")
+
+        # Should invalidate both file cache and tree cache
+        mock_cache_service.invalidate_github_file.assert_called_once_with("Test", "file.txt", "feature-branch")
+        mock_cache_service.invalidate_github_tree.assert_called_once_with("Test", "feature-branch")
+
+    @pytest.mark.asyncio
+    async def test_github_delete_file_invalidates_cache(self, mock_github_service, mock_cache_service):
+        """Test github_delete_file invalidates file and tree cache."""
+        from app.services.github_tools import github_delete_file
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.delete_file = AsyncMock(return_value=(True, {
+            "sha": "def456",
+        }))
+
+        await github_delete_file("Test", "deleted.txt", "delete msg", "feature-branch")
+
+        # Should invalidate both file cache and tree cache
+        mock_cache_service.invalidate_github_file.assert_called_once_with("Test", "deleted.txt", "feature-branch")
+        mock_cache_service.invalidate_github_tree.assert_called_once_with("Test", "feature-branch")
+
+    @pytest.mark.asyncio
+    async def test_github_commit_file_no_invalidation_on_failure(self, mock_github_service, mock_cache_service):
+        """Test github_commit_file does not invalidate cache on failure."""
+        from app.services.github_tools import github_commit_file
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.commit_file = AsyncMock(return_value=(False, {
+            "error": "conflict",
+            "message": "File conflict",
+        }))
+
+        await github_commit_file("Test", "file.txt", "content", "commit msg", "feature-branch")
+
+        # Should NOT invalidate cache when commit fails
+        mock_cache_service.invalidate_github_file.assert_not_called()
+        mock_cache_service.invalidate_github_tree.assert_not_called()
+
+
+# =============================================================================
+# GitHub Tool Registration with Composite Tools Tests
+# =============================================================================
+
+class TestGitHubToolRegistrationComposite:
+    """Tests for GitHub tool registration including composite tools."""
+
+    def test_composite_tools_registered_for_read_capability(self):
+        """Test composite tools are registered when read capability is available."""
+        from app.services.github_tools import register_github_tools
+        from app.services.tool_service import ToolService, ToolCategory
+
+        tool_service = ToolService()
+
+        read_only_repo = GitHubRepoConfig(
+            owner="test",
+            repo="test",
+            label="Test",
+            token="ghp_test",
+            capabilities=["read"],
+        )
+
+        with patch('app.services.github_tools.settings') as mock_settings, \
+             patch('app.services.github_tools.github_service') as mock_service:
+            mock_settings.github_tools_enabled = True
+            mock_service.get_repos.return_value = [read_only_repo]
+            register_github_tools(tool_service)
+
+        github_tools = tool_service.list_tools()
+        github_tool_names = [t.name for t in github_tools if t.category == ToolCategory.GITHUB]
+
+        # Should have composite tools
+        assert "github_explore" in github_tool_names
+        assert "github_tree" in github_tool_names
+        assert "github_get_files" in github_tool_names
+
+        # Should also have standard read tools
+        assert "github_repo_info" in github_tool_names
+        assert "github_get_file" in github_tool_names
+        assert "github_search_code" in github_tool_names
