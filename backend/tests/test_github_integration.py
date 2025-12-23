@@ -2151,3 +2151,313 @@ class TestGitHubCompositeToolsLocalClone:
         assert "[local]" in result
         mock_github_service.get_tree_local.assert_called_once()
         mock_github_service.get_tree.assert_not_called()
+
+
+class TestGitHubServiceGitignoreSupport:
+    """Tests for .gitignore and sensitive file blocking in local clone operations."""
+
+    @pytest.fixture
+    def github_service_instance(self):
+        """Create a real GitHubService instance for testing gitignore methods."""
+        from app.services.github_service import GitHubService
+        return GitHubService()
+
+    def test_is_sensitive_file_env(self, github_service_instance):
+        """Test that .env files are detected as sensitive."""
+        assert github_service_instance._is_sensitive_file(".env") is True
+        assert github_service_instance._is_sensitive_file(".env.local") is True
+        assert github_service_instance._is_sensitive_file(".env.production") is True
+        assert github_service_instance._is_sensitive_file("config/.env") is True
+
+    def test_is_sensitive_file_credentials(self, github_service_instance):
+        """Test that credential files are detected as sensitive."""
+        assert github_service_instance._is_sensitive_file("credentials.json") is True
+        assert github_service_instance._is_sensitive_file("secrets.yaml") is True
+        assert github_service_instance._is_sensitive_file("api_key.txt") is True
+
+    def test_is_sensitive_file_keys(self, github_service_instance):
+        """Test that key files are detected as sensitive."""
+        assert github_service_instance._is_sensitive_file("server.pem") is True
+        assert github_service_instance._is_sensitive_file("private.key") is True
+        assert github_service_instance._is_sensitive_file("id_rsa") is True
+        assert github_service_instance._is_sensitive_file(".ssh/id_rsa") is True
+
+    def test_is_sensitive_file_normal_files(self, github_service_instance):
+        """Test that normal files are NOT detected as sensitive."""
+        assert github_service_instance._is_sensitive_file("README.md") is False
+        assert github_service_instance._is_sensitive_file("main.py") is False
+        assert github_service_instance._is_sensitive_file("package.json") is False
+        assert github_service_instance._is_sensitive_file("src/app.ts") is False
+
+    def test_parse_gitignore_empty(self, github_service_instance, tmp_path):
+        """Test parsing empty .gitignore."""
+        patterns = github_service_instance._parse_gitignore(tmp_path)
+        assert patterns == []
+
+    def test_parse_gitignore_with_patterns(self, github_service_instance, tmp_path):
+        """Test parsing .gitignore with patterns."""
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text("node_modules/\n*.pyc\n# comment\n\n__pycache__/\n")
+
+        patterns = github_service_instance._parse_gitignore(tmp_path)
+
+        assert "node_modules/" in patterns
+        assert "*.pyc" in patterns
+        assert "__pycache__/" in patterns
+        assert "# comment" not in patterns
+        assert "" not in patterns
+
+    def test_matches_gitignore_simple_pattern(self, github_service_instance):
+        """Test simple gitignore pattern matching."""
+        patterns = ["*.pyc", "node_modules/"]
+
+        assert github_service_instance._matches_gitignore("test.pyc", patterns) is True
+        assert github_service_instance._matches_gitignore("src/test.pyc", patterns) is True
+        assert github_service_instance._matches_gitignore("test.py", patterns) is False
+
+    def test_matches_gitignore_directory_pattern(self, github_service_instance):
+        """Test directory gitignore pattern matching."""
+        patterns = ["node_modules/", "__pycache__/"]
+
+        assert github_service_instance._matches_gitignore("node_modules", patterns) is True
+        assert github_service_instance._matches_gitignore("src/node_modules", patterns) is True
+        assert github_service_instance._matches_gitignore("__pycache__", patterns) is True
+
+    def test_matches_gitignore_negation(self, github_service_instance):
+        """Test gitignore negation pattern."""
+        patterns = ["*.log", "!important.log"]
+
+        assert github_service_instance._matches_gitignore("debug.log", patterns) is True
+        assert github_service_instance._matches_gitignore("important.log", patterns) is False
+
+    def test_should_exclude_path_sensitive(self, github_service_instance):
+        """Test _should_exclude_path detects sensitive files."""
+        should_exclude, reason = github_service_instance._should_exclude_path(
+            ".env", [], is_directory=False
+        )
+        assert should_exclude is True
+        assert reason == "sensitive_file"
+
+    def test_should_exclude_path_gitignore(self, github_service_instance):
+        """Test _should_exclude_path detects gitignored files."""
+        patterns = ["*.pyc", "node_modules/"]
+        should_exclude, reason = github_service_instance._should_exclude_path(
+            "test.pyc", patterns, is_directory=False
+        )
+        assert should_exclude is True
+        assert reason == "gitignore"
+
+    def test_should_exclude_path_allowed(self, github_service_instance):
+        """Test _should_exclude_path allows normal files."""
+        patterns = ["*.pyc"]
+        should_exclude, reason = github_service_instance._should_exclude_path(
+            "main.py", patterns, is_directory=False
+        )
+        assert should_exclude is False
+        assert reason is None
+
+    def test_get_file_contents_local_blocks_env(self, github_service_instance, tmp_path):
+        """Test get_file_contents_local blocks .env files."""
+        from app.config import GitHubRepoConfig
+
+        # Create test structure
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        env_file = tmp_path / ".env"
+        env_file.write_text("SECRET_KEY=abc123")
+
+        repo = GitHubRepoConfig(
+            owner="test",
+            repo="test",
+            label="Test",
+            token="test-token",
+            local_clone_path=str(tmp_path),
+        )
+
+        success, data = github_service_instance.get_file_contents_local(repo, ".env")
+
+        assert success is False
+        assert data["error"] == "sensitive_file"
+        assert "sensitive file" in data["message"]
+
+    def test_get_file_contents_local_blocks_gitignored(self, github_service_instance, tmp_path):
+        """Test get_file_contents_local blocks gitignored files."""
+        from app.config import GitHubRepoConfig
+
+        # Create test structure
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text("build/\n*.log\n")
+        log_file = tmp_path / "debug.log"
+        log_file.write_text("debug output")
+
+        repo = GitHubRepoConfig(
+            owner="test",
+            repo="test",
+            label="Test",
+            token="test-token",
+            local_clone_path=str(tmp_path),
+        )
+
+        success, data = github_service_instance.get_file_contents_local(repo, "debug.log")
+
+        assert success is False
+        assert data["error"] == "gitignored"
+        assert ".gitignore" in data["message"]
+
+    def test_get_file_contents_local_allows_normal_files(self, github_service_instance, tmp_path):
+        """Test get_file_contents_local allows normal files."""
+        from app.config import GitHubRepoConfig
+
+        # Create test structure
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        readme = tmp_path / "README.md"
+        readme.write_text("# Test Project")
+
+        repo = GitHubRepoConfig(
+            owner="test",
+            repo="test",
+            label="Test",
+            token="test-token",
+            local_clone_path=str(tmp_path),
+        )
+
+        success, data = github_service_instance.get_file_contents_local(repo, "README.md")
+
+        assert success is True
+        assert data["content"] == "# Test Project"
+
+    def test_list_contents_local_filters_sensitive(self, github_service_instance, tmp_path):
+        """Test list_contents_local filters out sensitive files."""
+        from app.config import GitHubRepoConfig
+
+        # Create test structure
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (tmp_path / "README.md").write_text("# Test")
+        (tmp_path / ".env").write_text("SECRET=123")
+        (tmp_path / "main.py").write_text("print('hello')")
+
+        repo = GitHubRepoConfig(
+            owner="test",
+            repo="test",
+            label="Test",
+            token="test-token",
+            local_clone_path=str(tmp_path),
+        )
+
+        success, items = github_service_instance.list_contents_local(repo)
+
+        assert success is True
+        names = [item["name"] for item in items]
+        assert "README.md" in names
+        assert "main.py" in names
+        assert ".env" not in names
+
+    def test_list_contents_local_filters_gitignored(self, github_service_instance, tmp_path):
+        """Test list_contents_local filters out gitignored files."""
+        from app.config import GitHubRepoConfig
+
+        # Create test structure
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text("*.log\nbuild/\n")
+        (tmp_path / "README.md").write_text("# Test")
+        (tmp_path / "debug.log").write_text("debug")
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        (build_dir / "output.js").write_text("compiled")
+
+        repo = GitHubRepoConfig(
+            owner="test",
+            repo="test",
+            label="Test",
+            token="test-token",
+            local_clone_path=str(tmp_path),
+        )
+
+        success, items = github_service_instance.list_contents_local(repo)
+
+        assert success is True
+        names = [item["name"] for item in items]
+        assert "README.md" in names
+        assert "debug.log" not in names
+        assert "build" not in names
+
+    def test_get_tree_local_filters_sensitive(self, github_service_instance, tmp_path):
+        """Test get_tree_local filters out sensitive files."""
+        from app.config import GitHubRepoConfig
+
+        # Create test structure
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (tmp_path / "README.md").write_text("# Test")
+        (tmp_path / ".env").write_text("SECRET=123")
+        (tmp_path / "credentials.json").write_text("{}")
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "main.py").write_text("print('hello')")
+
+        repo = GitHubRepoConfig(
+            owner="test",
+            repo="test",
+            label="Test",
+            token="test-token",
+            local_clone_path=str(tmp_path),
+        )
+
+        success, data = github_service_instance.get_tree_local(repo)
+
+        assert success is True
+        paths = [item["path"] for item in data["tree"]]
+        assert "README.md" in paths
+        assert "src" in paths
+        assert "src/main.py" in paths
+        assert ".env" not in paths
+        assert "credentials.json" not in paths
+
+    def test_get_tree_local_filters_gitignored(self, github_service_instance, tmp_path):
+        """Test get_tree_local filters out gitignored files and directories."""
+        from app.config import GitHubRepoConfig
+
+        # Create test structure
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text("node_modules/\n*.pyc\n__pycache__/\n")
+        (tmp_path / "README.md").write_text("# Test")
+        (tmp_path / "test.pyc").write_text("compiled")
+        node_modules = tmp_path / "node_modules"
+        node_modules.mkdir()
+        (node_modules / "lodash").mkdir()
+        pycache = tmp_path / "__pycache__"
+        pycache.mkdir()
+        (pycache / "module.cpython-39.pyc").write_bytes(b"\x00")
+
+        repo = GitHubRepoConfig(
+            owner="test",
+            repo="test",
+            label="Test",
+            token="test-token",
+            local_clone_path=str(tmp_path),
+        )
+
+        success, data = github_service_instance.get_tree_local(repo)
+
+        assert success is True
+        paths = [item["path"] for item in data["tree"]]
+        assert "README.md" in paths
+        assert "test.pyc" not in paths
+        assert "node_modules" not in paths
+        assert "node_modules/lodash" not in paths
+        assert "__pycache__" not in paths
+
+    def test_sensitive_files_case_insensitive(self, github_service_instance):
+        """Test that sensitive file detection is case insensitive."""
+        assert github_service_instance._is_sensitive_file(".ENV") is True
+        assert github_service_instance._is_sensitive_file(".Env") is True
+        assert github_service_instance._is_sensitive_file("CREDENTIALS.JSON") is True
+        assert github_service_instance._is_sensitive_file("Secrets.yaml") is True
