@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from datetime import datetime
 import uuid
 
-from app.services.session_manager import SessionManager, ConversationSession, MemoryEntry
+from app.services.session_manager import SessionManager, ConversationSession, MemoryEntry, _add_cache_control_to_tool_result
 from app.models import Conversation, Message, MessageRole, ConversationType
 
 
@@ -2081,3 +2081,366 @@ class TestAgenticToolLoopMemoryOptimization:
         # Second: with no memories (base for subsequent iterations)
         assert build_calls[1]["memories_count"] == 0
         assert build_calls[1]["memories"] == []
+
+
+class TestAddCacheControlToToolResult:
+    """Tests for _add_cache_control_to_tool_result helper function."""
+
+    def test_adds_cache_control_to_single_tool_result(self):
+        """Test adding cache_control to a single tool_result block."""
+        user_msg = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool-1",
+                    "content": "Search results here",
+                    "is_error": False,
+                }
+            ],
+        }
+
+        result = _add_cache_control_to_tool_result(user_msg)
+
+        # Should have cache_control on the tool_result block
+        assert result["content"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        # Original fields should be preserved
+        assert result["content"][0]["type"] == "tool_result"
+        assert result["content"][0]["tool_use_id"] == "tool-1"
+        assert result["content"][0]["content"] == "Search results here"
+        assert result["content"][0]["is_error"] is False
+
+    def test_adds_cache_control_to_last_block_only(self):
+        """Test that cache_control is only added to the last tool_result block."""
+        user_msg = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool-1",
+                    "content": "First result",
+                    "is_error": False,
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool-2",
+                    "content": "Second result",
+                    "is_error": False,
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool-3",
+                    "content": "Third result",
+                    "is_error": False,
+                },
+            ],
+        }
+
+        result = _add_cache_control_to_tool_result(user_msg)
+
+        # First two blocks should NOT have cache_control
+        assert "cache_control" not in result["content"][0]
+        assert "cache_control" not in result["content"][1]
+
+        # Last block SHOULD have cache_control
+        assert result["content"][2]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+    def test_does_not_mutate_original_message(self):
+        """Test that the original message is not mutated."""
+        user_msg = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool-1",
+                    "content": "Result",
+                    "is_error": False,
+                }
+            ],
+        }
+
+        result = _add_cache_control_to_tool_result(user_msg)
+
+        # Original should not have cache_control
+        assert "cache_control" not in user_msg["content"][0]
+
+        # Result should have cache_control
+        assert result["content"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+        # They should be different objects
+        assert result is not user_msg
+        assert result["content"] is not user_msg["content"]
+        assert result["content"][0] is not user_msg["content"][0]
+
+    def test_handles_empty_content(self):
+        """Test handling of message with empty content list."""
+        user_msg = {
+            "role": "user",
+            "content": [],
+        }
+
+        result = _add_cache_control_to_tool_result(user_msg)
+
+        # Should return message unchanged (no crash)
+        assert result["role"] == "user"
+        assert result["content"] == []
+
+    def test_handles_non_list_content(self):
+        """Test handling of message with non-list content."""
+        user_msg = {
+            "role": "user",
+            "content": "Plain text content",
+        }
+
+        result = _add_cache_control_to_tool_result(user_msg)
+
+        # Should return message unchanged (no crash)
+        assert result["role"] == "user"
+        assert result["content"] == "Plain text content"
+
+    def test_handles_missing_content(self):
+        """Test handling of message with missing content key."""
+        user_msg = {
+            "role": "user",
+        }
+
+        result = _add_cache_control_to_tool_result(user_msg)
+
+        # Should return message unchanged (no crash)
+        assert result["role"] == "user"
+        assert "content" not in result
+
+    def test_preserves_role_and_other_fields(self):
+        """Test that role and other message fields are preserved."""
+        user_msg = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool-1",
+                    "content": "Result",
+                    "is_error": False,
+                }
+            ],
+            "extra_field": "some_value",
+        }
+
+        result = _add_cache_control_to_tool_result(user_msg)
+
+        assert result["role"] == "user"
+        assert result["extra_field"] == "some_value"
+
+
+class TestToolIterationCaching:
+    """Tests for cache_control being added to tool iterations."""
+
+    @pytest.mark.asyncio
+    async def test_cache_control_added_to_tool_result_in_subsequent_iterations(
+        self, db_session, sample_conversation
+    ):
+        """Test that cache_control is added to tool result messages in subsequent iterations."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            # Configure mocks
+            mock_memory.is_configured.return_value = False
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
+            mock_settings.tool_use_max_iterations = 10
+
+            sent_messages = []
+
+            def build_messages(memories, **kwargs):
+                return [{"role": "user", "content": "base"}]
+
+            mock_llm.build_messages_with_memories.side_effect = build_messages
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            call_count = [0]
+
+            async def mock_stream(messages, **kwargs):
+                sent_messages.append(list(messages))
+                call_count[0] += 1
+
+                if call_count[0] == 1:
+                    # First call: return tool use
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {
+                        "type": "done",
+                        "content": "",
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {"input_tokens": 10, "output_tokens": 5},
+                        "stop_reason": "tool_use",
+                        "content_blocks": [
+                            {"type": "tool_use", "id": "tool-1", "name": "web_search", "input": {"query": "test"}}
+                        ],
+                        "tool_use": [{"id": "tool-1", "name": "web_search", "input": {"query": "test"}}],
+                    }
+                else:
+                    # Second call: return final response
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {"type": "token", "content": "Done"}
+                    yield {
+                        "type": "done",
+                        "content": "Done",
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {"input_tokens": 20, "output_tokens": 10},
+                        "stop_reason": "end_turn",
+                        "content_blocks": [{"type": "text", "text": "Done"}],
+                    }
+
+            mock_llm.send_message_stream = mock_stream
+
+            # Mock tool execution
+            mock_tool_result = MagicMock()
+            mock_tool_result.tool_use_id = "tool-1"
+            mock_tool_result.content = "Search results"
+            mock_tool_result.is_error = False
+            mock_tool.execute_tool = AsyncMock(return_value=mock_tool_result)
+
+            session = manager.create_session(sample_conversation.id)
+
+            # Process message
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Search for something", db_session, tool_schemas=[{"name": "web_search"}]
+            ):
+                events.append(event)
+
+        # Should have two LLM calls
+        assert len(sent_messages) == 2
+
+        # Second iteration should have cache_control on the tool result message
+        tool_result_msg = sent_messages[1][2]  # base + assistant + user (tool_result)
+        assert tool_result_msg["role"] == "user"
+        assert isinstance(tool_result_msg["content"], list)
+        # The last content block should have cache_control
+        last_block = tool_result_msg["content"][-1]
+        assert last_block.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
+
+    @pytest.mark.asyncio
+    async def test_multiple_tool_iterations_each_gets_cache_control(
+        self, db_session, sample_conversation
+    ):
+        """Test that each tool iteration has cache_control on the last accumulated tool result."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            # Configure mocks
+            mock_memory.is_configured.return_value = False
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 4096
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
+            mock_settings.tool_use_max_iterations = 10
+
+            sent_messages = []
+
+            def build_messages(memories, **kwargs):
+                return [{"role": "user", "content": "base"}]
+
+            mock_llm.build_messages_with_memories.side_effect = build_messages
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            call_count = [0]
+
+            async def mock_stream(messages, **kwargs):
+                sent_messages.append(list(messages))
+                call_count[0] += 1
+
+                if call_count[0] == 1:
+                    # First tool use
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {
+                        "type": "done",
+                        "stop_reason": "tool_use",
+                        "content_blocks": [
+                            {"type": "tool_use", "id": "tool-1", "name": "web_search", "input": {"query": "first"}}
+                        ],
+                        "tool_use": [{"id": "tool-1", "name": "web_search", "input": {"query": "first"}}],
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {},
+                    }
+                elif call_count[0] == 2:
+                    # Second tool use
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {
+                        "type": "done",
+                        "stop_reason": "tool_use",
+                        "content_blocks": [
+                            {"type": "tool_use", "id": "tool-2", "name": "web_fetch", "input": {"url": "http://example.com"}}
+                        ],
+                        "tool_use": [{"id": "tool-2", "name": "web_fetch", "input": {"url": "http://example.com"}}],
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {},
+                    }
+                else:
+                    # Final response
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {"type": "token", "content": "Final"}
+                    yield {
+                        "type": "done",
+                        "content": "Final",
+                        "stop_reason": "end_turn",
+                        "content_blocks": [{"type": "text", "text": "Final"}],
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {},
+                    }
+
+            mock_llm.send_message_stream = mock_stream
+
+            # Mock tool execution
+            tool_call_count = [0]
+
+            async def mock_execute(tool_use_id, tool_name, tool_input):
+                tool_call_count[0] += 1
+                result = MagicMock()
+                result.tool_use_id = tool_use_id
+                result.content = f"Result {tool_call_count[0]}"
+                result.is_error = False
+                return result
+
+            mock_tool.execute_tool = mock_execute
+
+            session = manager.create_session(sample_conversation.id)
+
+            # Process message
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Multi-tool query", db_session, tool_schemas=[{"name": "web_search"}, {"name": "web_fetch"}]
+            ):
+                events.append(event)
+
+        # Should have three LLM calls
+        assert len(sent_messages) == 3
+
+        # Second iteration: should have cache_control on first tool result
+        # Messages: base, assistant (tool_use), user (tool_result with cache_control)
+        second_call_tool_result = sent_messages[1][2]
+        assert second_call_tool_result["role"] == "user"
+        last_block = second_call_tool_result["content"][-1]
+        assert last_block.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
+
+        # Third iteration: should have cache_control only on LAST tool result
+        # Messages: base, assistant, user (NO cache_control), assistant, user (WITH cache_control)
+        # The first tool_result should NOT have cache_control anymore (it's not the last exchange)
+        third_call_first_tool_result = sent_messages[2][2]
+        assert third_call_first_tool_result["role"] == "user"
+        first_block = third_call_first_tool_result["content"][-1]
+        assert "cache_control" not in first_block  # Not the last exchange
+
+        # The second (last) tool_result SHOULD have cache_control
+        third_call_second_tool_result = sent_messages[2][4]
+        assert third_call_second_tool_result["role"] == "user"
+        last_block = third_call_second_tool_result["content"][-1]
+        assert last_block.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}

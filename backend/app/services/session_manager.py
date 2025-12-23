@@ -190,6 +190,40 @@ def _build_memory_block_text(
     return memory_block
 
 
+def _add_cache_control_to_tool_result(user_msg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Add cache_control to the last tool_result block in a user message.
+
+    This enables Anthropic's prompt caching between tool iterations, so that
+    previous tool exchanges are cached when making the next API call.
+
+    Args:
+        user_msg: The user message containing tool_result content blocks
+
+    Returns:
+        A new message dict with cache_control added to the last content block
+    """
+    # Make a shallow copy to avoid mutating the original
+    result = dict(user_msg)
+
+    content = result.get("content")
+    if isinstance(content, list) and content:
+        # Copy the content list and its blocks
+        content_copy = []
+        for i, block in enumerate(content):
+            is_last = (i == len(content) - 1)
+            if is_last:
+                # Add cache_control to the last block
+                block_copy = dict(block)
+                block_copy["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+                content_copy.append(block_copy)
+            else:
+                content_copy.append(block)
+        result["content"] = content_copy
+
+    return result
+
+
 @dataclass
 class MemoryEntry:
     """A memory retrieved during a session."""
@@ -1361,10 +1395,19 @@ class SessionManager:
                 working_messages = list(messages)  # Include memories
             else:
                 # Rebuild from base (no memories) + accumulated tool exchanges
+                # Add cache_control to the last tool result for caching between iterations
                 working_messages = list(base_messages_no_memories)
-                for exchange in tool_exchanges:
+                for i, exchange in enumerate(tool_exchanges):
                     working_messages.append(exchange["assistant"])
-                    working_messages.append(exchange["user"])
+                    is_last_exchange = (i == len(tool_exchanges) - 1)
+                    if is_last_exchange:
+                        # Add cache_control to the last tool result message
+                        # This enables caching of all previous tool exchanges for subsequent iterations
+                        user_msg = _add_cache_control_to_tool_result(exchange["user"])
+                        working_messages.append(user_msg)
+                        logger.info(f"[CACHE] Added cache_control to tool result message (iteration {iteration})")
+                    else:
+                        working_messages.append(exchange["user"])
                 logger.info(f"[TOOLS] Iteration {iteration}: Using messages without memory block ({len(working_messages)} messages)")
 
             async for event in llm_service.send_message_stream(
