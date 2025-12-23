@@ -1,6 +1,7 @@
 from typing import Dict, List, Set, Optional, Any, AsyncIterator, Callable, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
+import json
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -222,6 +223,51 @@ def _add_cache_control_to_tool_result(user_msg: Dict[str, Any]) -> Dict[str, Any
         result["content"] = content_copy
 
     return result
+
+
+def _estimate_tool_exchange_tokens(
+    exchange: Dict[str, Any],
+    count_tokens_fn: Callable[[str], int]
+) -> int:
+    """
+    Estimate the token count for a tool exchange (assistant tool_use + user tool_result).
+
+    Args:
+        exchange: Dict with "assistant" and "user" message dicts
+        count_tokens_fn: Function to count tokens in text
+
+    Returns:
+        Estimated token count for the exchange
+    """
+    total = 0
+
+    # Count tokens in assistant's tool_use content
+    assistant_content = exchange.get("assistant", {}).get("content", [])
+    if isinstance(assistant_content, list):
+        for block in assistant_content:
+            if block.get("type") == "tool_use":
+                # Count tool name and input
+                total += count_tokens_fn(block.get("name", ""))
+                input_json = json.dumps(block.get("input", {}))
+                total += count_tokens_fn(input_json)
+            elif block.get("type") == "text":
+                total += count_tokens_fn(block.get("text", ""))
+
+    # Count tokens in user's tool_result content
+    user_content = exchange.get("user", {}).get("content", [])
+    if isinstance(user_content, list):
+        for block in user_content:
+            if block.get("type") == "tool_result":
+                content = block.get("content", "")
+                if isinstance(content, str):
+                    total += count_tokens_fn(content)
+                elif isinstance(content, list):
+                    # Content can be a list of content blocks
+                    for sub_block in content:
+                        if isinstance(sub_block, dict) and sub_block.get("type") == "text":
+                            total += count_tokens_fn(sub_block.get("text", ""))
+
+    return total
 
 
 @dataclass
@@ -1423,6 +1469,10 @@ class SessionManager:
         full_content = ""
         accumulated_tool_uses = []  # Track all tool uses across iterations
         tool_exchanges = []  # Track tool exchanges for rebuilding messages without memories
+        tool_exchange_tokens = []  # Token count for each exchange (parallel to tool_exchanges)
+        tool_cache_breakpoints = []  # Indices of exchanges that should have cache breakpoints
+        tokens_since_last_breakpoint = 0  # Tokens accumulated since last cache breakpoint
+        TOOL_CACHE_TOKEN_THRESHOLD = 2048  # Re-cache tool results every N tokens
         iteration = 0
         max_iterations = settings.tool_use_max_iterations
 
@@ -1440,18 +1490,19 @@ class SessionManager:
                 working_messages = list(messages)  # Include memories
             else:
                 # Rebuild from base (no memories) + accumulated tool exchanges
-                # Add cache_control to ALL tool results for caching between iterations
-                # This ensures the prefix matches across iterations for cache hits:
-                # - Iteration 2: [base_cache, asst_1, user_1_cache]
-                # - Iteration 3: [base_cache, asst_1, user_1_cache, asst_2, user_2_cache]
-                # The prefix in iteration 3 matches iteration 2, enabling cache hits
+                # Add cache_control only at breakpoint positions to respect Anthropic's 4 breakpoint limit
+                # Breakpoints are placed when accumulated tokens >= TOOL_CACHE_TOKEN_THRESHOLD
                 working_messages = list(base_messages_no_memories)
-                for exchange in tool_exchanges:
+                for i, exchange in enumerate(tool_exchanges):
                     working_messages.append(exchange["assistant"])
-                    # Add cache_control to each tool result for consistent caching
-                    user_msg = _add_cache_control_to_tool_result(exchange["user"])
+                    # Only add cache_control at designated breakpoint positions
+                    if i in tool_cache_breakpoints:
+                        user_msg = _add_cache_control_to_tool_result(exchange["user"])
+                    else:
+                        user_msg = exchange["user"]
                     working_messages.append(user_msg)
-                logger.info(f"[TOOLS] Iteration {iteration}: Using messages without memory block ({len(working_messages)} messages, {len(tool_exchanges)} tool exchanges with cache_control)")
+                breakpoint_count = len(tool_cache_breakpoints)
+                logger.info(f"[TOOLS] Iteration {iteration}: Using messages without memory block ({len(working_messages)} messages, {len(tool_exchanges)} tool exchanges, {breakpoint_count} cache breakpoints)")
 
             async for event in llm_service.send_message_stream(
                 messages=working_messages,
@@ -1595,10 +1646,23 @@ class SessionManager:
                 }
 
                 # Store exchange for rebuilding messages without memories on next iteration
-                tool_exchanges.append({
+                exchange = {
                     "assistant": assistant_msg,
                     "user": user_msg,
-                })
+                }
+                tool_exchanges.append(exchange)
+
+                # Track tokens and determine if this exchange should be a cache breakpoint
+                exchange_tokens = _estimate_tool_exchange_tokens(exchange, llm_service.count_tokens)
+                tool_exchange_tokens.append(exchange_tokens)
+                tokens_since_last_breakpoint += exchange_tokens
+
+                # Add a cache breakpoint if we've accumulated enough tokens
+                if tokens_since_last_breakpoint >= TOOL_CACHE_TOKEN_THRESHOLD:
+                    exchange_index = len(tool_exchanges) - 1
+                    tool_cache_breakpoints.append(exchange_index)
+                    tokens_since_last_breakpoint = 0
+                    logger.debug(f"[TOOLS] Added cache breakpoint at exchange {exchange_index} ({exchange_tokens} tokens, total breakpoints: {len(tool_cache_breakpoints)})")
 
                 # Accumulate any text content from this iteration
                 full_content += iteration_content
