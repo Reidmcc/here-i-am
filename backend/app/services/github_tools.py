@@ -124,9 +124,14 @@ async def github_list_contents(
         # Try local clone first if available and no specific ref requested
         source = "GitHub API"
         if not ref and github_service.has_local_clone(repo):
+            logger.info(f"[{repo_label}] Reading directory '{path or '/'}' from LOCAL CLONE at {repo.local_clone_path}")
             success, items = github_service.list_contents_local(repo, path)
             source = "local clone"
         else:
+            if ref:
+                logger.info(f"[{repo_label}] Reading directory '{path or '/'}' from GitHub API (ref={ref} specified)")
+            else:
+                logger.info(f"[{repo_label}] Reading directory '{path or '/'}' from GitHub API (no local clone)")
             success, items = await github_service.list_contents(repo, path, ref)
 
         if not success:
@@ -195,9 +200,14 @@ async def github_get_file(
         # Try local clone first if available and no specific ref requested
         source = "GitHub API"
         if not ref and github_service.has_local_clone(repo):
+            logger.info(f"[{repo_label}] Reading file '{path}' from LOCAL CLONE at {repo.local_clone_path}")
             success, data = github_service.get_file_contents_local(repo, path)
             source = "local clone"
         else:
+            if ref:
+                logger.info(f"[{repo_label}] Reading file '{path}' from GitHub API (ref={ref} specified)")
+            else:
+                logger.info(f"[{repo_label}] Reading file '{path}' from GitHub API (no local clone)")
             success, data = await github_service.get_file_contents(repo, path, ref)
 
         if not success:
