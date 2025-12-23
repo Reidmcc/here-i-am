@@ -634,6 +634,9 @@ async def github_tree(
     max_depth = min(max(1, max_depth), MAX_TREE_DEPTH)
 
     try:
+        from_cache = False
+        from_local = False
+
         # Check cache first
         if not bypass_cache:
             cached = cache_service.get_github_tree(repo_label, ref)
@@ -641,24 +644,33 @@ async def github_tree(
                 logger.info(f"[{repo_label}] Cache HIT for tree (ref={ref or 'HEAD'})")
                 tree_data = cached
                 from_cache = True
-            else:
-                from_cache = False
-        else:
-            from_cache = False
 
         if not from_cache:
-            # Get default branch if needed
-            if not ref:
-                default_branch = await github_service.get_default_branch(repo)
-                ref = default_branch
+            # Try local clone first if no specific ref and local clone is available
+            if not ref and github_service.has_local_clone(repo):
+                success, tree_data = github_service.get_tree_local(repo)
+                if success:
+                    from_local = True
+                    logger.info(f"[{repo_label}] Reading tree from local clone")
+                else:
+                    logger.warning(f"[{repo_label}] Local tree read failed, falling back to API: {tree_data.get('message')}")
 
-            success, tree_data = await github_service.get_tree(repo, ref, recursive=True)
+            # Fall back to API if local clone not available or failed
+            if not from_cache and not from_local:
+                # Get default branch if needed
+                if not ref:
+                    default_branch = await github_service.get_default_branch(repo)
+                    ref = default_branch
 
-            if not success:
-                return f"Error: {tree_data.get('message', 'Failed to get tree')}"
+                success, tree_data = await github_service.get_tree(repo, ref, recursive=True)
+                logger.info(f"[{repo_label}] Reading tree from GitHub API (ref={ref})")
 
-            # Cache the tree
-            cache_service.set_github_tree(repo_label, ref, tree_data)
+                if not success:
+                    return f"Error: {tree_data.get('message', 'Failed to get tree')}"
+
+            # Cache the tree (only cache API results, not local)
+            if not from_local:
+                cache_service.set_github_tree(repo_label, ref, tree_data)
 
         # Build formatted tree view
         tree_items = tree_data.get("tree", [])
@@ -672,6 +684,8 @@ async def github_tree(
             header_parts.append(f"(branch: {ref})")
         if from_cache:
             header_parts.append("[cached]")
+        elif from_local:
+            header_parts.append("[local]")
 
         header = " ".join(header_parts)
 
@@ -740,8 +754,10 @@ async def github_get_files(
             # Try local clone first
             if not ref and github_service.has_local_clone(repo):
                 success, data = github_service.get_file_contents_local(repo, path)
+                logger.info(f"[{repo_label}] Reading file '{path}' from local clone")
             else:
                 success, data = await github_service.get_file_contents(repo, path, ref)
+                logger.info(f"[{repo_label}] Reading file '{path}' from GitHub API")
 
             if not success:
                 return path, data, True
@@ -852,6 +868,9 @@ async def github_explore(
     try:
         output_parts = []
 
+        # Track if ref was originally specified by the user
+        user_specified_ref = ref is not None
+
         # 1. Repository metadata
         success, repo_info = await github_service.get_repo_info(repo)
         if success:
@@ -869,6 +888,9 @@ async def github_explore(
                 ref = repo_info.get('default_branch', 'main')
 
         # 2. Tree structure (depth 2)
+        tree_from_cache = False
+        tree_from_local = False
+
         if not bypass_cache:
             cached_tree = cache_service.get_github_tree(repo_label, ref)
         else:
@@ -877,10 +899,23 @@ async def github_explore(
         if cached_tree:
             tree_data = cached_tree
             tree_from_cache = True
+            logger.info(f"[{repo_label}] Cache HIT for tree in explore")
         else:
-            success, tree_data = await github_service.get_tree(repo, ref, recursive=True)
-            tree_from_cache = False
-            if success:
+            # Try local clone first if no specific ref was specified by user and local clone is available
+            if not user_specified_ref and github_service.has_local_clone(repo):
+                success, tree_data = github_service.get_tree_local(repo)
+                if success:
+                    tree_from_local = True
+                    logger.info(f"[{repo_label}] Reading tree from local clone in explore")
+                else:
+                    logger.warning(f"[{repo_label}] Local tree read failed in explore, falling back to API")
+                    success, tree_data = await github_service.get_tree(repo, ref, recursive=True)
+                    logger.info(f"[{repo_label}] Reading tree from GitHub API in explore")
+            else:
+                success, tree_data = await github_service.get_tree(repo, ref, recursive=True)
+                logger.info(f"[{repo_label}] Reading tree from GitHub API in explore (ref={ref})")
+
+            if success and not tree_from_local:
                 cache_service.set_github_tree(repo_label, ref, tree_data)
 
         if tree_data and not tree_data.get("error"):
@@ -892,6 +927,8 @@ async def github_explore(
             output_parts.append("=== File Structure (depth 2) ===")
             if tree_from_cache:
                 output_parts.append("[cached]")
+            elif tree_from_local:
+                output_parts.append("[local]")
             output_parts.append(tree_view)
             output_parts.append(f"\nTotal: {file_count} files, {dir_count} directories")
             output_parts.append("")
@@ -905,12 +942,17 @@ async def github_explore(
             if not bypass_cache:
                 cached = cache_service.get_github_file(repo_label, path, ref)
                 if cached:
+                    logger.info(f"[{repo_label}] Cache HIT for file '{path}' in explore")
                     return cached
 
-            if not ref and github_service.has_local_clone(repo):
+            if not user_specified_ref and github_service.has_local_clone(repo):
                 success, data = github_service.get_file_contents_local(repo, path)
+                if success:
+                    logger.info(f"[{repo_label}] Reading file '{path}' from local clone in explore")
             else:
                 success, data = await github_service.get_file_contents(repo, path, ref)
+                if success:
+                    logger.info(f"[{repo_label}] Reading file '{path}' from GitHub API in explore")
 
             if success and data.get("type") == "text":
                 cache_service.set_github_file(repo_label, path, ref, data)

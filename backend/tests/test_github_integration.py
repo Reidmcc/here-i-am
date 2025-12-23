@@ -1890,3 +1890,264 @@ class TestGitHubToolRegistrationComposite:
         assert "github_repo_info" in github_tool_names
         assert "github_get_file" in github_tool_names
         assert "github_search_code" in github_tool_names
+
+
+# =============================================================================
+# GitHub Local Clone Tree Tests
+# =============================================================================
+
+class TestGitHubServiceLocalTree:
+    """Tests for get_tree_local method."""
+
+    def test_get_tree_local_no_local_clone(self):
+        """Test get_tree_local when no local clone is configured."""
+        from app.services.github_service import GitHubService
+
+        service = GitHubService()
+        repo = GitHubRepoConfig(
+            owner="test",
+            repo="test",
+            label="Test",
+            token="ghp_test",
+            local_clone_path=None,
+        )
+
+        success, result = service.get_tree_local(repo)
+
+        assert success is False
+        assert result["error"] == "no_local_clone"
+
+    def test_get_tree_local_invalid_path(self, tmp_path):
+        """Test get_tree_local with non-existent path."""
+        from app.services.github_service import GitHubService
+
+        service = GitHubService()
+        repo = GitHubRepoConfig(
+            owner="test",
+            repo="test",
+            label="Test",
+            token="ghp_test",
+            local_clone_path=str(tmp_path / "nonexistent"),
+        )
+
+        success, result = service.get_tree_local(repo)
+
+        assert success is False
+        assert result["error"] == "not_found"
+
+    def test_get_tree_local_success(self, tmp_path):
+        """Test get_tree_local with valid local clone."""
+        from app.services.github_service import GitHubService
+
+        # Create mock repository structure
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "src").mkdir()
+        (tmp_path / "README.md").write_text("# Test")
+        (tmp_path / "src" / "main.py").write_text("print('hello')")
+
+        service = GitHubService()
+        repo = GitHubRepoConfig(
+            owner="test",
+            repo="test",
+            label="Test",
+            token="ghp_test",
+            local_clone_path=str(tmp_path),
+        )
+
+        success, result = service.get_tree_local(repo)
+
+        assert success is True
+        assert result["source"] == "local"
+        assert result["sha"] is None
+        assert result["truncated"] is False
+
+        tree = result["tree"]
+        paths = [item["path"] for item in tree]
+        assert "README.md" in paths
+        assert "src" in paths
+        # Note: path separator may vary, check for the file name
+        src_main_paths = [p for p in paths if "main.py" in p]
+        assert len(src_main_paths) == 1
+
+    def test_get_tree_local_skips_hidden_files(self, tmp_path):
+        """Test get_tree_local skips hidden files and .git."""
+        from app.services.github_service import GitHubService
+
+        # Create mock repository structure
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".hidden_file").write_text("hidden")
+        (tmp_path / ".hidden_dir").mkdir()
+        (tmp_path / ".hidden_dir" / "file.txt").write_text("in hidden dir")
+        (tmp_path / "visible.txt").write_text("visible")
+
+        service = GitHubService()
+        repo = GitHubRepoConfig(
+            owner="test",
+            repo="test",
+            label="Test",
+            token="ghp_test",
+            local_clone_path=str(tmp_path),
+        )
+
+        success, result = service.get_tree_local(repo)
+
+        assert success is True
+        tree = result["tree"]
+        paths = [item["path"] for item in tree]
+
+        # Should only have visible.txt
+        assert "visible.txt" in paths
+        assert ".hidden_file" not in paths
+        assert ".hidden_dir" not in paths
+        assert ".git" not in paths
+
+
+# =============================================================================
+# GitHub Composite Tools Local Clone Tests
+# =============================================================================
+
+class TestGitHubCompositeToolsLocalClone:
+    """Tests for composite tools using local clone."""
+
+    @pytest.fixture
+    def mock_github_service(self):
+        """Mock GitHub service."""
+        with patch('app.services.github_tools.github_service') as mock_service:
+            yield mock_service
+
+    @pytest.fixture
+    def mock_cache_service(self):
+        """Mock cache service."""
+        with patch('app.services.github_tools.cache_service') as mock_cache:
+            mock_cache.get_github_tree.return_value = None
+            mock_cache.get_github_file.return_value = None
+            yield mock_cache
+
+    @pytest.mark.asyncio
+    async def test_github_tree_uses_local_clone(self, mock_github_service, mock_cache_service):
+        """Test github_tree uses local clone when available and no ref specified."""
+        from app.services.github_tools import github_tree
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_repo.owner = "test-owner"
+        mock_repo.repo = "test-repo"
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.has_local_clone.return_value = True
+        mock_github_service.get_tree_local.return_value = (True, {
+            "sha": None,
+            "tree": [
+                {"path": "local_file.txt", "type": "blob", "size": 100},
+            ],
+            "truncated": False,
+            "source": "local",
+        })
+
+        result = await github_tree("Test")  # No ref specified
+
+        assert "local_file.txt" in result
+        assert "[local]" in result
+        mock_github_service.get_tree_local.assert_called_once()
+        mock_github_service.get_tree.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_github_tree_uses_api_when_ref_specified(self, mock_github_service, mock_cache_service):
+        """Test github_tree uses API when ref is specified even if local clone available."""
+        from app.services.github_tools import github_tree
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_repo.owner = "test-owner"
+        mock_repo.repo = "test-repo"
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.has_local_clone.return_value = True
+        mock_github_service.get_tree = AsyncMock(return_value=(True, {
+            "sha": "abc123",
+            "tree": [{"path": "api_file.txt", "type": "blob", "size": 100}],
+            "truncated": False,
+        }))
+
+        result = await github_tree("Test", ref="feature-branch")  # ref specified
+
+        assert "api_file.txt" in result
+        assert "[local]" not in result
+        mock_github_service.get_tree_local.assert_not_called()
+        mock_github_service.get_tree.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_github_get_files_uses_local_clone(self, mock_github_service, mock_cache_service):
+        """Test github_get_files uses local clone when available and no ref specified."""
+        from app.services.github_tools import github_get_files
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.has_local_clone.return_value = True
+        mock_github_service.get_file_contents_local.return_value = (True, {
+            "type": "text",
+            "content": "local content",
+            "size": 13,
+            "name": "test.txt",
+        })
+
+        result = await github_get_files("Test", ["test.txt"])
+
+        assert "local content" in result
+        mock_github_service.get_file_contents_local.assert_called_once()
+        mock_github_service.get_file_contents.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_github_get_files_uses_api_when_ref_specified(self, mock_github_service, mock_cache_service):
+        """Test github_get_files uses API when ref is specified."""
+        from app.services.github_tools import github_get_files
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.has_local_clone.return_value = True
+        mock_github_service.get_file_contents = AsyncMock(return_value=(True, {
+            "type": "text",
+            "content": "api content",
+            "size": 11,
+            "name": "test.txt",
+        }))
+
+        result = await github_get_files("Test", ["test.txt"], ref="feature-branch")
+
+        assert "api content" in result
+        mock_github_service.get_file_contents_local.assert_not_called()
+        mock_github_service.get_file_contents.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_github_explore_uses_local_clone_for_tree(self, mock_github_service, mock_cache_service):
+        """Test github_explore uses local clone for tree when available."""
+        from app.services.github_tools import github_explore
+
+        mock_repo = MagicMock()
+        mock_repo.has_capability.return_value = True
+        mock_repo.owner = "test-owner"
+        mock_repo.repo = "test-repo"
+        mock_github_service.get_repo_by_label.return_value = mock_repo
+        mock_github_service.get_repo_info = AsyncMock(return_value=(True, {
+            "full_name": "test-owner/test-repo",
+            "description": "Test",
+            "default_branch": "main",
+            "visibility": "public",
+            "language": "Python",
+            "stars": 0,
+        }))
+        mock_github_service.has_local_clone.return_value = True
+        mock_github_service.get_tree_local.return_value = (True, {
+            "sha": None,
+            "tree": [{"path": "local_tree.txt", "type": "blob", "size": 100}],
+            "truncated": False,
+            "source": "local",
+        })
+        mock_github_service.get_file_contents_local.return_value = (False, {"error": "not_found"})
+
+        result = await github_explore("Test")
+
+        assert "local_tree.txt" in result
+        assert "[local]" in result
+        mock_github_service.get_tree_local.assert_called_once()
+        mock_github_service.get_tree.assert_not_called()

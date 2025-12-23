@@ -1251,6 +1251,72 @@ class GitHubService:
         items.sort(key=lambda x: (0 if x["type"] == "dir" else 1, x["name"].lower()))
         return True, items
 
+    def get_tree_local(
+        self,
+        repo: GitHubRepoConfig,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Get the full repository tree from a local clone.
+
+        Walks the local filesystem recursively to build a tree structure
+        matching the GitHub Git Trees API format.
+
+        Args:
+            repo: Repository configuration with local_clone_path
+
+        Returns:
+            Tuple of (success, data)
+            On success: {"tree": [...], "sha": None, "truncated": False, "source": "local"}
+            On failure: {"error": "...", "message": "..."}
+        """
+        if not repo.local_clone_path:
+            return False, {"error": "no_local_clone", "message": "No local clone configured"}
+
+        local_root = Path(repo.local_clone_path)
+
+        if not local_root.is_dir():
+            return False, {"error": "not_found", "message": f"Local clone path does not exist: {repo.local_clone_path}"}
+
+        tree_items = []
+
+        try:
+            for entry in local_root.rglob("*"):
+                # Skip hidden files/directories and .git
+                parts = entry.relative_to(local_root).parts
+                if any(part.startswith('.') for part in parts):
+                    continue
+
+                rel_path = str(entry.relative_to(local_root))
+
+                if entry.is_dir():
+                    tree_items.append({
+                        "path": rel_path,
+                        "type": "tree",
+                        "size": None,
+                    })
+                else:
+                    try:
+                        file_size = entry.stat().st_size
+                    except OSError:
+                        file_size = 0
+                    tree_items.append({
+                        "path": rel_path,
+                        "type": "blob",
+                        "size": file_size,
+                    })
+        except OSError as e:
+            return False, {"error": "read_error", "message": f"Could not read directory tree: {e}"}
+
+        # Sort by path for consistent output
+        tree_items.sort(key=lambda x: x["path"].lower())
+
+        return True, {
+            "sha": None,  # No SHA available for local clone
+            "tree": tree_items,
+            "truncated": False,
+            "source": "local",
+        }
+
 
 # Singleton instance
 github_service = GitHubService()
