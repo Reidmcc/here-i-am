@@ -45,13 +45,19 @@ async def _migrate_messages_role_enum(conn):
     ))
     row = result.fetchone()
     if not row:
+        print("Migration check: messages table not found (will be created)")
         return
 
     table_sql = row[0]
+    print(f"Migration check: messages table schema: {table_sql[:200]}...")
 
     # Check if the CHECK constraint exists and doesn't include the new values
     # The constraint looks like: CHECK (role IN ('human', 'assistant', 'system'))
-    if 'CHECK' in table_sql.upper() and 'tool_use' not in table_sql.lower():
+    has_check = 'CHECK' in table_sql.upper()
+    has_tool_use = 'tool_use' in table_sql.lower()
+    print(f"Migration check: has CHECK constraint: {has_check}, has tool_use: {has_tool_use}")
+
+    if has_check and not has_tool_use:
         print("Migrating: Updating messages.role enum to support tool_use and tool_result...")
 
         # Check which columns exist in the old table
