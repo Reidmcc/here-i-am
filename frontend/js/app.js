@@ -547,6 +547,13 @@ class App {
         if (this.elements.refreshRateLimitsBtn) {
             this.elements.refreshRateLimitsBtn.addEventListener('click', () => this.loadGitHubRateLimits());
         }
+
+        // Global Escape key to close modals
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                this.closeActiveModal();
+            }
+        });
     }
 
     handleInputChange() {
@@ -3007,6 +3014,29 @@ class App {
 
     hideModal(modalName) {
         this.elements[modalName].classList.remove('active');
+    }
+
+    closeActiveModal() {
+        // List of all modal element names
+        const modalNames = [
+            'settingsModal',
+            'memoriesModal',
+            'archiveModal',
+            'renameModal',
+            'deleteModal',
+            'archivedModal',
+            'voiceCloneModal',
+            'voiceEditModal',
+            'multiEntityModal'
+        ];
+
+        // Find and close the first active modal
+        for (const modalName of modalNames) {
+            if (this.elements[modalName]?.classList.contains('active')) {
+                this.hideModal(modalName);
+                return;
+            }
+        }
     }
 
     showSettingsModal() {
