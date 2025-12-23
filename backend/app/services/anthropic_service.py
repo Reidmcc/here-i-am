@@ -331,6 +331,18 @@ class AnthropicService:
             if full_content:
                 content_blocks.insert(0, {"type": "text", "text": full_content})
 
+            # Detect truncated tool_use blocks (hit max_tokens mid-tool-use)
+            truncated_tool_use = None
+            if current_tool_use is not None:
+                truncated_tool_use = current_tool_use.copy()
+                truncated_tool_use["truncated"] = True
+                truncated_tool_use["partial_input_json"] = current_tool_input_json
+                logger.warning(
+                    f"[TOOLS] Tool use truncated! Tool '{current_tool_use['name']}' was cut off by max_tokens. "
+                    f"Output tokens: {output_tokens}. The tool will NOT execute. "
+                    f"Consider increasing max_tokens or using smaller file content."
+                )
+
             # Build usage dict with cache information when available
             usage = {
                 "input_tokens": input_tokens,
@@ -349,7 +361,7 @@ class AnthropicService:
                 logger.info(f"[TOOLS] Stream complete with {len(tool_use_blocks)} tool calls, stop_reason: {stop_reason}")
 
             # Yield final done event with complete data
-            yield {
+            done_event = {
                 "type": "done",
                 "content": full_content,
                 "content_blocks": content_blocks,
@@ -358,6 +370,9 @@ class AnthropicService:
                 "usage": usage,
                 "stop_reason": stop_reason,
             }
+            if truncated_tool_use:
+                done_event["truncated_tool_use"] = truncated_tool_use
+            yield done_event
 
         except Exception as e:
             logger.exception(f"[TOOLS] Stream error: {e}")

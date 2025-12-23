@@ -273,7 +273,7 @@ class Settings(BaseSettings):
     default_openai_model: str = "gpt-5.1"  # Default OpenAI model
     default_google_model: str = "gemini-2.5-flash"  # Default Google model
     default_temperature: float = 1.0
-    default_max_tokens: int = 4096
+    default_max_tokens: int = 20000
     default_verbosity: str = "medium"  # Default verbosity for GPT-5.1 models (low, medium, high)
 
     # =========================================================================

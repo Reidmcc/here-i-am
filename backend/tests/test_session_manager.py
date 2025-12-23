@@ -347,7 +347,7 @@ class TestSessionManager:
         with patch("app.services.session_manager.settings") as mock_settings:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
 
             session = manager.create_session("conv-123")
 
@@ -361,7 +361,7 @@ class TestSessionManager:
         with patch("app.services.session_manager.settings") as mock_settings:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
 
             session = manager.create_session(
                 conversation_id="conv-123",
@@ -390,7 +390,7 @@ class TestSessionManager:
             mock_settings.get_default_model_for_provider.return_value = "gpt-4o"
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
 
             session = manager.create_session(
                 conversation_id="conv-123",
@@ -406,7 +406,7 @@ class TestSessionManager:
         with patch("app.services.session_manager.settings") as mock_settings:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
 
             created = manager.create_session("conv-123")
             retrieved = manager.get_session("conv-123")
@@ -428,7 +428,7 @@ class TestSessionManager:
         with patch("app.services.session_manager.settings") as mock_settings:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
 
             manager.create_session("conv-123")
             assert "conv-123" in manager._sessions
@@ -453,7 +453,7 @@ class TestSessionManager:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(
@@ -499,7 +499,7 @@ class TestSessionManager:
             })
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(
@@ -531,7 +531,7 @@ class TestSessionManager:
             mock_llm.count_tokens = MagicMock(return_value=10)  # Mock token counting
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
 
@@ -590,7 +590,7 @@ class TestSessionManager:
 
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.significance_half_life_days = 60
@@ -647,7 +647,7 @@ class TestSessionManager:
 
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.significance_half_life_days = 60
@@ -761,7 +761,7 @@ class TestMultiEntityMemoryIsolation:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = MagicMock(
                 label="Claude",
                 default_model="claude-sonnet-4-5-20250929",
@@ -796,7 +796,7 @@ class TestMultiEntityMemoryIsolation:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(
@@ -1058,7 +1058,7 @@ class TestCacheStateManagement:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = None
 
             # Load without preserving - should use full context length
@@ -1093,7 +1093,7 @@ class TestCacheStateManagement:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = None
 
             # Load with preserved value larger than actual context
@@ -1207,7 +1207,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1240,7 +1240,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1273,7 +1273,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1324,7 +1324,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_entity = MagicMock()
             mock_entity.label = "Claude"
             mock_entity.default_model = "claude-sonnet-4-5-20250929"
@@ -1385,7 +1385,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
 
             # Mock entity configs
             def get_entity(eid):
@@ -1468,7 +1468,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_entity = MagicMock()
             mock_entity.label = "GPT"
             mock_entity.default_model = "gpt-4o"
@@ -1511,7 +1511,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1543,7 +1543,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1574,7 +1574,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1607,7 +1607,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1639,7 +1639,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1669,7 +1669,7 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
@@ -1741,7 +1741,7 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
@@ -1845,7 +1845,7 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
@@ -1958,7 +1958,7 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
@@ -2022,7 +2022,7 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
@@ -2249,7 +2249,7 @@ class TestToolIterationCaching:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
@@ -2339,7 +2339,7 @@ class TestToolIterationCaching:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 4096
+            mock_settings.default_max_tokens = 20000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
