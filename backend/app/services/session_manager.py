@@ -1458,9 +1458,12 @@ class SessionManager:
         accumulated_tool_uses = []  # Track all tool uses across iterations
         tool_exchanges = []  # Track tool exchanges for rebuilding messages without memories
         tool_exchange_tokens = []  # Token count for each exchange (parallel to tool_exchanges)
-        tool_cache_breakpoints = []  # Indices of exchanges that should have cache breakpoints
-        tokens_since_last_breakpoint = 0  # Tokens accumulated since last cache breakpoint
-        TOOL_CACHE_TOKEN_THRESHOLD = 2048  # Re-cache tool results every N tokens
+        # Single moving cache breakpoint (like conversation history caching)
+        # Only moves when enough new tokens accumulate, ensuring cache hits on prefix
+        tool_cache_breakpoint_index: Optional[int] = None  # Index of exchange with cache_control
+        total_tool_tokens = 0  # Total tokens across all tool exchanges
+        tokens_at_last_breakpoint = 0  # Total tokens when breakpoint was last set/moved
+        TOOL_CACHE_TOKEN_THRESHOLD = 2048  # Move breakpoint after N new tokens
         iteration = 0
         max_iterations = settings.tool_use_max_iterations
 
@@ -1495,19 +1498,19 @@ class SessionManager:
                     )
 
                 # Rebuild from base (no memories) + accumulated tool exchanges
-                # Add cache_control only at breakpoint positions to respect Anthropic's 4 breakpoint limit
-                # Breakpoints are placed when accumulated tokens >= TOOL_CACHE_TOKEN_THRESHOLD
+                # Use single moving cache breakpoint (like conversation history)
+                # Only the exchange at the breakpoint index gets cache_control
                 working_messages = list(base_messages_no_memories)
                 for i, exchange in enumerate(tool_exchanges):
                     working_messages.append(exchange["assistant"])
-                    # Only add cache_control at designated breakpoint positions
-                    if i in tool_cache_breakpoints:
+                    # Only add cache_control at the single breakpoint position
+                    if i == tool_cache_breakpoint_index:
                         user_msg = _add_cache_control_to_tool_result(exchange["user"])
                     else:
                         user_msg = exchange["user"]
                     working_messages.append(user_msg)
-                breakpoint_count = len(tool_cache_breakpoints)
-                logger.info(f"[TOOLS] Iteration {iteration}: Using messages without memory block ({len(working_messages)} messages, {len(tool_exchanges)} tool exchanges, {breakpoint_count} cache breakpoints)")
+                breakpoint_info = f"breakpoint at {tool_cache_breakpoint_index}" if tool_cache_breakpoint_index is not None else "no breakpoint"
+                logger.info(f"[TOOLS] Iteration {iteration}: Using messages without memory block ({len(working_messages)} messages, {len(tool_exchanges)} tool exchanges, {breakpoint_info})")
 
             async for event in llm_service.send_message_stream(
                 messages=working_messages,
@@ -1657,22 +1660,20 @@ class SessionManager:
                 }
                 tool_exchanges.append(exchange)
 
-                # Track tokens and determine if this exchange should be a cache breakpoint
+                # Track tokens and determine if breakpoint should move (single moving breakpoint)
                 exchange_tokens = _estimate_tool_exchange_tokens(exchange, llm_service.count_tokens)
                 tool_exchange_tokens.append(exchange_tokens)
-                tokens_since_last_breakpoint += exchange_tokens
+                total_tool_tokens += exchange_tokens
 
-                # Add a cache breakpoint if we've accumulated enough tokens
-                # Limit to MAX_TOOL_CACHE_BREAKPOINTS since conversation history uses some of the 4 allowed
-                MAX_TOOL_CACHE_BREAKPOINTS = 2  # Conversation history typically uses 2 breakpoints
-                if tokens_since_last_breakpoint >= TOOL_CACHE_TOKEN_THRESHOLD:
-                    if len(tool_cache_breakpoints) < MAX_TOOL_CACHE_BREAKPOINTS:
-                        exchange_index = len(tool_exchanges) - 1
-                        tool_cache_breakpoints.append(exchange_index)
-                        tokens_since_last_breakpoint = 0
-                        logger.debug(f"[TOOLS] Added cache breakpoint at exchange {exchange_index} ({exchange_tokens} tokens, total breakpoints: {len(tool_cache_breakpoints)})")
-                    else:
-                        logger.debug(f"[TOOLS] Skipping cache breakpoint at exchange {len(tool_exchanges) - 1} (max {MAX_TOOL_CACHE_BREAKPOINTS} reached)")
+                # Move breakpoint when enough new tokens have accumulated since last breakpoint
+                # This uses a single cache breakpoint that moves forward, like conversation history
+                tokens_since_breakpoint = total_tool_tokens - tokens_at_last_breakpoint
+                if tokens_since_breakpoint >= TOOL_CACHE_TOKEN_THRESHOLD:
+                    exchange_index = len(tool_exchanges) - 1
+                    old_breakpoint = tool_cache_breakpoint_index
+                    tool_cache_breakpoint_index = exchange_index
+                    tokens_at_last_breakpoint = total_tool_tokens
+                    logger.debug(f"[TOOLS] Moved cache breakpoint: {old_breakpoint} -> {exchange_index} ({total_tool_tokens} total tokens)")
 
                 # Accumulate any text content from this iteration
                 full_content += iteration_content
