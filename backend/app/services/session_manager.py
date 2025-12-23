@@ -1663,11 +1663,16 @@ class SessionManager:
                 tokens_since_last_breakpoint += exchange_tokens
 
                 # Add a cache breakpoint if we've accumulated enough tokens
+                # Limit to MAX_TOOL_CACHE_BREAKPOINTS since conversation history uses some of the 4 allowed
+                MAX_TOOL_CACHE_BREAKPOINTS = 2  # Conversation history typically uses 2 breakpoints
                 if tokens_since_last_breakpoint >= TOOL_CACHE_TOKEN_THRESHOLD:
-                    exchange_index = len(tool_exchanges) - 1
-                    tool_cache_breakpoints.append(exchange_index)
-                    tokens_since_last_breakpoint = 0
-                    logger.debug(f"[TOOLS] Added cache breakpoint at exchange {exchange_index} ({exchange_tokens} tokens, total breakpoints: {len(tool_cache_breakpoints)})")
+                    if len(tool_cache_breakpoints) < MAX_TOOL_CACHE_BREAKPOINTS:
+                        exchange_index = len(tool_exchanges) - 1
+                        tool_cache_breakpoints.append(exchange_index)
+                        tokens_since_last_breakpoint = 0
+                        logger.debug(f"[TOOLS] Added cache breakpoint at exchange {exchange_index} ({exchange_tokens} tokens, total breakpoints: {len(tool_cache_breakpoints)})")
+                    else:
+                        logger.debug(f"[TOOLS] Skipping cache breakpoint at exchange {len(tool_exchanges) - 1} (max {MAX_TOOL_CACHE_BREAKPOINTS} reached)")
 
                 # Accumulate any text content from this iteration
                 full_content += iteration_content
