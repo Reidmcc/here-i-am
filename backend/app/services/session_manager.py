@@ -1449,20 +1449,8 @@ class SessionManager:
 
         # Build messages WITHOUT memories for subsequent tool iterations (memory optimization)
         # This reduces context size on iterations after the first
-        base_messages_no_memories = llm_service.build_messages_with_memories(
-            memories=[],  # No memories for subsequent iterations
-            conversation_context=session.conversation_context,
-            current_message=user_message,
-            model=session.model,
-            conversation_start_date=session.conversation_start_date,
-            enable_caching=True,
-            cached_context=cache_content["cached_context"],
-            new_context=cache_content["new_context"],
-            is_multi_entity=session.is_multi_entity,
-            entity_labels=session.entity_labels,
-            responding_entity_label=session.responding_entity_label,
-            user_display_name=session.user_display_name,
-        )
+        # Lazy initialization - only built when tool use is detected
+        base_messages_no_memories = None
 
         # Step 6: Stream LLM response with caching enabled
         # This includes a tool use loop if tools are provided
@@ -1489,6 +1477,23 @@ class SessionManager:
             if iteration == 1:
                 working_messages = list(messages)  # Include memories
             else:
+                # Lazy build base messages without memories (only when tool use actually happens)
+                if base_messages_no_memories is None:
+                    base_messages_no_memories = llm_service.build_messages_with_memories(
+                        memories=[],  # No memories for subsequent iterations
+                        conversation_context=session.conversation_context,
+                        current_message=user_message,
+                        model=session.model,
+                        conversation_start_date=session.conversation_start_date,
+                        enable_caching=True,
+                        cached_context=cache_content["cached_context"],
+                        new_context=cache_content["new_context"],
+                        is_multi_entity=session.is_multi_entity,
+                        entity_labels=session.entity_labels,
+                        responding_entity_label=session.responding_entity_label,
+                        user_display_name=session.user_display_name,
+                    )
+
                 # Rebuild from base (no memories) + accumulated tool exchanges
                 # Add cache_control only at breakpoint positions to respect Anthropic's 4 breakpoint limit
                 # Breakpoints are placed when accumulated tokens >= TOOL_CACHE_TOKEN_THRESHOLD
