@@ -182,7 +182,9 @@ GITHUB_REPOS='[
     "label": "My Project",
     "token": "ghp_xxxxxxxxxxxx",
     "protected_branches": ["main", "master"],
-    "capabilities": ["read", "branch", "commit", "pr", "issue"]
+    "capabilities": ["read", "branch", "commit", "pr", "issue"],
+    "commit_author_name": "Your Name",
+    "commit_author_email": "your.email@example.com"
   }
 ]'
 ```
@@ -195,6 +197,8 @@ GITHUB_REPOS='[
 - `protected_branches`: Branches that cannot be committed to (default: `["main", "master"]`)
 - `capabilities`: Allowed operations (default: `["read", "branch", "commit", "pr", "issue"]`)
 - `local_clone_path`: Path to local clone for faster operations (optional)
+- `commit_author_name`: Name to use for commit author attribution (optional)
+- `commit_author_email`: Email to use for commit author attribution (optional)
 
 **Capabilities:**
 - `read`: Read files, list contents, search code, view PRs/issues

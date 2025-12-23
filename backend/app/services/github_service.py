@@ -577,6 +577,13 @@ class GitHubService:
         if file_sha:
             commit_data["sha"] = file_sha
 
+        # Add author info if configured
+        if repo.commit_author_name and repo.commit_author_email:
+            commit_data["author"] = {
+                "name": repo.commit_author_name,
+                "email": repo.commit_author_email,
+            }
+
         status, data = await self._request("PUT", endpoint, repo.token, json_data=commit_data)
 
         if status not in (200, 201):
@@ -635,6 +642,13 @@ class GitHubService:
             "sha": file_sha,
             "branch": branch,
         }
+
+        # Add author info if configured
+        if repo.commit_author_name and repo.commit_author_email:
+            delete_data["author"] = {
+                "name": repo.commit_author_name,
+                "email": repo.commit_author_email,
+            }
 
         status, data = await self._request("DELETE", endpoint, repo.token, json_data=delete_data)
 
