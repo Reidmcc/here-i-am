@@ -18,6 +18,38 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _format_available_repos() -> str:
+    """
+    Format the list of available repositories for error messages.
+
+    Shows both the label and the owner/repo path to help the AI
+    understand the repository configuration.
+
+    Returns:
+        Formatted string like: "Label1" (owner1/repo1), "Label2" (owner2/repo2)
+    """
+    repos = github_service.get_repos()
+    if not repos:
+        return ""
+    return ", ".join(f'"{r.label}" ({r.owner}/{r.repo})' for r in repos)
+
+
+def _repo_not_found_error(repo_label: str) -> str:
+    """
+    Generate a helpful error message when a repository is not found.
+
+    Args:
+        repo_label: The label that was searched for
+
+    Returns:
+        Error message with available repositories listed
+    """
+    available = _format_available_repos()
+    if available:
+        return f"Error: Repository '{repo_label}' not found. Available repositories: {available}"
+    return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+
+
 # =============================================================================
 # Read Tools (capability: "read")
 # =============================================================================
@@ -34,10 +66,7 @@ async def github_repo_info(repo_label: str) -> str:
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("read"):
         return f"Error: Read capability is not enabled for repository '{repo_label}'."
@@ -86,10 +115,7 @@ async def github_list_contents(
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("read"):
         return f"Error: Read capability is not enabled for repository '{repo_label}'."
@@ -150,10 +176,7 @@ async def github_get_file(
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("read"):
         return f"Error: Read capability is not enabled for repository '{repo_label}'."
@@ -227,10 +250,7 @@ async def github_search_code(repo_label: str, query: str) -> str:
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("read"):
         return f"Error: Read capability is not enabled for repository '{repo_label}'."
@@ -273,10 +293,7 @@ async def github_list_branches(repo_label: str) -> str:
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("read"):
         return f"Error: Read capability is not enabled for repository '{repo_label}'."
@@ -333,10 +350,7 @@ async def github_create_branch(
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("branch"):
         return f"Error: Branch capability is not enabled for repository '{repo_label}'."
@@ -381,10 +395,7 @@ async def github_commit_file(
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("commit"):
         return f"Error: Commit capability is not enabled for repository '{repo_label}'."
@@ -431,10 +442,7 @@ async def github_delete_file(
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("commit"):
         return f"Error: Commit capability is not enabled for repository '{repo_label}'."
@@ -472,10 +480,7 @@ async def github_list_pull_requests(
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("pr"):
         return f"Error: PR capability is not enabled for repository '{repo_label}'."
@@ -524,10 +529,7 @@ async def github_get_pull_request(
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("pr"):
         return f"Error: PR capability is not enabled for repository '{repo_label}'."
@@ -588,10 +590,7 @@ async def github_create_pull_request(
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("pr"):
         return f"Error: PR capability is not enabled for repository '{repo_label}'."
@@ -637,10 +636,7 @@ async def github_list_issues(
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("issue"):
         return f"Error: Issue capability is not enabled for repository '{repo_label}'."
@@ -693,10 +689,7 @@ async def github_get_issue(
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("issue"):
         return f"Error: Issue capability is not enabled for repository '{repo_label}'."
@@ -759,10 +752,7 @@ async def github_create_issue(
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     if not repo.has_capability("issue"):
         return f"Error: Issue capability is not enabled for repository '{repo_label}'."
@@ -806,10 +796,7 @@ async def github_add_comment(
     """
     repo = github_service.get_repo_by_label(repo_label)
     if not repo:
-        available = [r.label for r in github_service.get_repos()]
-        if available:
-            return f"Error: Repository '{repo_label}' not found. Available repositories: {', '.join(available)}"
-        return f"Error: Repository '{repo_label}' not found. No repositories are configured."
+        return _repo_not_found_error(repo_label)
 
     # Allow comment if either issue or PR capability is enabled
     if not repo.has_capability("issue") and not repo.has_capability("pr"):
