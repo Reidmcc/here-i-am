@@ -841,6 +841,11 @@ def register_github_tools(tool_service: ToolService) -> None:
 
     logger.info(f"Registering GitHub tools for capabilities: {all_capabilities}")
 
+    # Build a description for repo_label that shows available repos upfront
+    # Format: "Label" (owner/repo) for each configured repository
+    repo_list = ", ".join(f'"{r.label}" ({r.owner}/{r.repo})' for r in repos)
+    repo_label_description = f"The label of the configured repository. Available: {repo_list}"
+
     # Read tools
     if "read" in all_capabilities:
         tool_service.register_tool(
@@ -854,7 +859,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository (e.g., 'My Project')",
+                        "description": repo_label_description,
                     },
                 },
                 "required": ["repo_label"],
@@ -875,7 +880,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                     "path": {
                         "type": "string",
@@ -906,7 +911,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                     "path": {
                         "type": "string",
@@ -943,7 +948,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                     "query": {
                         "type": "string",
@@ -965,7 +970,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                 },
                 "required": ["repo_label"],
@@ -988,7 +993,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                     "branch_name": {
                         "type": "string",
@@ -1019,7 +1024,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                     "path": {
                         "type": "string",
@@ -1056,7 +1061,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                     "path": {
                         "type": "string",
@@ -1088,7 +1093,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                     "state": {
                         "type": "string",
@@ -1112,7 +1117,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                     "pr_number": {
                         "type": "integer",
@@ -1136,7 +1141,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                     "title": {
                         "type": "string",
@@ -1172,7 +1177,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                     "state": {
                         "type": "string",
@@ -1200,7 +1205,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                     "issue_number": {
                         "type": "integer",
@@ -1222,7 +1227,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                     "title": {
                         "type": "string",
@@ -1255,7 +1260,7 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "properties": {
                     "repo_label": {
                         "type": "string",
-                        "description": "The label of the configured repository",
+                        "description": repo_label_description,
                     },
                     "number": {
                         "type": "integer",
