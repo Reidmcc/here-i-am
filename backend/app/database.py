@@ -97,10 +97,11 @@ async def _migrate_messages_role_enum(conn):
         """))
 
         # Step 2: Copy data from old table (handle missing speaker_entity_id column)
+        # Use LOWER(role) to normalize case - old data may have 'HUMAN'/'ASSISTANT' but new schema uses lowercase
         if has_speaker_entity_id:
             await conn.execute(text("""
                 INSERT INTO messages_new
-                SELECT id, conversation_id, role, content, created_at, token_count,
+                SELECT id, conversation_id, LOWER(role), content, created_at, token_count,
                        times_retrieved, last_retrieved_at, speaker_entity_id
                 FROM messages
             """))
@@ -108,7 +109,7 @@ async def _migrate_messages_role_enum(conn):
             await conn.execute(text("""
                 INSERT INTO messages_new (id, conversation_id, role, content, created_at,
                                          token_count, times_retrieved, last_retrieved_at)
-                SELECT id, conversation_id, role, content, created_at, token_count,
+                SELECT id, conversation_id, LOWER(role), content, created_at, token_count,
                        times_retrieved, last_retrieved_at
                 FROM messages
             """))
