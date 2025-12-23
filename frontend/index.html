@@ -92,6 +92,12 @@
                         </svg>
                     </button>
                     <button id="send-btn" class="send-btn" disabled>Send</button>
+                    <button id="stop-btn" class="stop-btn" title="Stop generation" style="display: none;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                            <rect x="6" y="6" width="12" height="12" rx="1"/>
+                        </svg>
+                        Stop
+                    </button>
                     <button id="continue-btn" class="continue-btn" title="Continue conversation with an entity" style="display: none;">Continue</button>
                 </div>
                 <div class="input-meta">
@@ -319,6 +325,38 @@
                 </div>
 
                 <div id="import-status" class="import-status" style="display: none;"></div>
+
+                <!-- GitHub Integration Section -->
+                <div class="settings-divider"></div>
+                <h4 class="settings-section-title">GitHub Integration</h4>
+                <p class="settings-section-description" id="github-description">
+                    GitHub repository integration allows the AI to read repository contents, create branches, commit changes, and manage PRs/issues.
+                </p>
+
+                <div id="github-not-configured" style="display: none;">
+                    <p class="github-not-configured-message">
+                        No repositories are configured. GitHub integration is configured via environment variables.
+                        See the documentation for setup instructions.
+                    </p>
+                </div>
+
+                <div id="github-repos-container" style="display: none;">
+                    <div class="github-repos-list" id="github-repos-list">
+                        <!-- Repos will be loaded dynamically -->
+                    </div>
+
+                    <div class="github-rate-limit-section">
+                        <h5>API Rate Limits</h5>
+                        <div id="github-rate-limits" class="github-rate-limits">
+                            <!-- Rate limits will be loaded dynamically -->
+                        </div>
+                        <button id="refresh-rate-limits-btn" class="secondary-btn small">Refresh Rate Limits</button>
+                    </div>
+
+                    <p class="form-help github-config-note">
+                        Repository configuration is managed via environment variables. See documentation for setup instructions.
+                    </p>
+                </div>
             </div>
             <div class="modal-footer">
                 <button id="apply-settings" class="primary-btn">Apply</button>

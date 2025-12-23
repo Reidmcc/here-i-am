@@ -9,9 +9,12 @@ from app.services.tts_service import TTSService, tts_service
 from app.services.xtts_service import XTTSService, xtts_service
 from app.services.tool_service import ToolService, ToolCategory, ToolResult, tool_service
 from app.services.web_tools import register_web_tools
+from app.services.github_service import GitHubService, github_service
+from app.services.github_tools import register_github_tools
 
-# Register web tools at module load time
+# Register tools at module load time
 register_web_tools(tool_service)
+register_github_tools(tool_service)
 
 __all__ = [
     # Classes
@@ -29,6 +32,7 @@ __all__ = [
     "ToolService",
     "ToolCategory",
     "ToolResult",
+    "GitHubService",
     # Singleton instances
     "anthropic_service",
     "openai_service",
@@ -40,6 +44,8 @@ __all__ = [
     "tts_service",
     "xtts_service",
     "tool_service",
+    "github_service",
     # Tool registration functions
     "register_web_tools",
+    "register_github_tools",
 ]
