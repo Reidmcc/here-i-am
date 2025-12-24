@@ -4,20 +4,21 @@ Notes Tools - Tool definitions for entity notes management.
 These tools allow AI entities to read, write, and manage their own notes,
 as well as access shared notes that all entities can see.
 
-Tools are registered at module load time via register_notes_tools().
+Tools are registered via register_notes_tools() called from services/__init__.py.
 """
 
 import logging
 from typing import Optional
 
-from app.services.tool_service import tool_service, ToolCategory
+from app.services.tool_service import ToolCategory, ToolService
 from app.services.notes_service import notes_service
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 # Track the entity label for the current context
-# This gets set by the chat route before tool execution
+# This gets set by the session manager before tool execution
 _current_entity_label: Optional[str] = None
 
 
@@ -44,6 +45,9 @@ async def _notes_read(filename: str, shared: bool = False) -> str:
     Returns:
         The file contents, or an error message
     """
+    if not settings.notes_enabled:
+        return "Error: Notes feature is not enabled"
+    
     entity_label = get_current_entity_label()
     if not entity_label and not shared:
         return "Error: No entity context available for reading private notes"
@@ -72,6 +76,9 @@ async def _notes_write(filename: str, content: str, shared: bool = False) -> str
     Returns:
         Success message or error
     """
+    if not settings.notes_enabled:
+        return "Error: Notes feature is not enabled"
+    
     entity_label = get_current_entity_label()
     if not entity_label and not shared:
         return "Error: No entity context available for writing private notes"
@@ -104,6 +111,9 @@ async def _notes_delete(filename: str, shared: bool = False) -> str:
     Returns:
         Success message or error
     """
+    if not settings.notes_enabled:
+        return "Error: Notes feature is not enabled"
+    
     entity_label = get_current_entity_label()
     if not entity_label and not shared:
         return "Error: No entity context available for deleting private notes"
@@ -131,6 +141,9 @@ async def _notes_list(shared: bool = False) -> str:
     Returns:
         A formatted list of files with sizes and modification dates
     """
+    if not settings.notes_enabled:
+        return "Error: Notes feature is not enabled"
+    
     entity_label = get_current_entity_label()
     if not entity_label and not shared:
         return "Error: No entity context available for listing private notes"
@@ -170,8 +183,13 @@ async def _notes_list(shared: bool = False) -> str:
     return "\n".join(lines)
 
 
-def register_notes_tools() -> None:
+def register_notes_tools(tool_service: ToolService) -> None:
     """Register all notes tools with the tool service."""
+    
+    # Only register if notes are enabled
+    if not settings.notes_enabled:
+        logger.info("Notes tools not registered (notes_enabled=False)")
+        return
     
     # notes_read
     tool_service.register_tool(
@@ -286,7 +304,3 @@ def register_notes_tools() -> None:
     )
     
     logger.info("Notes tools registered: notes_read, notes_write, notes_delete, notes_list")
-
-
-# Register tools when module is imported
-register_notes_tools()
