@@ -35,7 +35,8 @@ class TestNotesServiceConfiguration:
             mock_settings.notes_base_dir = "/custom/notes/path"
             
             service = NotesService()
-            assert str(service.base_dir) == "/custom/notes/path"
+            # Compare as Path objects to handle cross-platform path separators
+            assert service.base_dir == Path("/custom/notes/path")
 
     def test_base_dir_fallback(self):
         """Test base_dir falls back to ./notes if not configured."""
