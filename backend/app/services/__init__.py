@@ -11,10 +11,13 @@ from app.services.tool_service import ToolService, ToolCategory, ToolResult, too
 from app.services.web_tools import register_web_tools
 from app.services.github_service import GitHubService, github_service
 from app.services.github_tools import register_github_tools
+from app.services.notes_service import NotesService, notes_service
+from app.services.notes_tools import register_notes_tools, set_current_entity_label
 
 # Register tools at module load time
 register_web_tools(tool_service)
 register_github_tools(tool_service)
+register_notes_tools(tool_service)
 
 __all__ = [
     # Classes
@@ -33,6 +36,7 @@ __all__ = [
     "ToolCategory",
     "ToolResult",
     "GitHubService",
+    "NotesService",
     # Singleton instances
     "anthropic_service",
     "openai_service",
@@ -45,7 +49,11 @@ __all__ = [
     "xtts_service",
     "tool_service",
     "github_service",
+    "notes_service",
     # Tool registration functions
     "register_web_tools",
     "register_github_tools",
+    "register_notes_tools",
+    # Notes context helpers
+    "set_current_entity_label",
 ]
