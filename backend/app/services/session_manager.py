@@ -169,6 +169,46 @@ def _ensure_role_balance(
     return top_candidates
 
 
+def _get_message_content_text(content: Any) -> str:
+    """
+    Extract text representation from message content (string or content blocks).
+
+    For string content, returns the string directly.
+    For content blocks (tool_use, tool_result, text), extracts text/content fields.
+    This is used for accurate token counting in cache consolidation decisions.
+    """
+    if isinstance(content, str):
+        return content
+
+    if not isinstance(content, list):
+        return str(content)
+
+    # Content blocks - extract text from each block
+    text_parts = []
+    for block in content:
+        if not isinstance(block, dict):
+            text_parts.append(str(block))
+            continue
+
+        block_type = block.get("type", "")
+        if block_type == "text":
+            text_parts.append(block.get("text", ""))
+        elif block_type == "tool_use":
+            # Summarize tool use for token counting
+            tool_name = block.get("name", "unknown")
+            tool_input = json.dumps(block.get("input", {}))
+            text_parts.append(f"[Tool use: {tool_name}({tool_input})]")
+        elif block_type == "tool_result":
+            # Tool result content
+            result_content = block.get("content", "")
+            if isinstance(result_content, str):
+                text_parts.append(f"[Tool result: {result_content}]")
+            else:
+                text_parts.append(f"[Tool result: {json.dumps(result_content)}]")
+
+    return "\n".join(text_parts)
+
+
 def _build_memory_block_text(
     memories: List[Dict[str, Any]],
     conversation_start_date: Optional[datetime] = None,
@@ -474,9 +514,13 @@ class ConversationSession:
             return False
 
         # Calculate tokens in cached context
+        # Use _get_message_content_text to properly extract text from tool exchange content blocks
         cached_tokens = 0
         if cached_context:
-            cached_text = "\n".join(f"{m['role']}: {m['content']}" for m in cached_context)
+            cached_text = "\n".join(
+                f"{m['role']}: {_get_message_content_text(m['content'])}"
+                for m in cached_context
+            )
             cached_tokens = count_tokens_fn(cached_text)
 
             # If cached context is too small to be cached (< 1024 tokens), grow it
@@ -485,7 +529,11 @@ class ConversationSession:
                 return True
 
         # Calculate tokens in new context
-        new_text = "\n".join(f"{m['role']}: {m['content']}" for m in new_context)
+        # Use _get_message_content_text to properly extract text from tool exchange content blocks
+        new_text = "\n".join(
+            f"{m['role']}: {_get_message_content_text(m['content'])}"
+            for m in new_context
+        )
         new_tokens = count_tokens_fn(new_text)
 
         # Consolidate when new history reaches threshold (balance cache hits vs prefix growth)
@@ -1685,6 +1733,18 @@ class SessionManager:
             full_content,
             tool_exchanges=tool_exchanges if tool_exchanges else None,
         )
+
+        # Update cache state for conversation history (same logic as normal exit path)
+        if should_consolidate:
+            new_cached_ctx_len = len(session.conversation_context) - 2
+        elif session.last_cached_context_length == 0 and len(session.conversation_context) > 0:
+            # Bootstrap: start caching with all current content
+            new_cached_ctx_len = len(session.conversation_context)
+        else:
+            # Keep stable for cache hits
+            new_cached_ctx_len = session.last_cached_context_length
+
+        session.update_cache_state(new_cached_ctx_len)
 
         yield {
             "type": "done",
