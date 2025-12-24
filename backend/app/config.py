@@ -240,6 +240,14 @@ class Settings(BaseSettings):
     #             "protected_branches": ["main", "master"], "capabilities": ["read", "branch", "commit", "pr", "issue"]}
     github_repos: str = ""
 
+    # Entity Notes settings
+    # Enable persistent notes for AI entities
+    notes_enabled: bool = True
+    # Base directory for entity notes storage
+    # Each entity gets their own folder: {notes_base_dir}/{entity_label}/
+    # Shared notes accessible to all entities: {notes_base_dir}/shared/
+    notes_base_dir: str = "./notes"
+
     # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, llm_provider, default_model)
     # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'
     pinecone_indexes: str = ""

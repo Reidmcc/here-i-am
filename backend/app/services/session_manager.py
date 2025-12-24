@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity
 from app.services import memory_service, llm_service
 from app.services.tool_service import tool_service, ToolResult
+from app.services.notes_tools import set_current_entity_label
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -1235,6 +1236,17 @@ class SessionManager:
         truly_new_memory_ids = set()  # Only memories never seen before (for cache stability)
 
         logger.info(f"[MEMORY] Processing message (stream) for conversation {session.conversation_id[:8]}... entity_id={session.entity_id}, model={session.model}")
+
+        # Set entity label for notes tools context
+        # Use responding_entity_label if available (multi-entity), otherwise look up from entity_id
+        entity_label = session.responding_entity_label
+        if not entity_label and session.entity_id:
+            entity_config = settings.get_entity_by_index(session.entity_id)
+            if entity_config:
+                entity_label = entity_config.label
+        if entity_label:
+            set_current_entity_label(entity_label)
+            logger.debug(f"[NOTES] Set entity label context: {entity_label}")
 
         # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
         # Validate both that Pinecone is configured AND the entity_id is valid

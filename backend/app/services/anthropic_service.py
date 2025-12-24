@@ -2,6 +2,7 @@ from typing import Optional, List, Dict, Any, AsyncIterator, Set, Union
 from datetime import datetime
 from anthropic import AsyncAnthropic
 from app.config import settings
+from app.services.notes_service import notes_service
 import tiktoken
 import json
 import logging
@@ -410,7 +411,7 @@ class AnthropicService:
         N+1. New history messages (uncached, grows until consolidation)
         ...
         M-1. User: [/CONVERSATION HISTORY] + [MEMORIES] + memories block + [/MEMORIES]
-        M. User: [CURRENT USER MESSAGE] + date context + current message
+        M. User: [CURRENT USER MESSAGE] + date context + entity notes + current message
 
         If current_message is None (multi-entity continuation), the entity is prompted
         to continue the conversation without a new human message.
@@ -563,6 +564,7 @@ class AnthropicService:
         # - End of conversation history marker
         # - Memories block
         # - Date context
+        # - Entity notes (index.md)
         # - Current user message
         # All in ONE user message to ensure proper user/assistant alternation
         final_parts = []
@@ -586,6 +588,22 @@ class AnthropicService:
         date_block += f"Current date: {current_date.strftime('%Y-%m-%d')}\n"
         date_block += "[/DATE CONTEXT]"
         final_parts.append(date_block)
+
+        # Entity notes (index.md) - inject if notes are enabled and entity has an index file
+        if settings.notes_enabled and responding_entity_label:
+            # Get the entity's index.md content
+            entity_notes = notes_service.get_index_content(responding_entity_label)
+            if entity_notes:
+                notes_block = f"[ENTITY NOTES]\n{entity_notes}\n[/ENTITY NOTES]"
+                final_parts.append(notes_block)
+                logger.info(f"[NOTES] Injected index.md for entity '{responding_entity_label}' ({len(entity_notes)} chars)")
+
+            # Also check for shared notes
+            shared_notes = notes_service.get_shared_index_content()
+            if shared_notes:
+                shared_block = f"[SHARED NOTES]\n{shared_notes}\n[/SHARED NOTES]"
+                final_parts.append(shared_block)
+                logger.info(f"[NOTES] Injected shared index.md ({len(shared_notes)} chars)")
 
         # Handle current message or continuation prompt
         if current_message:
