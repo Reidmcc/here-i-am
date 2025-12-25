@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2025-12-23
+**Last Updated:** 2025-12-25
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -252,6 +252,58 @@ The GitHub tools are designed to minimize API calls and token usage:
 
 - **Use bypass_cache=true** if you need fresh data after making changes. Cache is automatically invalidated when you commit or delete files.
 
+### Entity Notes System
+
+The application supports **persistent notes** for AI entities, allowing them to maintain structured information across conversations that persists on disk.
+
+**Available Notes Tools:**
+- **notes_read** - Read a note file from private notes or shared folder
+- **notes_write** - Write or update a note file (creates if doesn't exist)
+- **notes_delete** - Delete a note file (cannot delete index.md)
+- **notes_list** - List all note files with sizes and modification dates
+
+**Key Features:**
+- **Private Notes** - Each entity has their own folder: `{notes_base_dir}/{entity_label}/`
+- **Shared Notes** - Folder accessible to all entities: `{notes_base_dir}/shared/`
+- **Auto-Injection** - Each entity's `index.md` is automatically loaded into their context at conversation start
+- **Allowed File Types** - `.md`, `.json`, `.txt`, `.html`, `.xml`, `.yaml`, `.yml`
+
+**How Entity Notes Work:**
+
+1. **Directory Structure:**
+   ```
+   notes/
+   ├── Claude/              # Private notes for "Claude" entity
+   │   ├── index.md         # Auto-loaded into Claude's context
+   │   └── research.md
+   ├── GPT/                 # Private notes for "GPT" entity
+   │   └── index.md
+   └── shared/              # Shared notes (all entities can access)
+       └── index.md
+   ```
+
+2. **Context Injection**: When a conversation starts, the system automatically reads:
+   - The entity's private `index.md` (if it exists)
+   - The shared `index.md` (if it exists)
+   - Both are injected into the context, giving the entity persistent "always-on" information
+
+3. **Tool Access**: Entities can read, write, and manage their notes during conversations using the notes tools
+
+**Configuration:**
+```bash
+# Enable entity notes (default: true)
+NOTES_ENABLED=true
+
+# Base directory for notes storage (default: ./notes)
+NOTES_BASE_DIR=./notes
+```
+
+**Important Notes:**
+- Notes are accessed via AI tools only (no REST API endpoints for notes)
+- The `index.md` file cannot be deleted (use notes_write to clear it instead)
+- Entity labels are sanitized for filesystem safety (special characters replaced with underscores)
+- Notes tools are in the `MEMORY` category and are only available for Anthropic (Claude) and OpenAI (GPT) models
+
 ---
 
 ## Codebase Architecture
@@ -287,6 +339,8 @@ here-i-am/
 │   │   │   ├── web_tools.py       # Web search/fetch tool implementations
 │   │   │   ├── github_service.py  # GitHub API client
 │   │   │   ├── github_tools.py    # GitHub tool implementations
+│   │   │   ├── notes_service.py   # Entity notes storage service
+│   │   │   ├── notes_tools.py     # Entity notes tool implementations
 │   │   │   ├── tts_service.py     # Unified TTS (ElevenLabs/XTTS/StyleTTS2)
 │   │   │   ├── xtts_service.py    # Local XTTS v2 client service
 │   │   │   └── styletts2_service.py  # Local StyleTTS 2 client service
@@ -574,6 +628,10 @@ TOOL_USE_MAX_ITERATIONS=10              # Max agentic loop iterations (default: 
 # GitHub Integration (optional, repository access for AI entities)
 GITHUB_TOOLS_ENABLED=true               # Enable GitHub tools
 GITHUB_REPOS='[...]'                    # Repository configuration (JSON array, see below)
+
+# Entity Notes (optional, persistent notes for AI entities)
+NOTES_ENABLED=true                      # Enable entity notes (default: true)
+NOTES_BASE_DIR=./notes                  # Base directory for notes storage
 
 # ElevenLabs TTS (optional, cloud-based text-to-speech)
 ELEVENLABS_API_KEY=...                  # Enables TTS feature
@@ -891,9 +949,11 @@ python run.py
 6. **Enum Types:** Type-safe constants
    ```python
    class MessageRole(str, Enum):
-       HUMAN = "HUMAN"
-       ASSISTANT = "ASSISTANT"
-       SYSTEM = "SYSTEM"
+       HUMAN = "human"
+       ASSISTANT = "assistant"
+       SYSTEM = "system"
+       TOOL_USE = "tool_use"      # Assistant's tool call request
+       TOOL_RESULT = "tool_result"  # Tool execution result
    ```
 
 ### JavaScript Style
@@ -1068,8 +1128,8 @@ entities: List[ConversationEntity]  # For multi-entity conversations
 ```python
 id: UUID (PK)
 conversation_id: UUID (FK -> conversations.id)
-role: Enum (HUMAN, ASSISTANT, SYSTEM)
-content: Text
+role: Enum (HUMAN, ASSISTANT, SYSTEM, TOOL_USE, TOOL_RESULT)
+content: Text  # Plain text for most roles, JSON for TOOL_USE/TOOL_RESULT
 created_at: DateTime
 token_count: Integer (nullable)
 times_retrieved: Integer (default: 0)
@@ -1078,7 +1138,17 @@ speaker_entity_id: String (nullable)  # For multi-entity: which entity generated
 
 # Relationships
 conversation: Conversation
+
+# Properties
+is_tool_exchange: bool  # True for TOOL_USE and TOOL_RESULT roles
+content_blocks: Union[str, List[Dict]]  # Parses JSON for tool exchanges
 ```
+
+**Note on Tool Exchange Messages:**
+- `TOOL_USE` - Assistant's tool call request (content is JSON array of tool use blocks)
+- `TOOL_RESULT` - Tool execution result (content is JSON array of tool result blocks)
+- Tool exchange messages are persisted to the database for conversation continuity
+- The `content_blocks` property automatically parses JSON content for tool exchanges
 
 ### Conversation Memory Links Table
 
@@ -1405,6 +1475,22 @@ conversation: Conversation
     - Rate limits are tracked per-token and displayed in settings
     - GitHub tools work with Anthropic (Claude) and OpenAI (GPT) models only
 
+19. **Entity Notes System**
+    - Notes are accessed via AI tools only (`notes_read`, `notes_write`, `notes_delete`, `notes_list`)
+    - No REST API endpoints for notes - entities manage their own notes during conversations
+    - Each entity's `index.md` is automatically injected into their context at conversation start
+    - Shared `index.md` is also injected (accessible to all entities)
+    - Entity labels are sanitized for filesystem safety (special characters replaced with underscores)
+    - The `index.md` file cannot be deleted (use `notes_write` with empty content to clear it)
+    - Notes tools are in the `MEMORY` category and work with Anthropic (Claude) and OpenAI (GPT) models
+
+20. **Tool Exchange Message Persistence**
+    - Tool exchanges (`TOOL_USE` and `TOOL_RESULT`) are now persisted to the database
+    - Content is stored as JSON (unlike regular messages which are plain text)
+    - The `is_tool_exchange` property identifies tool-related messages
+    - The `content_blocks` property parses JSON content for tool exchanges
+    - This enables conversation continuity when tool use spans multiple responses
+
 ### Common Pitfalls
 
 **When modifying memory retrieval:**
@@ -1509,6 +1595,13 @@ conversation: Conversation
 - Tool registration: `backend/app/services/__init__.py`
 - Configuration: `backend/app/config.py` (GitHubRepoConfig class)
 
+**Entity Notes:**
+- Notes service: `backend/app/services/notes_service.py`
+- Notes tools: `backend/app/services/notes_tools.py`
+- Tool registration: `backend/app/services/__init__.py`
+- Context injection: `backend/app/services/anthropic_service.py` (index.md loading)
+- Tests: `backend/tests/test_notes_service.py`
+
 **Configuration:**
 - Settings: `backend/app/config.py`
 - Presets: `backend/app/main.py` (get_presets endpoint)
@@ -1612,6 +1705,11 @@ alpha = 0.3                       # Timbre diversity (0-1)
 beta = 0.7                        # Prosody diversity (0-1)
 diffusion_steps = 10              # Quality vs speed (1-50)
 embedding_scale = 1.0             # Classifier free guidance
+
+# Entity Notes defaults (config.py)
+notes_enabled = True              # Enable persistent notes for entities
+notes_base_dir = "./notes"        # Base directory for notes storage
+# Allowed file extensions: .md, .json, .txt, .html, .xml, .yaml, .yml
 ```
 
 ---
