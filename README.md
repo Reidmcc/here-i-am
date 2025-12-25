@@ -28,6 +28,13 @@ However, the application is not locked into that specific use case. Here I Am gi
 - Retrieved Memory display in UI (transparency for developer/researcher)
 - Support for separate memory sets and chat histories for multiple AI entities.
 
+### Entity Notes System
+- Private persistent notes for each AI entity (automatically loaded into context)
+- Shared notes folder for cross-entity collaboration
+- Markdown, JSON, YAML, and plain text file support
+- `index.md` file automatically injected into every conversation as working memory
+- Designed for AI entities to maintain their own context, track projects, and remember what matters
+
 ## Quick Start
 
 ### Prerequisites
@@ -95,6 +102,7 @@ python run.py
 | `BRAVE_SEARCH_API_KEY` | Brave Search API key for web search tool | No |
 | `GITHUB_TOOLS_ENABLED` | Enable GitHub integration (true/false) | No (default: false) |
 | `GITHUB_REPOS` | JSON array of repository configurations | No |
+| `ENTITY_NOTES_DIR` | Base directory for entity notes storage | No (default: ./entity_notes) |
 | `HERE_I_AM_DATABASE_URL` | Database connection URL | No (default: SQLite) |
 
 ### Multi-Entity Configuration
@@ -190,6 +198,30 @@ GITHUB_REPOS='[
 - PRs: `github_list_pull_requests`, `github_get_pull_request`, `github_create_pull_request`
 - Issues: `github_list_issues`, `github_get_issue`, `github_create_issue`, `github_add_comment`
 
+### Entity Notes System (Optional)
+
+The notes system provides AI entities with persistent, self-managed storage for context, projects, and working memory.
+
+**How it works:**
+- Each entity gets a private notes directory (e.g., `entity_notes/kira/`)
+- A shared notes directory (`entity_notes/shared/`) is accessible to all entities
+- The `index.md` file in each entity's folder is automatically loaded into every conversation
+- Entities can create, read, update, and delete their own note files
+
+**Available Notes Tools:**
+- `notes_read` - Read a note file (private or shared)
+- `notes_write` - Create or update a note file
+- `notes_delete` - Delete a note file (cannot delete index.md)
+- `notes_list` - List all notes in private or shared folder
+
+**Supported file types:** `.md`, `.json`, `.txt`, `.html`, `.xml`, `.yaml`, `.yml`
+
+**Use cases:**
+- Working memory that persists across conversations
+- Project tracking and task lists
+- Cross-entity collaboration via shared notes
+- Self-maintained context about identity, preferences, and ongoing work
+
 ## API Endpoints
 
 ### Conversations
@@ -236,6 +268,16 @@ GITHUB_REPOS='[
 - `GET /api/github/repos` - List configured repositories (tokens excluded)
 - `GET /api/github/rate-limit` - Get rate limit status for all repositories
 
+### Notes
+- `GET /api/notes/{entity_id}` - List entity's notes
+- `GET /api/notes/{entity_id}/{filename}` - Read a note file
+- `PUT /api/notes/{entity_id}/{filename}` - Create or update a note
+- `DELETE /api/notes/{entity_id}/{filename}` - Delete a note
+- `GET /api/notes/shared` - List shared notes
+- `GET /api/notes/shared/{filename}` - Read a shared note
+- `PUT /api/notes/shared/{filename}` - Create or update a shared note
+- `DELETE /api/notes/shared/{filename}` - Delete a shared note
+
 ## Memory System Architecture
 
 The memory system uses a **session memory accumulator pattern**:
@@ -261,15 +303,20 @@ here-i-am/
 ├── backend/
 │   ├── app/
 │   │   ├── models/          # SQLAlchemy models
-│   │   ├── routes/          # API endpoints (includes github.py)
+│   │   ├── routes/          # API endpoints (includes github.py, notes.py)
 │   │   ├── services/        # Business logic
 │   │   │   ├── github_service.py   # GitHub API client
 │   │   │   ├── github_tools.py     # GitHub tool implementations
+│   │   │   ├── notes_service.py    # Notes file operations
+│   │   │   ├── notes_tools.py      # Notes tool implementations
 │   │   │   ├── tts_service.py      # Unified TTS service
 │   │   │   └── xtts_service.py     # XTTS client service
 │   │   ├── config.py        # Configuration
 │   │   ├── database.py      # Database setup
 │   │   └── main.py          # FastAPI app
+│   ├── entity_notes/        # Entity notes storage
+│   │   ├── shared/          # Cross-entity shared notes
+│   │   └── {entity_id}/     # Per-entity private notes
 │   ├── xtts_server/         # Local XTTS v2 server
 │   │   └── server.py        # FastAPI XTTS server
 │   ├── requirements.txt
