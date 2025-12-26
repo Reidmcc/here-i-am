@@ -137,15 +137,15 @@ class TestMemoryQuerySearch:
             mock_service.search_memories.assert_called_once_with(
                 query="here i am",
                 top_k=7,
-                exclude_conversation_id=None,  # Deliberate recall includes all
+                exclude_conversation_id="my-conversation",  # Excludes current conversation
                 exclude_ids=None,  # Deliberate recall includes all
                 entity_id="my-entity",
                 use_cache=True,
             )
 
     @pytest.mark.asyncio
-    async def test_search_does_not_exclude_current_conversation(self):
-        """Test that deliberate recall can surface memories from current conversation."""
+    async def test_search_excludes_current_conversation(self):
+        """Test that deliberate recall excludes current conversation (already in context)."""
         set_memory_tool_context("test-entity", "current-conv-123")
         
         with patch("app.services.memory_tools.memory_service") as mock_service:
@@ -155,8 +155,8 @@ class TestMemoryQuerySearch:
             await _memory_query("something from earlier")
             
             call_kwargs = mock_service.search_memories.call_args[1]
-            # Should NOT exclude current conversation
-            assert call_kwargs["exclude_conversation_id"] is None
+            # Should exclude current conversation (its content is already in context)
+            assert call_kwargs["exclude_conversation_id"] == "current-conv-123"
 
 
 class TestMemoryQueryFullContentRetrieval:
