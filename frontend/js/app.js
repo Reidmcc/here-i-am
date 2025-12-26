@@ -1653,6 +1653,43 @@ class App {
 
             // Render messages
             messages.forEach((msg, index) => {
+                // Handle tool exchange messages with interactive UI
+                if (msg.role === 'tool_use') {
+                    try {
+                        const contentBlocks = JSON.parse(msg.content);
+                        for (const block of contentBlocks) {
+                            if (block.type === 'tool_use') {
+                                this.addToolMessage('start', block.name, {
+                                    tool_id: block.id,
+                                    input: block.input,
+                                });
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Failed to parse tool_use content:', e);
+                    }
+                    return;
+                }
+
+                if (msg.role === 'tool_result') {
+                    try {
+                        const contentBlocks = JSON.parse(msg.content);
+                        for (const block of contentBlocks) {
+                            if (block.type === 'tool_result') {
+                                this.addToolMessage('result', '', {
+                                    tool_id: block.tool_use_id,
+                                    content: block.content,
+                                    is_error: block.is_error || false,
+                                });
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Failed to parse tool_result content:', e);
+                    }
+                    return;
+                }
+
+                // Regular message (human, assistant, system)
                 this.addMessage(msg.role, msg.content, {
                     timestamp: msg.created_at,
                     showTimestamp: true,
