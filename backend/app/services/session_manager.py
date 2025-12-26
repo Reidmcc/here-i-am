@@ -22,6 +22,7 @@ from app.models import Conversation, Message, MessageRole, ConversationType, Con
 from app.services import memory_service, llm_service
 from app.services.tool_service import tool_service, ToolResult
 from app.services.notes_tools import set_current_entity_label
+from app.services.memory_tools import set_memory_tool_context
 from app.config import settings
 
 # Import from split modules
