@@ -1663,7 +1663,7 @@ class App {
                 });
             });
 
-            this.scrollToBottom();
+            this.scrollToBottom(true);
 
             // Don't auto-show responder selector when loading conversation
             // User should click "New Conversation" or type a message to trigger entity selection
@@ -1701,7 +1701,7 @@ class App {
 
             // Add user message visually immediately
             this.pendingUserMessageEl = this.addMessage('human', content);
-            this.scrollToBottom();
+            this.scrollToBottom(true);
 
             // Show responder selector
             this.showEntityResponderSelector();
@@ -2358,7 +2358,7 @@ class App {
             </div>
         `;
         this.elements.messages.appendChild(indicator);
-        this.scrollToBottom();
+        this.scrollToBottom(true);
         return indicator;
     }
 
@@ -2788,7 +2788,7 @@ class App {
                 }
             );
 
-            this.scrollToBottom();
+            this.scrollToBottom(true);
 
         } catch (error) {
             streamingMessage.element.remove();
