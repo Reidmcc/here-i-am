@@ -13,11 +13,13 @@ from app.services.github_service import GitHubService, github_service
 from app.services.github_tools import register_github_tools
 from app.services.notes_service import NotesService, notes_service
 from app.services.notes_tools import register_notes_tools, set_current_entity_label
+from app.services.memory_tools import register_memory_tools, set_memory_tool_context
 
 # Register tools at module load time
 register_web_tools(tool_service)
 register_github_tools(tool_service)
 register_notes_tools(tool_service)
+register_memory_tools(tool_service)
 
 __all__ = [
     # Classes
@@ -54,6 +56,8 @@ __all__ = [
     "register_web_tools",
     "register_github_tools",
     "register_notes_tools",
-    # Notes context helpers
+    "register_memory_tools",
+    # Context helpers
     "set_current_entity_label",
+    "set_memory_tool_context",
 ]
