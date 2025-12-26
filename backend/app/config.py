@@ -248,6 +248,12 @@ class Settings(BaseSettings):
     # Shared notes accessible to all entities: {notes_base_dir}/shared/
     notes_base_dir: str = "./notes"
 
+    # Memory System settings
+    # When True, memories are inserted directly into conversation context as user messages
+    # (better cacheability - memories only paid for once per conversation)
+    # When False (default), memories are rendered as a separate block each turn (legacy behavior)
+    use_memory_in_context: bool = False
+
     # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, llm_provider, default_model)
     # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'
     pinecone_indexes: str = ""
@@ -281,7 +287,7 @@ class Settings(BaseSettings):
     default_openai_model: str = "gpt-5.1"  # Default OpenAI model
     default_google_model: str = "gemini-2.5-flash"  # Default Google model
     default_temperature: float = 1.0
-    default_max_tokens: int = 20000
+    default_max_tokens: int = 64000
     default_verbosity: str = "medium"  # Default verbosity for GPT-5.1 models (low, medium, high)
 
     # =========================================================================
