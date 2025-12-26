@@ -22,6 +22,7 @@ from app.models import Conversation, Message, MessageRole, ConversationType, Con
 from app.services import memory_service, llm_service
 from app.services.tool_service import tool_service, ToolResult
 from app.services.notes_tools import set_current_entity_label
+from app.services.memory_tools import set_memory_tool_context
 from app.config import settings
 
 # Import from split modules
@@ -637,6 +638,11 @@ class SessionManager:
         if entity_label:
             set_current_entity_label(entity_label)
             logger.debug(f"[NOTES] Set entity label context: {entity_label}")
+
+        # Set context for memory query tool
+        if session.entity_id:
+            set_memory_tool_context(session.entity_id, session.conversation_id)
+            logger.debug(f"[MEMORY] Set memory tool context: entity_id={session.entity_id}, conversation_id={session.conversation_id[:8]}...")
 
         # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
         # Validate both that Pinecone is configured AND the entity_id is valid
