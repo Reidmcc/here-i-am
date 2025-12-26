@@ -2056,6 +2056,9 @@ class App {
      * @returns {HTMLElement|null} - The tool message element (only for start) or null
      */
     addToolMessage(type, toolName, data) {
+        // Check scroll position before adding content
+        const wasNearBottom = this.isNearBottom();
+
         const message = document.createElement('div');
         message.className = 'tool-message';
         message.dataset.toolId = data.tool_id || '';
@@ -2087,7 +2090,10 @@ class App {
             `;
 
             this.elements.messages.appendChild(message);
-            this.scrollToBottom();
+            // Only scroll if user was already near the bottom
+            if (wasNearBottom) {
+                this.scrollToBottom();
+            }
             return message;
         } else if (type === 'result') {
             // Find the corresponding start message
@@ -2121,7 +2127,10 @@ class App {
                 `;
 
                 startMessage.appendChild(resultDetails);
-                this.scrollToBottom();
+                // Only scroll if user was already near the bottom
+                if (wasNearBottom) {
+                    this.scrollToBottom();
+                }
             }
             return null;
         }
@@ -3042,6 +3051,17 @@ class App {
 
     scrollToBottom() {
         this.elements.messagesContainer.scrollTop = this.elements.messagesContainer.scrollHeight;
+    }
+
+    /**
+     * Check if the user is near the bottom of the messages container.
+     * Used to determine whether auto-scroll should occur.
+     * @param {number} threshold - Pixels from bottom to consider "near" (default 100)
+     * @returns {boolean} - True if user is near the bottom
+     */
+    isNearBottom(threshold = 100) {
+        const container = this.elements.messagesContainer;
+        return container.scrollTop + container.clientHeight >= container.scrollHeight - threshold;
     }
 
     // Modal management
