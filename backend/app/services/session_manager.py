@@ -85,6 +85,7 @@ class SessionManager:
             system_prompt=system_prompt,
             entity_id=entity_id,
             conversation_start_date=conversation_start_date,
+            use_memory_in_context=settings.use_memory_in_context,
         )
         self._sessions[conversation_id] = session
         return session
