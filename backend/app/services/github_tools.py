@@ -13,7 +13,8 @@ Includes composite tools for efficient multi-file operations:
 import asyncio
 import logging
 import re
-from typing import List, Optional, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from app.config import settings
 from app.services.github_service import github_service
@@ -32,6 +33,186 @@ MAX_TREE_DEPTH = 10
 MAX_FILES_PER_REQUEST = 10
 MAX_SEARCH_RESULTS = 10
 SEARCH_CONTEXT_LINES = 2
+
+
+# =============================================================================
+# Patch Utilities
+# =============================================================================
+
+@dataclass
+class PatchResult:
+    """Result of applying a patch."""
+    success: bool
+    content: Optional[str] = None
+    error: Optional[str] = None
+
+
+def apply_patch(original: str, patch: str) -> PatchResult:
+    """
+    Apply a unified diff patch to original content.
+
+    This is a pure Python implementation that handles standard unified diff format.
+    Based on public domain code (CC0) by Isaac Turner, adapted for this use case.
+
+    Patch format:
+    - Optional --- and +++ headers (skipped if present)
+    - Hunk headers: @@ -start,count +start,count @@
+    - Context lines: space-prefixed (unchanged)
+    - Remove lines: minus-prefixed (delete from original)
+    - Add lines: plus-prefixed (insert into result)
+
+    Line numbers in @@ headers are 1-indexed.
+
+    Args:
+        original: Original file content
+        patch: Unified diff patch to apply
+
+    Returns:
+        PatchResult with success status and either content or error message
+    """
+    # Split original into lines (preserve line endings info)
+    original_lines = original.split('\n')
+
+    # Parse patch into hunks
+    patch_lines = patch.split('\n')
+    hunks: List[Tuple[int, int, int, int, List[str]]] = []
+
+    i = 0
+    while i < len(patch_lines):
+        line = patch_lines[i]
+
+        # Skip --- and +++ header lines
+        if line.startswith('---') or line.startswith('+++'):
+            i += 1
+            continue
+
+        # Look for hunk header: @@ -start,count +start,count @@
+        hunk_match = re.match(
+            r'^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@',
+            line
+        )
+
+        if hunk_match:
+            # Parse hunk header
+            old_start = int(hunk_match.group(1))
+            old_count = int(hunk_match.group(2)) if hunk_match.group(2) else 1
+            new_start = int(hunk_match.group(3))
+            new_count = int(hunk_match.group(4)) if hunk_match.group(4) else 1
+
+            # Collect hunk lines until next hunk or end
+            i += 1
+            hunk_lines: List[str] = []
+            while i < len(patch_lines):
+                hunk_line = patch_lines[i]
+                # Stop at next hunk header or end
+                if hunk_line.startswith('@@') or hunk_line.startswith('---') or hunk_line.startswith('+++'):
+                    break
+                # Include lines that start with space, +, -, or are empty (empty context line)
+                if hunk_line == '' or hunk_line[0] in ' +-':
+                    hunk_lines.append(hunk_line)
+                    i += 1
+                elif hunk_line.startswith('\\'):
+                    # "\ No newline at end of file" - skip
+                    i += 1
+                else:
+                    # Unknown line format, might be end of patch
+                    break
+
+            hunks.append((old_start, old_count, new_start, new_count, hunk_lines))
+        else:
+            i += 1
+
+    if not hunks:
+        return PatchResult(
+            success=False,
+            error="No valid hunks found in patch. Ensure patch uses unified diff format with @@ headers."
+        )
+
+    # Apply hunks in order
+    # We need to track our position in original and apply adjustments
+    result_lines: List[str] = []
+    original_pos = 0  # 0-indexed position in original_lines
+
+    for hunk_idx, (old_start, old_count, new_start, new_count, hunk_lines) in enumerate(hunks):
+        # Convert to 0-indexed
+        old_start_idx = old_start - 1
+
+        # Copy unchanged lines before this hunk
+        if old_start_idx > original_pos:
+            result_lines.extend(original_lines[original_pos:old_start_idx])
+        elif old_start_idx < original_pos:
+            return PatchResult(
+                success=False,
+                error=f"Hunk {hunk_idx + 1}: Overlapping hunks detected. "
+                      f"Expected position {original_pos + 1}, but hunk starts at {old_start}."
+            )
+
+        # Process hunk lines
+        hunk_original_idx = old_start_idx
+        context_mismatch = False
+
+        for hunk_line in hunk_lines:
+            if hunk_line == '':
+                # Empty line is treated as context (empty line in original)
+                prefix = ' '
+                content = ''
+            else:
+                prefix = hunk_line[0]
+                content = hunk_line[1:] if len(hunk_line) > 1 else ''
+
+            if prefix == ' ':
+                # Context line - verify it matches original
+                if hunk_original_idx >= len(original_lines):
+                    return PatchResult(
+                        success=False,
+                        error=f"Hunk {hunk_idx + 1}: Patch extends beyond end of file. "
+                              f"Expected context line at position {hunk_original_idx + 1}."
+                    )
+                if original_lines[hunk_original_idx] != content:
+                    context_mismatch = True
+                    return PatchResult(
+                        success=False,
+                        error=f"Hunk {hunk_idx + 1}: Context mismatch at line {hunk_original_idx + 1}. "
+                              f"Expected: '{content[:50]}{'...' if len(content) > 50 else ''}', "
+                              f"Found: '{original_lines[hunk_original_idx][:50]}{'...' if len(original_lines[hunk_original_idx]) > 50 else ''}'."
+                    )
+                result_lines.append(content)
+                hunk_original_idx += 1
+
+            elif prefix == '-':
+                # Remove line - verify it matches original
+                if hunk_original_idx >= len(original_lines):
+                    return PatchResult(
+                        success=False,
+                        error=f"Hunk {hunk_idx + 1}: Cannot remove line at position {hunk_original_idx + 1}, "
+                              f"file only has {len(original_lines)} lines."
+                    )
+                if original_lines[hunk_original_idx] != content:
+                    return PatchResult(
+                        success=False,
+                        error=f"Hunk {hunk_idx + 1}: Line to remove at position {hunk_original_idx + 1} doesn't match. "
+                              f"Expected: '{content[:50]}{'...' if len(content) > 50 else ''}', "
+                              f"Found: '{original_lines[hunk_original_idx][:50]}{'...' if len(original_lines[hunk_original_idx]) > 50 else ''}'."
+                    )
+                # Don't add to result (removing the line)
+                hunk_original_idx += 1
+
+            elif prefix == '+':
+                # Add line
+                result_lines.append(content)
+                # Don't advance hunk_original_idx (adding, not consuming original)
+
+        # Update position after hunk
+        original_pos = hunk_original_idx
+
+    # Copy remaining lines after last hunk
+    if original_pos < len(original_lines):
+        result_lines.extend(original_lines[original_pos:])
+
+    return PatchResult(
+        success=True,
+        content='\n'.join(result_lines)
+    )
 
 
 def _format_available_repos() -> str:
@@ -1155,6 +1336,102 @@ async def github_delete_file(
         return f"Error: An unexpected error occurred: {str(e)}"
 
 
+async def github_commit_patch(
+    repo_label: str,
+    path: str,
+    patch: str,
+    message: str,
+    branch: str,
+) -> str:
+    """
+    Apply a unified diff patch to a file and commit the result.
+
+    More token-efficient than github_commit_file for large files. Instead of
+    transmitting the complete file content, only transmit the changes as a
+    unified diff patch.
+
+    Args:
+        repo_label: The label of the configured repository
+        path: File path within the repository
+        patch: Unified diff patch to apply. Format:
+               - Optional --- and +++ headers (skipped if present)
+               - Hunk headers: @@ -start,count +start,count @@
+               - Context lines: space-prefixed (unchanged)
+               - Remove lines: minus-prefixed
+               - Add lines: plus-prefixed
+        message: Commit message
+        branch: Target branch (required, cannot be a protected branch)
+
+    Returns:
+        Success message with commit SHA and URL, or error message
+
+    Example patch format:
+        @@ -10,4 +10,5 @@
+         context line
+        -old line to remove
+        +new line to add
+         more context
+        +another new line
+    """
+    repo = github_service.get_repo_by_label(repo_label)
+    if not repo:
+        return _repo_not_found_error(repo_label)
+
+    if not repo.has_capability("commit"):
+        return f"Error: Commit capability is not enabled for repository '{repo_label}'."
+
+    try:
+        # Get current file contents
+        # Try local clone first if available
+        if github_service.has_local_clone(repo):
+            logger.info(f"[{repo_label}] Reading file '{path}' from local clone for patch")
+            success, file_data = github_service.get_file_contents_local(repo, path)
+        else:
+            logger.info(f"[{repo_label}] Reading file '{path}' from GitHub API for patch")
+            success, file_data = await github_service.get_file_contents(repo, path, branch)
+
+        if not success:
+            return f"Error: {file_data.get('message', 'Failed to get file')}"
+
+        # Ensure it's a text file
+        if file_data.get("type") == "binary":
+            return f"Error: Cannot apply patch to binary file: {path}"
+
+        original_content = file_data.get("content", "")
+
+        # Apply the patch
+        patch_result = apply_patch(original_content, patch)
+
+        if not patch_result.success:
+            return f"Error: Patch failed to apply. {patch_result.error}"
+
+        # Commit the patched content using existing commit flow
+        success, data = await github_service.commit_file(
+            repo, path, patch_result.content, message, branch
+        )
+
+        if not success:
+            return f"Error: {data.get('message', 'Failed to commit patched file')}"
+
+        # Invalidate cache for this file and tree
+        cache_service.invalidate_github_file(repo_label, path, branch)
+        cache_service.invalidate_github_tree(repo_label, branch)
+
+        lines = [
+            f"Successfully patched and committed file: {path}",
+            f"Branch: {branch}",
+            f"Commit SHA: {data.get('sha')}",
+        ]
+        if data.get("html_url"):
+            lines.append(f"View on GitHub: {data.get('html_url')}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.exception(f"Error committing patch: {e}")
+        return f"Error: An unexpected error occurred: {str(e)}"
+
+
 # =============================================================================
 # Pull Request Tools (capability: "pr")
 # =============================================================================
@@ -1899,6 +2176,52 @@ def register_github_tools(tool_service: ToolService) -> None:
                 "required": ["repo_label", "path", "message", "branch"],
             },
             executor=github_delete_file,
+            category=ToolCategory.GITHUB,
+            enabled=True,
+        )
+
+        tool_service.register_tool(
+            name="github_commit_patch",
+            description=(
+                "Apply a unified diff patch to a file and commit the result. "
+                "More token-efficient than github_commit_file for large files - "
+                "only transmit the changes instead of full file content. "
+                "The branch parameter is required and cannot be a protected branch."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "repo_label": {
+                        "type": "string",
+                        "description": repo_label_description,
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "File path within the repository",
+                    },
+                    "patch": {
+                        "type": "string",
+                        "description": (
+                            "Unified diff patch to apply. Format: "
+                            "@@ -start,count +start,count @@ header, "
+                            "space-prefixed context lines, "
+                            "minus-prefixed lines to remove, "
+                            "plus-prefixed lines to add. "
+                            "Line numbers are 1-indexed."
+                        ),
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Commit message",
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": "Target branch (required, cannot be protected)",
+                    },
+                },
+                "required": ["repo_label", "path", "patch", "message", "branch"],
+            },
+            executor=github_commit_patch,
             category=ToolCategory.GITHUB,
             enabled=True,
         )

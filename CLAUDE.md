@@ -167,6 +167,7 @@ The application supports **GitHub repository integration**, allowing AI entities
 - **github_list_branches** - List all branches in a repository
 - **github_create_branch** - Create new branches from existing refs
 - **github_commit_file** - Commit file changes (create, update, or delete)
+- **github_commit_patch** - Apply unified diff patch and commit (token-efficient for large files)
 - **github_delete_file** - Delete files from a repository
 - **github_list_pull_requests** - List pull requests with filtering
 - **github_get_pull_request** - Get detailed PR information including diff
