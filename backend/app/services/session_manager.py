@@ -639,6 +639,11 @@ class SessionManager:
             set_current_entity_label(entity_label)
             logger.debug(f"[NOTES] Set entity label context: {entity_label}")
 
+        # Set context for memory query tool
+        if session.entity_id:
+            set_memory_tool_context(session.entity_id, session.conversation_id)
+            logger.debug(f"[MEMORY] Set memory tool context: entity_id={session.entity_id}, conversation_id={session.conversation_id[:8]}...")
+
         # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
         # Validate both that Pinecone is configured AND the entity_id is valid
         if memory_service.is_configured(entity_id=session.entity_id):
