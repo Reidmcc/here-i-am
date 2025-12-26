@@ -3003,8 +3003,17 @@ class App {
         this.elements.modelIndicator.textContent = this.settings.model;
     }
 
-    scrollToBottom() {
-        this.elements.messagesContainer.scrollTop = this.elements.messagesContainer.scrollHeight;
+    /**
+     * Scroll to the bottom of the messages container.
+     * @param {boolean} force - If true, always scroll. If false, only scroll if user is already near bottom.
+     */
+    scrollToBottom(force = false) {
+        const container = this.elements.messagesContainer;
+        // Only auto-scroll if user is already near the bottom (within 150px) or if forced
+        const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+        if (force || isNearBottom) {
+            container.scrollTop = container.scrollHeight;
+        }
     }
 
     // Modal management
