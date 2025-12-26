@@ -76,12 +76,12 @@ async def _memory_query(query: str, num_results: int = 5) -> str:
     num_results = max(1, min(10, num_results))
     
     try:
-        # Search memories by pure semantic similarity (no significance reranking)
-        # We don't exclude the current conversation—deliberate recall can surface anything
+        # Search memories by pure semantic similarity (no significance reranking).
+        # Exclude current conversation—its content is already in context.
         candidates = await memory_service.search_memories(
             query=query,
             top_k=num_results,
-            exclude_conversation_id=None,  # Include all conversations
+            exclude_conversation_id=conversation_id,  # Exclude current conversation
             exclude_ids=None,  # Include all memories
             entity_id=entity_id,
             use_cache=True,
