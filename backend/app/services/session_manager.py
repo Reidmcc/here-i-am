@@ -474,7 +474,7 @@ class SessionManager:
                     recency_str = f"{mem.days_since_retrieval:.1f}" if mem.days_since_retrieval >= 0 else "never"
                     logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str} source={mem.source}")
             else:
-                logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
+                logger.info(f"[MEMORY] No new memories retrieved (total in context: {session.get_in_context_memory_count()})")
 
             # Log candidates that were not selected after re-ranking (show next 5)
             unselected_candidates = enriched_candidates[top_k:top_k + 5]
@@ -662,12 +662,17 @@ class SessionManager:
             user_candidates = []
             assistant_candidates = []
 
+            if session.use_memory_in_context:
+                exclude_ids = session.memory_tracker.get_in_context_memory_ids(len(session.conversation_context))
+            else:
+                exclude_ids = session.in_context_ids
+
             if user_query:
                 user_candidates = await memory_service.search_memories(
                     query=user_query,
                     top_k=fetch_k_per_query,
                     exclude_conversation_id=session.conversation_id,
-                    exclude_ids=session.in_context_ids,
+                    exclude_ids=exclude_ids,
                     entity_id=session.entity_id,
                 )
                 logger.info(f"[MEMORY] User query retrieved {len(user_candidates)} candidates")
@@ -782,7 +787,10 @@ class SessionManager:
                     source=item["source"],
                 )
 
-                added, is_new_retrieval = session.add_memory(memory)
+                if session.use_memory_in_context:
+                    added, is_new_retrieval = session.insert_memory_into_context(memory)
+                else:
+                    added, is_new_retrieval = session.add_memory(memory)
                 if added:
                     new_memories.append(memory)
                     # Track truly new memories separately for cache stability
@@ -805,7 +813,7 @@ class SessionManager:
                     recency_str = f"{mem.days_since_retrieval:.1f}" if mem.days_since_retrieval >= 0 else "never"
                     logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str} source={mem.source}")
             else:
-                logger.info(f"[MEMORY] No new memories retrieved (total in context: {len(session.in_context_ids)})")
+                logger.info(f"[MEMORY] No new memories retrieved (total in context: {session.get_in_context_memory_count()})")
 
             # Log candidates that were not selected after re-ranking (show next 5)
             unselected_candidates = enriched_candidates[top_k:top_k + 5]
@@ -824,12 +832,16 @@ class SessionManager:
             else:
                 logger.info(f"[MEMORY] Memory retrieval skipped: entity_id={session.entity_id}")
 
-        # Step 3: Apply token limits before building API messages
-        # Trim memories if over limit (FIFO - oldest retrieved first)
-        trimmed_memory_ids = session.trim_memories_to_limit(
-            max_tokens=settings.memory_token_limit,
-            count_tokens_fn=llm_service.count_tokens,
-        )
+# Step 3: Apply token limits before building API messages
+# With memory-in-context, memory trimming is handled by context trimming
+        if session.use_memory_in_context:
+            trimmed_memory_ids = []  # Memories are part of context, trimmed there
+        else:
+            # Trim memories if over limit (FIFO - oldest retrieved first)
+            trimmed_memory_ids = session.trim_memories_to_limit(
+                max_tokens=settings.memory_token_limit,
+                count_tokens_fn=llm_service.count_tokens,
+            )
 
         # Trim conversation context if over limit (FIFO - oldest messages first)
         trimmed_context_count = session.trim_context_to_limit(
@@ -856,7 +868,7 @@ class SessionManager:
                 }
                 for m in new_memories
             ],
-            "total_in_context": len(session.in_context_ids),
+            "total_in_context": session.get_in_context_memory_count(),
             "trimmed_memory_ids": trimmed_memory_ids,
             "trimmed_context_messages": trimmed_context_count,
         }
@@ -866,20 +878,31 @@ class SessionManager:
 
         # Step 5: Build API messages with conversation-first caching
         # Cache breakpoint: end of cached conversation history
-        # Memories are placed after history (don't invalidate cache)
-        memories_for_injection = session.get_memories_for_injection()
+        # With memory-in-context, memories are already in conversation_context
+        if session.use_memory_in_context:
+            memories_for_injection = []  # Empty - memories are in context
+        else:
+            memories_for_injection = session.get_memories_for_injection()
+
         cache_content = session.get_cache_aware_content()
 
         # Debug logging for memory injection
-        logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
+        if session.use_memory_in_context:
+            in_context_count = session.get_in_context_memory_count()
+            logger.info(f"[MEMORY] Memory-in-context mode: {in_context_count} memories embedded in conversation history")
+        else:
+            logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
+
         # Log cached context breakdown by role
         cached_ctx = cache_content['cached_context']
         new_ctx = cache_content['new_context']
         cached_user = sum(1 for m in cached_ctx if m.get('role') == 'user')
         cached_asst = sum(1 for m in cached_ctx if m.get('role') == 'assistant')
+        cached_memory = sum(1 for m in cached_ctx if m.get('is_memory'))
         new_user = sum(1 for m in new_ctx if m.get('role') == 'user')
         new_asst = sum(1 for m in new_ctx if m.get('role') == 'assistant')
-        logger.info(f"[CACHE] Context: {len(cached_ctx)} cached msgs ({cached_user} user, {cached_asst} assistant), {len(new_ctx)} new msgs ({new_user} user, {new_asst} assistant)")
+        new_memory = sum(1 for m in new_ctx if m.get('is_memory'))
+        logger.info(f"[CACHE] Context: {len(cached_ctx)} cached msgs ({cached_user} user, {cached_asst} assistant, {cached_memory} memory), {len(new_ctx)} new msgs ({new_user} user, {new_asst} assistant, {new_memory} memory)")
 
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
