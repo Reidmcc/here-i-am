@@ -453,6 +453,14 @@ class AnthropicService:
             elif role == "assistant":
                 return assistant_label
             return role
+        
+        def format_with_timestamp(msg: Dict[str, Any], content: str) -> str:
+            """Prepend timestamp to message content if available."""
+            timestamp = msg.get("timestamp")
+            if timestamp:
+                # Format: [TIMESTAMP] content
+                return f"[{timestamp}]\n{content}"
+            return content
 
         # Calculate if we should cache conversation history
         has_conversation = bool(cached_context) or bool(new_context)
