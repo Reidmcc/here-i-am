@@ -285,6 +285,7 @@ class ConversationSession:
 
         If human_message is None (continuation), only the assistant response is added.
         For multi-entity conversations, messages are labeled with participant names.
+        Each message is timestamped for temporal context.
 
         Args:
             human_message: The human's message (None for continuations)
@@ -293,12 +294,15 @@ class ConversationSession:
                 Each exchange is a dict with "assistant" and "user" keys containing
                 the tool_use and tool_result messages respectively.
         """
+        now = datetime.utcnow()
+        timestamp = now.isoformat()
+        
         if human_message:
             if self.is_multi_entity:
                 labeled_content = f"[Human]: {human_message}"
-                self.conversation_context.append({"role": "user", "content": labeled_content})
+                self.conversation_context.append({"role": "user", "content": labeled_content, "timestamp": timestamp})
             else:
-                self.conversation_context.append({"role": "user", "content": human_message})
+                self.conversation_context.append({"role": "user", "content": human_message, "timestamp": timestamp})
 
         # Add tool exchanges if any occurred during this response
         # These go between the user message and the final assistant response
@@ -309,20 +313,22 @@ class ConversationSession:
                     "role": "assistant",
                     "content": exchange["assistant"]["content"],
                     "is_tool_use": True,
+                    "timestamp": timestamp,
                 })
                 # User's tool_result message (content is a list of tool_result blocks)
                 self.conversation_context.append({
                     "role": "user",
                     "content": exchange["user"]["content"],
                     "is_tool_result": True,
+                    "timestamp": timestamp,
                 })
 
         # Add the final assistant response (text only)
         if self.is_multi_entity and self.responding_entity_label:
             labeled_content = f"[{self.responding_entity_label}]: {assistant_response}"
-            self.conversation_context.append({"role": "assistant", "content": labeled_content})
+            self.conversation_context.append({"role": "assistant", "content": labeled_content, "timestamp": timestamp})
         else:
-            self.conversation_context.append({"role": "assistant", "content": assistant_response})
+            self.conversation_context.append({"role": "assistant", "content": assistant_response, "timestamp": timestamp})
 
     def get_cache_aware_content(self) -> Dict[str, Any]:
         """
