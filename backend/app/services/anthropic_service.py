@@ -507,7 +507,7 @@ class AnthropicService:
                         messages.append({"role": msg["role"], "content": content_blocks})
                 else:
                     # Regular messages have string content
-                    content = msg["content"]
+                    content = format_with_timestamp(msg, msg["content"])
                     if is_first:
                         # First message gets [CONVERSATION HISTORY] marker and multi-entity header
                         content = "[CONVERSATION HISTORY]\n" + multi_entity_header + "\n" + content
@@ -540,7 +540,7 @@ class AnthropicService:
                     messages.append({"role": msg["role"], "content": msg["content"]})
                 else:
                     # Regular messages have string content
-                    content = msg["content"]
+                    content = format_with_timestamp(msg, msg["content"])
                     # If there's no cached context, first new message gets the conversation header
                     if i == 0 and not cached_context:
                         content = "[CONVERSATION HISTORY]\n" + multi_entity_header + "\n" + content
