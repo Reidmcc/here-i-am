@@ -224,6 +224,14 @@ class Settings(BaseSettings):
     # Phonemizer backend: "gruut" (MIT licensed, no system deps) or "espeak" (requires espeak-ng)
     styletts2_phonemizer: str = "gruut"
 
+    # Whisper STT (Speech-to-Text) settings
+    # Set WHISPER_ENABLED=true to use local Whisper for speech-to-text
+    whisper_enabled: bool = False
+    # URL of the Whisper STT server
+    whisper_api_url: str = "http://localhost:8030"
+    # Default model (large-v3, distil-large-v3, medium, small, base, tiny)
+    whisper_model: str = "large-v3"
+
     # Tool Use settings
     # Enable tool use (web search, content fetching) for AI entities
     tools_enabled: bool = True
