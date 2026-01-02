@@ -22,7 +22,10 @@ if sys.platform == "win32":
 
         PyTorch installs NVIDIA libraries in site-packages/nvidia/*/bin but these
         directories aren't automatically discoverable by the DLL loader.
-        This function adds them via os.add_dll_directory().
+
+        We modify PATH directly because os.add_dll_directory() only works for
+        Python's ctypes, not for native libraries loaded by C extensions like
+        ctranslate2 (used by faster-whisper).
         """
         # All NVIDIA library subdirectories that may contain DLLs
         nvidia_libs = [
@@ -53,21 +56,31 @@ if sys.platform == "win32":
             if p.exists() and p not in site_packages_paths:
                 site_packages_paths.append(p)
 
-        added_dirs = []
+        # Collect all DLL directories that exist
+        dll_dirs = []
         for site_path in site_packages_paths:
             for lib in nvidia_libs:
                 dll_path = site_path / "nvidia" / lib / "bin"
                 if dll_path.exists():
-                    try:
-                        os.add_dll_directory(str(dll_path))
-                        added_dirs.append(f"{lib}")
-                    except Exception as e:
-                        print(f"[CUDA] Warning: Failed to add {lib} DLL directory: {e}")
+                    dll_dirs.append(str(dll_path))
 
-        if added_dirs:
-            print(f"[CUDA] Configured DLL directories: {', '.join(added_dirs)}")
+        if dll_dirs:
+            # Prepend to PATH so these directories are searched first
+            current_path = os.environ.get("PATH", "")
+            new_path = os.pathsep.join(dll_dirs)
+            os.environ["PATH"] = new_path + os.pathsep + current_path
 
-        return added_dirs
+            # Also use add_dll_directory for Python 3.8+ as a backup
+            for dll_dir in dll_dirs:
+                try:
+                    os.add_dll_directory(dll_dir)
+                except (OSError, AttributeError):
+                    pass  # Not available or failed, PATH modification should work
+
+            lib_names = [d.split(os.sep)[-2] for d in dll_dirs]  # Extract lib name from path
+            print(f"[CUDA] Added to PATH: {', '.join(lib_names)}")
+
+        return dll_dirs
 
     try:
         configure_cuda_dll_paths()
