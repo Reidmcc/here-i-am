@@ -16,6 +16,7 @@ However, the application is not locked into that specific use case. Here I Am gi
 - Seed conversation import capability
 - Optional text-to-speech via ElevenLabs (cloud) or XTTS v2 (local with voice cloning)
 - Stop generation button to cancel AI responses mid-stream
+- Optional speech-to-text via Whisper (local with GPU acceleration) or browser Web Speech API
 - Web search and content fetching tools (requires Brave Search API key)
 - GitHub repository integration for AI entities to read, commit, and manage repos
 
@@ -52,6 +53,7 @@ However, the application is not locked into that specific use case. Here I Am gi
 
 ### Optional Local Services
 - **XTTS v2** - Local GPU-accelerated text-to-speech with voice cloning (no API key required, runs locally)
+- **Whisper** - Local GPU-accelerated speech-to-text with punctuation (no API key required, runs locally)
 
 ### Installation
 
