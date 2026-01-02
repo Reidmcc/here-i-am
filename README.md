@@ -170,6 +170,45 @@ XTTS_API_URL=http://localhost:8020
 **Voice Cloning:**
 Upload a 6-30 second WAV file via `/api/tts/voices/clone` or through the UI to create custom voices. XTTS supports 17 languages including English, Spanish, French, German, Japanese, Chinese, and more.
 
+### Local Whisper STT Setup (Optional)
+
+Whisper provides local, GPU-accelerated speech-to-text with proper punctuation—a significant improvement over browser-native dictation which lacks punctuation entirely.
+
+**Prerequisites:**
+- NVIDIA GPU with CUDA (recommended) or CPU (slower)
+- Python 3.9-3.11
+- ~3GB disk space for model
+
+**Installation:**
+```bash
+cd backend
+
+# Install PyTorch (GPU version)
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+# Or for CPU only:
+# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Install Whisper dependencies
+pip install -r requirements-whisper.txt
+```
+
+**Running the Whisper Server:**
+```bash
+cd backend
+python run_whisper.py
+```
+
+The server downloads the Whisper large-v3 model (~3GB) on first run and starts on port 8030.
+
+**Configure the main app:**
+```bash
+# In .env
+WHISPER_ENABLED=true
+WHISPER_API_URL=http://localhost:8030
+# Optional: "whisper", "browser", or "auto" (default: auto)
+DICTATION_MODE=auto
+```
+
 ### GitHub Repository Integration (Optional)
 
 GitHub integration allows AI entities to interact with repositories during conversations - reading files, creating branches, making commits, managing pull requests, and more.
