@@ -17,22 +17,36 @@ from typing import Optional
 # This is necessary because ctranslate2 (used by faster-whisper) needs cuBLAS
 # and the DLLs installed via pip aren't automatically discoverable
 if sys.platform == "win32":
-    # Try to find nvidia packages in site-packages
     try:
+        # Build list of possible site-packages locations
+        site_packages_paths = []
+        
+        # First, check for venv site-packages (most likely location)
+        if hasattr(sys, 'prefix'):
+            venv_site = Path(sys.prefix) / "Lib" / "site-packages"
+            if venv_site.exists():
+                site_packages_paths.append(venv_site)
+        
+        # Also check site.getsitepackages() as fallback
         import site
-        for site_path in site.getsitepackages():
-            nvidia_cublas_path = Path(site_path) / "nvidia" / "cublas" / "bin"
-            nvidia_cudnn_path = Path(site_path) / "nvidia" / "cudnn" / "bin"
+        for sp in site.getsitepackages():
+            p = Path(sp)
+            if p.exists() and p not in site_packages_paths:
+                site_packages_paths.append(p)
+        
+        for site_path in site_packages_paths:
+            nvidia_cublas_path = site_path / "nvidia" / "cublas" / "bin"
+            nvidia_cudnn_path = site_path / "nvidia" / "cudnn" / "bin"
             
             if nvidia_cublas_path.exists():
                 os.add_dll_directory(str(nvidia_cublas_path))
-                logging.info(f"Added CUDA DLL directory: {nvidia_cublas_path}")
+                print(f"[CUDA] Added cuBLAS DLL directory: {nvidia_cublas_path}")
             
             if nvidia_cudnn_path.exists():
                 os.add_dll_directory(str(nvidia_cudnn_path))
-                logging.info(f"Added cuDNN DLL directory: {nvidia_cudnn_path}")
+                print(f"[CUDA] Added cuDNN DLL directory: {nvidia_cudnn_path}")
     except Exception as e:
-        logging.warning(f"Failed to configure CUDA DLL paths: {e}")
+        print(f"[CUDA] Warning: Failed to configure DLL paths: {e}")
 
 import torch
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
