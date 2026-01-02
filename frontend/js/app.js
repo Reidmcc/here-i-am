@@ -232,7 +232,8 @@ class App {
     async init() {
         this.loadTheme();
         this.bindEvents();
-        this.initVoiceDictation();
+        await this.checkSTTStatus();  // Check STT before init (sets dictation mode)
+        this.initVoiceDictation();    // Then initialize appropriate dictation
         await this.loadEntities();
         this.loadEntitySystemPromptsFromStorage();  // Load saved system prompts
         await this.loadConversations();
