@@ -231,6 +231,10 @@ class Settings(BaseSettings):
     whisper_api_url: str = "http://localhost:8030"
     # Default model (large-v3, distil-large-v3, medium, small, base, tiny)
     whisper_model: str = "large-v3"
+    # Dictation mode: "whisper" (local server), "browser" (Web Speech API), or "auto"
+    # "auto" uses Whisper if enabled and server is healthy, falls back to browser
+    # This setting determines which mode the frontend starts in
+    dictation_mode: str = "auto"
 
     # Tool Use settings
     # Enable tool use (web search, content fetching) for AI entities
