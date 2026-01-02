@@ -39,33 +39,60 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Configure CUDA DLL paths on Windows BEFORE importing torch or faster-whisper
 # This MUST happen before any CUDA-related imports
 if sys.platform == "win32":
-    try:
+    def configure_cuda_dll_paths():
+        """Configure NVIDIA CUDA DLL paths for Windows.
+
+        PyTorch installs NVIDIA libraries in site-packages/nvidia/*/bin but these
+        directories aren't automatically discoverable by the DLL loader.
+        This function adds them via os.add_dll_directory().
+        """
+        # All NVIDIA library subdirectories that may contain DLLs
+        nvidia_libs = [
+            "cublas",        # cuBLAS - linear algebra
+            "cudnn",         # cuDNN - deep neural networks
+            "cuda_runtime",  # CUDA runtime
+            "cufft",         # cuFFT - Fourier transforms
+            "cusparse",      # cuSPARSE - sparse matrices
+            "cusolver",      # cuSOLVER - linear algebra solvers
+            "curand",        # cuRAND - random number generation
+            "nccl",          # NCCL - multi-GPU communication
+            "nvjitlink",     # nvJitLink - JIT linking (CUDA 12+)
+            "nvtx",          # NVTX - profiling markers
+        ]
+
         site_packages_paths = []
-        
+
         # Check venv site-packages first (most common case)
         if hasattr(sys, 'prefix'):
             venv_site = Path(sys.prefix) / "Lib" / "site-packages"
             if venv_site.exists():
                 site_packages_paths.append(venv_site)
-        
+
         # Also check site.getsitepackages() as fallback
         import site
         for sp in site.getsitepackages():
             p = Path(sp)
             if p.exists() and p not in site_packages_paths:
                 site_packages_paths.append(p)
-        
+
+        added_dirs = []
         for site_path in site_packages_paths:
-            nvidia_cublas_path = site_path / "nvidia" / "cublas" / "bin"
-            nvidia_cudnn_path = site_path / "nvidia" / "cudnn" / "bin"
-            
-            if nvidia_cublas_path.exists():
-                os.add_dll_directory(str(nvidia_cublas_path))
-                print(f"[CUDA] Added cuBLAS DLL directory: {nvidia_cublas_path}")
-            
-            if nvidia_cudnn_path.exists():
-                os.add_dll_directory(str(nvidia_cudnn_path))
-                print(f"[CUDA] Added cuDNN DLL directory: {nvidia_cudnn_path}")
+            for lib in nvidia_libs:
+                dll_path = site_path / "nvidia" / lib / "bin"
+                if dll_path.exists():
+                    try:
+                        os.add_dll_directory(str(dll_path))
+                        added_dirs.append(f"{lib}")
+                    except Exception as e:
+                        print(f"[CUDA] Warning: Failed to add {lib} DLL directory: {e}")
+
+        if added_dirs:
+            print(f"[CUDA] Configured DLL directories: {', '.join(added_dirs)}")
+
+        return added_dirs
+
+    try:
+        configure_cuda_dll_paths()
     except Exception as e:
         print(f"[CUDA] Warning: Failed to configure DLL paths: {e}")
 
