@@ -7,10 +7,32 @@ Provides speech-to-text transcription using faster-whisper.
 import io
 import logging
 import os
+import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Optional
+
+# Configure CUDA DLL paths on Windows before importing torch/faster-whisper
+# This is necessary because ctranslate2 (used by faster-whisper) needs cuBLAS
+# and the DLLs installed via pip aren't automatically discoverable
+if sys.platform == "win32":
+    # Try to find nvidia packages in site-packages
+    try:
+        import site
+        for site_path in site.getsitepackages():
+            nvidia_cublas_path = Path(site_path) / "nvidia" / "cublas" / "bin"
+            nvidia_cudnn_path = Path(site_path) / "nvidia" / "cudnn" / "bin"
+            
+            if nvidia_cublas_path.exists():
+                os.add_dll_directory(str(nvidia_cublas_path))
+                logging.info(f"Added CUDA DLL directory: {nvidia_cublas_path}")
+            
+            if nvidia_cudnn_path.exists():
+                os.add_dll_directory(str(nvidia_cudnn_path))
+                logging.info(f"Added cuDNN DLL directory: {nvidia_cudnn_path}")
+    except Exception as e:
+        logging.warning(f"Failed to configure CUDA DLL paths: {e}")
 
 import torch
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
