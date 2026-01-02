@@ -1,0 +1,33 @@
+# Whisper STT Server Dependencies
+# ================================
+#
+# IMPORTANT: Install PyTorch FIRST before installing faster-whisper!
+#
+# Step 1: Install PyTorch (choose one based on your system)
+# ---------------------------------------------------------
+# For CUDA 11.8 (NVIDIA GPU):
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+#
+# For CUDA 12.1 (NVIDIA GPU):
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+#
+# For CPU only:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#
+# Step 2: Install this requirements file
+# ---------------------------------------------------------
+#   pip install -r requirements-whisper.txt
+#
+# Note: Requires Python 3.9-3.11. Python 3.12+ may have compatibility issues.
+# Note: The large-v3 model requires ~3GB download on first run and ~4-6GB VRAM.
+
+# faster-whisper - CTranslate2-based Whisper implementation (4x faster than original)
+faster-whisper>=1.0.0
+
+# Server dependencies (should already be installed from main requirements)
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+
+# Audio processing (faster-whisper handles most formats via PyAV)
+# No additional audio dependencies needed - PyAV is bundled with faster-whisper
