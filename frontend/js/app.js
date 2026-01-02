@@ -290,6 +290,33 @@ class App {
         }
     }
 
+    async checkSTTStatus() {
+        try {
+            const status = await api.getSTTStatus();
+            
+            // Store Whisper availability
+            this.whisperAvailable = status.configured && status.server_healthy;
+            
+            // Set dictation mode based on server response
+            // effective_mode is calculated server-side based on config + health
+            if (status.effective_mode === 'whisper') {
+                this.dictationMode = 'whisper';
+                console.log('[STT] Using Whisper for dictation (model:', status.model, ', device:', status.device, ')');
+            } else if (status.effective_mode === 'browser') {
+                this.dictationMode = 'browser';
+                console.log('[STT] Using browser Web Speech API for dictation');
+            } else {
+                // 'none' - Whisper required but unavailable
+                this.dictationMode = 'none';
+                console.warn('[STT] Dictation unavailable - Whisper server not running');
+            }
+        } catch (error) {
+            console.warn('STT status check failed, falling back to browser:', error);
+            this.dictationMode = 'browser';
+            this.whisperAvailable = false;
+        }
+    }
+
     async checkTTSStatus() {
         try {
             const status = await api.getTTSStatus();
