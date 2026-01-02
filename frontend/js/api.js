@@ -565,6 +565,42 @@ class ApiClient {
         return this.request('/tts/xtts/health');
     }
 
+    // STT (Speech-to-Text)
+    async getSTTStatus() {
+        return this.request('/stt/status');
+    }
+
+    /**
+     * Transcribe audio to text using Whisper.
+     * @param {Blob} audioBlob - Audio blob to transcribe
+     * @param {string} language - Optional language code (auto-detect if not specified)
+     * @returns {Promise<Object>} Transcription result with text, language, duration
+     */
+    async transcribeAudio(audioBlob, language = null) {
+        const url = `${API_BASE}/stt/transcribe`;
+        const formData = new FormData();
+        
+        // Determine filename based on MIME type
+        const ext = audioBlob.type.includes('webm') ? 'webm' : 'wav';
+        formData.append('audio_file', audioBlob, `recording.${ext}`);
+        
+        if (language) {
+            formData.append('language', language);
+        }
+
+        const response = await fetch(url, {
+            method: 'POST',
+            body: formData,
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+            throw new Error(error.detail || `HTTP ${response.status}`);
+        }
+
+        return response.json();
+    }
+
     // GitHub Integration
     async listGitHubRepos() {
         return this.request('/github/repos');
