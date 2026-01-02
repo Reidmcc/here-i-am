@@ -209,6 +209,12 @@ class App {
         this.recognition = null;
         this.isRecording = false;
         this.textBeforeDictation = '';
+        // STT/Dictation mode state
+        this.dictationMode = 'browser';  // 'whisper' or 'browser'
+        this.whisperAvailable = false;
+        this.mediaRecorder = null;
+        this.audioChunks = [];
+        this.isTranscribing = false;  // True while waiting for Whisper response
 
         // TTS state
         this.ttsEnabled = false;
