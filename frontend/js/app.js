@@ -609,18 +609,47 @@ class App {
     }
 
     /**
-     * Initialize Web Speech API for voice dictation.
-     * Hides the voice button if the browser doesn't support it.
+     * Initialize voice dictation.
+     * Supports two modes: Whisper (local server) or Browser (Web Speech API).
+     * Mode is determined by checkSTTStatus() which runs before this.
      */
     initVoiceDictation() {
+        if (this.dictationMode === 'whisper') {
+            // Whisper mode - uses MediaRecorder to capture audio, sends to server
+            this.initWhisperDictation();
+        } else if (this.dictationMode === 'browser') {
+            // Browser mode - uses Web Speech API
+            this.initBrowserDictation();
+        } else {
+            // No dictation available
+            console.warn('[STT] Dictation disabled');
+            this.elements.voiceBtn.classList.add('unsupported');
+            this.elements.voiceBtn.title = 'Voice dictation unavailable';
+        }
+    }
+
+    /**
+     * Initialize Whisper-based dictation using MediaRecorder.
+     */
+    initWhisperDictation() {
+        console.log('[STT] Initializing Whisper dictation mode');
+        this.elements.voiceBtn.title = 'Voice dictation (Whisper)';
+    }
+
+    /**
+     * Initialize browser-based dictation using Web Speech API.
+     */
+    initBrowserDictation() {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
         if (!SpeechRecognition) {
-            console.warn('Speech recognition not supported in this browser');
+            console.warn('[STT] Browser speech recognition not supported');
             this.elements.voiceBtn.classList.add('unsupported');
+            this.elements.voiceBtn.title = 'Voice dictation not supported';
             return;
         }
 
+        console.log('[STT] Initializing browser dictation mode');
         this.recognition = new SpeechRecognition();
         this.recognition.continuous = true;
         this.recognition.interimResults = true;
@@ -631,84 +660,175 @@ class App {
             this.elements.voiceBtn.classList.add('recording');
             this.elements.voiceBtn.title = 'Stop dictation';
             this.elements.messageInput.classList.add('transcribing');
-            // Save the text that was in the input before we started dictating
             this.textBeforeDictation = this.elements.messageInput.value;
         };
 
         this.recognition.onend = () => {
             this.isRecording = false;
             this.elements.voiceBtn.classList.remove('recording');
-            this.elements.voiceBtn.title = 'Voice dictation';
+            this.elements.voiceBtn.title = 'Voice dictation (Browser)';
             this.elements.messageInput.classList.remove('transcribing');
             this.handleInputChange();
         };
 
         this.recognition.onresult = (event) => {
-            let interimTranscript = '';
-            let finalTranscript = '';
-
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-                const transcript = event.results[i][0].transcript;
-                if (event.results[i].isFinal) {
-                    finalTranscript += transcript;
-                } else {
-                    interimTranscript += transcript;
-                }
-            }
-
-            // Combine: text before dictation + final results so far + current interim
-            // Build the complete final transcript from all final results
             let allFinalTranscripts = '';
+            let interimTranscript = '';
+
             for (let i = 0; i < event.results.length; i++) {
                 if (event.results[i].isFinal) {
                     allFinalTranscripts += event.results[i][0].transcript;
+                } else if (i >= event.resultIndex) {
+                    interimTranscript += event.results[i][0].transcript;
                 }
             }
 
-            // Construct the full text: previous text + final transcripts + interim
             const separator = this.textBeforeDictation && !this.textBeforeDictation.endsWith(' ') ? ' ' : '';
             const newText = this.textBeforeDictation + separator + allFinalTranscripts + interimTranscript;
-
             this.elements.messageInput.value = newText;
             this.handleInputChange();
         };
 
         this.recognition.onerror = (event) => {
-            console.error('Speech recognition error:', event.error);
-
+            console.error('[STT] Browser recognition error:', event.error);
             if (event.error === 'not-allowed') {
-                this.showToast('Microphone access denied. Please allow microphone access.', 'error');
+                this.showToast('Microphone access denied', 'error');
             } else if (event.error === 'no-speech') {
-                this.showToast('No speech detected. Try again.', 'warning');
+                this.showToast('No speech detected', 'warning');
             } else if (event.error !== 'aborted') {
-                this.showToast(`Voice dictation error: ${event.error}`, 'error');
+                this.showToast(`Dictation error: ${event.error}`, 'error');
             }
-
             this.isRecording = false;
             this.elements.voiceBtn.classList.remove('recording');
             this.elements.messageInput.classList.remove('transcribing');
         };
+
+        this.elements.voiceBtn.title = 'Voice dictation (Browser)';
     }
 
     /**
-     * Toggle voice dictation on/off.
+     * Toggle voice dictation on/off based on current mode.
      */
     toggleVoiceDictation() {
-        if (!this.recognition) {
-            this.showToast('Voice dictation is not supported in this browser', 'warning');
-            return;
+        if (this.dictationMode === 'whisper') {
+            this.toggleWhisperDictation();
+        } else if (this.dictationMode === 'browser' && this.recognition) {
+            this.toggleBrowserDictation();
+        } else {
+            this.showToast('Voice dictation is not available', 'warning');
         }
+    }
 
+    /**
+     * Toggle browser-based dictation.
+     */
+    toggleBrowserDictation() {
         if (this.isRecording) {
             this.recognition.stop();
         } else {
             try {
                 this.recognition.start();
             } catch (e) {
-                // May throw if already started
-                console.error('Failed to start recognition:', e);
+                console.error('[STT] Failed to start browser recognition:', e);
             }
         }
+    }
+
+    /**
+     * Toggle Whisper-based dictation (record audio, send to server).
+     */
+    async toggleWhisperDictation() {
+        if (this.isRecording) {
+            this.stopWhisperRecording();
+        } else if (this.isTranscribing) {
+            return;
+        } else {
+            await this.startWhisperRecording();
+        }
+    }
+
+    /**
+     * Start recording audio for Whisper transcription.
+     */
+    async startWhisperRecording() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/wav';
+            this.mediaRecorder = new MediaRecorder(stream, { mimeType });
+            this.audioChunks = [];
+
+            this.mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    this.audioChunks.push(event.data);
+                }
+            };
+
+            this.mediaRecorder.onstop = () => {
+                stream.getTracks().forEach(track => track.stop());
+                this.processWhisperRecording();
+            };
+
+            this.mediaRecorder.start();
+            this.isRecording = true;
+            this.textBeforeDictation = this.elements.messageInput.value;
+            this.elements.voiceBtn.classList.add('recording');
+            this.elements.voiceBtn.title = 'Stop recording';
+            this.elements.messageInput.classList.add('transcribing');
+            this.elements.messageInput.placeholder = 'Recording... Click mic to stop';
+
+        } catch (error) {
+            console.error('[STT] Failed to start recording:', error);
+            if (error.name === 'NotAllowedError') {
+                this.showToast('Microphone access denied', 'error');
+            } else {
+                this.showToast('Failed to start recording', 'error');
+            }
+        }
+    }
+
+    stopWhisperRecording() {
+        if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+            this.mediaRecorder.stop();
+            this.isRecording = false;
+            this.elements.voiceBtn.classList.remove('recording');
+            this.elements.voiceBtn.classList.add('transcribing');
+            this.elements.voiceBtn.title = 'Transcribing...';
+            this.elements.messageInput.placeholder = 'Transcribing...';
+        }
+    }
+
+    async processWhisperRecording() {
+        if (this.audioChunks.length === 0) {
+            this.resetWhisperUI();
+            return;
+        }
+
+        this.isTranscribing = true;
+        const mimeType = this.mediaRecorder?.mimeType || 'audio/webm';
+        const audioBlob = new Blob(this.audioChunks, { type: mimeType });
+
+        try {
+            const result = await api.transcribeAudio(audioBlob);
+            const separator = this.textBeforeDictation && !this.textBeforeDictation.endsWith(' ') ? ' ' : '';
+            const newText = this.textBeforeDictation + separator + result.text;
+            this.elements.messageInput.value = newText;
+            this.handleInputChange();
+            console.log(`[STT] Transcribed ${result.duration.toFixed(1)}s audio in ${result.processing_time.toFixed(2)}s (${result.language})`);
+        } catch (error) {
+            console.error('[STT] Transcription failed:', error);
+            this.showToast('Transcription failed: ' + error.message, 'error');
+        } finally {
+            this.resetWhisperUI();
+        }
+    }
+
+    resetWhisperUI() {
+        this.isTranscribing = false;
+        this.audioChunks = [];
+        this.elements.voiceBtn.classList.remove('recording', 'transcribing');
+        this.elements.voiceBtn.title = 'Voice dictation (Whisper)';
+        this.elements.messageInput.classList.remove('transcribing');
+        this.elements.messageInput.placeholder = 'Type your message...';
     }
 
     async loadConversations() {
