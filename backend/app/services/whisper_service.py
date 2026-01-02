@@ -19,11 +19,16 @@ class WhisperService:
     def __init__(self):
         self.api_url = getattr(settings, 'whisper_api_url', 'http://localhost:8030')
         self.enabled = getattr(settings, 'whisper_enabled', False)
+        self.dictation_mode = getattr(settings, 'dictation_mode', 'auto')
         self._server_healthy = False
 
     def is_configured(self) -> bool:
         """Check if Whisper STT is configured."""
         return self.enabled
+
+    def get_dictation_mode(self) -> str:
+        """Get the configured dictation mode preference."""
+        return self.dictation_mode
 
     async def check_health(self) -> bool:
         """Check if the Whisper server is healthy and responding."""
@@ -113,12 +118,16 @@ class WhisperService:
             raise
 
     async def get_status(self) -> Dict[str, Any]:
-        """Get Whisper server status information."""
+        """Get Whisper server status information including dictation mode preference."""
+        dictation_mode = self.dictation_mode
+        
         if not self.enabled:
             return {
                 "configured": False,
                 "provider": "none",
                 "server_healthy": False,
+                "dictation_mode": dictation_mode,
+                "effective_mode": "browser" if dictation_mode != "whisper" else "none",
             }
 
         try:
@@ -126,21 +135,43 @@ class WhisperService:
                 response = await client.get(f"{self.api_url}/health")
                 if response.status_code == 200:
                     data = response.json()
+                    server_healthy = data.get("model_loaded", False)
+                    
+                    # Determine effective mode based on config and server health
+                    if dictation_mode == "whisper":
+                        effective_mode = "whisper" if server_healthy else "none"
+                    elif dictation_mode == "browser":
+                        effective_mode = "browser"
+                    else:  # auto
+                        effective_mode = "whisper" if server_healthy else "browser"
+                    
                     return {
                         "configured": True,
                         "provider": "whisper",
-                        "server_healthy": data.get("model_loaded", False),
+                        "server_healthy": server_healthy,
                         "model": data.get("model", "unknown"),
                         "device": data.get("device", "unknown"),
                         "cuda_available": data.get("cuda_available", False),
+                        "dictation_mode": dictation_mode,
+                        "effective_mode": effective_mode,
                     }
         except Exception as e:
             logger.warning(f"Failed to get Whisper status: {e}")
 
+        # Server unreachable
+        if dictation_mode == "whisper":
+            effective_mode = "none"
+        elif dictation_mode == "browser":
+            effective_mode = "browser"
+        else:  # auto
+            effective_mode = "browser"
+            
         return {
             "configured": True,
             "provider": "whisper",
             "server_healthy": False,
+            "dictation_mode": dictation_mode,
+            "effective_mode": effective_mode,
         }
 
 
