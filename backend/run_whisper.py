@@ -31,9 +31,43 @@ Once running, configure the main app with:
 
 import sys
 import os
+from pathlib import Path
 
 # Add the backend directory to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Configure CUDA DLL paths on Windows BEFORE importing torch or faster-whisper
+# This MUST happen before any CUDA-related imports
+if sys.platform == "win32":
+    try:
+        site_packages_paths = []
+        
+        # Check venv site-packages first (most common case)
+        if hasattr(sys, 'prefix'):
+            venv_site = Path(sys.prefix) / "Lib" / "site-packages"
+            if venv_site.exists():
+                site_packages_paths.append(venv_site)
+        
+        # Also check site.getsitepackages() as fallback
+        import site
+        for sp in site.getsitepackages():
+            p = Path(sp)
+            if p.exists() and p not in site_packages_paths:
+                site_packages_paths.append(p)
+        
+        for site_path in site_packages_paths:
+            nvidia_cublas_path = site_path / "nvidia" / "cublas" / "bin"
+            nvidia_cudnn_path = site_path / "nvidia" / "cudnn" / "bin"
+            
+            if nvidia_cublas_path.exists():
+                os.add_dll_directory(str(nvidia_cublas_path))
+                print(f"[CUDA] Added cuBLAS DLL directory: {nvidia_cublas_path}")
+            
+            if nvidia_cudnn_path.exists():
+                os.add_dll_directory(str(nvidia_cudnn_path))
+                print(f"[CUDA] Added cuDNN DLL directory: {nvidia_cudnn_path}")
+    except Exception as e:
+        print(f"[CUDA] Warning: Failed to configure DLL paths: {e}")
 
 
 def check_dependencies():
