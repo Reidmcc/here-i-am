@@ -1123,6 +1123,23 @@ h4.md-header {
     }
 }
 
+.voice-btn.transcribing {
+    background-color: var(--accent);
+    border-color: var(--accent);
+    color: white;
+    cursor: wait;
+    animation: pulse-transcribing 1s ease-in-out infinite;
+}
+
+@keyframes pulse-transcribing {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.6;
+    }
+}
+
 /* Interim transcription styling */
 #message-input.transcribing {
     border-color: var(--danger);
