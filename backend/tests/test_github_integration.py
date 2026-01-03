@@ -15,19 +15,9 @@ import base64
 import time
 import sys
 
-# Mock heavy modules before they're imported
-sys.modules['app.services.google_service'] = MagicMock()
-sys.modules['app.services.anthropic_service'] = MagicMock()
-sys.modules['app.services.openai_service'] = MagicMock()
-sys.modules['app.services.llm_service'] = MagicMock()
-sys.modules['app.services.memory_service'] = MagicMock()
-sys.modules['app.services.session_manager'] = MagicMock()
-sys.modules['app.services.cache_service'] = MagicMock()
-sys.modules['app.services.tts_service'] = MagicMock()
-sys.modules['app.services.xtts_service'] = MagicMock()
-sys.modules['app.services.styletts2_service'] = MagicMock()
-sys.modules['app.services.web_tools'] = MagicMock()
-
+# Import configuration and GitHub-specific modules
+# Note: We import these specific modules directly without mocking dependencies
+# at module level to avoid polluting other test files during pytest collection.
 from app.config import Settings, GitHubRepoConfig
 from app.services.github_service import GitHubService, RateLimitInfo, BINARY_EXTENSIONS
 

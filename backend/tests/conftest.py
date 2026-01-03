@@ -78,7 +78,7 @@ def test_settings():
         default_model="claude-sonnet-4-5-20250929",
         default_openai_model="gpt-4o",
         default_temperature=1.0,
-        default_max_tokens=20000,
+        default_max_tokens=64000,
     )
 
 
