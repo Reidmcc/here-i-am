@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2025-12-25
+**Last Updated:** 2026-01-03
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -305,6 +305,180 @@ NOTES_BASE_DIR=./notes
 - Entity labels are sanitized for filesystem safety (special characters replaced with underscores)
 - Notes tools are in the `MEMORY` category and are only available for Anthropic (Claude) and OpenAI (GPT) models
 
+### Memory Query Tool (Deliberate Recall)
+
+The application provides a **memory_query** tool that allows AI entities to intentionally search their memories beyond automatic retrieval.
+
+**Available Tool:**
+- **memory_query** - Search memories by semantic similarity for deliberate recall
+
+**Key Features:**
+- Returns memories ranked by pure semantic similarity (not re-ranked by significance)
+- Excludes current conversation from results
+- Updates retrieval tracking (`times_retrieved`, `last_retrieved_at`) so intentional queries influence future automatic recall
+- Supports 1-10 results per query
+
+**How It Differs from Automatic Retrieval:**
+- Automatic retrieval happens on every message and re-ranks by significance
+- `memory_query` gives the entity direct control over when and what to recall
+- Useful when the entity wants to explore specific topics in their memory
+
+**Technical Notes:**
+- Registered via `register_memory_tools()` in `services/__init__.py`
+- Tool is in the `MEMORY` category
+- Only available for Anthropic (Claude) and OpenAI (GPT) models
+
+### Whisper Speech-to-Text (STT)
+
+The application supports **local speech-to-text** using OpenAI's Whisper model via the `faster-whisper` library. This enables voice input in the research interface.
+
+**Configuration:**
+```bash
+# Enable Whisper STT (requires running the Whisper server separately)
+WHISPER_ENABLED=true                    # Enable local Whisper STT
+WHISPER_API_URL=http://localhost:8030   # Whisper server URL
+WHISPER_MODEL=large-v3                  # Model size (see options below)
+DICTATION_MODE=auto                     # "whisper", "browser", or "auto"
+```
+
+**Available Models:**
+| Model | Size | Speed | Quality |
+|-------|------|-------|---------|
+| `large-v3` | ~3GB | Slowest | Best |
+| `distil-large-v3` | ~1.5GB | Fast | Very Good |
+| `medium` | ~1.5GB | Medium | Good |
+| `small` | ~500MB | Fast | Decent |
+| `base` | ~150MB | Very Fast | Basic |
+| `tiny` | ~75MB | Fastest | Lowest |
+
+**Dictation Modes:**
+- `whisper` - Always use local Whisper server
+- `browser` - Use browser's Web Speech API (requires Chrome/Edge)
+- `auto` - Use Whisper if available, fall back to browser
+
+**Running the Whisper Server:**
+```bash
+cd backend
+
+# Step 1: Install PyTorch (same as TTS servers)
+# For NVIDIA GPU with CUDA:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+# For CPU only:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Step 2: Install Whisper dependencies
+pip install -r requirements-whisper.txt
+
+# Step 3: Run the server
+python run_whisper.py
+# Or with custom port:
+python run_whisper.py --port 8030
+```
+
+The server will:
+1. Download the specified Whisper model on first run
+2. Start on port 8030 (default)
+3. Apply GPU optimizations if CUDA is available
+
+**Technical Notes:**
+- Uses `faster-whisper` (CTranslate2-based, 4x faster than original Whisper)
+- Supports automatic language detection
+- Context hints via `initial_prompt` parameter improve accuracy
+- GPU strongly recommended for `large-v3` model
+- Windows users: CUDA DLL paths are auto-configured
+
+### Conversation Archiving
+
+Conversations can be **archived** to hide them from the main list while preserving their data.
+
+**Behavior:**
+- Archived conversations are hidden from the main conversation list
+- Archived conversations are excluded from memory retrieval (AI won't recall memories from archived conversations)
+- Archived conversations can be viewed via the archived list
+- Archived conversations can be restored (unarchived) at any time
+
+**API Endpoints:**
+- `GET /api/conversations/archived` - List all archived conversations
+- `POST /api/conversations/{id}/archive` - Archive a conversation
+- `POST /api/conversations/{id}/unarchive` - Restore an archived conversation
+
+**Use Cases:**
+- Clearing clutter from the conversation list
+- Temporarily excluding certain conversations from memory retrieval
+- Organizing completed research phases
+
+### External Conversation Import
+
+The application supports **importing conversations from external sources** (OpenAI and Anthropic exports).
+
+**Supported Formats:**
+- OpenAI conversation exports (JSON format)
+- Anthropic conversation exports (JSON format)
+- Auto-detection of format based on structure
+
+**How It Works:**
+1. Upload conversation export file via preview endpoint
+2. System parses and validates the format
+3. Import stores messages to the selected entity's Pinecone index
+4. Imported conversations are marked with `is_imported=True`
+5. Messages become searchable memories but conversation is hidden from list
+
+**API Endpoints:**
+- `POST /api/conversations/import-external/preview` - Preview import before committing
+- `POST /api/conversations/import-external` - Import conversation
+- `POST /api/conversations/import-external/stream` - Stream-based import (SSE for progress)
+
+**Important Notes:**
+- Imported conversations are hidden from the conversation list (like archived)
+- Messages ARE stored to Pinecone and become retrievable memories
+- Useful for migrating conversation history from other platforms
+- Entity must be selected before import (memories go to that entity's index)
+
+### Response Regeneration
+
+The application supports **regenerating AI responses** via a dedicated endpoint.
+
+**How It Works:**
+- Given an assistant message ID: deletes the old response and generates a new one
+- Given a human message ID: generates a new response for that human message
+- Supports multi-entity conversations (can change responding entity on regeneration)
+
+**API Endpoint:**
+- `POST /api/chat/regenerate` - Regenerate response (SSE stream)
+
+**Request Parameters:**
+```python
+{
+    "message_id": "uuid",              # Assistant or human message ID
+    "responding_entity_id": "string"   # Optional: for multi-entity, select different responder
+}
+```
+
+**Use Cases:**
+- Getting a different response without resending the message
+- Correcting entity selection in multi-entity conversations
+- Exploring alternative continuations
+
+### Per-Entity System Prompts
+
+Multi-entity conversations support **different system prompts for each entity**.
+
+**How It Works:**
+- Store per-entity prompts in conversation's `entity_system_prompts` field
+- Each entity receives their specific prompt when responding
+- Overrides the global system prompt for that entity
+
+**Database Field:**
+```python
+entity_system_prompts: Optional[Dict[str, str]] = None
+# Example: {"claude-main": "You are...", "gpt-research": "You are..."}
+```
+
+**Use Cases:**
+- Different research contexts for different entities
+- Comparative studies with controlled prompt variations
+- Entity-specific behavioral guidance
+
 ---
 
 ## Codebase Architecture
@@ -321,30 +495,36 @@ here-i-am/
 │   │   │   ├── message.py
 │   │   │   └── conversation_memory_link.py
 │   │   ├── routes/            # FastAPI endpoint routers
-│   │   │   ├── conversations.py
-│   │   │   ├── chat.py
+│   │   │   ├── conversations.py  # Includes archive/import endpoints
+│   │   │   ├── chat.py           # Includes regenerate endpoint
 │   │   │   ├── memories.py
 │   │   │   ├── entities.py
 │   │   │   ├── messages.py    # Individual message edit/delete
 │   │   │   ├── tts.py         # Text-to-speech endpoints
+│   │   │   ├── stt.py         # Speech-to-text endpoints
 │   │   │   └── github.py      # GitHub integration endpoints
 │   │   ├── services/          # Business logic layer
 │   │   │   ├── anthropic_service.py
 │   │   │   ├── openai_service.py
-│   │   │   ├── google_service.py  # Google Gemini API client
-│   │   │   ├── llm_service.py     # Unified LLM abstraction
+│   │   │   ├── google_service.py     # Google Gemini API client
+│   │   │   ├── llm_service.py        # Unified LLM abstraction
 │   │   │   ├── memory_service.py
 │   │   │   ├── session_manager.py
-│   │   │   ├── cache_service.py   # TTL-based in-memory caching
-│   │   │   ├── tool_service.py    # Tool registration and execution
-│   │   │   ├── web_tools.py       # Web search/fetch tool implementations
-│   │   │   ├── github_service.py  # GitHub API client
-│   │   │   ├── github_tools.py    # GitHub tool implementations
-│   │   │   ├── notes_service.py   # Entity notes storage service
-│   │   │   ├── notes_tools.py     # Entity notes tool implementations
-│   │   │   ├── tts_service.py     # Unified TTS (ElevenLabs/XTTS/StyleTTS2)
-│   │   │   ├── xtts_service.py    # Local XTTS v2 client service
-│   │   │   └── styletts2_service.py  # Local StyleTTS 2 client service
+│   │   │   ├── conversation_session.py  # Session data classes
+│   │   │   ├── memory_context.py     # Memory-in-context integration
+│   │   │   ├── session_helpers.py    # Session helper functions
+│   │   │   ├── cache_service.py      # TTL-based in-memory caching
+│   │   │   ├── tool_service.py       # Tool registration and execution
+│   │   │   ├── web_tools.py          # Web search/fetch tool implementations
+│   │   │   ├── memory_tools.py       # Memory query tool implementation
+│   │   │   ├── github_service.py     # GitHub API client
+│   │   │   ├── github_tools.py       # GitHub tool implementations
+│   │   │   ├── notes_service.py      # Entity notes storage service
+│   │   │   ├── notes_tools.py        # Entity notes tool implementations
+│   │   │   ├── tts_service.py        # Unified TTS (ElevenLabs/XTTS/StyleTTS2)
+│   │   │   ├── xtts_service.py       # Local XTTS v2 client service
+│   │   │   ├── styletts2_service.py  # Local StyleTTS 2 client service
+│   │   │   └── whisper_service.py    # Local Whisper STT client service
 │   │   ├── config.py          # Pydantic settings
 │   │   ├── database.py        # SQLAlchemy async setup
 │   │   └── main.py            # FastAPI app initialization
@@ -356,12 +536,19 @@ here-i-am/
 │   │   ├── __init__.py
 │   │   ├── __main__.py        # CLI entry point
 │   │   └── server.py          # FastAPI StyleTTS 2 server
+│   ├── whisper_server/        # Local Whisper STT server
+│   │   ├── __init__.py
+│   │   ├── __main__.py        # CLI entry point
+│   │   └── server.py          # FastAPI Whisper server
 │   ├── requirements.txt
-│   ├── requirements-xtts.txt  # XTTS-specific dependencies
-│   ├── requirements-styletts2.txt  # StyleTTS 2-specific dependencies
+│   ├── requirements-xtts.txt      # XTTS-specific dependencies
+│   ├── requirements-styletts2.txt # StyleTTS 2-specific dependencies
+│   ├── requirements-whisper.txt   # Whisper STT-specific dependencies
 │   ├── run.py                 # Application entry point
 │   ├── run_xtts.py            # XTTS server entry point
 │   ├── run_styletts2.py       # StyleTTS 2 server entry point
+│   ├── run_whisper.py         # Whisper server entry point
+│   ├── migrate_multi_entity.py  # Database migration script
 │   └── .env.example
 ├── frontend/                   # Vanilla JavaScript SPA
 │   ├── css/styles.css
@@ -402,6 +589,7 @@ here-i-am/
 | Web Search | Brave Search API | - | Web search for tool use (optional) |
 | Local TTS | Coqui TTS (coqui-tts) | - | XTTS v2 voice cloning (optional) |
 | Local TTS | StyleTTS 2 (styletts2) | - | StyleTTS 2 voice cloning (optional) |
+| Local STT | faster-whisper | - | Whisper speech-to-text (optional) |
 | Utilities | tiktoken, numpy, scipy | - | Token counting, embeddings, audio |
 
 ### Frontend
@@ -657,6 +845,16 @@ ELEVENLABS_MODEL_ID=eleven_multilingual_v2  # TTS model
 # STYLETTS2_VOICES_DIR=./styletts2_voices  # Directory for cloned voice samples
 # STYLETTS2_DEFAULT_SPEAKER=/path/to/sample.wav  # Default speaker sample (optional)
 # STYLETTS2_PHONEMIZER=gruut            # "gruut" (default, no deps) or "espeak" (requires espeak-ng)
+
+# Whisper STT (optional, local GPU-accelerated speech-to-text)
+# Requires running the Whisper server separately (see "Running the Whisper Server")
+# WHISPER_ENABLED=true                  # Enable local Whisper STT
+# WHISPER_API_URL=http://localhost:8030 # Whisper server URL
+# WHISPER_MODEL=large-v3                # Model: large-v3, distil-large-v3, medium, small, base, tiny
+# DICTATION_MODE=auto                   # "whisper", "browser", or "auto"
+
+# Memory System Enhancement
+# USE_MEMORY_IN_CONTEXT=false           # Insert memories directly into conversation context (experimental)
 ```
 
 **Entity Configuration (PINECONE_INDEXES):**
@@ -1117,6 +1315,9 @@ system_prompt_used: Text (nullable)
 llm_model_used: String (default: claude-sonnet-4-5-20250929)
 notes: Text (nullable)
 entity_id: String (nullable)  # Pinecone index name, or "multi-entity" for multi-entity conversations
+is_archived: Boolean (default: False)  # Hidden from main list, excluded from memory retrieval
+is_imported: Boolean (default: False)  # Imported from external source, hidden from list
+entity_system_prompts: JSON (nullable)  # Per-entity system prompts for multi-entity conversations
 
 # Relationships
 messages: List[Message]
@@ -1201,6 +1402,12 @@ conversation: Conversation
 | DELETE | `/api/conversations/{id}` | Delete conversation |
 | GET | `/api/conversations/{id}/export` | Export to JSON |
 | POST | `/api/conversations/import-seed` | Import seed conversation |
+| GET | `/api/conversations/archived` | List archived conversations |
+| POST | `/api/conversations/{id}/archive` | Archive a conversation |
+| POST | `/api/conversations/{id}/unarchive` | Restore archived conversation |
+| POST | `/api/conversations/import-external/preview` | Preview external conversation import |
+| POST | `/api/conversations/import-external` | Import external conversation |
+| POST | `/api/conversations/import-external/stream` | Stream-based external import (SSE) |
 
 **Multi-Entity Parameters:**
 - `POST /api/conversations/`: Use `entity_ids: ["entity1", "entity2"]` to create multi-entity conversation
@@ -1214,6 +1421,7 @@ conversation: Conversation
 | POST | `/api/chat/send` | Send message (full pipeline) |
 | POST | `/api/chat/stream` | Send message with SSE streaming |
 | POST | `/api/chat/quick` | Quick chat (no persistence) |
+| POST | `/api/chat/regenerate` | Regenerate AI response (SSE stream) |
 | GET | `/api/chat/session/{id}` | Get session state |
 | DELETE | `/api/chat/session/{id}` | Close session |
 | GET | `/api/chat/config` | Get default config |
@@ -1221,6 +1429,10 @@ conversation: Conversation
 **Multi-Entity Parameters (for `/api/chat/send` and `/api/chat/stream`):**
 - `responding_entity_id` (required for multi-entity): Which entity should respond
 - `message` can be `null` for continuation mode (entity responds without new human input)
+
+**Regenerate Parameters:**
+- `message_id`: UUID of assistant or human message to regenerate from
+- `responding_entity_id` (optional): For multi-entity, select different responder
 
 ### Memories
 
@@ -1269,6 +1481,22 @@ conversation: Conversation
 |--------|----------|-------------|
 | GET | `/api/github/repos` | List configured repositories (without tokens) |
 | GET | `/api/github/rate-limit` | Get rate limit status for all repositories |
+
+### Speech-to-Text
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/stt/transcribe` | Transcribe audio file to text |
+
+**Transcription Response:**
+```python
+{
+    "text": "transcribed text",
+    "language": "en",  # Detected language
+    "duration": 5.2,   # Audio duration in seconds
+    "processing_time": 1.1  # Processing time in seconds
+}
+```
 
 ### Configuration
 
@@ -1356,12 +1584,15 @@ conversation: Conversation
 12. **Toast Notifications** - User feedback system
 13. **Loading States** - Typing indicators, overlays
 14. **Text-to-Speech** - Listen to AI messages via ElevenLabs, XTTS, or StyleTTS 2 (optional)
-15. **Message Actions** - Copy button, edit/delete for human messages
-16. **Voice Selection** - Choose from configured or cloned voices in settings
-17. **Voice Cloning** - Clone custom voices from audio samples (XTTS/StyleTTS 2)
-18. **Tool Use Display** - Real-time tool execution with collapsible input/output details (Claude only)
-19. **Stop Generation** - Cancel AI response mid-stream
-20. **GitHub Settings** - View configured repositories and rate limits in settings modal
+15. **Speech-to-Text** - Voice input via Whisper or browser Web Speech API (optional)
+16. **Message Actions** - Copy button, edit/delete for human messages
+17. **Response Regeneration** - Regenerate AI responses with optional entity change
+18. **Voice Selection** - Choose from configured or cloned voices in settings
+19. **Voice Cloning** - Clone custom voices from audio samples (XTTS/StyleTTS 2)
+20. **Tool Use Display** - Real-time tool execution with collapsible input/output details (Claude only)
+21. **Stop Generation** - Cancel AI response mid-stream
+22. **GitHub Settings** - View configured repositories and rate limits in settings modal
+23. **Conversation Archiving** - Archive conversations to hide from list (accessible via archived view)
 
 ---
 
@@ -1492,6 +1723,40 @@ conversation: Conversation
     - The `content_blocks` property parses JSON content for tool exchanges
     - This enables conversation continuity when tool use spans multiple responses
 
+21. **Whisper STT Server is Separate Process**
+    - Whisper runs as a standalone FastAPI server on port 8030
+    - Uses `faster-whisper` (CTranslate2-based, 4x faster than original Whisper)
+    - GPU (CUDA) strongly recommended for `large-v3` model
+    - Models are downloaded automatically on first run
+    - Windows users: CUDA DLL paths are auto-configured in `run_whisper.py`
+
+22. **Conversation Archiving Behavior**
+    - Archived conversations are hidden from the main list
+    - **Important:** Archived conversations are excluded from memory retrieval
+    - This means the AI won't recall memories from archived conversations
+    - Use archiving to temporarily "pause" certain conversation threads
+    - Unarchiving restores the conversation and its memories to active status
+
+23. **External Conversation Import**
+    - Imported conversations are marked with `is_imported=True`
+    - They are hidden from the conversation list (like archived)
+    - However, their messages ARE stored to Pinecone as memories
+    - This allows importing historical conversations without cluttering the UI
+    - Supports both OpenAI and Anthropic export formats
+
+24. **Memory Query Tool vs Automatic Retrieval**
+    - Automatic retrieval re-ranks by significance (times_retrieved × recency × half_life)
+    - `memory_query` tool returns pure semantic similarity ranking
+    - Both update retrieval tracking, so intentional queries influence future retrieval
+    - Use automatic retrieval for natural conversation flow
+    - Use `memory_query` when the entity needs specific deliberate recall
+
+25. **Memory-in-Context Mode (Experimental)**
+    - Enable with `USE_MEMORY_IN_CONTEXT=true`
+    - Memories are inserted directly into conversation history instead of separate block
+    - Improves cacheability (memories paid for once per conversation)
+    - Trade-off: Less clear separation between memories and conversation
+
 ### Common Pitfalls
 
 **When modifying memory retrieval:**
@@ -1555,7 +1820,11 @@ conversation: Conversation
 
 **Memory System Logic:**
 - Memory service: `backend/app/services/memory_service.py`
+- Memory tools: `backend/app/services/memory_tools.py`
 - Session manager: `backend/app/services/session_manager.py`
+- Conversation session: `backend/app/services/conversation_session.py`
+- Memory context: `backend/app/services/memory_context.py`
+- Session helpers: `backend/app/services/session_helpers.py`
 - Memory routes: `backend/app/routes/memories.py`
 - Entity routes: `backend/app/routes/entities.py`
 - Cache service: `backend/app/services/cache_service.py`
@@ -1588,6 +1857,13 @@ conversation: Conversation
 - StyleTTS 2 server: `backend/styletts2_server/server.py`
 - StyleTTS 2 entry point: `backend/run_styletts2.py`
 - StyleTTS 2 dependencies: `backend/requirements-styletts2.txt`
+
+**Speech-to-Text:**
+- Whisper client service: `backend/app/services/whisper_service.py`
+- STT routes: `backend/app/routes/stt.py`
+- Whisper server: `backend/whisper_server/server.py`
+- Whisper entry point: `backend/run_whisper.py`
+- Whisper dependencies: `backend/requirements-whisper.txt`
 
 **GitHub Integration:**
 - GitHub service: `backend/app/services/github_service.py`
@@ -1629,7 +1905,15 @@ conversation: Conversation
 - Chat routes (responding_entity_id): `backend/app/routes/chat.py`
 - Session manager (multi-entity state): `backend/app/services/session_manager.py`
 - Anthropic service (context header): `backend/app/services/anthropic_service.py`
-- Frontend entity modal/responder: `frontend/js/app.js` (lines 752-893)
+- Frontend entity modal/responder: `frontend/js/app.js`
+
+**Conversation Management:**
+- Conversation model: `backend/app/models/conversation.py`
+- Conversation routes: `backend/app/routes/conversations.py`
+- Archive/unarchive: `backend/app/routes/conversations.py`
+- External import: `backend/app/routes/conversations.py`
+- Response regeneration: `backend/app/routes/chat.py`
+- Database migration: `backend/migrate_multi_entity.py`
 
 ### Key Constants
 
@@ -1711,6 +1995,15 @@ embedding_scale = 1.0             # Classifier free guidance
 notes_enabled = True              # Enable persistent notes for entities
 notes_base_dir = "./notes"        # Base directory for notes storage
 # Allowed file extensions: .md, .json, .txt, .html, .xml, .yaml, .yml
+
+# Whisper STT defaults (config.py)
+whisper_enabled = False           # Must be explicitly enabled
+whisper_api_url = "http://localhost:8030"
+whisper_model = "large-v3"        # Options: large-v3, distil-large-v3, medium, small, base, tiny
+dictation_mode = "auto"           # "whisper", "browser", or "auto"
+
+# Memory Context (experimental)
+use_memory_in_context = False     # Insert memories directly into conversation context
 ```
 
 ---
