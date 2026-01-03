@@ -83,7 +83,7 @@ class TestSettings:
         assert settings.default_model == "claude-sonnet-4-5-20250929"
         assert settings.default_openai_model == "gpt-5.1"
         assert settings.default_temperature == 1.0
-        assert settings.default_max_tokens == 20000
+        assert settings.default_max_tokens == 64000
         assert settings.retrieval_top_k == 5
         assert settings.similarity_threshold == 0.3
 

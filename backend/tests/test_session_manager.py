@@ -347,7 +347,7 @@ class TestSessionManager:
         with patch("app.services.session_manager.settings") as mock_settings:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
 
             session = manager.create_session("conv-123")
 
@@ -361,7 +361,7 @@ class TestSessionManager:
         with patch("app.services.session_manager.settings") as mock_settings:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
 
             session = manager.create_session(
                 conversation_id="conv-123",
@@ -390,7 +390,7 @@ class TestSessionManager:
             mock_settings.get_default_model_for_provider.return_value = "gpt-4o"
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
 
             session = manager.create_session(
                 conversation_id="conv-123",
@@ -406,7 +406,7 @@ class TestSessionManager:
         with patch("app.services.session_manager.settings") as mock_settings:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
 
             created = manager.create_session("conv-123")
             retrieved = manager.get_session("conv-123")
@@ -428,7 +428,7 @@ class TestSessionManager:
         with patch("app.services.session_manager.settings") as mock_settings:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
 
             manager.create_session("conv-123")
             assert "conv-123" in manager._sessions
@@ -453,7 +453,7 @@ class TestSessionManager:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(
@@ -499,7 +499,7 @@ class TestSessionManager:
             })
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(
@@ -531,7 +531,7 @@ class TestSessionManager:
             mock_llm.count_tokens = MagicMock(return_value=10)  # Mock token counting
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
 
@@ -590,13 +590,16 @@ class TestSessionManager:
 
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.significance_half_life_days = 60
             mock_settings.recency_boost_strength = 1.0
             mock_settings.significance_floor = 0.01
             mock_settings.retrieval_candidate_multiplier = 2
+            mock_settings.initial_retrieval_top_k = 5
+            mock_settings.retrieval_top_k = 5
+            mock_settings.use_memory_in_context = False
 
             session = manager.create_session(sample_conversation.id)
             result = await manager.process_message(session, "Hello", db_session)
@@ -647,13 +650,16 @@ class TestSessionManager:
 
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.significance_half_life_days = 60
             mock_settings.recency_boost_strength = 1.0
             mock_settings.significance_floor = 0.01
             mock_settings.retrieval_candidate_multiplier = 2
+            mock_settings.initial_retrieval_top_k = 5
+            mock_settings.retrieval_top_k = 5
+            mock_settings.use_memory_in_context = False
 
             session = manager.create_session(sample_conversation.id)
 
@@ -761,7 +767,7 @@ class TestMultiEntityMemoryIsolation:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = MagicMock(
                 label="Claude",
                 default_model="claude-sonnet-4-5-20250929",
@@ -796,7 +802,7 @@ class TestMultiEntityMemoryIsolation:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(
@@ -1058,7 +1064,7 @@ class TestCacheStateManagement:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
 
             # Load without preserving - should use full context length
@@ -1093,7 +1099,7 @@ class TestCacheStateManagement:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
 
             # Load with preserved value larger than actual context
@@ -1207,7 +1213,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1240,7 +1246,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1273,7 +1279,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1324,7 +1330,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_entity = MagicMock()
             mock_entity.label = "Claude"
             mock_entity.default_model = "claude-sonnet-4-5-20250929"
@@ -1385,7 +1391,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
 
             # Mock entity configs
             def get_entity(eid):
@@ -1468,7 +1474,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_entity = MagicMock()
             mock_entity.label = "GPT"
             mock_entity.default_model = "gpt-4o"
@@ -1511,7 +1517,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1543,7 +1549,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1574,7 +1580,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1607,7 +1613,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1639,7 +1645,7 @@ class TestSystemPromptSelection:
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
 
             session = await manager.load_session_from_db(conversation.id, db_session)
@@ -1658,7 +1664,7 @@ class TestAgenticToolLoopMemoryOptimization:
 
     @pytest.mark.asyncio
     async def test_first_iteration_includes_memories(self, db_session, sample_conversation):
-        """Test that the first tool loop iteration includes memories."""
+        """Test that a simple response (no tool use) includes memories in the single call."""
         manager = SessionManager()
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
@@ -1669,10 +1675,11 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.use_memory_in_context = False
 
             # Track what messages are built
             build_calls = []
@@ -1718,15 +1725,13 @@ class TestAgenticToolLoopMemoryOptimization:
             ):
                 events.append(event)
 
-        # Should have built messages twice: once with memories, once without
-        assert len(build_calls) == 2
+        # Without tool use, messages are built only once (with memories)
+        # Base messages without memories are lazily built only when tool use is detected
+        assert len(build_calls) == 1
 
-        # First call (with memories) should have the memory
+        # The single call should include the memory
         assert len(build_calls[0]["memories"]) == 1
         assert build_calls[0]["memories"][0]["id"] == "mem-1"
-
-        # Second call (base without memories) should have empty memories
-        assert len(build_calls[1]["memories"]) == 0
 
     @pytest.mark.asyncio
     async def test_subsequent_iterations_exclude_memories(self, db_session, sample_conversation):
@@ -1741,10 +1746,11 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.use_memory_in_context = False
 
             # Track messages sent to LLM
             sent_messages = []
@@ -1845,10 +1851,11 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.use_memory_in_context = False
 
             sent_messages = []
 
@@ -1958,10 +1965,11 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.use_memory_in_context = False
 
             sent_messages = []
 
@@ -2013,19 +2021,21 @@ class TestAgenticToolLoopMemoryOptimization:
 
     @pytest.mark.asyncio
     async def test_base_messages_built_without_memories(self, db_session, sample_conversation):
-        """Test that base_messages_no_memories is built with empty memories list."""
+        """Test that base_messages_no_memories is lazily built on tool use."""
         manager = SessionManager()
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.use_memory_in_context = False
 
             build_calls = []
 
@@ -2039,19 +2049,45 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_llm.build_messages_with_memories.side_effect = track_build
             mock_llm.count_tokens = MagicMock(return_value=100)
 
+            call_count = [0]
+
             async def mock_stream(messages, **kwargs):
-                yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
-                yield {"type": "token", "content": "Done"}
-                yield {
-                    "type": "done",
-                    "content": "Done",
-                    "stop_reason": "end_turn",
-                    "content_blocks": [],
-                    "model": "claude-sonnet-4-5-20250929",
-                    "usage": {},
-                }
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    # First call: tool use to trigger lazy build of base messages
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {
+                        "type": "done",
+                        "content": "",
+                        "stop_reason": "tool_use",
+                        "content_blocks": [
+                            {"type": "tool_use", "id": "tool-1", "name": "test_tool", "input": {}}
+                        ],
+                        "tool_use": [{"id": "tool-1", "name": "test_tool", "input": {}}],
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {},
+                    }
+                else:
+                    # Second call: final response
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {"type": "token", "content": "Done"}
+                    yield {
+                        "type": "done",
+                        "content": "Done",
+                        "stop_reason": "end_turn",
+                        "content_blocks": [],
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {},
+                    }
 
             mock_llm.send_message_stream = mock_stream
+
+            # Mock tool execution
+            mock_tool_result = MagicMock()
+            mock_tool_result.tool_use_id = "tool-1"
+            mock_tool_result.content = "Tool result"
+            mock_tool_result.is_error = False
+            mock_tool.execute_tool = AsyncMock(return_value=mock_tool_result)
 
             session = manager.create_session(sample_conversation.id)
             # Add multiple memories
@@ -2068,17 +2104,17 @@ class TestAgenticToolLoopMemoryOptimization:
 
             events = []
             async for event in manager.process_message_stream(
-                session, "Test", db_session, tool_schemas=[]
+                session, "Test", db_session, tool_schemas=[{"name": "test_tool"}]
             ):
                 events.append(event)
 
-        # Should have two build calls
+        # Should have two build calls: first with memories, second without (lazy built on tool use)
         assert len(build_calls) == 2
 
         # First: with all 3 memories
         assert build_calls[0]["memories_count"] == 3
 
-        # Second: with no memories (base for subsequent iterations)
+        # Second: with no memories (base for subsequent iterations, lazily built)
         assert build_calls[1]["memories_count"] == 0
         assert build_calls[1]["memories"] == []
 
@@ -2232,13 +2268,13 @@ class TestAddCacheControlToToolResult:
 
 
 class TestToolIterationCaching:
-    """Tests for cache_control being added to tool iterations."""
+    """Tests for cache_control being added to tool iterations based on token threshold."""
 
     @pytest.mark.asyncio
-    async def test_cache_control_added_to_tool_result_in_subsequent_iterations(
+    async def test_cache_control_added_when_token_threshold_reached(
         self, db_session, sample_conversation
     ):
-        """Test that cache_control is added to tool result messages in subsequent iterations."""
+        """Test that cache_control is added when tool exchange tokens exceed threshold (2048)."""
         manager = SessionManager()
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
@@ -2249,10 +2285,11 @@ class TestToolIterationCaching:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.use_memory_in_context = False
 
             sent_messages = []
 
@@ -2260,6 +2297,99 @@ class TestToolIterationCaching:
                 return [{"role": "user", "content": "base"}]
 
             mock_llm.build_messages_with_memories.side_effect = build_messages
+            # Return 3000 tokens to exceed the 2048 threshold
+            mock_llm.count_tokens = MagicMock(return_value=3000)
+
+            call_count = [0]
+
+            async def mock_stream(messages, **kwargs):
+                sent_messages.append(list(messages))
+                call_count[0] += 1
+
+                if call_count[0] == 1:
+                    # First call: return tool use
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {
+                        "type": "done",
+                        "content": "",
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {"input_tokens": 10, "output_tokens": 5},
+                        "stop_reason": "tool_use",
+                        "content_blocks": [
+                            {"type": "tool_use", "id": "tool-1", "name": "web_search", "input": {"query": "test"}}
+                        ],
+                        "tool_use": [{"id": "tool-1", "name": "web_search", "input": {"query": "test"}}],
+                    }
+                else:
+                    # Second call: return final response
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {"type": "token", "content": "Done"}
+                    yield {
+                        "type": "done",
+                        "content": "Done",
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {"input_tokens": 20, "output_tokens": 10},
+                        "stop_reason": "end_turn",
+                        "content_blocks": [{"type": "text", "text": "Done"}],
+                    }
+
+            mock_llm.send_message_stream = mock_stream
+
+            # Mock tool execution
+            mock_tool_result = MagicMock()
+            mock_tool_result.tool_use_id = "tool-1"
+            mock_tool_result.content = "Search results"
+            mock_tool_result.is_error = False
+            mock_tool.execute_tool = AsyncMock(return_value=mock_tool_result)
+
+            session = manager.create_session(sample_conversation.id)
+
+            # Process message
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Search for something", db_session, tool_schemas=[{"name": "web_search"}]
+            ):
+                events.append(event)
+
+        # Should have two LLM calls
+        assert len(sent_messages) == 2
+
+        # Second iteration should have cache_control because threshold was exceeded
+        tool_result_msg = sent_messages[1][2]  # base + assistant + user (tool_result)
+        assert tool_result_msg["role"] == "user"
+        assert isinstance(tool_result_msg["content"], list)
+        # The last content block should have cache_control
+        last_block = tool_result_msg["content"][-1]
+        assert last_block.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
+
+    @pytest.mark.asyncio
+    async def test_no_cache_control_when_under_threshold(
+        self, db_session, sample_conversation
+    ):
+        """Test that cache_control is NOT added when tool exchange tokens are below threshold."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            # Configure mocks
+            mock_memory.is_configured.return_value = False
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
+            mock_settings.tool_use_max_iterations = 10
+            mock_settings.use_memory_in_context = False
+
+            sent_messages = []
+
+            def build_messages(memories, **kwargs):
+                return [{"role": "user", "content": "base"}]
+
+            mock_llm.build_messages_with_memories.side_effect = build_messages
+            # Return only 100 tokens - below the 2048 threshold
             mock_llm.count_tokens = MagicMock(return_value=100)
 
             call_count = [0]
@@ -2316,19 +2446,19 @@ class TestToolIterationCaching:
         # Should have two LLM calls
         assert len(sent_messages) == 2
 
-        # Second iteration should have cache_control on the tool result message
+        # Second iteration should NOT have cache_control because threshold wasn't reached
         tool_result_msg = sent_messages[1][2]  # base + assistant + user (tool_result)
         assert tool_result_msg["role"] == "user"
         assert isinstance(tool_result_msg["content"], list)
-        # The last content block should have cache_control
+        # The last content block should NOT have cache_control
         last_block = tool_result_msg["content"][-1]
-        assert last_block.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
+        assert last_block.get("cache_control") is None
 
     @pytest.mark.asyncio
-    async def test_multiple_tool_iterations_each_gets_cache_control(
+    async def test_multiple_tool_iterations_cache_control_moves_with_threshold(
         self, db_session, sample_conversation
     ):
-        """Test that each tool iteration has cache_control on the last accumulated tool result."""
+        """Test that cache breakpoint moves when token threshold is exceeded across iterations."""
         manager = SessionManager()
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
@@ -2339,10 +2469,11 @@ class TestToolIterationCaching:
             mock_memory.is_configured.return_value = False
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
             mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.use_memory_in_context = False
 
             sent_messages = []
 
@@ -2350,7 +2481,8 @@ class TestToolIterationCaching:
                 return [{"role": "user", "content": "base"}]
 
             mock_llm.build_messages_with_memories.side_effect = build_messages
-            mock_llm.count_tokens = MagicMock(return_value=100)
+            # Use 3000 tokens to exceed the 2048 threshold per tool exchange
+            mock_llm.count_tokens = MagicMock(return_value=3000)
 
             call_count = [0]
 
@@ -2424,24 +2556,23 @@ class TestToolIterationCaching:
         # Should have three LLM calls
         assert len(sent_messages) == 3
 
-        # Second iteration: should have cache_control on first tool result
+        # Second iteration: should have cache_control on first tool result (threshold reached)
         # Messages: base, assistant (tool_use), user (tool_result with cache_control)
         second_call_tool_result = sent_messages[1][2]
         assert second_call_tool_result["role"] == "user"
         last_block = second_call_tool_result["content"][-1]
         assert last_block.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
 
-        # Third iteration: should have cache_control on ALL tool results
-        # This ensures prefix consistency for cache hits:
-        # - Iteration 2 sent: [base_cache, asst_1, user_1_cache]
-        # - Iteration 3 sends: [base_cache, asst_1, user_1_cache, asst_2, user_2_cache]
-        # The prefix matches, enabling cache hit on the first tool exchange
+        # Third iteration: cache breakpoint moves to the NEWEST tool exchange
+        # The implementation uses a single moving breakpoint that tracks accumulated tokens
+        # When threshold is exceeded again, breakpoint moves to the latest exchange
+        # First tool result should NOT have cache_control (breakpoint moved past it)
         third_call_first_tool_result = sent_messages[2][2]
         assert third_call_first_tool_result["role"] == "user"
         first_block = third_call_first_tool_result["content"][-1]
-        assert first_block.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}  # All have cache_control
+        assert first_block.get("cache_control") is None  # Breakpoint moved
 
-        # The second tool_result also has cache_control
+        # Second tool_result should have cache_control (current breakpoint)
         third_call_second_tool_result = sent_messages[2][4]
         assert third_call_second_tool_result["role"] == "user"
         last_block = third_call_second_tool_result["content"][-1]

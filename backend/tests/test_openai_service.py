@@ -91,7 +91,7 @@ class TestOpenAIService:
         with patch("app.services.openai_service.settings") as mock_settings:
             mock_settings.default_openai_model = "gpt-4o"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
 
             response = await service.send_message(messages)
 
@@ -112,7 +112,7 @@ class TestOpenAIService:
         with patch("app.services.openai_service.settings") as mock_settings:
             mock_settings.default_openai_model = "gpt-4o"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
 
             await service.send_message(
                 messages,
@@ -136,7 +136,7 @@ class TestOpenAIService:
         with patch("app.services.openai_service.settings") as mock_settings:
             mock_settings.default_openai_model = "gpt-4o"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
 
             await service.send_message(
                 messages,
@@ -161,7 +161,7 @@ class TestOpenAIService:
         with patch("app.services.openai_service.settings") as mock_settings:
             mock_settings.default_openai_model = "gpt-4o"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
 
             response = await service.send_message(messages)
 
@@ -184,7 +184,7 @@ class TestOpenAIService:
         with patch("app.services.openai_service.settings") as mock_settings:
             mock_settings.default_openai_model = "gpt-4o"
             mock_settings.default_temperature = 1.0
-            mock_settings.default_max_tokens = 20000
+            mock_settings.default_max_tokens = 64000
 
             response = await service.send_message(messages)
 

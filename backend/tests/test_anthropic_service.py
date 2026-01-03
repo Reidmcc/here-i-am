@@ -301,10 +301,10 @@ class TestAnthropicService:
         if isinstance(memory_content, list):
             memory_content = memory_content[0]["text"]
 
-        # Check formatting - note: times_retrieved was removed for cache stability
-        assert "Memory (from 2024-01-01):" in memory_content
+        # Check formatting - memories now include role, times_retrieved was removed for cache stability
+        assert "Memory from assistant (from 2024-01-01):" in memory_content
         assert '"I remember you mentioned enjoying programming."' in memory_content
-        assert "Memory (from 2024-01-02):" in memory_content
+        assert "Memory from user (from 2024-01-02):" in memory_content
 
     def test_build_messages_caching_structure(self, sample_memories):
         """Test that cache_control markers are added correctly on conversation history."""
@@ -612,8 +612,8 @@ class TestCacheBreakpointPlacement:
         assert "[THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN]" in first_context_content1
         assert first_context_content1 == first_context_content2
 
-    def test_multi_entity_header_changes_with_responding_entity(self):
-        """Test that multi-entity header changes when responding entity changes."""
+    def test_multi_entity_header_consistent_across_entities(self):
+        """Test that multi-entity header is consistent regardless of responding entity."""
         service = AnthropicService()
 
         mock_encoder = MagicMock()
@@ -653,13 +653,14 @@ class TestCacheBreakpointPlacement:
             responding_entity_label="GPT",
         )
 
-        # Headers should be different (different responding entity label)
+        # Both should contain the multi-entity header
         first_content_claude = messages_claude[0]["content"]
         first_content_gpt = messages_gpt[0]["content"]
 
-        assert 'MESSAGES LABELED AS FROM "Claude" ARE YOURS' in first_content_claude
-        assert 'MESSAGES LABELED AS FROM "GPT" ARE YOURS' in first_content_gpt
-        assert first_content_claude != first_content_gpt
+        assert "[THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN]" in first_content_claude
+        assert "[THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN]" in first_content_gpt
+        # The header is now the same regardless of responding entity (simplified for cache stability)
+        assert first_content_claude == first_content_gpt
 
 
 class TestTwoBreakpointCachingStrategy:
