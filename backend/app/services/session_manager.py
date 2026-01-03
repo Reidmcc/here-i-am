@@ -1119,10 +1119,11 @@ class SessionManager:
                 }
 
                 tool_result_content = []
-                for result in tool_results:
+                for tool_call, result in zip(iteration_tool_use, tool_results):
                     tool_result_content.append({
                         "type": "tool_result",
                         "tool_use_id": result.tool_use_id,
+                        "tool_name": tool_call["name"],  # Include tool name for Google API compatibility
                         "content": result.content,
                         "is_error": result.is_error,
                     })

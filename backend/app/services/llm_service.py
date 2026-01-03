@@ -246,13 +246,13 @@ class LLMService:
                 tools=tools,
             )
         elif provider == ModelProvider.GOOGLE:
-            # Tool use not currently supported for Google in this implementation
             return await google_service.send_message(
                 messages=messages,
                 system_prompt=system_prompt,
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                tools=tools,
             )
         else:
             raise ValueError(f"Unsupported provider: {provider}")
@@ -322,13 +322,13 @@ class LLMService:
             ):
                 yield event
         elif provider == ModelProvider.GOOGLE:
-            # Tool use not currently supported for Google in this implementation
             async for event in google_service.send_message_stream(
                 messages=messages,
                 system_prompt=system_prompt,
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                tools=tools,
             ):
                 yield event
         else:

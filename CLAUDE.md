@@ -113,7 +113,7 @@ Beyond separate entity workspaces, the application supports **multi-entity conve
 
 ### Tool Use System (Web Search & Fetch)
 
-The application supports **agentic tool use** for Anthropic (Claude) and OpenAI (GPT) models, allowing the AI to search the web and fetch content from URLs during conversations.
+The application supports **agentic tool use** for Anthropic (Claude), OpenAI (GPT), and Google (Gemini) models, allowing the AI to search the web and fetch content from URLs during conversations.
 
 **Available Tools:**
 - **web_search** - Search the web using Brave Search API (returns up to 20 results)
@@ -123,7 +123,7 @@ The application supports **agentic tool use** for Anthropic (Claude) and OpenAI 
 
 1. **Agentic Loop**: When the AI responds with a tool request, the system executes the tool and feeds results back in a loop (max 10 iterations)
 2. **Streaming**: Tool execution is streamed in real-time with visual indicators in the UI
-3. **Provider Support**: Tool use is available for **Anthropic (Claude) and OpenAI (GPT)** models - Google models do not currently support tool use in this application
+3. **Provider Support**: Tool use is available for **Anthropic (Claude), OpenAI (GPT), and Google (Gemini)** models
 
 **Configuration:**
 ```bash
@@ -228,7 +228,7 @@ GITHUB_REPOS='[
 - Automatic rate limit info attached to tool responses
 
 **Technical Notes:**
-- GitHub tools are only available for Anthropic (Claude) and OpenAI (GPT) models
+- GitHub tools are available for Anthropic (Claude), OpenAI (GPT), and Google (Gemini) models
 - Tools are registered at module load time via `register_github_tools()`
 - All API requests use Bearer token authentication
 - Large files (>1MB) are fetched via Git Data API to avoid content limits
@@ -303,7 +303,7 @@ NOTES_BASE_DIR=./notes
 - Notes are accessed via AI tools only (no REST API endpoints for notes)
 - The `index.md` file cannot be deleted (use notes_write to clear it instead)
 - Entity labels are sanitized for filesystem safety (special characters replaced with underscores)
-- Notes tools are in the `MEMORY` category and are only available for Anthropic (Claude) and OpenAI (GPT) models
+- Notes tools are in the `MEMORY` category and are available for Anthropic (Claude), OpenAI (GPT), and Google (Gemini) models
 
 ### Memory Query Tool (Deliberate Recall)
 
@@ -326,7 +326,7 @@ The application provides a **memory_query** tool that allows AI entities to inte
 **Technical Notes:**
 - Registered via `register_memory_tools()` in `services/__init__.py`
 - Tool is in the `MEMORY` category
-- Only available for Anthropic (Claude) and OpenAI (GPT) models
+- Available for Anthropic (Claude), OpenAI (GPT), and Google (Gemini) models
 
 ### Whisper Speech-to-Text (STT)
 
@@ -763,8 +763,9 @@ tool_service.register_tool(
 ```
 
 **Provider Support:**
-- **Anthropic**: Full tool use support
-- **OpenAI/Google**: Tools not passed (architectural decision)
+- **Anthropic**: Full tool use support, streaming
+- **OpenAI**: Full tool use support, schema conversion, streaming
+- **Google**: Full tool use support, schema conversion, streaming
 
 ---
 
@@ -1294,8 +1295,8 @@ PRESETS = {
 3. **Handle errors gracefully** - Return error messages as strings, don't raise exceptions
 
 **Notes:**
-- Tools are available for Anthropic (Claude) and OpenAI (GPT) models
-- Tool schemas are defined in Anthropic format, auto-converted for OpenAI
+- Tools are available for Anthropic (Claude), OpenAI (GPT), and Google (Gemini) models
+- Tool schemas are defined in Anthropic format, auto-converted for OpenAI and Google
 - Tools execute in the agentic loop (max 10 iterations by default)
 
 ---
@@ -1689,9 +1690,8 @@ conversation: Conversation
     - Continuation mode (no human message) supported for entity-to-entity flow
 
 16. **Tool Use Provider Support**
-    - Tools (web_search, web_fetch) work with Anthropic (Claude) and OpenAI (GPT) models
-    - Google models do not currently receive tool schemas
-    - Tool schemas are defined in Anthropic format, auto-converted for OpenAI
+    - Tools (web_search, web_fetch, GitHub tools, etc.) work with Anthropic (Claude), OpenAI (GPT), and Google (Gemini) models
+    - Tool schemas are defined in Anthropic format, auto-converted for OpenAI and Google
     - Tool results are not persisted to database (visible in conversation but not stored separately)
 
 17. **Web Tools Require External API**
@@ -1705,7 +1705,7 @@ conversation: Conversation
     - Each repository requires its own Personal Access Token
     - Protected branches (main/master by default) cannot be committed to directly
     - Rate limits are tracked per-token and displayed in settings
-    - GitHub tools work with Anthropic (Claude) and OpenAI (GPT) models only
+    - GitHub tools work with Anthropic (Claude), OpenAI (GPT), and Google (Gemini) models
 
 19. **Entity Notes System**
     - Notes are accessed via AI tools only (`notes_read`, `notes_write`, `notes_delete`, `notes_list`)
@@ -1714,7 +1714,7 @@ conversation: Conversation
     - Shared `index.md` is also injected (accessible to all entities)
     - Entity labels are sanitized for filesystem safety (special characters replaced with underscores)
     - The `index.md` file cannot be deleted (use `notes_write` with empty content to clear it)
-    - Notes tools are in the `MEMORY` category and work with Anthropic (Claude) and OpenAI (GPT) models
+    - Notes tools are in the `MEMORY` category and work with Anthropic (Claude), OpenAI (GPT), and Google (Gemini) models
 
 20. **Tool Exchange Message Persistence**
     - Tool exchanges (`TOOL_USE` and `TOOL_RESULT`) are now persisted to the database

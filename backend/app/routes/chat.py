@@ -439,9 +439,9 @@ async def stream_message(data: ChatRequest):
                 # Get tool schemas if tools are enabled and using a supported provider
                 tool_schemas = None
                 if settings.tools_enabled:
-                    # Tool use is supported for Anthropic and OpenAI models
+                    # Tool use is supported for Anthropic, OpenAI, and Google models
                     provider = llm_service.get_provider_for_model(session.model)
-                    if provider in (ModelProvider.ANTHROPIC, ModelProvider.OPENAI):
+                    if provider in (ModelProvider.ANTHROPIC, ModelProvider.OPENAI, ModelProvider.GOOGLE):
                         tool_schemas = tool_service.get_tool_schemas()
 
                 async for event in session_manager.process_message_stream(
@@ -865,9 +865,9 @@ async def regenerate_response(data: RegenerateRequest):
                 # Get tool schemas if tools are enabled and using a supported provider
                 tool_schemas = None
                 if settings.tools_enabled:
-                    # Tool use is supported for Anthropic and OpenAI models
+                    # Tool use is supported for Anthropic, OpenAI, and Google models
                     provider = llm_service.get_provider_for_model(session.model)
-                    if provider in (ModelProvider.ANTHROPIC, ModelProvider.OPENAI):
+                    if provider in (ModelProvider.ANTHROPIC, ModelProvider.OPENAI, ModelProvider.GOOGLE):
                         tool_schemas = tool_service.get_tool_schemas()
 
                 # Stream the new response

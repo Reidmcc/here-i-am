@@ -4,6 +4,8 @@ from google.genai import types
 from app.config import settings
 import tiktoken
 import logging
+import json
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +61,102 @@ class GoogleService:
         # All Gemini models support temperature
         return True
 
+    def _convert_tools_to_gemini_format(
+        self,
+        tools: List[Dict[str, Any]]
+    ) -> List[types.Tool]:
+        """
+        Convert Anthropic-style tool schemas to Gemini format.
+
+        Anthropic format:
+        {
+            "name": "web_search",
+            "description": "...",
+            "input_schema": {"type": "object", "properties": {...}, "required": [...]}
+        }
+
+        Gemini format uses types.Tool with function_declarations.
+        """
+        function_declarations = []
+
+        for tool in tools:
+            # Extract properties and required fields from input_schema
+            input_schema = tool.get("input_schema", {"type": "object", "properties": {}})
+            properties = input_schema.get("properties", {})
+            required = input_schema.get("required", [])
+
+            # Convert properties to Gemini schema format
+            gemini_properties = {}
+            for prop_name, prop_def in properties.items():
+                gemini_prop = self._convert_json_schema_to_gemini(prop_def)
+                gemini_properties[prop_name] = gemini_prop
+
+            # Build function declaration
+            func_decl = types.FunctionDeclaration(
+                name=tool["name"],
+                description=tool.get("description", ""),
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties=gemini_properties,
+                    required=required,
+                ),
+            )
+            function_declarations.append(func_decl)
+
+        # Return as a single Tool with all function declarations
+        return [types.Tool(function_declarations=function_declarations)]
+
+    def _convert_json_schema_to_gemini(self, schema: Dict[str, Any]) -> types.Schema:
+        """Convert a JSON Schema property definition to Gemini Schema format."""
+        schema_type = schema.get("type", "string")
+
+        # Map JSON Schema types to Gemini types
+        type_map = {
+            "string": types.Type.STRING,
+            "integer": types.Type.INTEGER,
+            "number": types.Type.NUMBER,
+            "boolean": types.Type.BOOLEAN,
+            "array": types.Type.ARRAY,
+            "object": types.Type.OBJECT,
+        }
+
+        gemini_type = type_map.get(schema_type, types.Type.STRING)
+
+        kwargs = {
+            "type": gemini_type,
+            "description": schema.get("description", ""),
+        }
+
+        # Handle enum values
+        if "enum" in schema:
+            kwargs["enum"] = schema["enum"]
+
+        # Handle array items
+        if schema_type == "array" and "items" in schema:
+            kwargs["items"] = self._convert_json_schema_to_gemini(schema["items"])
+
+        # Handle object properties
+        if schema_type == "object" and "properties" in schema:
+            props = {}
+            for prop_name, prop_def in schema["properties"].items():
+                props[prop_name] = self._convert_json_schema_to_gemini(prop_def)
+            kwargs["properties"] = props
+            if "required" in schema:
+                kwargs["required"] = schema["required"]
+
+        return types.Schema(**kwargs)
+
     def _convert_messages_to_contents(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
     ) -> List[types.Content]:
         """
         Convert messages from standard format to Gemini Content format.
+
+        Handles:
+        - Regular text messages
+        - Tool use blocks (function calls from model)
+        - Tool result blocks (function responses to model)
 
         Returns list of Content objects.
         """
@@ -73,6 +165,51 @@ class GoogleService:
         for msg in messages:
             role = msg["role"]
             content = msg["content"]
+
+            # Handle tool result messages (from agentic loop - Anthropic format)
+            if role == "user" and isinstance(content, list):
+                # Check if this is a tool_result message from Anthropic format
+                if content and isinstance(content[0], dict) and content[0].get("type") == "tool_result":
+                    # Convert tool results to Gemini function_response format
+                    parts = []
+                    for result in content:
+                        function_response = types.FunctionResponse(
+                            name=result.get("tool_name", "unknown"),
+                            response={"result": result.get("content", "")},
+                        )
+                        parts.append(types.Part.from_function_response(function_response))
+
+                    contents.append(types.Content(
+                        role="user",
+                        parts=parts
+                    ))
+                    continue
+
+            # Handle assistant messages with tool_use blocks (function calls)
+            if role == "assistant" and isinstance(content, list):
+                parts = []
+                has_function_calls = False
+
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text = block.get("text", "")
+                            if text:
+                                parts.append(types.Part.from_text(text=text))
+                        elif block.get("type") == "tool_use":
+                            has_function_calls = True
+                            function_call = types.FunctionCall(
+                                name=block["name"],
+                                args=block.get("input", {}),
+                            )
+                            parts.append(types.Part.from_function_call(function_call))
+
+                if has_function_calls or parts:
+                    contents.append(types.Content(
+                        role="model",
+                        parts=parts if parts else [types.Part.from_text(text="")]
+                    ))
+                    continue
 
             # Handle array format (from Anthropic cache_control) - extract text
             if isinstance(content, list):
@@ -91,11 +228,12 @@ class GoogleService:
 
     async def send_message(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Send a message to Google AI (Gemini) API.
@@ -106,9 +244,11 @@ class GoogleService:
             model: Model to use (defaults to gemini-2.5-flash)
             temperature: Temperature setting (defaults to 1.0)
             max_tokens: Max tokens in response (defaults to 4096)
+            tools: Optional list of tool definitions (Anthropic format, will be converted)
 
         Returns:
-            Dict with 'content', 'model', 'usage' keys
+            Dict with 'content', 'model', 'usage', 'stop_reason' keys.
+            If tools are used, also includes 'content_blocks' and 'tool_use'.
         """
         client = self._ensure_client()
 
@@ -129,6 +269,11 @@ class GoogleService:
         if system_prompt:
             config.system_instruction = system_prompt
 
+        # Add tools if provided
+        if tools:
+            config.tools = self._convert_tools_to_gemini_format(tools)
+            logger.info(f"[TOOLS] Google: Sending request with {len(tools)} tools")
+
         logger.info(f"[GOOGLE] Sending {len(contents)} messages to API with model={model_name}")
 
         # Use async client
@@ -138,12 +283,38 @@ class GoogleService:
             config=config,
         )
 
-        # Extract content from response
+        # Extract content and function calls from response
         content = ""
+        content_blocks = []
+        tool_use_blocks = []
+
         if response.candidates and len(response.candidates) > 0:
             candidate = response.candidates[0]
             if candidate.content and candidate.content.parts:
-                content = "".join(part.text for part in candidate.content.parts if hasattr(part, 'text') and part.text)
+                for part in candidate.content.parts:
+                    # Handle text parts
+                    if hasattr(part, 'text') and part.text:
+                        content += part.text
+                        content_blocks.append({"type": "text", "text": part.text})
+
+                    # Handle function call parts
+                    if hasattr(part, 'function_call') and part.function_call:
+                        func_call = part.function_call
+                        # Generate a unique ID for this tool use
+                        tool_use_id = f"google_{uuid.uuid4().hex[:12]}"
+
+                        # Convert args to dict if needed
+                        args = dict(func_call.args) if func_call.args else {}
+
+                        tool_use_block = {
+                            "type": "tool_use",
+                            "id": tool_use_id,
+                            "name": func_call.name,
+                            "input": args,
+                        }
+                        content_blocks.append(tool_use_block)
+                        tool_use_blocks.append(tool_use_block)
+                        logger.info(f"[TOOLS] Google tool use detected: {func_call.name} (id={tool_use_id})")
 
         # Build usage dict
         usage = {
@@ -172,22 +343,35 @@ class GoogleService:
                 elif "stop" in finish_reason_str:
                     stop_reason = "end_turn"
 
+        # Check if this is a tool use response
+        if tool_use_blocks:
+            stop_reason = "tool_use"
+
         logger.info(f"[GOOGLE] API Response - input: {usage.get('input_tokens')}, output: {usage.get('output_tokens')}")
 
-        return {
+        result = {
             "content": content,
             "model": model_name,
             "usage": usage,
             "stop_reason": stop_reason,
         }
 
+        # Include content_blocks and tool_use for tool calling support
+        if content_blocks:
+            result["content_blocks"] = content_blocks
+        if tool_use_blocks:
+            result["tool_use"] = tool_use_blocks
+
+        return result
+
     async def send_message_stream(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Send a message to Google AI (Gemini) API with streaming response.
@@ -195,7 +379,8 @@ class GoogleService:
         Yields events with type and data:
         - {"type": "start", "model": str}
         - {"type": "token", "content": str}
-        - {"type": "done", "content": str, "model": str, "usage": dict, "stop_reason": str}
+        - {"type": "tool_use_start", "tool_use": dict} - Start of a tool use block
+        - {"type": "done", "content": str, "content_blocks": list, "tool_use": list|None, "model": str, "usage": dict, "stop_reason": str}
         - {"type": "error", "error": str}
         """
         client = self._ensure_client()
@@ -217,6 +402,11 @@ class GoogleService:
         if system_prompt:
             config.system_instruction = system_prompt
 
+        # Add tools if provided
+        if tools:
+            config.tools = self._convert_tools_to_gemini_format(tools)
+            logger.info(f"[TOOLS] Google: Streaming request with {len(tools)} tools")
+
         logger.info(f"[GOOGLE] Streaming {len(contents)} messages to API with model={model_name}")
 
         try:
@@ -225,10 +415,15 @@ class GoogleService:
 
             full_content = ""
             stop_reason = "end_turn"
+            content_blocks = []
+            tool_use_blocks = []
             usage = {
                 "input_tokens": 0,
                 "output_tokens": 0,
             }
+
+            # Track function calls that have been started (to avoid duplicate events)
+            seen_function_calls = set()
 
             # Use async streaming
             async for chunk in await client.aio.models.generate_content_stream(
@@ -236,14 +431,44 @@ class GoogleService:
                 contents=contents,
                 config=config,
             ):
-                # Extract text from chunk
+                # Extract content from chunk
                 if chunk.candidates and len(chunk.candidates) > 0:
                     candidate = chunk.candidates[0]
                     if candidate.content and candidate.content.parts:
                         for part in candidate.content.parts:
+                            # Handle text parts
                             if hasattr(part, 'text') and part.text:
                                 full_content += part.text
                                 yield {"type": "token", "content": part.text}
+
+                            # Handle function call parts
+                            if hasattr(part, 'function_call') and part.function_call:
+                                func_call = part.function_call
+                                func_name = func_call.name
+
+                                # Only emit tool_use_start once per function
+                                if func_name not in seen_function_calls:
+                                    seen_function_calls.add(func_name)
+                                    tool_use_id = f"google_{uuid.uuid4().hex[:12]}"
+                                    args = dict(func_call.args) if func_call.args else {}
+
+                                    tool_use_block = {
+                                        "type": "tool_use",
+                                        "id": tool_use_id,
+                                        "name": func_name,
+                                        "input": args,
+                                    }
+                                    tool_use_blocks.append(tool_use_block)
+
+                                    # Emit tool_use_start event
+                                    yield {
+                                        "type": "tool_use_start",
+                                        "tool_use": {
+                                            "id": tool_use_id,
+                                            "name": func_name,
+                                        }
+                                    }
+                                    logger.info(f"[TOOLS] Google tool use detected (streaming): {func_name} (id={tool_use_id})")
 
                     # Check finish reason
                     if candidate.finish_reason:
@@ -262,16 +487,33 @@ class GoogleService:
                     if hasattr(chunk.usage_metadata, 'cached_content_token_count') and chunk.usage_metadata.cached_content_token_count:
                         usage["cached_tokens"] = chunk.usage_metadata.cached_content_token_count
 
+            # Build content blocks
+            if full_content:
+                content_blocks.append({"type": "text", "text": full_content})
+            content_blocks.extend(tool_use_blocks)
+
+            # Check if this is a tool use response
+            if tool_use_blocks:
+                stop_reason = "tool_use"
+
             logger.info(f"[GOOGLE] Stream API Response - input: {usage.get('input_tokens')}, output: {usage.get('output_tokens')}")
 
             # Yield final done event
-            yield {
+            done_event = {
                 "type": "done",
                 "content": full_content,
                 "model": model_name,
                 "usage": usage,
                 "stop_reason": stop_reason,
             }
+
+            # Include content_blocks and tool_use for tool calling support
+            if content_blocks:
+                done_event["content_blocks"] = content_blocks
+            if tool_use_blocks:
+                done_event["tool_use"] = tool_use_blocks
+
+            yield done_event
 
         except Exception as e:
             logger.error(f"[GOOGLE] Streaming error: {e}")
