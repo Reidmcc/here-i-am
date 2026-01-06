@@ -201,6 +201,9 @@ class MemoryService:
         top_k = top_k or settings.retrieval_top_k
         exclude_ids = exclude_ids or set()
 
+        # Normalize exclude_conversation_id to string for consistent comparison
+        exclude_conv_id_normalized = str(exclude_conversation_id) if exclude_conversation_id else None
+
         # Check cache first (before exclude_ids filtering, which happens post-query)
         # Cache key doesn't include exclude_ids since we filter after retrieval
         if use_cache:
@@ -208,7 +211,7 @@ class MemoryService:
                 query=query,
                 entity_id=entity_id,
                 top_k=top_k * 2,  # Cache the larger fetch_k results
-                exclude_conversation_id=exclude_conversation_id,
+                exclude_conversation_id=exclude_conv_id_normalized,
             )
             if cached_results is not None:
                 logger.info(f"[MEMORY] Cache HIT for entity={entity_id}")
@@ -238,10 +241,11 @@ class MemoryService:
 
             # Add metadata filter to exclude current conversation at Pinecone level
             # This is more efficient than filtering in Python after retrieval
-            if exclude_conversation_id:
+            if exclude_conv_id_normalized:
                 search_query["filter"] = {
-                    "conversation_id": {"$ne": exclude_conversation_id}
+                    "conversation_id": {"$ne": exclude_conv_id_normalized}
                 }
+                logger.debug(f"[MEMORY] Excluding conversation_id: {exclude_conv_id_normalized}")
 
             # Use Pinecone's integrated inference - search with raw text
             results = index.search(
@@ -264,8 +268,11 @@ class MemoryService:
                 conv_id = fields.get("conversation_id")
 
                 # Skip same conversation (this filter is part of cache key)
-                if exclude_conversation_id and conv_id == exclude_conversation_id:
-                    logger.debug(f"SKIP (same conversation): {match_id[:8]}...")
+                # Ensure both values are strings for consistent comparison
+                conv_id_str = str(conv_id) if conv_id else None
+                if exclude_conv_id_normalized and conv_id_str == exclude_conv_id_normalized:
+                    # This should not happen if Pinecone filter worked - log at INFO level for debugging
+                    logger.info(f"[MEMORY] SKIP (same conversation fallback): {match_id[:8]}... conv_id={conv_id_str}")
                     continue
 
                 all_memories.append({
@@ -284,7 +291,7 @@ class MemoryService:
                     query=query,
                     entity_id=entity_id,
                     top_k=fetch_k,
-                    exclude_conversation_id=exclude_conversation_id,
+                    exclude_conversation_id=exclude_conv_id_normalized,
                     results=all_memories,
                 )
 

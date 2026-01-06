@@ -245,8 +245,8 @@ async def send_message(
 
                 # For human messages: role is "human" for all entities
                 await memory_service.store_memory(
-                    message_id=human_msg.id,
-                    conversation_id=data.conversation_id,
+                    message_id=str(human_msg.id),
+                    conversation_id=str(data.conversation_id),
                     role="human",
                     content=data.message,
                     created_at=human_msg.created_at,
@@ -258,8 +258,8 @@ async def send_message(
                 # - For other entities: role is the responding entity's label
                 if entity_id == responding_entity_id:
                     await memory_service.store_memory(
-                        message_id=assistant_msg.id,
-                        conversation_id=data.conversation_id,
+                        message_id=str(assistant_msg.id),
+                        conversation_id=str(data.conversation_id),
                         role="assistant",
                         content=response["content"],
                         created_at=assistant_msg.created_at,
@@ -267,8 +267,8 @@ async def send_message(
                     )
                 else:
                     await memory_service.store_memory(
-                        message_id=assistant_msg.id,
-                        conversation_id=data.conversation_id,
+                        message_id=str(assistant_msg.id),
+                        conversation_id=str(data.conversation_id),
                         role=responding_label or "other_entity",
                         content=response["content"],
                         created_at=assistant_msg.created_at,
@@ -277,16 +277,16 @@ async def send_message(
         else:
             # Standard single-entity conversation
             await memory_service.store_memory(
-                message_id=human_msg.id,
-                conversation_id=data.conversation_id,
+                message_id=str(human_msg.id),
+                conversation_id=str(data.conversation_id),
                 role="human",
                 content=data.message,
                 created_at=human_msg.created_at,
                 entity_id=session.entity_id,
             )
             await memory_service.store_memory(
-                message_id=assistant_msg.id,
-                conversation_id=data.conversation_id,
+                message_id=str(assistant_msg.id),
+                conversation_id=str(data.conversation_id),
                 role="assistant",
                 content=response["content"],
                 created_at=assistant_msg.created_at,
@@ -540,8 +540,8 @@ async def stream_message(data: ChatRequest):
                             # For human messages: role is "human" for all entities (skip for continuation)
                             if human_msg:
                                 await memory_service.store_memory(
-                                    message_id=human_msg.id,
-                                    conversation_id=data.conversation_id,
+                                    message_id=str(human_msg.id),
+                                    conversation_id=str(data.conversation_id),
                                     role="human",
                                     content=data.message,
                                     created_at=human_msg.created_at,
@@ -553,8 +553,8 @@ async def stream_message(data: ChatRequest):
                             # - For other entities: role is the responding entity's label
                             if entity_id == responding_entity_id:
                                 await memory_service.store_memory(
-                                    message_id=assistant_msg.id,
-                                    conversation_id=data.conversation_id,
+                                    message_id=str(assistant_msg.id),
+                                    conversation_id=str(data.conversation_id),
                                     role="assistant",
                                     content=full_content,
                                     created_at=assistant_msg.created_at,
@@ -562,8 +562,8 @@ async def stream_message(data: ChatRequest):
                                 )
                             else:
                                 await memory_service.store_memory(
-                                    message_id=assistant_msg.id,
-                                    conversation_id=data.conversation_id,
+                                    message_id=str(assistant_msg.id),
+                                    conversation_id=str(data.conversation_id),
                                     role=responding_label or "other_entity",
                                     content=full_content,
                                     created_at=assistant_msg.created_at,
@@ -572,16 +572,16 @@ async def stream_message(data: ChatRequest):
                     else:
                         # Standard single-entity conversation (always has human message)
                         await memory_service.store_memory(
-                            message_id=human_msg.id,
-                            conversation_id=data.conversation_id,
+                            message_id=str(human_msg.id),
+                            conversation_id=str(data.conversation_id),
                             role="human",
                             content=data.message,
                             created_at=human_msg.created_at,
                             entity_id=session.entity_id,
                         )
                         await memory_service.store_memory(
-                            message_id=assistant_msg.id,
-                            conversation_id=data.conversation_id,
+                            message_id=str(assistant_msg.id),
+                            conversation_id=str(data.conversation_id),
                             role="assistant",
                             content=full_content,
                             created_at=assistant_msg.created_at,
@@ -955,8 +955,8 @@ async def regenerate_response(data: RegenerateRequest):
                             # For other entities: role is the responding entity's label
                             if entity_id == responding_entity_id:
                                 await memory_service.store_memory(
-                                    message_id=assistant_msg.id,
-                                    conversation_id=conversation_id,
+                                    message_id=str(assistant_msg.id),
+                                    conversation_id=str(conversation_id),
                                     role="assistant",
                                     content=full_content,
                                     created_at=assistant_msg.created_at,
@@ -964,8 +964,8 @@ async def regenerate_response(data: RegenerateRequest):
                                 )
                             else:
                                 await memory_service.store_memory(
-                                    message_id=assistant_msg.id,
-                                    conversation_id=conversation_id,
+                                    message_id=str(assistant_msg.id),
+                                    conversation_id=str(conversation_id),
                                     role=responding_label,
                                     content=full_content,
                                     created_at=assistant_msg.created_at,
@@ -973,8 +973,8 @@ async def regenerate_response(data: RegenerateRequest):
                                 )
                     else:
                         await memory_service.store_memory(
-                            message_id=assistant_msg.id,
-                            conversation_id=conversation_id,
+                            message_id=str(assistant_msg.id),
+                            conversation_id=str(conversation_id),
                             role="assistant",
                             content=full_content,
                             created_at=assistant_msg.created_at,

@@ -841,3 +841,143 @@ class TestMemoryServiceDelete:
             result = await service.delete_memory("msg-123")
 
             assert result is False
+
+
+class TestMemoryServiceConversationIdNormalization:
+    """Tests for conversation_id normalization (UUID vs string handling)."""
+
+    @pytest.mark.asyncio
+    async def test_search_memories_excludes_uuid_conversation_id(self, mock_pinecone_index):
+        """Test that UUID conversation_id is properly normalized for exclusion."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service = MemoryService()
+
+            # Mock cache service
+            mock_cache = MagicMock()
+            mock_cache.get_search_results.return_value = None
+            service._cache_service = mock_cache
+
+            # Create a UUID object
+            conv_uuid = uuid.uuid4()
+            conv_str = str(conv_uuid)
+
+            # Create match from current conversation using new API structure
+            mock_hit = MagicMock()
+            mock_hit.to_dict.return_value = {
+                "_id": "current-conv-memory",
+                "_score": 0.9,
+                "fields": {
+                    "conversation_id": conv_str,  # Stored as string
+                    "created_at": "2024-01-01",
+                },
+            }
+
+            mock_result = MagicMock()
+            mock_result.hits = [mock_hit]
+            mock_search_result = MagicMock()
+            mock_search_result.result = mock_result
+            mock_pinecone_index.search = MagicMock(return_value=mock_search_result)
+
+            service._indexes["default"] = mock_pinecone_index
+
+            # Pass UUID object (not string) - should still work due to normalization
+            results = await service.search_memories(
+                "Query",
+                exclude_conversation_id=conv_uuid  # UUID object, not string
+            )
+
+            # Result should be excluded because UUID is normalized to string
+            assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_search_memories_filter_uses_normalized_string(self, mock_pinecone_index):
+        """Test that the Pinecone filter uses the normalized string conversation_id."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service = MemoryService()
+
+            # Mock cache service
+            mock_cache = MagicMock()
+            mock_cache.get_search_results.return_value = None
+            service._cache_service = mock_cache
+
+            # Create empty search result
+            mock_result = MagicMock()
+            mock_result.hits = []
+            mock_search_result = MagicMock()
+            mock_search_result.result = mock_result
+            mock_pinecone_index.search = MagicMock(return_value=mock_search_result)
+
+            service._indexes["default"] = mock_pinecone_index
+
+            # Pass UUID object
+            conv_uuid = uuid.uuid4()
+            await service.search_memories(
+                "Query",
+                exclude_conversation_id=conv_uuid
+            )
+
+            # Verify the search was called with filter containing string, not UUID
+            call_args = mock_pinecone_index.search.call_args
+            query_arg = call_args.kwargs.get("query") or call_args.args[0] if call_args.args else None
+
+            # The filter should contain the string version of the UUID
+            if query_arg and "filter" in query_arg:
+                filter_value = query_arg["filter"]["conversation_id"]["$ne"]
+                assert filter_value == str(conv_uuid)
+                assert isinstance(filter_value, str)
+
+    @pytest.mark.asyncio
+    async def test_search_memories_python_fallback_normalizes_both_values(self, mock_pinecone_index):
+        """Test that Python fallback filter normalizes both stored and exclude conversation_id."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service = MemoryService()
+
+            # Mock cache service
+            mock_cache = MagicMock()
+            mock_cache.get_search_results.return_value = None
+            service._cache_service = mock_cache
+
+            conv_id = "test-conv-123"
+
+            # Create match where stored conv_id is non-string (simulating edge case)
+            mock_hit = MagicMock()
+            mock_hit.to_dict.return_value = {
+                "_id": "test-memory",
+                "_score": 0.9,
+                "fields": {
+                    "conversation_id": conv_id,  # Same as exclude
+                    "created_at": "2024-01-01",
+                },
+            }
+
+            mock_result = MagicMock()
+            mock_result.hits = [mock_hit]
+            mock_search_result = MagicMock()
+            mock_search_result.result = mock_result
+            mock_pinecone_index.search = MagicMock(return_value=mock_search_result)
+
+            service._indexes["default"] = mock_pinecone_index
+
+            # Even if Pinecone filter didn't work, Python fallback should catch it
+            results = await service.search_memories(
+                "Query",
+                exclude_conversation_id=conv_id
+            )
+
+            # Should be filtered out by the Python fallback
+            assert len(results) == 0
