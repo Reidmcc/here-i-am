@@ -399,6 +399,42 @@ class TestSessionManager:
 
         assert session.model == "gpt-4o"
 
+    def test_create_session_normalizes_uuid_to_string(self):
+        """Test that UUID conversation_id is normalized to string."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.settings") as mock_settings:
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.use_memory_in_context = False
+
+            # Pass a UUID object instead of string
+            conv_uuid = uuid.uuid4()
+            session = manager.create_session(conv_uuid)
+
+        # session.conversation_id should be a string
+        assert isinstance(session.conversation_id, str)
+        assert session.conversation_id == str(conv_uuid)
+        # Session should be stored with string key
+        assert str(conv_uuid) in manager._sessions
+
+    def test_create_session_with_string_conversation_id(self):
+        """Test that string conversation_id remains unchanged."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.settings") as mock_settings:
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.use_memory_in_context = False
+
+            conv_str = "test-conversation-123"
+            session = manager.create_session(conv_str)
+
+        assert session.conversation_id == conv_str
+        assert isinstance(session.conversation_id, str)
+
     def test_get_session_exists(self):
         """Test getting an existing session."""
         manager = SessionManager()
