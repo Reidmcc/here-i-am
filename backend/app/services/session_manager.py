@@ -70,6 +70,9 @@ class SessionManager:
         conversation_start_date: Optional[datetime] = None,
     ) -> ConversationSession:
         """Create a new session for a conversation."""
+        # Ensure conversation_id is a string for consistent comparison in memory filtering
+        conversation_id = str(conversation_id)
+
         # Determine default model based on entity configuration
         if model is None and entity_id:
             entity = settings.get_entity_by_index(entity_id)
