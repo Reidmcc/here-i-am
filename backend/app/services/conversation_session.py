@@ -294,11 +294,11 @@ class ConversationSession:
                 the tool_use and tool_result messages respectively.
         """
         if human_message:
-            if self.is_multi_entity:
-                labeled_content = f"[Human]: {human_message}"
-                self.conversation_context.append({"role": "user", "content": labeled_content})
-            else:
-                self.conversation_context.append({"role": "user", "content": human_message})
+            # if self.is_multi_entity:
+            #     labeled_content = f"[Human]: {human_message}"
+            #     self.conversation_context.append({"role": "user", "content": labeled_content})
+            # else:
+            self.conversation_context.append({"role": "user", "content": human_message})
 
         # Add tool exchanges if any occurred during this response
         # These go between the user message and the final assistant response
@@ -319,8 +319,8 @@ class ConversationSession:
 
         # Add the final assistant response (text only)
         if self.is_multi_entity and self.responding_entity_label:
-            labeled_content = f"[{self.responding_entity_label}]: {assistant_response}"
-            self.conversation_context.append({"role": "assistant", "content": labeled_content})
+            # labeled_content = f"[{self.responding_entity_label}]: {assistant_response}"
+            self.conversation_context.append({"role": self.responding_entity_label, "content": assistant_response})
         else:
             self.conversation_context.append({"role": "assistant", "content": assistant_response})
 
