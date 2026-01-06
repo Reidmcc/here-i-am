@@ -438,7 +438,7 @@ class AnthropicService:
         if is_multi_entity and entity_labels and responding_entity_label:
             ai_labels = list(entity_labels.values())
             quoted_labels = ', '.join(f'"{label}"' for label in ai_labels)
-            multi_entity_header = "[THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN]\n"
+            multi_entity_header = "[THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN. DO NOT WRITE FOR OTHER PARTICIPANTS. DO NOT LABEL YOUR MESSAGES WITH YOUR NAME.]"
 
         # Determine display labels for roles
         # For user: use user_display_name if provided, otherwise "user"
