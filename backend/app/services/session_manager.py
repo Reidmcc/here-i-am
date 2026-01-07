@@ -430,11 +430,16 @@ class SessionManager:
                     logger.error(f"[MEMORY] Error processing candidate {candidate.get('id', 'unknown')}: {e}")
                     continue
 
-            # Re-rank by combined score and keep top_k with role balance
+            # Re-rank by combined score and keep top_k
             enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
-            top_candidates = _ensure_role_balance(enriched_candidates, top_k)
 
-            logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)}")
+            # Apply role balance if enabled (ensures at least one human and one assistant message)
+            if settings.memory_role_balance_enabled:
+                top_candidates = _ensure_role_balance(enriched_candidates, top_k)
+            else:
+                top_candidates = enriched_candidates[:top_k]
+
+            logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)} (role_balance={'on' if settings.memory_role_balance_enabled else 'off'})")
 
             # Step 3: Process top candidates
             for item in top_candidates:
@@ -771,11 +776,16 @@ class SessionManager:
                     logger.error(f"[MEMORY] Error processing candidate {candidate.get('id', 'unknown')}: {e}")
                     continue
 
-            # Re-rank by combined score and keep top_k with role balance
+            # Re-rank by combined score and keep top_k
             enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
-            top_candidates = _ensure_role_balance(enriched_candidates, top_k)
 
-            logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)}")
+            # Apply role balance if enabled (ensures at least one human and one assistant message)
+            if settings.memory_role_balance_enabled:
+                top_candidates = _ensure_role_balance(enriched_candidates, top_k)
+            else:
+                top_candidates = enriched_candidates[:top_k]
+
+            logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)} (role_balance={'on' if settings.memory_role_balance_enabled else 'off'})")
 
             # Step 3: Process top candidates
             for item in top_candidates:

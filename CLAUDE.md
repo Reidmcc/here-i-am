@@ -855,6 +855,7 @@ ELEVENLABS_MODEL_ID=eleven_multilingual_v2  # TTS model
 
 # Memory System Enhancement
 # USE_MEMORY_IN_CONTEXT=false           # Insert memories directly into conversation context (experimental)
+# MEMORY_ROLE_BALANCE_ENABLED=true      # Ensure memories include both human and assistant messages (default: true)
 ```
 
 **Entity Configuration (PINECONE_INDEXES):**
@@ -1952,6 +1953,9 @@ significance = times_retrieved * recency_factor * half_life_modifier
 #   Note: days_since_retrieval capped at 1-day minimum to prevent very recent retrievals from dominating
 # half_life_modifier = 0.5 ^ (days_since_creation / significance_half_life_days)
 # Final significance = max(calculated_significance, significance_floor)
+
+# Role balance in memory retrieval
+memory_role_balance_enabled = True  # When True, ensures at least one human and one assistant memory
 
 # GPT-5.x verbosity setting (config.py)
 default_verbosity = "medium"  # Options: "low", "medium", "high" for GPT-5.x models

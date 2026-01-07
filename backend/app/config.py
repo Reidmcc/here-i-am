@@ -290,6 +290,11 @@ class Settings(BaseSettings):
     significance_floor: float = 0.25
     significance_half_life_days: int = 60  # Significance halves every N days since memory creation
 
+    # Role balance in memory retrieval
+    # When True, ensures selected memories include at least one human and one assistant message
+    # When False, memories are selected purely by combined score (similarity × significance)
+    memory_role_balance_enabled: bool = True
+
     # Reflection mode
     reflection_seed_count: int = 7
     reflection_exclude_recent_conversations: int = 0
