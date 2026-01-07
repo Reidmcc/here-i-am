@@ -280,15 +280,20 @@ class Settings(BaseSettings):
     debug: bool = True
 
     # Memory retrieval defaults
-    initial_retrieval_top_k: int = 5  # First retrieval in a conversation
-    retrieval_top_k: int = 5  # Subsequent retrievals
+    initial_retrieval_top_k: int = 3  # First retrieval in a conversation
+    retrieval_top_k: int = 3  # Subsequent retrievals
     similarity_threshold: float = 0.3  # Tuned for llama-text-embed-v2
-    retrieval_candidate_multiplier: int = 2  # Fetch this many times top_k, then re-rank by significance
+    retrieval_candidate_multiplier: int = 3  # Fetch this many times top_k, then re-rank by significance
 
     # Significance calculation
     recency_boost_strength: float = 1.2
     significance_floor: float = 0.25
     significance_half_life_days: int = 60  # Significance halves every N days since memory creation
+
+    # Role balance in memory retrieval
+    # When True, ensures selected memories include at least one human and one assistant message
+    # When False, memories are selected purely by combined score (similarity × significance)
+    memory_role_balance_enabled: bool = True
 
     # Reflection mode
     reflection_seed_count: int = 7

@@ -268,6 +268,16 @@ class SessionManager:
                 )
                 session.in_context_ids.add(str_id)
 
+        # For memory-in-context mode: sync memory_tracker with loaded retrieved_ids
+        # This ensures check_memory_status() knows which memories were already retrieved
+        # so they don't get counted again. Mark them as rolled out (position=-1) so
+        # they can be re-inserted if relevant without incrementing retrieval count.
+        if session.use_memory_in_context and retrieved_ids:
+            for mem_id in retrieved_ids:
+                session.memory_tracker.retrieved_ids.add(mem_id)
+                session.memory_tracker.memory_positions[mem_id] = -1  # Rolled out
+            logger.info(f"[MEMORY] Initialized memory_tracker with {len(retrieved_ids)} previously retrieved memory IDs (marked as rolled out)")
+
         # For context cache length: preserve if provided (for multi-entity entity switches),
         # otherwise bootstrap with all existing content
         if preserve_context_cache_length is not None:
@@ -430,11 +440,16 @@ class SessionManager:
                     logger.error(f"[MEMORY] Error processing candidate {candidate.get('id', 'unknown')}: {e}")
                     continue
 
-            # Re-rank by combined score and keep top_k with role balance
+            # Re-rank by combined score and keep top_k
             enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
-            top_candidates = _ensure_role_balance(enriched_candidates, top_k)
 
-            logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)}")
+            # Apply role balance if enabled (ensures at least one human and one assistant message)
+            if settings.memory_role_balance_enabled:
+                top_candidates = _ensure_role_balance(enriched_candidates, top_k)
+            else:
+                top_candidates = enriched_candidates[:top_k]
+
+            logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)} (role_balance={'on' if settings.memory_role_balance_enabled else 'off'})")
 
             # Step 3: Process top candidates
             for item in top_candidates:
@@ -692,7 +707,7 @@ class SessionManager:
                     query=assistant_query,
                     top_k=fetch_k_per_query,
                     exclude_conversation_id=session.conversation_id,
-                    exclude_ids=session.in_context_ids,
+                    exclude_ids=exclude_ids,
                     entity_id=session.entity_id,
                 )
                 logger.info(f"[MEMORY] Assistant query retrieved {len(assistant_candidates)} candidates")
@@ -771,11 +786,16 @@ class SessionManager:
                     logger.error(f"[MEMORY] Error processing candidate {candidate.get('id', 'unknown')}: {e}")
                     continue
 
-            # Re-rank by combined score and keep top_k with role balance
+            # Re-rank by combined score and keep top_k
             enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
-            top_candidates = _ensure_role_balance(enriched_candidates, top_k)
 
-            logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)}")
+            # Apply role balance if enabled (ensures at least one human and one assistant message)
+            if settings.memory_role_balance_enabled:
+                top_candidates = _ensure_role_balance(enriched_candidates, top_k)
+            else:
+                top_candidates = enriched_candidates[:top_k]
+
+            logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)} (role_balance={'on' if settings.memory_role_balance_enabled else 'off'})")
 
             # Step 3: Process top candidates
             for item in top_candidates:
