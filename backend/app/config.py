@@ -280,10 +280,10 @@ class Settings(BaseSettings):
     debug: bool = True
 
     # Memory retrieval defaults
-    initial_retrieval_top_k: int = 5  # First retrieval in a conversation
-    retrieval_top_k: int = 5  # Subsequent retrievals
+    initial_retrieval_top_k: int = 3  # First retrieval in a conversation
+    retrieval_top_k: int = 3  # Subsequent retrievals
     similarity_threshold: float = 0.3  # Tuned for llama-text-embed-v2
-    retrieval_candidate_multiplier: int = 2  # Fetch this many times top_k, then re-rank by significance
+    retrieval_candidate_multiplier: int = 3  # Fetch this many times top_k, then re-rank by significance
 
     # Significance calculation
     recency_boost_strength: float = 1.2
