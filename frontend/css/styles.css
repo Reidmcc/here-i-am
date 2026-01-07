@@ -1155,6 +1155,124 @@ h4.md-header {
     color: var(--text-muted);
 }
 
+/* Attachment Button */
+.attach-btn {
+    padding: 10px 14px;
+    background-color: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.attach-btn:hover {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+
+/* Attachment Preview */
+.attachment-preview {
+    max-width: 800px;
+    margin: 0 auto 12px;
+    padding: 12px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+}
+
+.attachment-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.attachment-item {
+    position: relative;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.attachment-item.image {
+    width: 80px;
+    height: 80px;
+    background-color: var(--bg-primary);
+}
+
+.attachment-item.image img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.attachment-item.file {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    max-width: 200px;
+}
+
+.attachment-file-icon {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 4px 6px;
+    background-color: var(--accent);
+    color: white;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.attachment-file-name {
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+}
+
+.attachment-remove {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background-color: var(--danger);
+    color: white;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.attachment-item:hover .attachment-remove {
+    opacity: 1;
+}
+
+.attachment-remove:hover {
+    background-color: var(--danger-hover);
+}
+
+/* Drag and Drop */
+.input-area.drag-over {
+    background-color: var(--bg-tertiary);
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 2px var(--accent);
+}
+
 /* Modal */
 .modal {
     display: none;

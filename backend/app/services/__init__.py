@@ -14,6 +14,7 @@ from app.services.github_tools import register_github_tools
 from app.services.notes_service import NotesService, notes_service
 from app.services.notes_tools import register_notes_tools, set_current_entity_label
 from app.services.memory_tools import register_memory_tools, set_memory_tool_context
+from app.services.attachment_service import AttachmentService, attachment_service
 
 # Register tools at module load time
 register_web_tools(tool_service)
@@ -39,6 +40,7 @@ __all__ = [
     "ToolResult",
     "GitHubService",
     "NotesService",
+    "AttachmentService",
     # Singleton instances
     "anthropic_service",
     "openai_service",
@@ -52,6 +54,7 @@ __all__ = [
     "tool_service",
     "github_service",
     "notes_service",
+    "attachment_service",
     # Tool registration functions
     "register_web_tools",
     "register_github_tools",

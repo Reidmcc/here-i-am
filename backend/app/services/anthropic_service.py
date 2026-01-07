@@ -397,6 +397,10 @@ class AnthropicService:
         responding_entity_label: Optional[str] = None,
         # Custom role labels for context formatting
         user_display_name: Optional[str] = None,
+        # Attachments (images and files) - ephemeral, not stored
+        attachments: Optional[Dict[str, Any]] = None,
+        # Provider for formatting attachments correctly
+        provider: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build the message list for API call with conversation-first caching.
@@ -622,8 +626,22 @@ class AnthropicService:
             if not cached_context and not new_context:
                 final_parts.insert(0, "[CONVERSATION HISTORY]\n" + multi_entity_header)
 
-        final_message = "\n\n".join(final_parts)
-        messages.append({"role": "user", "content": final_message})
+        final_text = "\n\n".join(final_parts)
+
+        # Handle attachments for multimodal messages
+        from app.services.attachment_service import attachment_service, has_attachments
+        if attachments and has_attachments(attachments):
+            # Process attachments for the appropriate provider
+            provider_str = provider.value if hasattr(provider, 'value') else str(provider) if provider else "anthropic"
+            multimodal_content = attachment_service.process_attachments_for_provider(
+                text_content=final_text,
+                attachments=attachments,
+                provider=provider_str,
+            )
+            messages.append({"role": "user", "content": multimodal_content})
+            logger.info(f"[ATTACHMENTS] Built multimodal message with {len(multimodal_content)} content blocks for {provider_str}")
+        else:
+            messages.append({"role": "user", "content": final_text})
 
         # Log final message structure for debugging
         msg_summary = [f"{m['role']}:{len(m['content']) if isinstance(m['content'], str) else 'array'}" for m in messages]
