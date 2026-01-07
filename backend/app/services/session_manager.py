@@ -344,12 +344,17 @@ class SessionManager:
             user_candidates = []
             assistant_candidates = []
 
+            if session.use_memory_in_context:
+                exclude_ids = session.memory_tracker.get_in_context_memory_ids(len(session.conversation_context))
+            else:
+                exclude_ids = session.in_context_ids
+
             if user_query:
                 user_candidates = await memory_service.search_memories(
                     query=user_query,
                     top_k=fetch_k_per_query,
                     exclude_conversation_id=session.conversation_id,
-                    exclude_ids=session.in_context_ids,
+                    exclude_ids=exclude_ids,
                     entity_id=session.entity_id,
                 )
                 logger.info(f"[MEMORY] User query retrieved {len(user_candidates)} candidates")
@@ -359,7 +364,7 @@ class SessionManager:
                     query=assistant_query,
                     top_k=fetch_k_per_query,
                     exclude_conversation_id=session.conversation_id,
-                    exclude_ids=session.in_context_ids,
+                    exclude_ids=exclude_ids,
                     entity_id=session.entity_id,
                 )
                 logger.info(f"[MEMORY] Assistant query retrieved {len(assistant_candidates)} candidates")
