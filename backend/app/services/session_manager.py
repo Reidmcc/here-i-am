@@ -626,6 +626,7 @@ class SessionManager:
         user_message: Optional[str],
         db: AsyncSession,
         tool_schemas: Optional[List[Dict[str, Any]]] = None,
+        attachments: Optional[Dict[str, Any]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Process a user message through the full pipeline with streaming response.
@@ -636,6 +637,10 @@ class SessionManager:
 
         If user_message is None (multi-entity continuation), the entity responds
         based on existing conversation context without a new human message.
+
+        Attachments (images and files) are processed and included in the current
+        message for multimodal models. Attachments are ephemeral - they are not
+        stored in conversation history or memories.
 
         Yields events:
         - {"type": "memories", "new_memories": [...], "total_in_context": int}
@@ -939,6 +944,13 @@ class SessionManager:
         new_memory = sum(1 for m in new_ctx if m.get('is_memory'))
         logger.info(f"[CACHE] Context: {len(cached_ctx)} cached msgs ({cached_user} user, {cached_asst} assistant, {cached_memory} memory), {len(new_ctx)} new msgs ({new_user} user, {new_asst} assistant, {new_memory} memory)")
 
+        # Log attachments info if present
+        if attachments:
+            images = attachments.get("images", [])
+            files = attachments.get("files", [])
+            if images or files:
+                logger.info(f"[ATTACHMENTS] Processing {len(images)} images, {len(files)} files")
+
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
@@ -952,6 +964,7 @@ class SessionManager:
             entity_labels=session.entity_labels,
             responding_entity_label=session.responding_entity_label,
             user_display_name=session.user_display_name,
+            attachments=attachments,  # Include attachments for multimodal support
         )
 
         # Build messages WITHOUT memories for subsequent tool iterations (memory optimization)

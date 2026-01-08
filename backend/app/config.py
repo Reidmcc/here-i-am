@@ -260,6 +260,20 @@ class Settings(BaseSettings):
     # Shared notes accessible to all entities: {notes_base_dir}/shared/
     notes_base_dir: str = "./notes"
 
+    # Attachment settings
+    # Enable image attachments in conversations
+    attachments_enabled: bool = True
+    # Maximum file size for attachments in bytes (5MB default)
+    attachment_max_size_bytes: int = 5 * 1024 * 1024
+    # Allowed image MIME types
+    attachment_allowed_image_types: str = "image/jpeg,image/png,image/gif,image/webp"
+    # Allowed text file extensions (for text extraction)
+    attachment_allowed_text_extensions: str = ".txt,.md,.py,.js,.ts,.json,.yaml,.yml,.html,.css,.xml,.csv,.log"
+    # Enable PDF text extraction (requires PyPDF2)
+    attachment_pdf_enabled: bool = True
+    # Enable DOCX text extraction (requires python-docx)
+    attachment_docx_enabled: bool = True
+
     # Memory System settings
     # When True, memories are inserted directly into conversation context as user messages
     # (better cacheability - memories only paid for once per conversation)
@@ -506,6 +520,23 @@ class Settings(BaseSettings):
         elif self.elevenlabs_api_key:
             return "elevenlabs"
         return "none"
+
+    def get_allowed_image_types(self) -> List[str]:
+        """Get list of allowed image MIME types."""
+        return [t.strip() for t in self.attachment_allowed_image_types.split(",") if t.strip()]
+
+    def get_allowed_text_extensions(self) -> List[str]:
+        """Get list of allowed text file extensions (including leading dot)."""
+        return [e.strip() for e in self.attachment_allowed_text_extensions.split(",") if e.strip()]
+
+    def is_allowed_image_type(self, mime_type: str) -> bool:
+        """Check if a MIME type is an allowed image type."""
+        return mime_type in self.get_allowed_image_types()
+
+    def is_allowed_text_file(self, filename: str) -> bool:
+        """Check if a filename has an allowed text extension."""
+        filename_lower = filename.lower()
+        return any(filename_lower.endswith(ext) for ext in self.get_allowed_text_extensions())
 
 
 settings = Settings()

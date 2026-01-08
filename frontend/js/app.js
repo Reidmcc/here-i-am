@@ -189,12 +189,24 @@ class App {
             entityResponderSelector: document.getElementById('entity-responder-selector'),
             entityResponderButtons: document.getElementById('entity-responder-buttons'),
 
+            // Attachments
+            attachBtn: document.getElementById('attach-btn'),
+            fileInput: document.getElementById('file-input'),
+            attachmentPreview: document.getElementById('attachment-preview'),
+            attachmentList: document.getElementById('attachment-list'),
+
             // GitHub Integration
             githubNotConfigured: document.getElementById('github-not-configured'),
             githubReposContainer: document.getElementById('github-repos-container'),
             githubReposList: document.getElementById('github-repos-list'),
             githubRateLimits: document.getElementById('github-rate-limits'),
             refreshRateLimitsBtn: document.getElementById('refresh-rate-limits-btn'),
+        };
+
+        // Attachment state
+        this.pendingAttachments = {
+            images: [],  // { data: base64, media_type: string, filename: string, previewUrl: string }
+            files: [],   // { filename: string, content: string, content_type: 'text'|'base64', media_type?: string }
         };
 
         // Import state
@@ -482,6 +494,21 @@ class App {
         this.elements.stopBtn.addEventListener('click', () => this.stopGeneration());
         this.elements.voiceBtn.addEventListener('click', () => this.toggleVoiceDictation());
 
+        // Attachments
+        if (this.elements.attachBtn) {
+            this.elements.attachBtn.addEventListener('click', () => this.elements.fileInput?.click());
+        }
+        if (this.elements.fileInput) {
+            this.elements.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+        }
+        // Drag and drop on input area
+        const inputArea = document.querySelector('.input-area');
+        if (inputArea) {
+            inputArea.addEventListener('dragover', (e) => this.handleDragOver(e));
+            inputArea.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+            inputArea.addEventListener('drop', (e) => this.handleDrop(e));
+        }
+
         // Conversation management
         this.elements.newConversationBtn.addEventListener('click', () => this.createNewConversation());
 
@@ -592,7 +619,9 @@ class App {
 
     handleInputChange() {
         const hasContent = this.elements.messageInput.value.trim().length > 0;
-        this.elements.sendBtn.disabled = !hasContent || this.isLoading;
+        const hasAttachments = this.hasAttachments();
+        // Can send if there's text content OR attachments (or both)
+        this.elements.sendBtn.disabled = (!hasContent && !hasAttachments) || this.isLoading;
 
         // Auto-resize textarea
         this.elements.messageInput.style.height = 'auto';
@@ -607,6 +636,307 @@ class App {
             }
         }
     }
+
+    // ==================== ATTACHMENT HANDLING ====================
+
+    /**
+     * Handle file selection from the file input.
+     */
+    handleFileSelect(e) {
+        const files = Array.from(e.target.files);
+        if (files.length > 0) {
+            this.processFiles(files);
+        }
+        // Reset input so the same file can be selected again
+        e.target.value = '';
+    }
+
+    /**
+     * Handle drag over the input area.
+     */
+    handleDragOver(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.currentTarget.classList.add('drag-over');
+    }
+
+    /**
+     * Handle drag leave from the input area.
+     */
+    handleDragLeave(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.currentTarget.classList.remove('drag-over');
+    }
+
+    /**
+     * Handle file drop on the input area.
+     */
+    handleDrop(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.currentTarget.classList.remove('drag-over');
+
+        const files = Array.from(e.dataTransfer.files);
+        if (files.length > 0) {
+            this.processFiles(files);
+        }
+    }
+
+    /**
+     * Process selected files, separating images from text files.
+     */
+    async processFiles(files) {
+        const MAX_SIZE = 5 * 1024 * 1024; // 5MB
+        const allowedImageTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+        const allowedTextExtensions = ['.txt', '.md', '.py', '.js', '.ts', '.json', '.yaml', '.yml', '.html', '.css', '.xml', '.csv', '.log'];
+        const binaryExtensions = ['.pdf', '.docx'];
+
+        for (const file of files) {
+            // Check file size
+            if (file.size > MAX_SIZE) {
+                this.showToast(`File "${file.name}" exceeds 5MB limit`, 'error');
+                continue;
+            }
+
+            const ext = '.' + file.name.split('.').pop().toLowerCase();
+
+            // Process image files
+            if (allowedImageTypes.includes(file.type)) {
+                try {
+                    const { data, previewUrl } = await this.readFileAsBase64(file);
+                    this.pendingAttachments.images.push({
+                        data: data,
+                        media_type: file.type,
+                        filename: file.name,
+                        previewUrl: previewUrl,
+                    });
+                } catch (error) {
+                    this.showToast(`Failed to read image "${file.name}"`, 'error');
+                    console.error('Failed to read image:', error);
+                }
+            }
+            // Process text files
+            else if (allowedTextExtensions.includes(ext)) {
+                try {
+                    const content = await this.readFileAsText(file);
+                    this.pendingAttachments.files.push({
+                        filename: file.name,
+                        content: content,
+                        content_type: 'text',
+                        media_type: file.type || 'text/plain',
+                    });
+                } catch (error) {
+                    this.showToast(`Failed to read file "${file.name}"`, 'error');
+                    console.error('Failed to read file:', error);
+                }
+            }
+            // Process PDF/DOCX (send as base64 for server-side extraction)
+            else if (binaryExtensions.includes(ext)) {
+                try {
+                    const { data } = await this.readFileAsBase64(file);
+                    this.pendingAttachments.files.push({
+                        filename: file.name,
+                        content: data,
+                        content_type: 'base64',
+                        media_type: file.type,
+                    });
+                } catch (error) {
+                    this.showToast(`Failed to read file "${file.name}"`, 'error');
+                    console.error('Failed to read file:', error);
+                }
+            }
+            else {
+                this.showToast(`Unsupported file type: ${file.name}`, 'error');
+            }
+        }
+
+        this.updateAttachmentPreview();
+        this.handleInputChange();
+    }
+
+    /**
+     * Read a file as base64-encoded data.
+     * Returns an object with data (base64 without prefix) and previewUrl.
+     */
+    readFileAsBase64(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const result = reader.result;
+                // Remove data URL prefix (e.g., "data:image/jpeg;base64,")
+                const base64Data = result.split(',')[1];
+                resolve({
+                    data: base64Data,
+                    previewUrl: result, // Full data URL for preview
+                });
+            };
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(file);
+        });
+    }
+
+    /**
+     * Read a file as text.
+     */
+    readFileAsText(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsText(file);
+        });
+    }
+
+    /**
+     * Update the attachment preview area.
+     */
+    updateAttachmentPreview() {
+        const hasAttachments = this.pendingAttachments.images.length > 0 || this.pendingAttachments.files.length > 0;
+
+        if (!hasAttachments) {
+            this.elements.attachmentPreview.style.display = 'none';
+            this.elements.attachmentList.innerHTML = '';
+            return;
+        }
+
+        this.elements.attachmentPreview.style.display = 'flex';
+
+        let html = '';
+
+        // Images
+        for (let i = 0; i < this.pendingAttachments.images.length; i++) {
+            const img = this.pendingAttachments.images[i];
+            html += `
+                <div class="attachment-item image" data-type="image" data-index="${i}">
+                    <img src="${img.previewUrl}" alt="${img.filename}" title="${img.filename}">
+                    <button class="attachment-remove" title="Remove">&times;</button>
+                </div>
+            `;
+        }
+
+        // Files
+        for (let i = 0; i < this.pendingAttachments.files.length; i++) {
+            const file = this.pendingAttachments.files[i];
+            const ext = file.filename.split('.').pop().toUpperCase();
+            html += `
+                <div class="attachment-item file" data-type="file" data-index="${i}">
+                    <span class="attachment-file-icon">${ext}</span>
+                    <span class="attachment-file-name" title="${file.filename}">${file.filename}</span>
+                    <button class="attachment-remove" title="Remove">&times;</button>
+                </div>
+            `;
+        }
+
+        this.elements.attachmentList.innerHTML = html;
+
+        // Add remove handlers
+        this.elements.attachmentList.querySelectorAll('.attachment-remove').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const item = e.target.closest('.attachment-item');
+                const type = item.dataset.type;
+                const index = parseInt(item.dataset.index, 10);
+                this.removeAttachment(type, index);
+            });
+        });
+    }
+
+    /**
+     * Remove an attachment by type and index.
+     */
+    removeAttachment(type, index) {
+        if (type === 'image') {
+            // Revoke object URL to free memory
+            const img = this.pendingAttachments.images[index];
+            if (img && img.previewUrl && img.previewUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(img.previewUrl);
+            }
+            this.pendingAttachments.images.splice(index, 1);
+        } else if (type === 'file') {
+            this.pendingAttachments.files.splice(index, 1);
+        }
+        this.updateAttachmentPreview();
+        this.handleInputChange();
+    }
+
+    /**
+     * Clear all pending attachments.
+     */
+    clearAttachments() {
+        // Revoke object URLs
+        for (const img of this.pendingAttachments.images) {
+            if (img.previewUrl && img.previewUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(img.previewUrl);
+            }
+        }
+        this.pendingAttachments = { images: [], files: [] };
+        this.updateAttachmentPreview();
+    }
+
+    /**
+     * Check if there are any pending attachments.
+     */
+    hasAttachments() {
+        return this.pendingAttachments.images.length > 0 || this.pendingAttachments.files.length > 0;
+    }
+
+    /**
+     * Get attachments formatted for the API request.
+     * Returns null if no attachments, otherwise the attachments object.
+     */
+    getAttachmentsForRequest() {
+        if (!this.hasAttachments()) {
+            return null;
+        }
+
+        return {
+            images: this.pendingAttachments.images.map(img => ({
+                data: img.data,
+                media_type: img.media_type,
+                filename: img.filename,
+            })),
+            files: this.pendingAttachments.files.map(f => ({
+                filename: f.filename,
+                content: f.content,
+                content_type: f.content_type,
+                media_type: f.media_type,
+            })),
+        };
+    }
+
+    /**
+     * Build display content that includes attachment indicators.
+     * Attachments are ephemeral and not stored, so we add visual indicators.
+     */
+    buildDisplayContentWithAttachments(textContent, attachments) {
+        if (!attachments) return textContent;
+
+        const parts = [];
+
+        // Add attachment indicator
+        const imageCount = attachments.images?.length || 0;
+        const fileCount = attachments.files?.length || 0;
+
+        if (imageCount > 0 || fileCount > 0) {
+            const indicators = [];
+            if (imageCount > 0) {
+                indicators.push(`${imageCount} image${imageCount > 1 ? 's' : ''}`);
+            }
+            if (fileCount > 0) {
+                const fileNames = attachments.files.map(f => f.filename).join(', ');
+                indicators.push(`${fileCount} file${fileCount > 1 ? 's' : ''}: ${fileNames}`);
+            }
+            parts.push(`📎 *Attachments: ${indicators.join(', ')}*`);
+        }
+
+        if (textContent) {
+            parts.push(textContent);
+        }
+
+        return parts.join('\n\n') || '[Attachments only]';
+    }
+
+    // ==================== END ATTACHMENT HANDLING ====================
 
     /**
      * Initialize voice dictation.
@@ -1319,12 +1649,14 @@ class App {
 
         // Content can be null for continuation mode
         const content = this.pendingMessageContent;
+        const attachments = this.pendingMessageAttachments;
         const responderId = this.pendingResponderId;
         const userMessageEl = this.pendingUserMessageEl;
-        const isContinuation = !content;
+        const isContinuation = !content && !attachments;
 
         // Clear pending state
         this.pendingMessageContent = null;
+        this.pendingMessageAttachments = null;
         this.pendingResponderId = null;
         this.pendingUserMessageEl = null;
 
@@ -1351,6 +1683,7 @@ class App {
                 verbosity: this.settings.verbosity,
                 responding_entity_id: responderId,
                 user_display_name: this.settings.researcherName || null,
+                attachments: attachments,  // Include attachments
             };
             // Only include model override if NOT in multi-entity mode
             if (!this.isMultiEntityMode) {
@@ -1868,13 +2201,20 @@ class App {
 
     async sendMessage(skipEntityModal = false) {
         const content = this.elements.messageInput.value.trim();
-        if (!content || this.isLoading) return;
+        const hasAttachments = this.hasAttachments();
+
+        // Need either content or attachments to send
+        if ((!content && !hasAttachments) || this.isLoading) return;
+
+        // Capture attachments before clearing (they'll be cleared after message is sent)
+        const attachments = this.getAttachmentsForRequest();
 
         // In multi-entity mode without a conversation, show entity selection modal
         // (unless we just came from the modal confirmation)
         if (!this.currentConversationId && this.isMultiEntityMode && !skipEntityModal) {
             this.pendingActionAfterEntitySelection = 'sendMessage';
             this.pendingMessageForEntitySelection = content;
+            this.pendingAttachmentsForEntitySelection = attachments;
             this.showMultiEntityModal();
             return;
         }
@@ -1887,11 +2227,14 @@ class App {
         // In multi-entity mode, store message and show responder selector
         if (this.isMultiEntityMode) {
             this.pendingMessageContent = content;
+            this.pendingMessageAttachments = attachments;
             this.elements.messageInput.value = '';
             this.elements.messageInput.style.height = 'auto';
+            this.clearAttachments();
 
-            // Add user message visually immediately
-            this.pendingUserMessageEl = this.addMessage('human', content);
+            // Add user message visually immediately (with attachment indicator if present)
+            const displayContent = this.buildDisplayContentWithAttachments(content, attachments);
+            this.pendingUserMessageEl = this.addMessage('human', displayContent);
             this.scrollToBottom();
 
             // Show responder selector
@@ -1906,12 +2249,15 @@ class App {
         this.elements.stopBtn.style.display = 'flex';
         this.elements.messageInput.value = '';
         this.elements.messageInput.style.height = 'auto';
+        this.clearAttachments();
 
         // Create abort controller for stop functionality
         this.streamAbortController = new AbortController();
 
         // Add user message (without ID initially - will be updated when stored)
-        const userMessageEl = this.addMessage('human', content);
+        // Include attachment indicator in display
+        const displayContent = this.buildDisplayContentWithAttachments(content, attachments);
+        const userMessageEl = this.addMessage('human', displayContent);
         this.scrollToBottom();
 
         // Create streaming message element
@@ -1922,13 +2268,14 @@ class App {
             await api.sendMessageStream(
                 {
                     conversation_id: this.currentConversationId,
-                    message: content,
+                    message: content || null,  // Can be null if only attachments
                     model: this.settings.model,
                     temperature: this.settings.temperature,
                     max_tokens: this.settings.maxTokens,
                     system_prompt: this.settings.systemPrompt,
                     verbosity: this.settings.verbosity,
                     user_display_name: this.settings.researcherName || null,
+                    attachments: attachments,  // Include attachments
                 },
                 {
                     onMemories: (data) => {

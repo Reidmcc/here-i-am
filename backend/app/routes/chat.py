@@ -1,15 +1,15 @@
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 import json
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.database import get_db, async_session_maker
 from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity
-from app.services import session_manager, memory_service, llm_service, tool_service
+from app.services import session_manager, memory_service, llm_service, tool_service, attachment_service
 from app.services.llm_service import ModelProvider
 from app.config import settings
 
@@ -32,6 +32,54 @@ def get_entity_label(entity_id: str) -> Optional[str]:
     return entity.label if entity else None
 
 
+class ImageAttachment(BaseModel):
+    """
+    An image attachment for multimodal messages.
+
+    Images are ephemeral - they are analyzed by the AI in the current turn,
+    but the raw image data is NOT stored in conversation history or memories.
+    The AI's textual description becomes the persisted context.
+    """
+    # Base64-encoded image data (without data URI prefix)
+    data: str
+    # MIME type (e.g., "image/jpeg", "image/png", "image/gif", "image/webp")
+    media_type: str
+    # Optional filename for reference
+    filename: Optional[str] = None
+
+    @field_validator('media_type')
+    @classmethod
+    def validate_media_type(cls, v: str) -> str:
+        allowed = settings.get_allowed_image_types()
+        if v not in allowed:
+            raise ValueError(f"Unsupported image type '{v}'. Allowed types: {', '.join(allowed)}")
+        return v
+
+
+class FileAttachment(BaseModel):
+    """
+    A text file attachment for context injection.
+
+    Text from files is extracted and injected into the message context.
+    Supported formats: plain text files, PDF (if enabled), DOCX (if enabled).
+    """
+    # Filename with extension (used to determine file type)
+    filename: str
+    # For text files: the text content directly
+    # For PDF/DOCX: base64-encoded file data for server-side extraction
+    content: str
+    # Content type: "text" for already-extracted text, "base64" for binary files
+    content_type: Literal["text", "base64"] = "text"
+    # MIME type of the original file (optional, for validation)
+    media_type: Optional[str] = None
+
+
+class Attachments(BaseModel):
+    """Container for message attachments."""
+    images: List[ImageAttachment] = Field(default_factory=list)
+    files: List[FileAttachment] = Field(default_factory=list)
+
+
 class ChatRequest(BaseModel):
     conversation_id: str
     message: Optional[str] = None  # Optional for multi-entity continuation
@@ -45,6 +93,8 @@ class ChatRequest(BaseModel):
     responding_entity_id: Optional[str] = None
     # Custom display name for the user/researcher (used in role labels)
     user_display_name: Optional[str] = None
+    # Attachments (images and files) - ephemeral, not stored in memory
+    attachments: Optional[Attachments] = None
 
 
 class MemoryInfo(BaseModel):
@@ -436,6 +486,16 @@ async def stream_message(data: ChatRequest):
                 stop_reason = None
                 tool_exchanges = []
 
+                # Validate and prepare attachments
+                attachments_dict = None
+                if data.attachments:
+                    try:
+                        attachments_dict = data.attachments.model_dump()
+                        attachment_service.validate_attachments(attachments_dict)
+                    except ValueError as e:
+                        yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+                        return
+
                 # Get tool schemas if tools are enabled and using a supported provider
                 tool_schemas = None
                 if settings.tools_enabled:
@@ -449,6 +509,7 @@ async def stream_message(data: ChatRequest):
                     user_message=data.message,
                     db=db,
                     tool_schemas=tool_schemas,
+                    attachments=attachments_dict,
                 ):
                     event_type = event.get("type")
 

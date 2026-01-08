@@ -351,6 +351,8 @@ class LLMService:
         responding_entity_label: Optional[str] = None,
         # Custom role labels for context formatting
         user_display_name: Optional[str] = None,
+        # Attachments (images and files) - ephemeral, not stored
+        attachments: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build the message list for API call with memory injection.
@@ -363,12 +365,16 @@ class LLMService:
         1. Cached conversation history (with cache breakpoint at end)
         2. New conversation history (uncached)
         3. Memories (after conversation, so retrievals don't invalidate cache)
-        4. Current user message
+        4. Current user message (with optional attachments for multimodal)
 
         For cache hits, the cached_context must be IDENTICAL to the previous call.
 
         For multi-entity conversations, a header is added explaining the conversation
         structure and participant labels.
+
+        Attachments (images and files) are ephemeral - they are included in the
+        current message for multimodal models but NOT stored in conversation
+        history or memories. The AI's response becomes the persisted context.
 
         Args:
             memories: List of memory dicts to inject
@@ -383,6 +389,7 @@ class LLMService:
             entity_labels: Mapping of entity_id to display label
             responding_entity_label: Label of the entity receiving this context
             user_display_name: Custom display name for the user/researcher
+            attachments: Optional dict with "images" and "files" lists
 
         Returns:
             List of message dicts formatted for the LLM API
@@ -403,6 +410,8 @@ class LLMService:
             entity_labels=entity_labels,
             responding_entity_label=responding_entity_label,
             user_display_name=user_display_name,
+            attachments=attachments,
+            provider=provider,
         )
 
 

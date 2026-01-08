@@ -111,6 +111,56 @@ Beyond separate entity workspaces, the application supports **multi-entity conve
 - Actual participating entities stored in `ConversationEntities` junction table
 - Messages track speaker via `speaker_entity_id` field
 
+### Image and File Attachments (Vision/Multimodal Support)
+
+The application supports **image and file attachments** for multimodal conversations with AI entities.
+
+**Supported Attachment Types:**
+- **Images**: JPEG, PNG, GIF, WebP (analyzed by vision-capable models)
+- **Text Files**: .txt, .md, .py, .js, .ts, .json, .yaml, .yml, .html, .css, .xml, .csv, .log
+- **Documents**: PDF (requires PyPDF2), DOCX (requires python-docx)
+
+**Key Features:**
+- **Ephemeral Attachments**: Images and files are NOT stored in conversation history or memories - they are analyzed in the current turn, and the AI's textual response becomes the persisted context
+- **5MB Size Limit**: Per-file maximum size
+- **Drag & Drop**: Drop files directly onto the input area
+- **File Picker**: Click the attachment button (📎) to select files
+- **Preview**: See attached files before sending
+- **Provider Support**: Works with Anthropic (Claude) and OpenAI (GPT) models; Google models receive extracted text only (no image support)
+
+**How Attachments Work:**
+
+1. **Images**: Encoded as base64 and sent to vision-capable models using their native multimodal format
+2. **Text Files**: Content is extracted and injected into the message context with a labeled block
+3. **PDF/DOCX**: Server-side extraction converts documents to text before sending to the AI
+
+**Configuration:**
+```bash
+# Enable/disable attachments (default: true)
+ATTACHMENTS_ENABLED=true
+
+# Maximum file size in bytes (default: 5MB)
+ATTACHMENT_MAX_SIZE_BYTES=5242880
+
+# Allowed image MIME types
+ATTACHMENT_ALLOWED_IMAGE_TYPES=image/jpeg,image/png,image/gif,image/webp
+
+# Allowed text file extensions
+ATTACHMENT_ALLOWED_TEXT_EXTENSIONS=.txt,.md,.py,.js,.ts,.json,.yaml,.yml,.html,.css,.xml,.csv,.log
+
+# Enable PDF text extraction (requires PyPDF2)
+ATTACHMENT_PDF_ENABLED=true
+
+# Enable DOCX text extraction (requires python-docx)
+ATTACHMENT_DOCX_ENABLED=true
+```
+
+**Technical Notes:**
+- Attachments are validated on both frontend (file type, size) and backend
+- File context is labeled with `[ATTACHED FILE: filename (type)]` blocks
+- Image-only messages (no text) are supported
+- Multi-entity conversations support attachments - all participating entities can see the content
+
 ### Tool Use System (Web Search & Fetch)
 
 The application supports **agentic tool use** for Anthropic (Claude) and OpenAI (GPT) models, allowing the AI to search the web and fetch content from URLs during conversations.
@@ -1594,6 +1644,8 @@ conversation: Conversation
 21. **Stop Generation** - Cancel AI response mid-stream
 22. **GitHub Settings** - View configured repositories and rate limits in settings modal
 23. **Conversation Archiving** - Archive conversations to hide from list (accessible via archived view)
+24. **Image/File Attachments** - Attach images and text files for multimodal conversations (drag-drop or picker)
+25. **Attachment Preview** - See attached files before sending with remove capability
 
 ---
 
@@ -1757,6 +1809,15 @@ conversation: Conversation
     - Memories are inserted directly into conversation history instead of separate block
     - Improves cacheability (memories paid for once per conversation)
     - Trade-off: Less clear separation between memories and conversation
+
+26. **Image and File Attachments**
+    - Attachments are **ephemeral** - NOT stored in conversation history or memories
+    - The AI analyzes attachments and its response becomes the persisted context
+    - Images require vision-capable models (Claude Sonnet/Opus, GPT-4o, etc.)
+    - For Google models, only text files are supported (images are skipped with a warning)
+    - PDF extraction requires PyPDF2, DOCX requires python-docx
+    - Frontend validates file types and sizes before upload
+    - Backend re-validates attachments for security
 
 ### Common Pitfalls
 
