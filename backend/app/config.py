@@ -296,7 +296,7 @@ class Settings(BaseSettings):
     # Memory retrieval defaults
     initial_retrieval_top_k: int = 3  # First retrieval in a conversation
     retrieval_top_k: int = 3  # Subsequent retrievals
-    similarity_threshold: float = 0.3  # Tuned for llama-text-embed-v2
+    similarity_threshold: float = 0.4  # Tuned for llama-text-embed-v2
     retrieval_candidate_multiplier: int = 3  # Fetch this many times top_k, then re-rank by significance
 
     # Significance calculation
