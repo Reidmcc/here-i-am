@@ -121,7 +121,8 @@ The application supports **image and file attachments** for multimodal conversat
 - **Documents**: PDF (requires PyPDF2), DOCX (requires python-docx)
 
 **Key Features:**
-- **Ephemeral Attachments**: Images and files are NOT stored in conversation history or memories - they are analyzed in the current turn, and the AI's textual response becomes the persisted context
+- **Ephemeral Images**: Image attachments are NOT stored - they are analyzed in the current turn, and the AI's textual response becomes the persisted context
+- **Persisted Text Files**: Text file contents ARE stored in conversation history (but NOT as searchable memories)
 - **5MB Size Limit**: Per-file maximum size
 - **Drag & Drop**: Drop files directly onto the input area
 - **File Picker**: Click the attachment button (📎) to select files
@@ -130,9 +131,9 @@ The application supports **image and file attachments** for multimodal conversat
 
 **How Attachments Work:**
 
-1. **Images**: Encoded as base64 and sent to vision-capable models using their native multimodal format
-2. **Text Files**: Content is extracted and injected into the message context with a labeled block
-3. **PDF/DOCX**: Server-side extraction converts documents to text before sending to the AI
+1. **Images**: Encoded as base64 and sent to vision-capable models using their native multimodal format. Images are ephemeral and not stored.
+2. **Text Files**: Content is extracted and stored in conversation history with a labeled `[ATTACHED FILE: filename (type)]` block. The extracted text is persisted with the human message but is NOT stored as a searchable memory.
+3. **PDF/DOCX**: Server-side extraction converts documents to text, then handled same as text files (persisted in history, not in memories).
 
 **Configuration:**
 ```bash
@@ -157,7 +158,9 @@ ATTACHMENT_DOCX_ENABLED=true
 
 **Technical Notes:**
 - Attachments are validated on both frontend (file type, size) and backend
-- File context is labeled with `[ATTACHED FILE: filename (type)]` blocks
+- Text file content is labeled with `[ATTACHED FILE: filename (type)]` blocks and stored with the human message
+- Text file content is stored in conversation history but NOT in the memory/vector database (Pinecone)
+- Images are ephemeral - sent to the AI but not stored anywhere
 - Image-only messages (no text) are supported
 - Multi-entity conversations support attachments - all participating entities can see the content
 
@@ -1811,8 +1814,9 @@ conversation: Conversation
     - Trade-off: Less clear separation between memories and conversation
 
 26. **Image and File Attachments**
-    - Attachments are **ephemeral** - NOT stored in conversation history or memories
-    - The AI analyzes attachments and its response becomes the persisted context
+    - **Images are ephemeral** - NOT stored in conversation history or memories
+    - **Text files are persisted** in conversation history (but NOT as searchable memories)
+    - Text file content is stored with the human message using `[ATTACHED FILE: ...]` blocks
     - Images require vision-capable models (Claude Sonnet/Opus, GPT-4o, etc.)
     - For Google models, only text files are supported (images are skipped with a warning)
     - PDF extraction requires PyPDF2, DOCX requires python-docx

@@ -321,6 +321,51 @@ def get_attachment_summary(attachments: Optional[Dict[str, Any]]) -> str:
     return ", ".join(parts) if parts else "none"
 
 
+def build_persistable_content(
+    user_message: Optional[str],
+    attachments: Optional[Dict[str, Any]],
+) -> str:
+    """
+    Build the persistable content combining user message with extracted file content.
+
+    This is used to store the human message in the database and memory system.
+    Text file contents are extracted and included, while images are NOT persisted
+    (they remain ephemeral as base64 data is too large to store).
+
+    Args:
+        user_message: The user's text message (can be None/empty)
+        attachments: Optional attachments dict with "images" and "files" lists
+
+    Returns:
+        Combined content string with file context prepended to user message
+    """
+    if not attachments:
+        return user_message or ""
+
+    files = attachments.get("files", [])
+
+    # Convert Pydantic models to dicts if needed
+    files_list = [
+        f.model_dump() if hasattr(f, 'model_dump') else f
+        for f in files
+    ]
+
+    if not files_list:
+        return user_message or ""
+
+    # Build file context block
+    file_context = build_file_context_block(files_list)
+
+    if not file_context:
+        return user_message or ""
+
+    # Combine file context with user message
+    if user_message:
+        return f"{file_context}\n\n{user_message}"
+    else:
+        return file_context
+
+
 # Singleton-like module functions
 class AttachmentService:
     """Service for processing message attachments."""

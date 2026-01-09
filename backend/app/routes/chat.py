@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.database import get_db, async_session_maker
 from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity
 from app.services import session_manager, memory_service, llm_service, tool_service, attachment_service
+from app.services.attachment_service import build_persistable_content
 from app.services.llm_service import ModelProvider
 from app.config import settings
 
@@ -538,13 +539,17 @@ async def stream_message(data: ChatRequest):
 
                 # Store messages in database after streaming completes
                 human_msg = None
+                persistable_content = None
                 if not is_continuation:
+                    # Build persistable content including extracted file text (images remain ephemeral)
+                    persistable_content = build_persistable_content(data.message, attachments_dict)
+
                     # Only create human message if this is not a continuation
                     human_msg = Message(
                         conversation_id=data.conversation_id,
                         role=MessageRole.HUMAN,
-                        content=data.message,
-                        token_count=llm_service.count_tokens(data.message),
+                        content=persistable_content,
+                        token_count=llm_service.count_tokens(persistable_content),
                     )
                     db.add(human_msg)
 
