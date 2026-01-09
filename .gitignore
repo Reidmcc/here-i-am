@@ -215,4 +215,5 @@ __marimo__/
 
 # App generated files
 voices.json
-backend/app/notes/*
+backend/app/notes/
+notes/
