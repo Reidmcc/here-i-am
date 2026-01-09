@@ -467,6 +467,40 @@ class MemoryService:
         # Convert to strings to match Pinecone's string ID format
         return set(str(row[0]) for row in result.fetchall())
 
+    async def get_retrieved_memories_with_timestamps(
+        self,
+        conversation_id: str,
+        db: AsyncSession,
+        entity_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all retrieved memory IDs with their retrieval timestamps.
+        Used for re-inserting memories at their original positions on session reload.
+
+        Args:
+            conversation_id: The conversation to get retrieved memories for
+            db: Database session
+            entity_id: Optional entity filter for multi-entity conversations
+
+        Returns:
+            List of dicts with 'message_id' and 'retrieved_at' for each retrieved memory
+        """
+        query = select(
+            ConversationMemoryLink.message_id,
+            ConversationMemoryLink.retrieved_at
+        ).where(
+            ConversationMemoryLink.conversation_id == conversation_id
+        ).order_by(ConversationMemoryLink.retrieved_at)
+
+        if entity_id is not None:
+            query = query.where(ConversationMemoryLink.entity_id == entity_id)
+
+        result = await db.execute(query)
+        return [
+            {"message_id": str(row[0]), "retrieved_at": row[1]}
+            for row in result.fetchall()
+        ]
+
     async def get_archived_conversation_ids(
         self,
         db: AsyncSession,

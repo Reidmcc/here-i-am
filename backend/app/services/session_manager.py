@@ -44,6 +44,7 @@ from app.services.session_helpers import (
     _add_cache_control_to_tool_result,
     _estimate_tool_exchange_tokens,
 )
+from app.services.memory_context import format_memory_as_context_message
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +210,98 @@ class SessionManager:
         other_count = len(messages) - human_count - assistant_count
         logger.info(f"[SESSION] Loading {len(messages)} messages from DB ({human_count} human, {assistant_count} assistant, {other_count} other)")
 
+        # For memory-in-context mode, we need to interleave messages with memories
+        # based on retrieval timestamps. Get memories with timestamps first.
+        memories_with_timestamps = []
+        if session.use_memory_in_context:
+            memories_with_timestamps = await memory_service.get_retrieved_memories_with_timestamps(
+                conversation_id, db, entity_id=entity_id if is_multi_entity else None
+            )
+
+        # Build a mapping of message_id -> memory data for quick lookup
+        memory_data_by_id: Dict[str, Optional[Dict]] = {}
+        retrieved_ids = set()
+
+        if memories_with_timestamps:
+            for mem_info in memories_with_timestamps:
+                mem_id = mem_info["message_id"]
+                retrieved_ids.add(mem_id)
+                mem_data = await memory_service.get_full_memory_content(mem_id, db)
+                if mem_data:
+                    str_id = mem_data["id"]
+                    memory_data_by_id[str_id] = {
+                        "data": mem_data,
+                        "retrieved_at": mem_info["retrieved_at"],
+                    }
+                    session.session_memories[str_id] = MemoryEntry(
+                        id=str_id,
+                        conversation_id=mem_data["conversation_id"],
+                        role=mem_data["role"],
+                        content=mem_data["content"],
+                        created_at=mem_data["created_at"],
+                        times_retrieved=mem_data["times_retrieved"],
+                    )
+                    session.in_context_ids.add(str_id)
+
+            session.retrieved_ids = retrieved_ids
+
+            # Sort memories by retrieved_at for insertion
+            sorted_memory_entries = sorted(
+                memory_data_by_id.items(),
+                key=lambda x: x[1]["retrieved_at"]
+            )
+            memory_queue = list(sorted_memory_entries)  # List of (mem_id, {data, retrieved_at})
+        else:
+            # Non-memory-in-context mode: just load retrieved IDs for deduplication
+            retrieved_ids = await memory_service.get_retrieved_ids_for_conversation(
+                conversation_id, db, entity_id=entity_id if is_multi_entity else None
+            )
+            session.retrieved_ids = retrieved_ids
+
+            # Load full memory content for already-retrieved memories
+            for mem_id in retrieved_ids:
+                mem_data = await memory_service.get_full_memory_content(mem_id, db)
+                if mem_data:
+                    str_id = mem_data["id"]
+                    session.session_memories[str_id] = MemoryEntry(
+                        id=str_id,
+                        conversation_id=mem_data["conversation_id"],
+                        role=mem_data["role"],
+                        content=mem_data["content"],
+                        created_at=mem_data["created_at"],
+                        times_retrieved=mem_data["times_retrieved"],
+                    )
+                    session.in_context_ids.add(str_id)
+            memory_queue = []
+
+        # Build conversation context, interleaving memories at their original positions
+        memory_insert_count = 0
         for msg in messages:
+            # In memory-in-context mode, insert any memories that were retrieved
+            # BEFORE this message was created
+            while memory_queue:
+                mem_id, mem_info = memory_queue[0]
+                if mem_info["retrieved_at"] <= msg.created_at:
+                    # This memory was retrieved before this message - insert it
+                    memory = session.session_memories[mem_id]
+                    memory_message = format_memory_as_context_message(
+                        memory_id=memory.id,
+                        content=memory.content,
+                        created_at=memory.created_at,
+                        role=memory.role,
+                    )
+                    insertion_point = len(session.conversation_context)
+                    session.conversation_context.append(memory_message)
+
+                    # Track in memory_tracker
+                    session.memory_tracker.retrieved_ids.add(memory.id)
+                    session.memory_tracker.memory_positions[memory.id] = insertion_point
+                    memory_insert_count += 1
+                    memory_queue.pop(0)
+                else:
+                    break
+
+            # Now add the message itself
             if msg.role == MessageRole.HUMAN:
                 # For multi-entity conversations, label human messages
                 if is_multi_entity:
@@ -243,40 +335,27 @@ class SessionManager:
             else:
                 logger.warning(f"[SESSION] Skipping message with unexpected role: {msg.role}")
 
-        # Load already-retrieved memory IDs for deduplication
-        # Note: get_retrieved_ids_for_conversation returns string IDs to match Pinecone
-        # For multi-entity conversations, filter by the responding entity to maintain isolation
-        retrieved_ids = await memory_service.get_retrieved_ids_for_conversation(
-            conversation_id, db, entity_id=entity_id if is_multi_entity else None
-        )
-        session.retrieved_ids = retrieved_ids
+        # Insert any remaining memories (retrieved after the last message)
+        while memory_queue:
+            mem_id, mem_info = memory_queue.pop(0)
+            memory = session.session_memories[mem_id]
+            memory_message = format_memory_as_context_message(
+                memory_id=memory.id,
+                content=memory.content,
+                created_at=memory.created_at,
+                role=memory.role,
+            )
+            insertion_point = len(session.conversation_context)
+            session.conversation_context.append(memory_message)
 
-        # Load full memory content for already-retrieved memories
-        # When loading from DB, all previously retrieved memories start in context
-        for mem_id in retrieved_ids:
-            mem_data = await memory_service.get_full_memory_content(mem_id, db)
-            if mem_data:
-                # Use the string ID from mem_data to ensure consistency
-                str_id = mem_data["id"]
-                session.session_memories[str_id] = MemoryEntry(
-                    id=str_id,
-                    conversation_id=mem_data["conversation_id"],
-                    role=mem_data["role"],
-                    content=mem_data["content"],
-                    created_at=mem_data["created_at"],
-                    times_retrieved=mem_data["times_retrieved"],
-                )
-                session.in_context_ids.add(str_id)
+            session.memory_tracker.retrieved_ids.add(memory.id)
+            session.memory_tracker.memory_positions[memory.id] = insertion_point
+            memory_insert_count += 1
 
-        # For memory-in-context mode: sync memory_tracker with loaded retrieved_ids
-        # This ensures check_memory_status() knows which memories were already retrieved
-        # so they don't get counted again. Mark them as rolled out (position=-1) so
-        # they can be re-inserted if relevant without incrementing retrieval count.
-        if session.use_memory_in_context and retrieved_ids:
-            for mem_id in retrieved_ids:
-                session.memory_tracker.retrieved_ids.add(mem_id)
-                session.memory_tracker.memory_positions[mem_id] = -1  # Rolled out
-            logger.info(f"[MEMORY] Initialized memory_tracker with {len(retrieved_ids)} previously retrieved memory IDs (marked as rolled out)")
+        if memory_insert_count > 0:
+            logger.info(
+                f"[MEMORY] Re-inserted {memory_insert_count} previously retrieved memories into context at their original positions"
+            )
 
         # For context cache length: preserve if provided (for multi-entity entity switches),
         # otherwise bootstrap with all existing content
