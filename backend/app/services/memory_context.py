@@ -16,6 +16,7 @@ Usage:
 from typing import Dict, List, Set, Optional, Any, Tuple
 from dataclasses import dataclass, field
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -28,24 +29,25 @@ def format_memory_as_context_message(
 ) -> Dict[str, Any]:
     """
     Format a memory as a user message for insertion into conversation context.
-    
+
     Memories are inserted as user-role messages with special markers so they
     can be identified and tracked. The format makes it clear to the AI that
     this is remembered content from a previous conversation.
-    
+
     Args:
         memory_id: The unique ID of the memory
         content: The memory content (original message text)
         created_at: ISO format timestamp of when the original message was created
         role: The original role of the message ("human" or "assistant")
-    
+
     Returns:
         Dict formatted as a conversation context message with memory metadata
     """
     # Format content with clear markers
+    # Include memory_id in the content for reliable identification when reloading sessions
     role_label = "you" if role == "assistant" else "human"
-    formatted_content = f"[MEMORY from {created_at} - originally from {role_label}]\n{content}\n[/MEMORY]"
-    
+    formatted_content = f"[MEMORY id={memory_id} from {created_at} - originally from {role_label}]\n{content}\n[/MEMORY]"
+
     return {
         "role": "user",
         "content": formatted_content,
@@ -188,20 +190,118 @@ def find_memory_insertion_point(
 ) -> int:
     """
     Find the appropriate position to insert memories in conversation context.
-    
+
     Memories should be inserted at the end of the current context, just before
     where the new user message will be added. This ensures they appear in the
     flow of conversation at the point they became relevant.
-    
+
     For tool exchanges, we want to insert after any pending tool results but
     before the position where the next human message would go.
-    
+
     Args:
         conversation_context: Current conversation context
-        
+
     Returns:
         Index where memory messages should be inserted
     """
     # Insert at the end of current context
     # The human message and assistant response will be added after
     return len(conversation_context)
+
+
+# Pattern to extract memory_id from formatted memory content
+# Matches: [MEMORY id=<uuid> from <date> - originally from <role>]
+MEMORY_ID_PATTERN = re.compile(r'\[MEMORY id=([a-f0-9-]+) from')
+
+# Legacy pattern for memories without id (for backwards compatibility)
+# Matches: [MEMORY from <date> - originally from <role>]
+MEMORY_LEGACY_PATTERN = re.compile(r'\[MEMORY from \d{4}-\d{2}-\d{2}')
+
+
+def extract_memory_id_from_content(content: str) -> Optional[str]:
+    """
+    Extract the memory_id from formatted memory content.
+
+    Handles both new format with id and legacy format without id.
+
+    Args:
+        content: The message content to parse
+
+    Returns:
+        The memory_id if found, None otherwise
+    """
+    if not isinstance(content, str):
+        return None
+
+    match = MEMORY_ID_PATTERN.search(content)
+    if match:
+        return match.group(1)
+    return None
+
+
+def is_memory_message(content: str) -> bool:
+    """
+    Check if a message content represents a memory message.
+
+    Args:
+        content: The message content to check
+
+    Returns:
+        True if this is a memory message (with or without id)
+    """
+    if not isinstance(content, str):
+        return False
+
+    # Check for new format with id
+    if MEMORY_ID_PATTERN.search(content):
+        return True
+
+    # Check for legacy format without id
+    if MEMORY_LEGACY_PATTERN.search(content):
+        return True
+
+    return False
+
+
+def scan_context_for_memories(
+    conversation_context: List[Dict[str, Any]],
+    known_memory_contents: Dict[str, str],
+) -> Dict[str, int]:
+    """
+    Scan conversation context to find existing memory messages and their positions.
+
+    This is used when restoring a session to identify which memories are already
+    embedded in the context, so they won't be re-retrieved and re-inserted.
+
+    Args:
+        conversation_context: The loaded conversation context
+        known_memory_contents: Dict mapping memory_id -> content for known memories
+
+    Returns:
+        Dict mapping memory_id -> position in context
+    """
+    found_positions: Dict[str, int] = {}
+
+    for idx, msg in enumerate(conversation_context):
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            continue
+
+        # Try to extract memory_id from new format
+        memory_id = extract_memory_id_from_content(content)
+        if memory_id:
+            found_positions[memory_id] = idx
+            logger.debug(f"[MEMORY] Found memory {memory_id[:8]}... at position {idx} (from id)")
+            continue
+
+        # For legacy format without id, try to match by content
+        if is_memory_message(content):
+            # Extract the memory content (between the header and [/MEMORY])
+            # Legacy format: [MEMORY from <date> - originally from <role>]\n<content>\n[/MEMORY]
+            for mem_id, mem_content in known_memory_contents.items():
+                if mem_content in content:
+                    found_positions[mem_id] = idx
+                    logger.debug(f"[MEMORY] Found memory {mem_id[:8]}... at position {idx} (from content match)")
+                    break
+
+    return found_positions

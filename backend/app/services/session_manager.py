@@ -44,6 +44,7 @@ from app.services.session_helpers import (
     _add_cache_control_to_tool_result,
     _estimate_tool_exchange_tokens,
 )
+from app.services.memory_context import scan_context_for_memories
 
 logger = logging.getLogger(__name__)
 
@@ -270,13 +271,41 @@ class SessionManager:
 
         # For memory-in-context mode: sync memory_tracker with loaded retrieved_ids
         # This ensures check_memory_status() knows which memories were already retrieved
-        # so they don't get counted again. Mark them as rolled out (position=-1) so
-        # they can be re-inserted if relevant without incrementing retrieval count.
+        # so they don't get counted again.
         if session.use_memory_in_context and retrieved_ids:
+            # Build a dict of known memory contents for matching
+            known_memory_contents: Dict[str, str] = {
+                mem_id: mem.content
+                for mem_id, mem in session.session_memories.items()
+            }
+
+            # Scan the loaded conversation context for existing memory messages
+            # This identifies memories that are already embedded in the context
+            found_positions = scan_context_for_memories(
+                session.conversation_context,
+                known_memory_contents,
+            )
+
+            # Set up memory_tracker with correct positions:
+            # - Memories found in context get their actual position
+            # - Memories not in context get position=-1 (rolled out)
+            in_context_count = 0
+            rolled_out_count = 0
             for mem_id in retrieved_ids:
                 session.memory_tracker.retrieved_ids.add(mem_id)
-                session.memory_tracker.memory_positions[mem_id] = -1  # Rolled out
-            logger.info(f"[MEMORY] Initialized memory_tracker with {len(retrieved_ids)} previously retrieved memory IDs (marked as rolled out)")
+                if mem_id in found_positions:
+                    # Memory is still in context at this position
+                    session.memory_tracker.memory_positions[mem_id] = found_positions[mem_id]
+                    in_context_count += 1
+                else:
+                    # Memory was retrieved before but is no longer in context
+                    session.memory_tracker.memory_positions[mem_id] = -1
+                    rolled_out_count += 1
+
+            logger.info(
+                f"[MEMORY] Initialized memory_tracker with {len(retrieved_ids)} previously retrieved memory IDs "
+                f"({in_context_count} still in context, {rolled_out_count} rolled out)"
+            )
 
         # For context cache length: preserve if provided (for multi-entity entity switches),
         # otherwise bootstrap with all existing content
