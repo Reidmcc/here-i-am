@@ -260,6 +260,34 @@ class Settings(BaseSettings):
     # Shared notes accessible to all entities: {notes_base_dir}/shared/
     notes_base_dir: str = "./notes"
 
+    # Codebase Navigator settings
+    # Enable codebase navigation tools for AI entities
+    # Uses Mistral Devstral for cost-efficient codebase exploration
+    codebase_navigator_enabled: bool = False
+    # Mistral API key (for Devstral model)
+    mistral_api_key: str = ""
+    # Devstral model to use for codebase navigation
+    codebase_navigator_model: str = "devstral-large-2501"
+    # API timeout in seconds
+    codebase_navigator_timeout: int = 120
+    # Maximum retries for API calls
+    codebase_navigator_max_retries: int = 3
+    # Maximum tokens per codebase chunk (leave headroom in 256k context)
+    codebase_navigator_max_tokens_per_chunk: int = 200000
+    # Maximum files to return in a single response
+    codebase_navigator_max_results: int = 50
+    # Enable response caching
+    codebase_navigator_cache_enabled: bool = True
+    # Cache directory for navigator responses
+    codebase_navigator_cache_dir: str = ".navigator_cache"
+    # Cache TTL in hours
+    codebase_navigator_cache_ttl_hours: int = 24
+    # Default file patterns to include (JSON array)
+    # Common code file extensions
+    codebase_navigator_default_includes: str = '["*.py","*.js","*.ts","*.jsx","*.tsx","*.java","*.go","*.rs","*.c","*.cpp","*.h","*.json","*.yaml","*.yml","*.toml","*.md","*.sql","*.graphql","*.html","*.css","*.scss"]'
+    # Default patterns to exclude (JSON array)
+    codebase_navigator_default_excludes: str = '["node_modules/","venv/",".venv/","__pycache__/",".git/","dist/","build/",".next/","*.min.js","*.map","*.lock","*.bundle.js"]'
+
     # Attachment settings
     # Enable image attachments in conversations
     attachments_enabled: bool = True
@@ -537,6 +565,20 @@ class Settings(BaseSettings):
         """Check if a filename has an allowed text extension."""
         filename_lower = filename.lower()
         return any(filename_lower.endswith(ext) for ext in self.get_allowed_text_extensions())
+
+    def get_navigator_include_patterns(self) -> List[str]:
+        """Get list of file patterns to include in codebase navigation."""
+        try:
+            return json.loads(self.codebase_navigator_default_includes)
+        except json.JSONDecodeError:
+            return ["*.py", "*.js", "*.ts", "*.jsx", "*.tsx"]
+
+    def get_navigator_exclude_patterns(self) -> List[str]:
+        """Get list of file patterns to exclude from codebase navigation."""
+        try:
+            return json.loads(self.codebase_navigator_default_excludes)
+        except json.JSONDecodeError:
+            return ["node_modules/", "venv/", ".venv/", "__pycache__/", ".git/"]
 
 
 settings = Settings()
