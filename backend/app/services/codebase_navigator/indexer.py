@@ -343,18 +343,27 @@ class CodebaseIndexer:
         current_chunk_tokens = 0
         chunk_id = 0
 
-        # Reserve tokens for manifest (approximately)
-        manifest_reserve = 2000
+        # Reserve tokens for:
+        # - Manifest (~2000 tokens)
+        # - System prompt (~1000 tokens)
+        # - Query prompt wrapper (~500 tokens)
+        # - Safety margin
+        overhead_reserve = 5000
 
         for file_info in sorted_files:
             content = self._file_contents.get(file_info.path)
             if not content:
                 continue
 
-            # Check if adding this file would exceed the limit
-            file_formatted_tokens = content.token_count + 50  # Header overhead
+            # Calculate FORMATTED token count, not raw tokens
+            # format_chunk_for_query adds "[line N] " prefix to every line (~4 tokens per line)
+            # Plus file header (~20 tokens) and footer (~10 tokens)
+            line_count = content.line_count
+            line_number_overhead = line_count * 4  # ~4 tokens for "[line N] " per line
+            file_header_overhead = 30  # "=== FILE: path ===" + "=== END FILE ==="
+            file_formatted_tokens = content.token_count + line_number_overhead + file_header_overhead
 
-            if current_chunk_tokens + file_formatted_tokens > self.max_tokens_per_chunk - manifest_reserve:
+            if current_chunk_tokens + file_formatted_tokens > self.max_tokens_per_chunk - overhead_reserve:
                 # Finish current chunk
                 if current_chunk_files:
                     chunks.append(CodebaseChunk(
