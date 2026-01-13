@@ -300,12 +300,12 @@ class TestNavigatorClient:
         """Test client initializes correctly."""
         client = NavigatorClient(
             api_key="test_key",
-            model="devstral-large-2501",
+            model="devstral-small-latest",
             cache_dir=temp_cache_dir,
         )
 
         assert client._api_key == "test_key"
-        assert client._model == "devstral-large-2501"
+        assert client._model == "devstral-small-latest"
         assert client._cache is not None
 
     def test_client_requires_api_key(self):

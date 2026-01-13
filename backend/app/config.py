@@ -267,7 +267,8 @@ class Settings(BaseSettings):
     # Mistral API key (for Devstral model)
     mistral_api_key: str = ""
     # Devstral model to use for codebase navigation
-    codebase_navigator_model: str = "devstral-large-2501"
+    # Valid models: devstral-small-latest, devstral-medium-latest, devstral-2512
+    codebase_navigator_model: str = "devstral-small-latest"
     # API timeout in seconds
     codebase_navigator_timeout: int = 120
     # Maximum retries for API calls

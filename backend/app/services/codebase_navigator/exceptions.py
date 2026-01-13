@@ -25,6 +25,11 @@ class NavigatorAPIError(NavigatorError):
     def __init__(self, message: str, status_code: int = None, response_body: str = None):
         self.status_code = status_code
         self.response_body = response_body
+        # Include response body in message for better debugging
+        if response_body:
+            # Truncate very long response bodies
+            body_preview = response_body[:500] + "..." if len(response_body) > 500 else response_body
+            message = f"{message}: {body_preview}"
         super().__init__(message)
 
 

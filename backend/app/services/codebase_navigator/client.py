@@ -146,7 +146,7 @@ class NavigatorClient:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "devstral-large-2501",
+        model: str = "devstral-small-latest",
         timeout: int = 120,
         max_retries: int = 3,
         cache_dir: Optional[Path] = None,
@@ -158,7 +158,7 @@ class NavigatorClient:
 
         Args:
             api_key: Mistral API key (falls back to settings if not provided)
-            model: Model ID to use (default: devstral-large-2501)
+            model: Model ID to use (default: devstral-small-latest)
             timeout: API timeout in seconds
             max_retries: Maximum number of retries for transient errors
             cache_dir: Directory for caching responses
