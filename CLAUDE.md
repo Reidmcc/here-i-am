@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2026-01-03
+**Last Updated:** 2026-01-13
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -422,7 +422,12 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 # Step 2: Install Whisper dependencies
 pip install -r requirements-whisper.txt
 
-# Step 3: Run the server
+# Step 3: Run the server (Option A: Using launcher script - recommended)
+./start-whisper.sh       # Linux/macOS
+start-whisper.bat        # Windows
+
+# Step 3: Run the server (Option B: Manual activation)
+source venv/bin/activate  # Windows: venv\Scripts\activate
 python run_whisper.py
 # Or with custom port:
 python run_whisper.py --port 8030
@@ -840,11 +845,19 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your API keys
 
-# Run application
+# Run application (Option A: Using launcher script - recommended)
+./start.sh           # Linux/macOS
+start.bat            # Windows
+
+# Run application (Option B: Manual activation)
+source venv/bin/activate  # Windows: venv\Scripts\activate
 python run.py
 ```
 
 Server runs on `http://localhost:8000` with hot reload enabled.
+
+**About Launcher Scripts:**
+Launcher scripts (`start.sh` / `start.bat`) automatically activate the virtual environment before running the application. This prevents accidentally running with globally-installed dependencies that may be incompatible.
 
 ### Environment Configuration
 
@@ -963,6 +976,13 @@ pip install -r requirements-xtts.txt
 **Running the XTTS Server:**
 ```bash
 cd backend
+
+# Option A: Using launcher script (recommended)
+./start-xtts.sh      # Linux/macOS
+start-xtts.bat       # Windows
+
+# Option B: Manual activation
+source venv/bin/activate  # Windows: venv\Scripts\activate
 python run_xtts.py
 # Or with custom port:
 python run_xtts.py --port 8020
@@ -1092,6 +1112,13 @@ pip install -r requirements-styletts2.txt
 **Running the StyleTTS 2 Server:**
 ```bash
 cd backend
+
+# Option A: Using launcher script (recommended)
+./start-styletts2.sh     # Linux/macOS
+start-styletts2.bat      # Windows
+
+# Option B: Manual activation
+source venv/bin/activate  # Windows: venv\Scripts\activate
 python run_styletts2.py
 # Or with custom port:
 python run_styletts2.py --port 8021
@@ -1140,9 +1167,19 @@ STYLETTS2_PRELOAD_SPEAKERS=/path/to/voice1.wav,/path/to/voice2.wav
 ### Development Commands
 
 ```bash
-# Run with hot reload (development)
+# Run with hot reload (development) - using launcher scripts
 cd backend
+./start.sh               # Linux/macOS (auto-activates venv)
+start.bat                # Windows (auto-activates venv)
+
+# Or manually activate venv first
+source venv/bin/activate  # Windows: venv\Scripts\activate
 python run.py
+
+# Run optional servers (each in separate terminal)
+./start-xtts.sh          # XTTS TTS server (port 8020)
+./start-styletts2.sh     # StyleTTS 2 server (port 8021)
+./start-whisper.sh       # Whisper STT server (port 8030)
 
 # Check current conversations
 # Open http://localhost:8000 in browser
@@ -1883,6 +1920,12 @@ conversation: Conversation
 ## Quick Reference
 
 ### File Paths for Common Tasks
+
+**Launcher Scripts (auto-activate venv):**
+- Main app: `backend/start.sh` / `backend/start.bat`
+- XTTS server: `backend/start-xtts.sh` / `backend/start-xtts.bat`
+- StyleTTS 2 server: `backend/start-styletts2.sh` / `backend/start-styletts2.bat`
+- Whisper server: `backend/start-whisper.sh` / `backend/start-whisper.bat`
 
 **Memory System Logic:**
 - Memory service: `backend/app/services/memory_service.py`
