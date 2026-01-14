@@ -8,9 +8,10 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 from app.database import init_db
-from app.routes import conversations_router, chat_router, memories_router, entities_router, messages_router, tts_router, github_router, stt_router
+from app.routes import conversations_router, chat_router, memories_router, entities_router, messages_router, tts_router, github_router, stt_router, games_router
 from app.config import settings
 from app.services.memory_service import memory_service
+from app.services.event_service import event_service
 
 
 def setup_logging():
@@ -93,14 +94,79 @@ def run_pinecone_connection_test():
     print("=" * 60 + "\n")
 
 
+async def initialize_event_listeners():
+    """Initialize and start event listeners based on configuration."""
+    # Import here to avoid circular imports
+    from app.config import settings
+
+    # OGS listener will be registered here when OGS is configured
+    if settings.ogs_enabled:
+        try:
+            from app.services.ogs_service import ogs_service
+            from app.services.event_listeners.ogs_listener import OGSEventListener
+
+            # Create and register OGS listener
+            ogs_listener = OGSEventListener(
+                entity_id=settings.ogs_entity_id,
+                ogs_service=ogs_service
+            )
+            event_service.register_listener("ogs", ogs_listener)
+
+            # Register OGS event handler
+            event_service.register_event_handler("ogs", ogs_service)
+
+            logging.getLogger(__name__).info("OGS event listener registered")
+        except ImportError as e:
+            logging.getLogger(__name__).warning(f"OGS integration not available: {e}")
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Failed to initialize OGS listener: {e}")
+
+
+def run_event_service_status():
+    """Print event service status to terminal."""
+    print("\n" + "=" * 60)
+    print("EVENT SERVICE STATUS")
+    print("=" * 60)
+
+    status = event_service.get_status()
+
+    if not status["listeners"]:
+        print("Status: NO LISTENERS CONFIGURED")
+        print("No external event listeners are active.")
+    else:
+        print(f"Status: {'RUNNING' if status['running'] else 'STOPPED'}")
+        print(f"Listeners: {len(status['listeners'])}")
+        print("-" * 60)
+
+        for listener_id, listener_info in status["listeners"].items():
+            print(f"\n  {listener_id}:")
+            print(f"    Entity: {listener_info['entity_id']}")
+            print(f"    State: {listener_info['state']}")
+            if listener_info.get('connected_at'):
+                print(f"    Connected: {listener_info['connected_at']}")
+            if listener_info.get('last_error'):
+                print(f"    Last Error: {listener_info['last_error']}")
+
+    print("=" * 60 + "\n")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
     run_pinecone_connection_test()
+
+    # Initialize and start event listeners
+    await initialize_event_listeners()
+    if event_service.get_all_listeners():
+        await event_service.start()
+        run_event_service_status()
+
     yield
+
     # Shutdown
-    pass
+    if event_service.is_running:
+        await event_service.stop()
 
 
 app = FastAPI(
@@ -147,6 +213,7 @@ app.include_router(messages_router)
 app.include_router(tts_router)
 app.include_router(github_router)
 app.include_router(stt_router)
+app.include_router(games_router)
 
 # Serve static frontend files
 frontend_path = Path(__file__).parent.parent.parent / "frontend"
@@ -163,6 +230,12 @@ async def health_check():
         "debug": settings.debug,
         "memory_system": "configured" if settings.pinecone_api_key else "not configured",
     }
+
+
+@app.get("/api/events/status")
+async def events_status():
+    """Get the status of the external event system."""
+    return event_service.get_status()
 
 
 @app.get("/api/config/presets")

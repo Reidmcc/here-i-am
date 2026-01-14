@@ -187,6 +187,20 @@ async def run_migrations(conn):
             ))
             print("  ✓ Added entity_system_prompts column for per-entity system prompts")
 
+        # External link fields for connecting conversations to external services
+        if 'external_link_type' not in columns:
+            print("Migrating: Adding external link columns to conversations table...")
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN external_link_type VARCHAR(50)"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN external_link_id VARCHAR(255)"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN external_link_metadata JSON"
+            ))
+            print("  ✓ Added external_link_type, external_link_id, external_link_metadata columns")
+
 
 async def init_db():
     async with engine.begin() as conn:

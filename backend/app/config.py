@@ -289,6 +289,27 @@ class Settings(BaseSettings):
     # Default patterns to exclude (JSON array)
     codebase_navigator_default_excludes: str = '["node_modules/","venv/",".venv/","__pycache__/",".git/","dist/","build/",".next/","*.min.js","*.map","*.lock","*.bundle.js"]'
 
+    # OGS (Online-Go Server) Integration settings
+    # Enable OGS integration for playing Go games
+    ogs_enabled: bool = False
+    # OAuth client credentials for OGS API
+    ogs_client_id: str = ""
+    ogs_client_secret: str = ""
+    # Bot username on OGS (used for identification)
+    ogs_bot_username: str = ""
+    # Entity ID (Pinecone index name) for the AI that plays Go
+    ogs_entity_id: str = ""
+    # OGS API base URL (production)
+    ogs_api_url: str = "https://online-go.com"
+    # OGS real-time socket URL
+    ogs_socket_url: str = "https://online-go.com"
+    # Automatically accept challenges (if False, requires manual acceptance)
+    ogs_auto_accept_challenges: bool = True
+    # Board sizes to accept (comma-separated, e.g., "9,13,19")
+    ogs_accepted_board_sizes: str = "9,13,19"
+    # Time settings to accept (comma-separated, e.g., "live,correspondence,blitz")
+    ogs_accepted_time_controls: str = "live,correspondence,blitz"
+
     # Attachment settings
     # Enable image attachments in conversations
     attachments_enabled: bool = True
@@ -580,6 +601,21 @@ class Settings(BaseSettings):
             return json.loads(self.codebase_navigator_default_excludes)
         except json.JSONDecodeError:
             return ["node_modules/", "venv/", ".venv/", "__pycache__/", ".git/"]
+
+    def get_ogs_accepted_board_sizes(self) -> List[int]:
+        """Get list of accepted board sizes for OGS games."""
+        if not self.ogs_accepted_board_sizes:
+            return [9, 13, 19]
+        try:
+            return [int(s.strip()) for s in self.ogs_accepted_board_sizes.split(",") if s.strip()]
+        except ValueError:
+            return [9, 13, 19]
+
+    def get_ogs_accepted_time_controls(self) -> List[str]:
+        """Get list of accepted time controls for OGS games."""
+        if not self.ogs_accepted_time_controls:
+            return ["live", "correspondence", "blitz"]
+        return [t.strip().lower() for t in self.ogs_accepted_time_controls.split(",") if t.strip()]
 
 
 settings = Settings()

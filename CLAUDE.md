@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2026-01-13
+**Last Updated:** 2026-01-14
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -537,6 +537,116 @@ entity_system_prompts: Optional[Dict[str, str]] = None
 - Comparative studies with controlled prompt variations
 - Entity-specific behavioral guidance
 
+### External Event System
+
+The application supports an **External Event System** that enables AI entities to receive and respond to events from external services asynchronously.
+
+**Architecture Layers:**
+
+1. **EventService** (`app/services/event_service.py`):
+   - Manages event listener lifecycle (startup/shutdown)
+   - Routes incoming events to appropriate handlers
+   - Tracks events in database for auditing
+
+2. **BaseEventListener** (`app/services/event_listeners/base.py`):
+   - Abstract base class for all event listeners
+   - Implements connection management with exponential backoff reconnection
+   - Provides event emission to the EventService
+
+3. **Event Storage**:
+   - `external_events` table tracks all received events
+   - Conversations can link to external resources via `external_link_type`, `external_link_id`, `external_link_metadata`
+
+**Key Features:**
+- Automatic reconnection with exponential backoff (1s to 5 minutes)
+- Event tracking with status (pending, processing, completed, failed, skipped)
+- Extensible listener pattern for adding new external services
+
+**API Endpoints:**
+- `GET /api/events/status` - Get status of all event listeners
+
+### OGS (Online-Go Server) Integration
+
+The application integrates with **OGS (Online-Go.com)** to enable AI entities to play Go games in real-time.
+
+**Dual-Channel Model:**
+- **Game Channel (Mechanical)**: Moves occur asynchronously. The entity receives notifications when it's their turn and responds with moves.
+- **Conversation Channel (Relational)**: A linked conversation where participants communicate freely, not gated by move events.
+
+**Configuration:**
+```bash
+# Enable OGS integration
+OGS_ENABLED=true
+OGS_CLIENT_ID=your_client_id
+OGS_CLIENT_SECRET=your_client_secret
+OGS_BOT_USERNAME=your_bot_username
+OGS_ENTITY_ID=entity_pinecone_index_name
+
+# Optional settings
+OGS_API_URL=https://online-go.com
+OGS_SOCKET_URL=https://online-go.com
+OGS_AUTO_ACCEPT_CHALLENGES=true
+OGS_ACCEPTED_BOARD_SIZES=9,13,19
+OGS_ACCEPTED_TIME_CONTROLS=live,correspondence,blitz
+```
+
+**How It Works:**
+
+1. **Connection**: OGSEventListener connects to OGS via socket.io on application startup
+2. **Game Events**: Receives move notifications, phase changes, challenges
+3. **Move Generation**: When it's the entity's turn:
+   - Fetches current board state
+   - Builds ASCII representation
+   - Loads Go learning notes (if available)
+   - Sends to LLM for move generation
+   - Parses response for `MOVE: <coordinate>` format
+   - Submits move to OGS
+4. **Commentary**: Optional commentary is posted to the linked conversation
+
+**Board Representation:**
+```
+    A B C D E F G H J K L M N O P Q R S T
+19  . . . . . . . . . . . . . . . . . . .  19
+18  . . . . . . . . . . . . . . . . . . .  18
+17  . . . + . . . . . + . . . . . + . . .  17
+...
+ 1  . . . . . . . . . . . . . . . . . . .   1
+    A B C D E F G H J K L M N O P Q R S T
+```
+
+- `.` = empty intersection
+- `X` = black stone
+- `O` = white stone
+- `+` = star point (hoshi)
+
+**Move Format:**
+The entity responds with: `MOVE: D4`, `MOVE: pass`, or `MOVE: resign`
+
+**API Endpoints:**
+```
+GET /api/games                           # List active games
+GET /api/games/{game_id}                 # Get game details with board
+POST /api/games/{game_id}/link           # Link game to conversation
+DELETE /api/games/{game_id}/link         # Unlink game from conversation
+GET /api/games/{game_id}/conversation    # Get linked conversation
+GET /api/games/conversation/{id}/board   # Get ephemeral board state
+```
+
+**Go Learning Notes:**
+- Entities can maintain a `go-notes.md` file in their notes folder
+- Contains observations about opponents, personal tendencies, strategic patterns
+- Automatically injected into every game move prompt
+- Entity updates notes via existing `notes_write` tool
+
+**Message Consolidation:**
+For game-linked conversations, consecutive same-role messages are consolidated before API calls to respect Anthropic's alternating user/assistant requirement. Database storage remains separate.
+
+**Technical Notes:**
+- Requires `python-socketio[asyncio_client]>=5.10.0`
+- OGS uses OAuth client credentials authentication
+- Game subscriptions managed per-game via socket.io
+- Reconnection handled automatically with exponential backoff
+
 ---
 
 ## Codebase Architecture
@@ -551,7 +661,8 @@ here-i-am/
 │   │   │   ├── conversation.py
 │   │   │   ├── conversation_entity.py  # Multi-entity conversation participants
 │   │   │   ├── message.py
-│   │   │   └── conversation_memory_link.py
+│   │   │   ├── conversation_memory_link.py
+│   │   │   └── external_event.py  # External event tracking
 │   │   ├── routes/            # FastAPI endpoint routers
 │   │   │   ├── conversations.py  # Includes archive/import endpoints
 │   │   │   ├── chat.py           # Includes regenerate endpoint
@@ -560,7 +671,8 @@ here-i-am/
 │   │   │   ├── messages.py    # Individual message edit/delete
 │   │   │   ├── tts.py         # Text-to-speech endpoints
 │   │   │   ├── stt.py         # Speech-to-text endpoints
-│   │   │   └── github.py      # GitHub integration endpoints
+│   │   │   ├── github.py      # GitHub integration endpoints
+│   │   │   └── games.py       # OGS game management endpoints
 │   │   ├── services/          # Business logic layer
 │   │   │   ├── anthropic_service.py
 │   │   │   ├── openai_service.py
@@ -582,7 +694,12 @@ here-i-am/
 │   │   │   ├── tts_service.py        # Unified TTS (ElevenLabs/XTTS/StyleTTS2)
 │   │   │   ├── xtts_service.py       # Local XTTS v2 client service
 │   │   │   ├── styletts2_service.py  # Local StyleTTS 2 client service
-│   │   │   └── whisper_service.py    # Local Whisper STT client service
+│   │   │   ├── whisper_service.py    # Local Whisper STT client service
+│   │   │   ├── event_service.py      # External event system management
+│   │   │   ├── ogs_service.py        # OGS (Online-Go Server) API client
+│   │   │   └── event_listeners/      # Event listener implementations
+│   │   │       ├── base.py           # BaseEventListener abstract class
+│   │   │       └── ogs_listener.py   # OGS socket.io listener
 │   │   ├── config.py          # Pydantic settings
 │   │   ├── database.py        # SQLAlchemy async setup
 │   │   └── main.py            # FastAPI app initialization
@@ -1410,6 +1527,11 @@ is_archived: Boolean (default: False)  # Hidden from main list, excluded from me
 is_imported: Boolean (default: False)  # Imported from external source, hidden from list
 entity_system_prompts: JSON (nullable)  # Per-entity system prompts for multi-entity conversations
 
+# External link fields (for connecting to external services like OGS)
+external_link_type: String (nullable)  # Type of link: "ogs_game", "github_issue", etc.
+external_link_id: String (nullable)  # ID in external service (e.g., OGS game ID)
+external_link_metadata: JSON (nullable)  # Additional metadata about the link
+
 # Relationships
 messages: List[Message]
 memory_links: List[ConversationMemoryLink]
@@ -1468,6 +1590,32 @@ display_order: Integer  # Order for UI display
 # Purpose: Track which entities participate in multi-entity conversations
 # Relationships
 conversation: Conversation
+```
+
+### External Events Table
+
+```python
+id: UUID (PK)
+created_at: DateTime
+processed_at: DateTime (nullable)
+
+# Event identification
+source: String  # e.g., "ogs", "github"
+event_type: String  # e.g., "game_move", "challenge"
+external_id: String (indexed)  # External resource ID (e.g., OGS game ID)
+
+# Event data
+payload: JSON (nullable)  # Raw event data from external service
+
+# Processing status
+status: Enum (PENDING, PROCESSING, COMPLETED, FAILED, SKIPPED)
+error_message: Text (nullable)
+retry_count: Integer (default: 0)
+
+# Response tracking
+response_message_id: UUID (nullable)  # Message created in response
+conversation_id: UUID (nullable)  # Associated conversation
+entity_id: String (nullable)  # Entity that processed this event
 ```
 
 ### Cascade Deletes
@@ -1550,6 +1698,23 @@ conversation: Conversation
 |--------|----------|-------------|
 | PUT | `/api/messages/{id}` | Edit human message content |
 | DELETE | `/api/messages/{id}` | Delete message (and paired response) |
+
+### Games (OGS Integration)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/games/` | List active OGS games |
+| GET | `/api/games/{game_id}` | Get game details with board |
+| POST | `/api/games/{game_id}/link` | Link game to conversation |
+| DELETE | `/api/games/{game_id}/link` | Unlink game from conversation |
+| GET | `/api/games/{game_id}/conversation` | Get linked conversation |
+| GET | `/api/games/conversation/{id}/board` | Get ephemeral board state |
+
+### Events
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/events/status` | Get status of all event listeners |
 
 ### Text-to-Speech
 
@@ -1860,6 +2025,18 @@ conversation: Conversation
     - Frontend validates file types and sizes before upload
     - Backend re-validates attachments for security
 
+27. **OGS (Online-Go Server) Integration**
+    - Set `OGS_ENABLED=true` and configure OAuth credentials to enable
+    - Requires `python-socketio[asyncio_client]>=5.10.0`
+    - The OGSEventListener connects on application startup if configured
+    - Uses OAuth client credentials flow for authentication
+    - Game events are received via socket.io, moves submitted via REST API
+    - Board state is converted to ASCII for LLM understanding
+    - Moves parsed from `MOVE: <coordinate>` format in LLM response
+    - Go learning notes (`go-notes.md`) are auto-injected into move prompts
+    - Message consolidation combines consecutive same-role messages for API calls
+    - Reconnection uses exponential backoff (1s to 5 minutes)
+
 ### Common Pitfalls
 
 **When modifying memory retrieval:**
@@ -1987,6 +2164,16 @@ conversation: Conversation
 - Tool registration: `backend/app/services/__init__.py`
 - Context injection: `backend/app/services/anthropic_service.py` (index.md loading)
 - Tests: `backend/tests/test_notes_service.py`
+
+**External Events & OGS:**
+- Event service: `backend/app/services/event_service.py`
+- Base listener: `backend/app/services/event_listeners/base.py`
+- OGS listener: `backend/app/services/event_listeners/ogs_listener.py`
+- OGS service: `backend/app/services/ogs_service.py`
+- Games routes: `backend/app/routes/games.py`
+- External event model: `backend/app/models/external_event.py`
+- Session helpers (consolidation): `backend/app/services/session_helpers.py`
+- Lifespan integration: `backend/app/main.py` (initialize_event_listeners)
 
 **Configuration:**
 - Settings: `backend/app/config.py`
