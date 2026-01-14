@@ -15,12 +15,14 @@ from app.services.notes_service import NotesService, notes_service
 from app.services.notes_tools import register_notes_tools, set_current_entity_label
 from app.services.memory_tools import register_memory_tools, set_memory_tool_context
 from app.services.attachment_service import AttachmentService, attachment_service
+from app.services.codebase_navigator_tools import register_codebase_navigator_tools
 
 # Register tools at module load time
 register_web_tools(tool_service)
 register_github_tools(tool_service)
 register_notes_tools(tool_service)
 register_memory_tools(tool_service)
+register_codebase_navigator_tools(tool_service)
 
 __all__ = [
     # Classes
@@ -60,6 +62,7 @@ __all__ = [
     "register_github_tools",
     "register_notes_tools",
     "register_memory_tools",
+    "register_codebase_navigator_tools",
     # Context helpers
     "set_current_entity_label",
     "set_memory_tool_context",
