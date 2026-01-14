@@ -567,5 +567,19 @@ class Settings(BaseSettings):
         filename_lower = filename.lower()
         return any(filename_lower.endswith(ext) for ext in self.get_allowed_text_extensions())
 
+    def get_navigator_include_patterns(self) -> List[str]:
+        """Get list of file patterns to include in codebase navigation."""
+        try:
+            return json.loads(self.codebase_navigator_default_includes)
+        except json.JSONDecodeError:
+            return ["*.py", "*.js", "*.ts", "*.jsx", "*.tsx"]
+
+    def get_navigator_exclude_patterns(self) -> List[str]:
+        """Get list of file patterns to exclude from codebase navigation."""
+        try:
+            return json.loads(self.codebase_navigator_default_excludes)
+        except json.JSONDecodeError:
+            return ["node_modules/", "venv/", ".venv/", "__pycache__/", ".git/"]
+
 
 settings = Settings()
