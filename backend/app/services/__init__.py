@@ -15,6 +15,7 @@ from app.services.notes_service import NotesService, notes_service
 from app.services.notes_tools import register_notes_tools, set_current_entity_label
 from app.services.memory_tools import register_memory_tools, set_memory_tool_context
 from app.services.attachment_service import AttachmentService, attachment_service
+from app.services.codebase_navigator_service import CodebaseNavigatorService, codebase_navigator_service
 from app.services.codebase_navigator_tools import register_codebase_navigator_tools
 
 # Register tools at module load time
@@ -43,6 +44,7 @@ __all__ = [
     "GitHubService",
     "NotesService",
     "AttachmentService",
+    "CodebaseNavigatorService",
     # Singleton instances
     "anthropic_service",
     "openai_service",
@@ -57,6 +59,7 @@ __all__ = [
     "github_service",
     "notes_service",
     "attachment_service",
+    "codebase_navigator_service",
     # Tool registration functions
     "register_web_tools",
     "register_github_tools",
