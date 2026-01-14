@@ -320,6 +320,150 @@ def estimate_tool_exchange_tokens(
     return total
 
 
+def consolidate_consecutive_messages(
+    messages: List[Dict[str, Any]],
+    separator: str = "\n\n",
+) -> List[Dict[str, Any]]:
+    """
+    Consolidate consecutive messages with the same role for API calls.
+
+    This is primarily used for game-linked conversations where multiple
+    assistant messages (move + commentary) or human messages may occur
+    in sequence. The Anthropic API requires alternating user/assistant
+    messages, so consolidation is necessary before making API calls.
+
+    Preserves:
+    - Tool exchanges (is_tool_use, is_tool_result) - never consolidated
+    - Memory messages (is_memory) - never consolidated
+    - Speaker entity information in multi-entity conversations
+
+    Args:
+        messages: List of message dicts with "role" and "content" keys
+        separator: String to join consolidated message contents
+
+    Returns:
+        List of messages with consecutive same-role messages combined
+    """
+    if not messages:
+        return messages
+
+    consolidated = []
+    current_group: Optional[Dict[str, Any]] = None
+
+    for msg in messages:
+        # Never consolidate special message types
+        is_special = (
+            msg.get("is_tool_use") or
+            msg.get("is_tool_result") or
+            msg.get("is_memory")
+        )
+
+        if is_special:
+            # Flush current group and add special message as-is
+            if current_group:
+                consolidated.append(current_group)
+                current_group = None
+            consolidated.append(msg.copy())
+            continue
+
+        # For regular messages, check if we can consolidate
+        msg_role = msg.get("role", "")
+        msg_content = msg.get("content", "")
+
+        # Handle content that might be a list (content blocks)
+        if isinstance(msg_content, list):
+            # Extract text from content blocks for consolidation
+            text_parts = []
+            for block in msg_content:
+                if isinstance(block, dict):
+                    if block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                    # Skip non-text blocks (images, etc.)
+                elif isinstance(block, str):
+                    text_parts.append(block)
+            msg_content = "\n".join(text_parts) if text_parts else ""
+
+        # Check if this continues the current group
+        if current_group is None:
+            # Start a new group
+            current_group = {"role": msg_role, "content": msg_content}
+            # Preserve speaker_entity_id if present
+            if msg.get("speaker_entity_id"):
+                current_group["speaker_entity_id"] = msg["speaker_entity_id"]
+        elif current_group["role"] == msg_role:
+            # Same role - consolidate
+            if current_group["content"] and msg_content:
+                current_group["content"] += separator + msg_content
+            elif msg_content:
+                current_group["content"] = msg_content
+            # Keep the first speaker_entity_id (or update if none)
+            if msg.get("speaker_entity_id") and not current_group.get("speaker_entity_id"):
+                current_group["speaker_entity_id"] = msg["speaker_entity_id"]
+        else:
+            # Different role - flush current group and start new one
+            consolidated.append(current_group)
+            current_group = {"role": msg_role, "content": msg_content}
+            if msg.get("speaker_entity_id"):
+                current_group["speaker_entity_id"] = msg["speaker_entity_id"]
+
+    # Flush final group
+    if current_group:
+        consolidated.append(current_group)
+
+    return consolidated
+
+
+def inject_game_board_state(
+    messages: List[Dict[str, Any]],
+    board_ascii: str,
+    game_info: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Inject the current game board state into conversation messages.
+
+    This is used for game-linked conversations where the current board
+    position should be included in the context sent to the LLM.
+
+    The board state is ephemeral - injected at API call time, not stored.
+
+    Args:
+        messages: List of message dicts
+        board_ascii: ASCII representation of the board
+        game_info: Dict with game metadata (opponent, color, move_count, etc.)
+
+    Returns:
+        New list of messages with board state prepended to the last user message
+    """
+    if not messages or not board_ascii:
+        return messages
+
+    # Build the board state header
+    board_header = f"""[CURRENT BOARD STATE]
+Game vs {game_info.get('opponent', 'Unknown')} (You are {game_info.get('our_color', '?').upper()})
+Move {game_info.get('move_count', 0)} - {'Your turn' if game_info.get('our_turn') else "Opponent's turn"}
+
+{board_ascii}
+[/CURRENT BOARD STATE]
+
+"""
+
+    # Make a copy and prepend to the last user message
+    result = [msg.copy() for msg in messages]
+
+    # Find the last user message
+    for i in range(len(result) - 1, -1, -1):
+        if result[i].get("role") == "user":
+            content = result[i].get("content", "")
+            if isinstance(content, str):
+                result[i]["content"] = board_header + content
+            elif isinstance(content, list):
+                # Insert as first text block
+                result[i]["content"] = [{"type": "text", "text": board_header}] + content
+            break
+
+    return result
+
+
 # Backward compatibility aliases (with underscore prefix matching old names)
 # These allow existing code to import from here without changes
 _build_memory_queries = build_memory_queries
@@ -329,3 +473,5 @@ _get_message_content_text = get_message_content_text
 _build_memory_block_text = build_memory_block_text
 _add_cache_control_to_tool_result = add_cache_control_to_tool_result
 _estimate_tool_exchange_tokens = estimate_tool_exchange_tokens
+_consolidate_consecutive_messages = consolidate_consecutive_messages
+_inject_game_board_state = inject_game_board_state

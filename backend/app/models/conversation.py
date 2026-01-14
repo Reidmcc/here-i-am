@@ -39,6 +39,15 @@ class Conversation(Base):
     # or overriding the default system prompt for single-entity conversations
     entity_system_prompts: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
+    # External link fields for connecting conversations to external services (e.g., OGS games)
+    # external_link_type: Type of external link (e.g., "ogs_game", "github_issue")
+    external_link_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    # external_link_id: Unique identifier for the external resource (e.g., OGS game ID)
+    external_link_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # external_link_metadata: Additional metadata about the external link (JSON)
+    # For OGS games: {"opponent": "username", "color": "black", "board_size": 19, ...}
+    external_link_metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
     messages: Mapped[List["Message"]] = relationship(
         "Message", back_populates="conversation", cascade="all, delete-orphan"
     )
