@@ -42,13 +42,18 @@ export function setCallbacks(cbs) {
  * Load entities from the API
  */
 export async function loadEntities() {
+    console.log('[Entities] Starting loadEntities...');
     try {
+        console.log('[Entities] Calling api.listEntities()...');
         const response = await api.listEntities();
+        console.log('[Entities] API response:', response);
         // API returns { entities: [...], default_entity: "..." }
         const entities = response.entities || [];
+        console.log('[Entities] Parsed entities:', entities);
         state.entities = entities;
 
         // Update entity selector
+        console.log('[Entities] entitySelect element:', elements.entitySelect);
         if (elements.entitySelect) {
             elements.entitySelect.innerHTML = '';
 
@@ -95,12 +100,15 @@ export async function loadEntities() {
         updateEntityDescription();
 
         // Trigger callback
+        console.log('[Entities] Triggering onEntityLoaded callback...');
         if (callbacks.onEntityLoaded) {
             callbacks.onEntityLoaded(entities);
         }
+        console.log('[Entities] loadEntities completed successfully');
 
     } catch (error) {
-        console.error('Failed to load entities:', error);
+        console.error('[Entities] Failed to load entities:', error);
+        console.error('[Entities] Error details:', error.message, error.stack);
     }
 }
 
