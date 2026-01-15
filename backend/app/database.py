@@ -193,4 +193,6 @@ async def init_db():
         # First run migrations on existing tables
         await run_migrations(conn)
         # Then create any new tables
+        # Import all models to ensure they're registered with Base.metadata
+        from app import models  # noqa: F401 - ensures all models are loaded
         await conn.run_sync(Base.metadata.create_all)
