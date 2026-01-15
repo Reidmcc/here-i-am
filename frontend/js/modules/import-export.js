@@ -6,6 +6,9 @@
 import { state } from './state.js';
 import { showToast, escapeHtml, readFileAsText } from './utils.js';
 
+// Reference to global API client
+const api = window.api;
+
 // Element references
 let elements = {};
 

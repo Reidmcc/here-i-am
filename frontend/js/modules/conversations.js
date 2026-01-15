@@ -8,6 +8,9 @@ import { showToast, escapeHtml } from './utils.js';
 import { showModal, hideModal, closeAllDropdowns } from './modals.js';
 import { getEntityLabel } from './entities.js';
 
+// Reference to global API client
+const api = window.api;
+
 // Element references
 let elements = {};
 

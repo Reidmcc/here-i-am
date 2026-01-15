@@ -13,6 +13,9 @@ import {
 import { hasAttachments, getAttachmentsForRequest, clearAttachments, buildDisplayContentWithAttachments } from './attachments.js';
 import { handleMemoryUpdate } from './memories.js';
 
+// Reference to global API client
+const api = window.api;
+
 // Element references
 let elements = {};
 

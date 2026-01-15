@@ -7,6 +7,9 @@ import { state, loadSelectedVoiceFromStorage, saveSelectedVoiceToStorage, clearA
 import { showToast, escapeHtml, stripMarkdown } from './utils.js';
 import { showModal, hideModal } from './modals.js';
 
+// Reference to global API client
+const api = window.api;
+
 // Element references
 let elements = {};
 

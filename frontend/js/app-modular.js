@@ -153,6 +153,9 @@ import {
     initBoard as initGoBoard
 } from './modules/go-game-ui.js';
 
+// Reference to global API client
+const api = window.api;
+
 /**
  * Main Application Class
  * Coordinates all modules and handles initialization

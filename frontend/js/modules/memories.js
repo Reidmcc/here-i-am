@@ -7,6 +7,9 @@ import { state } from './state.js';
 import { escapeHtml, truncateText, showToast } from './utils.js';
 import { showModal } from './modals.js';
 
+// Reference to global API client
+const api = window.api;
+
 // Element references
 let elements = {};
 

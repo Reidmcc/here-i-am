@@ -7,6 +7,9 @@ import { state, saveEntitySystemPromptsToStorage } from './state.js';
 import { showToast, escapeHtml } from './utils.js';
 import { showModal, hideModal, closeAllDropdowns } from './modals.js';
 
+// Reference to global API client
+const api = window.api;
+
 // Element references
 let elements = {};
 
