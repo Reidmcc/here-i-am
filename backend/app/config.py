@@ -292,7 +292,9 @@ class Settings(BaseSettings):
     # OGS (Online-Go Server) Integration settings
     # Enable OGS integration for playing Go games
     ogs_enabled: bool = False
-    # OAuth client credentials for OGS API
+    # API Key for OGS (RECOMMENDED - generated from bot profile page after moderator approval)
+    ogs_api_key: str = ""
+    # OAuth client credentials for OGS API (ALTERNATIVE - may have limited support)
     ogs_client_id: str = ""
     ogs_client_secret: str = ""
     # Bot username on OGS (used for identification)
