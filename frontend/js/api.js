@@ -688,5 +688,6 @@ class ApiClient {
     }
 }
 
-// Export singleton instance
+// Export singleton instance as global (needed for ES6 modules)
 const api = new ApiClient();
+window.api = api;
