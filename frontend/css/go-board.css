@@ -1,0 +1,435 @@
+/**
+ * Go Board Styles
+ * 
+ * Styles for the Go game interface, including:
+ * - Side-by-side layout (board + conversation)
+ * - Board container and SVG styling
+ * - Game info panel
+ * - Game controls
+ * - New game dialog
+ */
+
+/* === Side-by-side Layout === */
+
+.chat-area.with-go-game {
+    display: grid;
+    grid-template-columns: 1fr 400px;
+    grid-template-rows: auto 1fr auto;
+    gap: 0;
+}
+
+.chat-area.with-go-game .chat-header {
+    grid-column: 1 / -1;
+}
+
+.chat-area.with-go-game .messages-container {
+    grid-column: 1;
+    grid-row: 2;
+    border-right: 1px solid var(--border-color);
+}
+
+.chat-area.with-go-game .input-area {
+    grid-column: 1;
+    grid-row: 3;
+}
+
+.chat-area.with-go-game .go-panel {
+    grid-column: 2;
+    grid-row: 2 / 4;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    overflow: hidden;
+}
+
+/* === Go Panel === */
+
+.go-panel {
+    display: none;
+}
+
+.go-panel.active {
+    display: flex;
+}
+
+.go-panel-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--bg-tertiary);
+}
+
+.go-panel-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.go-panel-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.go-panel-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.go-panel-btn:hover {
+    background: var(--hover-overlay);
+    color: var(--text-primary);
+}
+
+.go-panel-btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+.go-panel-btn.primary:hover {
+    background: var(--accent-hover);
+}
+
+.go-panel-btn.danger {
+    color: var(--danger);
+    border-color: var(--danger);
+}
+
+.go-panel-btn.danger:hover {
+    background: var(--danger);
+    color: white;
+}
+
+/* === Board Container === */
+
+.go-board-container {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: var(--bg-primary);
+    min-height: 300px;
+}
+
+.go-board-svg {
+    width: 100%;
+    max-width: 360px;
+    height: auto;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px var(--shadow);
+}
+
+.go-board-background {
+    /* Wood color set in JS, but can be themed */
+}
+
+/* Dark mode board adjustments */
+@media (prefers-color-scheme: light) {
+    .go-board-container {
+        background: var(--bg-tertiary);
+    }
+}
+
+/* === Game Info Panel === */
+
+.go-game-info {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-color);
+    background: var(--bg-tertiary);
+}
+
+.go-info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+    font-size: 13px;
+}
+
+.go-info-label {
+    color: var(--text-muted);
+}
+
+.go-info-value {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.go-info-value.highlight {
+    color: var(--accent);
+}
+
+.go-captures {
+    display: flex;
+    gap: 16px;
+}
+
+.go-capture-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.go-stone-icon {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1px solid var(--border-color);
+}
+
+.go-stone-icon.black {
+    background: #111;
+}
+
+.go-stone-icon.white {
+    background: #f5f5f5;
+}
+
+/* === Game Controls === */
+
+.go-controls {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    background: var(--bg-secondary);
+}
+
+.go-control-btn {
+    flex: 1;
+    padding: 8px 12px;
+    font-size: 13px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.go-control-btn:hover:not(:disabled) {
+    background: var(--hover-overlay);
+    border-color: var(--accent);
+}
+
+.go-control-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* === Turn Indicator === */
+
+.go-turn-indicator {
+    padding: 8px 16px;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 500;
+    background: var(--accent-subtle);
+    color: var(--accent);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.go-turn-indicator.waiting {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+}
+
+.go-turn-indicator.your-turn {
+    background: var(--success);
+    background: rgba(76, 175, 124, 0.15);
+    color: var(--success);
+}
+
+.go-turn-indicator.finished {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+}
+
+/* === New Game Dialog === */
+
+.go-new-game-dialog {
+    display: none;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: var(--bg-elevated);
+    border-radius: 8px;
+    padding: 24px;
+    min-width: 320px;
+    box-shadow: 0 4px 20px var(--shadow-lg);
+    z-index: 1001;
+}
+
+.go-new-game-dialog.active {
+    display: block;
+}
+
+.go-new-game-dialog h3 {
+    margin: 0 0 20px 0;
+    font-size: 18px;
+    color: var(--text-primary);
+}
+
+.go-dialog-field {
+    margin-bottom: 16px;
+}
+
+.go-dialog-field label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.go-dialog-field select,
+.go-dialog-field input {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.go-dialog-field select:focus,
+.go-dialog-field input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.go-dialog-buttons {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 20px;
+}
+
+/* === Empty State === */
+
+.go-empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    text-align: center;
+}
+
+.go-empty-state p {
+    color: var(--text-muted);
+    margin-bottom: 16px;
+}
+
+/* === Status Badge === */
+
+.go-status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.go-status-badge.active {
+    background: rgba(76, 175, 124, 0.15);
+    color: var(--success);
+}
+
+.go-status-badge.scoring {
+    background: rgba(229, 165, 76, 0.15);
+    color: var(--warning);
+}
+
+.go-status-badge.finished {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+}
+
+/* === Responsive === */
+
+@media (max-width: 900px) {
+    .chat-area.with-go-game {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto auto 1fr auto;
+    }
+    
+    .chat-area.with-go-game .go-panel {
+        grid-column: 1;
+        grid-row: 2;
+        max-height: 350px;
+        border-bottom: 1px solid var(--border-color);
+    }
+    
+    .chat-area.with-go-game .messages-container {
+        grid-row: 3;
+        border-right: none;
+    }
+    
+    .chat-area.with-go-game .input-area {
+        grid-row: 4;
+    }
+    
+    .go-board-svg {
+        max-width: 280px;
+    }
+}
+
+/* === Game Result Overlay === */
+
+.go-result-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    z-index: 10;
+}
+
+.go-result-overlay h3 {
+    font-size: 24px;
+    margin-bottom: 8px;
+}
+
+.go-result-overlay p {
+    font-size: 16px;
+    color: rgba(255, 255, 255, 0.8);
+}
+
+/* === Header Game Indicator === */
+
+.conversation-info .go-game-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 12px;
+    padding: 4px 10px;
+    background: var(--accent-subtle);
+    border-radius: 12px;
+    font-size: 12px;
+    color: var(--accent);
+}
+
+.go-game-indicator svg {
+    width: 14px;
+    height: 14px;
+}
