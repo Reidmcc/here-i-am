@@ -17,6 +17,15 @@ from app.services.memory_tools import register_memory_tools, set_memory_tool_con
 from app.services.attachment_service import AttachmentService, attachment_service
 from app.services.codebase_navigator_service import CodebaseNavigatorService, codebase_navigator_service
 from app.services.codebase_navigator_tools import register_codebase_navigator_tools
+from app.services.go_service import GoGameService, go_service
+from app.services.go_context import (
+    get_active_game_for_conversation,
+    build_game_context_block,
+    inject_game_context,
+    parse_move_from_response,
+    execute_ai_move,
+    strip_move_command,
+)
 
 # Register tools at module load time
 register_web_tools(tool_service)
@@ -45,6 +54,7 @@ __all__ = [
     "NotesService",
     "AttachmentService",
     "CodebaseNavigatorService",
+    "GoGameService",
     # Singleton instances
     "anthropic_service",
     "openai_service",
@@ -60,6 +70,7 @@ __all__ = [
     "notes_service",
     "attachment_service",
     "codebase_navigator_service",
+    "go_service",
     # Tool registration functions
     "register_web_tools",
     "register_github_tools",
@@ -69,4 +80,11 @@ __all__ = [
     # Context helpers
     "set_current_entity_label",
     "set_memory_tool_context",
+    # Go game context functions
+    "get_active_game_for_conversation",
+    "build_game_context_block",
+    "inject_game_context",
+    "parse_move_from_response",
+    "execute_ai_move",
+    "strip_move_command",
 ]
