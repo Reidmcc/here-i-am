@@ -2,11 +2,15 @@
 OGS (Online-Go Server) Service for Go game integration.
 
 This service handles:
-- OAuth authentication with OGS
+- API key and OAuth authentication with OGS
 - REST API interactions (game info, moves, chat)
 - Board state conversion to ASCII representation
 - Move parsing from LLM responses
 - Processing game events (your turn notifications)
+
+Authentication methods (in order of preference):
+1. API Key - Recommended. Generated from bot profile after moderator approval.
+2. OAuth client_credentials - Alternative. May have limited support.
 """
 import asyncio
 import logging
@@ -61,16 +65,22 @@ class OGSService:
         self._user_id: Optional[int] = None
         self._active_games: Dict[int, OGSGame] = {}
         self._http_client: Optional[httpx.AsyncClient] = None
+        self._using_api_key: bool = False
 
     @property
     def is_configured(self) -> bool:
         """Check if OGS is properly configured."""
-        return bool(
-            settings.ogs_enabled and
-            settings.ogs_client_id and
-            settings.ogs_client_secret and
-            settings.ogs_entity_id
-        )
+        if not settings.ogs_enabled or not settings.ogs_entity_id:
+            return False
+        # Either API key or OAuth credentials required
+        has_api_key = bool(settings.ogs_api_key)
+        has_oauth = bool(settings.ogs_client_id and settings.ogs_client_secret)
+        return has_api_key or has_oauth
+
+    @property
+    def uses_api_key(self) -> bool:
+        """Check if using API key authentication (preferred)."""
+        return bool(settings.ogs_api_key)
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create the HTTP client."""
@@ -93,15 +103,50 @@ class OGSService:
 
     async def authenticate(self) -> bool:
         """
-        Authenticate with OGS using OAuth client credentials.
+        Authenticate with OGS using API key or OAuth client credentials.
 
+        Prefers API key if configured, falls back to OAuth.
         Returns True if authentication succeeded.
         """
         if not self.is_configured:
             logger.warning("OGS: Not configured, skipping authentication")
             return False
 
-        logger.info("OGS: Authenticating with OAuth")
+        # Prefer API key authentication
+        if self.uses_api_key:
+            return await self._authenticate_api_key()
+        else:
+            return await self._authenticate_oauth()
+
+    async def _authenticate_api_key(self) -> bool:
+        """Authenticate using API key (recommended method)."""
+        logger.info("OGS: Authenticating with API key")
+
+        # API key is used directly as bearer token
+        self._access_token = settings.ogs_api_key
+        self._using_api_key = True
+        # API keys don't expire (set far future expiry)
+        self._token_expires_at = datetime.utcnow() + timedelta(days=365)
+
+        try:
+            # Verify the API key by fetching user info
+            await self._fetch_user_info()
+            logger.info(f"OGS: Authenticated as user {self._user_id} (API key)")
+            return True
+        except httpx.HTTPStatusError as e:
+            logger.error(f"OGS: API key authentication failed: {e.response.status_code} - {e.response.text}")
+            self._access_token = None
+            self._using_api_key = False
+            return False
+        except Exception as e:
+            logger.error(f"OGS: API key authentication error: {e}")
+            self._access_token = None
+            self._using_api_key = False
+            return False
+
+    async def _authenticate_oauth(self) -> bool:
+        """Authenticate using OAuth client credentials (alternative method)."""
+        logger.info("OGS: Authenticating with OAuth client credentials")
 
         client = await self._get_client()
 
@@ -119,6 +164,7 @@ class OGSService:
             data = response.json()
             self._access_token = data["access_token"]
             self._refresh_token = data.get("refresh_token")
+            self._using_api_key = False
             # Set expiry with buffer
             expires_in = data.get("expires_in", 3600)
             self._token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in - 60)
@@ -126,14 +172,14 @@ class OGSService:
             # Get user info
             await self._fetch_user_info()
 
-            logger.info(f"OGS: Authenticated as user {self._user_id}")
+            logger.info(f"OGS: Authenticated as user {self._user_id} (OAuth)")
             return True
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"OGS: Authentication failed: {e.response.status_code} - {e.response.text}")
+            logger.error(f"OGS: OAuth authentication failed: {e.response.status_code} - {e.response.text}")
             return False
         except Exception as e:
-            logger.error(f"OGS: Authentication error: {e}")
+            logger.error(f"OGS: OAuth authentication error: {e}")
             return False
 
     async def _ensure_authenticated(self) -> bool:
@@ -141,8 +187,9 @@ class OGSService:
         if not self._access_token or not self._token_expires_at:
             return await self.authenticate()
 
-        if datetime.utcnow() >= self._token_expires_at:
-            logger.info("OGS: Token expired, re-authenticating")
+        # API keys don't expire, but OAuth tokens do
+        if not self._using_api_key and datetime.utcnow() >= self._token_expires_at:
+            logger.info("OGS: OAuth token expired, re-authenticating")
             return await self.authenticate()
 
         return True
