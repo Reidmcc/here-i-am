@@ -19,7 +19,7 @@ class EntityResponse(BaseModel):
 
 class EntityListResponse(BaseModel):
     entities: List[EntityResponse]
-    default_entity: str
+    default_entity: Optional[str] = None
 
 
 @router.get("/", response_model=EntityListResponse)
@@ -32,6 +32,13 @@ async def list_entities():
     """
     entities = settings.get_entities()
     default_entity = settings.get_default_entity()
+
+    # Handle case when no entities are configured
+    if not entities or not default_entity:
+        return EntityListResponse(
+            entities=[],
+            default_entity=None,
+        )
 
     return EntityListResponse(
         entities=[
