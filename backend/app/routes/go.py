@@ -12,7 +12,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import flag_modified
+from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel, Field
 
 from app.database import get_db
