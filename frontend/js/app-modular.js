@@ -757,7 +757,7 @@ class App {
         if (!this.elements.githubReposContainer) return;
 
         try {
-            const repos = await api.getGitHubRepos();
+            const repos = await api.listGitHubRepos();
             if (repos && repos.length > 0) {
                 this.elements.githubReposContainer.innerHTML = repos.map(repo => `
                     <div class="github-repo-item">

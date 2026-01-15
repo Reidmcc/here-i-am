@@ -295,8 +295,8 @@ html, body {
 
 .conversation-item:hover .conversation-menu-btn,
 .conversation-menu-btn:focus,
-.conversation-dropdown.open + .conversation-menu-btn,
-.conversation-item-menu:has(.conversation-dropdown.open) .conversation-menu-btn {
+.conversation-dropdown.active + .conversation-menu-btn,
+.conversation-item-menu:has(.conversation-dropdown.active) .conversation-menu-btn {
     opacity: 1;
 }
 
@@ -329,7 +329,7 @@ html, body {
     overflow: hidden;
 }
 
-.conversation-dropdown.open {
+.conversation-dropdown.active {
     display: block;
 }
 
