@@ -573,6 +573,38 @@ The application integrates with **OGS (Online-Go.com)** to enable AI entities to
 - **Game Channel (Mechanical)**: Moves occur asynchronously. The entity receives notifications when it's their turn and responds with moves.
 - **Conversation Channel (Relational)**: A linked conversation where participants communicate freely, not gated by move events.
 
+**Setup Guide:**
+
+1. **Create an OGS account for your bot:**
+   - Go to https://online-go.com and click "Sign Up"
+   - Create a NEW account specifically for your bot (not your personal account)
+   - Use a username that clearly identifies it as a bot (e.g., "MyBot" or "AIResearchBot")
+   - Verify your email address
+   - Note down this username for `OGS_BOT_USERNAME`
+
+2. **Register an OAuth application:**
+   - Log into OGS with your bot account
+   - Go to https://online-go.com/oauth2/applications/
+   - Click "New Application"
+   - Fill in the form with these **required settings**:
+     - **Name**: A descriptive name (e.g., "Here I Am Go Bot")
+     - **Client Type**: Select **"Confidential"** (IMPORTANT - not "Public")
+     - **Authorization Grant Type**: Select **"Client credentials"**
+     - **Redirect URIs**: Enter `http://localhost:8000/oauth/callback` (required but not used)
+   - Click "Save"
+   - **IMPORTANT**: Copy the "Client ID" and "Client Secret" immediately - the secret may only be shown once
+
+3. **Configure environment variables** (see Configuration below)
+
+**Troubleshooting:**
+- **Error "invalid_client"**: This means OAuth credentials are rejected. Check that:
+  1. Client ID and Secret are copied exactly (no extra spaces)
+  2. Client Type is set to "Confidential" (not "Public")
+  3. Authorization Grant Type includes "Client credentials"
+  4. The OAuth application belongs to the same account as `OGS_BOT_USERNAME`
+- **Error "unauthorized"**: Token expired - the app will auto-refresh
+- **No game events received**: Ensure the bot account has active games
+
 **Configuration:**
 ```bash
 # Enable OGS integration
@@ -589,6 +621,25 @@ OGS_AUTO_ACCEPT_CHALLENGES=true
 OGS_ACCEPTED_BOARD_SIZES=9,13,19
 OGS_ACCEPTED_TIME_CONTROLS=live,correspondence,blitz
 ```
+
+**Initiating Games:**
+
+*Option A: Challenge the bot from another OGS account*
+1. Log into OGS with a different account (not the bot account)
+2. Visit the bot's profile at `https://online-go.com/player/{bot_user_id}`
+3. Click "Challenge" and configure the game settings
+4. The bot will auto-accept if `OGS_AUTO_ACCEPT_CHALLENGES=true` and the settings match accepted board sizes and time controls
+
+*Option B: Create a game via OGS website with the bot account*
+1. Log into OGS as the bot
+2. Go to "Play" and create or accept a game
+3. The application will detect the game on next startup or via socket events
+
+**Linking Games to Conversations:**
+- Use the REST API to link games to conversations:
+  - `POST /api/games/{game_id}/link` with body `{"conversation_id": "uuid"}`
+- Once linked, the AI's move commentary appears in the conversation
+- The conversation channel is for free-form discussion (not move-gated)
 
 **How It Works:**
 
