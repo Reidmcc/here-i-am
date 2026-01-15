@@ -400,6 +400,12 @@ async def go_analyze_position(game_id: Optional[str] = None) -> str:
 def register_go_tools(tool_service: ToolService) -> None:
     """Register all Go game tools with the tool service."""
 
+    if not settings.go_tools_enabled:
+        logger.info("Go game tools disabled (GO_TOOLS_ENABLED=false)")
+        return
+
+    logger.info("Registering Go game tools")
+
     # go_get_board
     tool_service.register_tool(
         name="go_get_board",

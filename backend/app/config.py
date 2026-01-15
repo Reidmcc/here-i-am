@@ -252,6 +252,10 @@ class Settings(BaseSettings):
     #             "protected_branches": ["main", "master"], "capabilities": ["read", "branch", "commit", "pr", "issue"]}
     github_repos: str = ""
 
+    # Go Game Tools settings
+    # Enable Go game tools for AI entities (allows AI to play Go during conversations)
+    go_tools_enabled: bool = True
+
     # Entity Notes settings
     # Enable persistent notes for AI entities
     notes_enabled: bool = True

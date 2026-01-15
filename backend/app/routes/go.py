@@ -12,6 +12,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import flag_modified
 from pydantic import BaseModel, Field
 
 from app.database import get_db
@@ -314,6 +315,7 @@ async def make_move(game_id: str, data: MoveRequest, db: AsyncSession = Depends(
 
     # Update game state
     game.board_state = move_result["board_state"]
+    flag_modified(game, "board_state")  # Ensure SQLAlchemy detects the JSON mutation
     game.ko_point = move_result.get("ko_point")
     game.move_history = go_service.add_move_to_history(
         game.move_history,

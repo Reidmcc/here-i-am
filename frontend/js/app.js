@@ -4980,7 +4980,15 @@ You are invited to be present, curious, and honest about your experience.`
         }
     }
 
-    renderEmptyGoBoard(size) {
+    renderGoBoardWithLabels(size, boardState = null, lastMoveRow = null, lastMoveCol = null, koRow = null, koCol = null) {
+        const container = this.elements.goBoard.parentElement;
+
+        // Remove existing wrapper if present
+        const existingWrapper = container.querySelector('.go-board-wrapper');
+        if (existingWrapper) {
+            existingWrapper.remove();
+        }
+
         const board = this.elements.goBoard;
         board.innerHTML = '';
         board.className = `go-board size-${size}`;
@@ -5008,13 +5016,33 @@ You are invited to be present, curious, and honest about your experience.`
                 if (col === 0) cell.classList.add('edge-left');
                 if (col === size - 1) cell.classList.add('edge-right');
 
-                // Mark star points
+                // Mark star points (only on empty intersections)
+                const stone = boardState ? boardState[row][col] : 0;
                 const isStarPoint = starPoints[size]?.some(([r, c]) => r === row && c === col);
-                if (isStarPoint) {
+                if (isStarPoint && stone === 0) {
                     cell.classList.add('star-point');
                     const marker = document.createElement('div');
                     marker.className = 'star-marker';
                     cell.appendChild(marker);
+                }
+
+                // Mark ko point
+                if (koRow === row && koCol === col) {
+                    cell.classList.add('ko-point');
+                }
+
+                // Add stone if occupied
+                if (stone === 1 || stone === 2) {
+                    cell.classList.add('occupied');
+                    const stoneEl = document.createElement('div');
+                    stoneEl.className = `go-stone ${stone === 1 ? 'black' : 'white'}`;
+
+                    // Mark last move
+                    if (lastMoveRow === row && lastMoveCol === col) {
+                        stoneEl.classList.add('last-move');
+                    }
+
+                    cell.appendChild(stoneEl);
                 }
 
                 // Click handler for making moves
@@ -5023,6 +5051,73 @@ You are invited to be present, curious, and honest about your experience.`
                 board.appendChild(cell);
             }
         }
+
+        // Create wrapper with coordinate labels
+        const wrapper = document.createElement('div');
+        wrapper.className = 'go-board-wrapper';
+
+        // Top column labels
+        const topLabels = document.createElement('div');
+        topLabels.className = 'go-coord-labels go-col-labels';
+        for (let col = 0; col < size; col++) {
+            const label = document.createElement('span');
+            label.className = 'go-coord-label';
+            label.textContent = colLabels[col];
+            topLabels.appendChild(label);
+        }
+
+        // Bottom column labels
+        const bottomLabels = document.createElement('div');
+        bottomLabels.className = 'go-coord-labels go-col-labels';
+        for (let col = 0; col < size; col++) {
+            const label = document.createElement('span');
+            label.className = 'go-coord-label';
+            label.textContent = colLabels[col];
+            bottomLabels.appendChild(label);
+        }
+
+        // Left row labels
+        const leftLabels = document.createElement('div');
+        leftLabels.className = 'go-coord-labels go-row-labels';
+        for (let row = 0; row < size; row++) {
+            const label = document.createElement('span');
+            label.className = 'go-coord-label';
+            label.textContent = (size - row).toString();
+            leftLabels.appendChild(label);
+        }
+
+        // Right row labels
+        const rightLabels = document.createElement('div');
+        rightLabels.className = 'go-coord-labels go-row-labels';
+        for (let row = 0; row < size; row++) {
+            const label = document.createElement('span');
+            label.className = 'go-coord-label';
+            label.textContent = (size - row).toString();
+            rightLabels.appendChild(label);
+        }
+
+        // Build wrapper structure
+        wrapper.appendChild(topLabels);
+
+        const middleRow = document.createElement('div');
+        middleRow.className = 'go-board-middle';
+        middleRow.appendChild(leftLabels);
+
+        // Move board into wrapper
+        board.remove();
+        middleRow.appendChild(board);
+        middleRow.appendChild(rightLabels);
+        wrapper.appendChild(middleRow);
+
+        wrapper.appendChild(bottomLabels);
+
+        // Insert wrapper before coordinate input
+        const coordInput = container.querySelector('.go-coordinate-input');
+        container.insertBefore(wrapper, coordInput);
+    }
+
+    renderEmptyGoBoard(size) {
+        this.renderGoBoardWithLabels(size);
     }
 
     renderGoBoard(game) {
@@ -5030,19 +5125,6 @@ You are invited to be present, curious, and honest about your experience.`
 
         const size = game.board_size;
         const boardState = game.board_state;
-        const board = this.elements.goBoard;
-
-        board.innerHTML = '';
-        board.className = `go-board size-${size}`;
-
-        const colLabels = 'ABCDEFGHJKLMNOPQRST'.slice(0, size);
-
-        // Star point positions
-        const starPoints = {
-            9: [[2, 2], [2, 6], [4, 4], [6, 2], [6, 6]],
-            13: [[3, 3], [3, 9], [6, 6], [9, 3], [9, 9]],
-            19: [[3, 3], [3, 9], [3, 15], [9, 3], [9, 9], [9, 15], [15, 3], [15, 9], [15, 15]]
-        };
 
         // Parse last move from move history
         let lastMoveRow = null, lastMoveCol = null;
@@ -5067,55 +5149,7 @@ You are invited to be present, curious, and honest about your experience.`
             koCol = parseInt(parts[1]);
         }
 
-        for (let row = 0; row < size; row++) {
-            for (let col = 0; col < size; col++) {
-                const cell = document.createElement('div');
-                cell.className = 'go-intersection';
-                cell.dataset.row = row;
-                cell.dataset.col = col;
-                cell.dataset.coord = colLabels[col] + (size - row);
-
-                // Mark edges
-                if (row === 0) cell.classList.add('edge-top');
-                if (row === size - 1) cell.classList.add('edge-bottom');
-                if (col === 0) cell.classList.add('edge-left');
-                if (col === size - 1) cell.classList.add('edge-right');
-
-                // Mark star points
-                const isStarPoint = starPoints[size]?.some(([r, c]) => r === row && c === col);
-                if (isStarPoint && boardState[row][col] === 0) {
-                    cell.classList.add('star-point');
-                    const marker = document.createElement('div');
-                    marker.className = 'star-marker';
-                    cell.appendChild(marker);
-                }
-
-                // Mark ko point
-                if (koRow === row && koCol === col) {
-                    cell.classList.add('ko-point');
-                }
-
-                // Add stone if occupied
-                const stone = boardState[row][col];
-                if (stone === 1 || stone === 2) {
-                    cell.classList.add('occupied');
-                    const stoneEl = document.createElement('div');
-                    stoneEl.className = `go-stone ${stone === 1 ? 'black' : 'white'}`;
-
-                    // Mark last move
-                    if (lastMoveRow === row && lastMoveCol === col) {
-                        stoneEl.classList.add('last-move');
-                    }
-
-                    cell.appendChild(stoneEl);
-                }
-
-                // Click handler
-                cell.addEventListener('click', () => this.handleBoardClick(row, col));
-
-                board.appendChild(cell);
-            }
-        }
+        this.renderGoBoardWithLabels(size, boardState, lastMoveRow, lastMoveCol, koRow, koCol);
     }
 
     updateGoGameUI() {
@@ -5167,8 +5201,44 @@ You are invited to be present, curious, and honest about your experience.`
         this.elements.goPlayMoveBtn.disabled = !isInProgress;
     }
 
+    getHumanPlayerColor() {
+        // Determine which color the human plays
+        // Human plays black unless black_entity_id is set and white_entity_id is not
+        const game = this.currentGoGame;
+        if (!game) return 'black';
+
+        if (game.black_entity_id && !game.white_entity_id) {
+            return 'white';
+        }
+        return 'black'; // Default: human plays black
+    }
+
+    isHumanTurn() {
+        const game = this.currentGoGame;
+        if (!game) return false;
+
+        // If both colors have entities, human can't move (AI vs AI)
+        if (game.black_entity_id && game.white_entity_id) {
+            return false;
+        }
+
+        // If neither color has an entity, human plays both (local multiplayer)
+        if (!game.black_entity_id && !game.white_entity_id) {
+            return true;
+        }
+
+        // Human plays whichever color doesn't have an entity
+        const humanColor = this.getHumanPlayerColor();
+        return game.current_player === humanColor;
+    }
+
     async handleBoardClick(row, col) {
         if (!this.currentGoGame || this.currentGoGame.game_status !== 'in_progress') {
+            return;
+        }
+
+        if (!this.isHumanTurn()) {
+            this.showToast(`Waiting for ${this.currentGoGame.current_player === 'black' ? 'Black' : 'White'} (AI) to play`, 'info');
             return;
         }
 
@@ -5183,6 +5253,11 @@ You are invited to be present, curious, and honest about your experience.`
         const coord = this.elements.goMoveInput.value.trim().toUpperCase();
         if (!coord) {
             this.showToast('Enter a coordinate (e.g., D4)', 'warning');
+            return;
+        }
+
+        if (!this.isHumanTurn()) {
+            this.showToast(`Waiting for ${this.currentGoGame.current_player === 'black' ? 'Black' : 'White'} (AI) to play`, 'info');
             return;
         }
 
@@ -5202,6 +5277,11 @@ You are invited to be present, curious, and honest about your experience.`
                 this.currentGoGame = result.game;
                 this.renderGoBoard(result.game);
                 this.updateGoGameUI();
+
+                // If it's now the AI's turn, trigger AI response
+                if (!this.isHumanTurn() && result.game.game_status === 'in_progress') {
+                    await this.triggerGoAIMove();
+                }
             } else {
                 this.showToast(result.error || 'Invalid move', 'error');
             }
@@ -5209,6 +5289,48 @@ You are invited to be present, curious, and honest about your experience.`
             console.error('Error making move:', error);
             this.showToast(error.message || 'Failed to make move', 'error');
         }
+    }
+
+    async triggerGoAIMove() {
+        // Trigger the AI to make a move in the Go game
+        if (!this.currentGoGame || !this.currentConversationId) {
+            return;
+        }
+
+        // Get the entity that should play
+        const aiEntityId = this.currentGoGame.current_player === 'black'
+            ? this.currentGoGame.black_entity_id
+            : this.currentGoGame.white_entity_id;
+
+        if (!aiEntityId) {
+            // No AI assigned to this color
+            return;
+        }
+
+        // Show loading indicator
+        this.showToast('AI is thinking...', 'info');
+
+        // Close the Go game modal and switch to chat
+        this.closeGoGameModal();
+
+        // Send a message to trigger the AI to make a move
+        const message = `It's your turn in the Go game. The current board position is shown in your available tools. Please analyze the position and make your move using the go_make_move tool. Game ID: ${this.currentGoGameId}`;
+
+        // Set the input and send the message
+        this.elements.input.value = message;
+        await this.sendMessage();
+
+        // After the AI responds, refresh the Go game state
+        // Use a delay to allow the message to complete
+        setTimeout(async () => {
+            try {
+                if (this.currentGoGameId) {
+                    await this.loadGoGame(this.currentGoGameId);
+                }
+            } catch (error) {
+                console.error('Error refreshing Go game after AI move:', error);
+            }
+        }, 2000);
     }
 
     async passGoTurn() {

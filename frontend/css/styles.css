@@ -2970,6 +2970,53 @@ h4.md-header {
     gap: 12px;
 }
 
+/* Go Board Wrapper with Coordinate Labels */
+.go-board-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+.go-board-middle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.go-coord-labels {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.go-col-labels {
+    flex-direction: row;
+    padding-left: 20px;
+    padding-right: 20px;
+}
+
+.go-row-labels {
+    flex-direction: column;
+    width: 16px;
+}
+
+.go-coord-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-align: center;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.go-row-labels .go-coord-label {
+    width: 16px;
+}
+
 /* Go Board */
 .go-board {
     display: grid;

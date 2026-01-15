@@ -18,11 +18,12 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity
+from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity, GoGame, GameStatus
 from app.services import memory_service, llm_service
 from app.services.tool_service import tool_service, ToolResult
 from app.services.notes_tools import set_current_entity_label
 from app.services.memory_tools import set_memory_tool_context
+from app.services.go_tools import set_go_game_context
 from app.config import settings
 
 # Import from split modules
@@ -750,6 +751,22 @@ class SessionManager:
         if session.entity_id:
             set_memory_tool_context(session.entity_id, session.conversation_id)
             logger.debug(f"[MEMORY] Set memory tool context: entity_id={session.entity_id}, conversation_id={session.conversation_id[:8]}...")
+
+        # Set context for Go game tools - find any in-progress game for this conversation
+        if settings.go_tools_enabled:
+            go_game_result = await db.execute(
+                select(GoGame)
+                .where(GoGame.conversation_id == session.conversation_id)
+                .where(GoGame.game_status == GameStatus.IN_PROGRESS)
+                .order_by(GoGame.created_at.desc())
+            )
+            active_go_game = go_game_result.scalar_one_or_none()
+            if active_go_game:
+                set_go_game_context(active_go_game.id, db)
+                logger.info(f"[GO] Set Go game context: game_id={active_go_game.id}")
+            else:
+                set_go_game_context(None, db)
+                logger.debug(f"[GO] No active Go game for conversation")
 
         # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
         # Validate both that Pinecone is configured AND the entity_id is valid
