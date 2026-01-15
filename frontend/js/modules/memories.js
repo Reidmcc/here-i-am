@@ -210,7 +210,7 @@ export async function showMemoriesModal() {
 /**
  * Load memory statistics
  */
-async function loadMemoryStats() {
+export async function loadMemoryStats() {
     try {
         const stats = await api.getMemoryStats(state.selectedEntityId);
         const statsEl = document.getElementById('memory-stats');
@@ -242,7 +242,7 @@ async function loadMemoryStats() {
 /**
  * Load memory list
  */
-async function loadMemoryList() {
+export async function loadMemoryList() {
     try {
         const memories = await api.listMemories({
             limit: 50,
