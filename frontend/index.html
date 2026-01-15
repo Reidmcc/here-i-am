@@ -48,6 +48,7 @@
                     <span id="conversation-meta" class="conversation-meta"></span>
                 </div>
                 <div class="header-actions">
+                    <button id="go-game-btn" class="icon-btn" title="Go Game">Go</button>
                     <button id="export-btn" class="icon-btn" title="Export conversation">Export</button>
                     <button id="archive-btn" class="icon-btn" title="Archive conversation">Archive</button>
                 </div>
@@ -666,6 +667,77 @@
         <label class="responder-prompt">Who should respond?</label>
         <div class="entity-responder-buttons" id="entity-responder-buttons">
             <!-- Entity buttons will be populated dynamically -->
+        </div>
+    </div>
+
+    <!-- Go Game Modal -->
+    <div class="modal" id="go-game-modal">
+        <div class="modal-content go-game-modal-content">
+            <div class="modal-header">
+                <h3>Go Game</h3>
+                <button class="close-btn" id="close-go-game">&times;</button>
+            </div>
+            <div class="modal-body go-game-body">
+                <!-- Game Controls -->
+                <div class="go-game-controls">
+                    <div class="go-game-info">
+                        <span id="go-current-player" class="go-player-indicator">Black to play</span>
+                        <span id="go-move-count">Move: 0</span>
+                    </div>
+                    <div class="go-captures">
+                        <span class="go-capture-black">Black captures: <span id="go-black-captures">0</span></span>
+                        <span class="go-capture-white">White captures: <span id="go-white-captures">0</span></span>
+                    </div>
+                    <div class="go-game-status" id="go-game-status"></div>
+                </div>
+
+                <!-- Go Board -->
+                <div class="go-board-container">
+                    <div class="go-board" id="go-board">
+                        <!-- Board will be rendered dynamically -->
+                    </div>
+                    <div class="go-coordinate-input">
+                        <input type="text" id="go-move-input" placeholder="Enter move (e.g., D4)" maxlength="3">
+                        <button id="go-play-move-btn" class="primary-btn">Play</button>
+                    </div>
+                </div>
+
+                <!-- Game Actions -->
+                <div class="go-game-actions">
+                    <button id="go-pass-btn" class="secondary-btn">Pass</button>
+                    <button id="go-resign-btn" class="danger-btn">Resign</button>
+                    <button id="go-score-btn" class="secondary-btn" disabled>Score Game</button>
+                </div>
+
+                <!-- New Game Section -->
+                <div class="go-new-game-section">
+                    <details>
+                        <summary>Start New Game</summary>
+                        <div class="go-new-game-options">
+                            <div class="form-group">
+                                <label for="go-board-size">Board Size</label>
+                                <select id="go-board-size">
+                                    <option value="19">19×19 (Standard)</option>
+                                    <option value="13">13×13</option>
+                                    <option value="9">9×9 (Beginner)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="go-komi">Komi</label>
+                                <input type="number" id="go-komi" value="6.5" step="0.5" min="0" max="10">
+                            </div>
+                            <div class="form-group">
+                                <label for="go-scoring">Scoring Method</label>
+                                <select id="go-scoring">
+                                    <option value="japanese">Japanese (Territory)</option>
+                                    <option value="chinese">Chinese (Area)</option>
+                                </select>
+                            </div>
+                            <button id="go-new-game-btn" class="primary-btn">Create Game</button>
+                        </div>
+                    </details>
+                </div>
+            </div>
         </div>
     </div>
 

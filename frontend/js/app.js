@@ -201,6 +201,26 @@ class App {
             githubReposList: document.getElementById('github-repos-list'),
             githubRateLimits: document.getElementById('github-rate-limits'),
             refreshRateLimitsBtn: document.getElementById('refresh-rate-limits-btn'),
+
+            // Go Game
+            goGameBtn: document.getElementById('go-game-btn'),
+            goGameModal: document.getElementById('go-game-modal'),
+            closeGoGameBtn: document.getElementById('close-go-game'),
+            goBoard: document.getElementById('go-board'),
+            goCurrentPlayer: document.getElementById('go-current-player'),
+            goMoveCount: document.getElementById('go-move-count'),
+            goBlackCaptures: document.getElementById('go-black-captures'),
+            goWhiteCaptures: document.getElementById('go-white-captures'),
+            goGameStatus: document.getElementById('go-game-status'),
+            goMoveInput: document.getElementById('go-move-input'),
+            goPlayMoveBtn: document.getElementById('go-play-move-btn'),
+            goPassBtn: document.getElementById('go-pass-btn'),
+            goResignBtn: document.getElementById('go-resign-btn'),
+            goScoreBtn: document.getElementById('go-score-btn'),
+            goBoardSize: document.getElementById('go-board-size'),
+            goKomi: document.getElementById('go-komi'),
+            goScoring: document.getElementById('go-scoring'),
+            goNewGameBtn: document.getElementById('go-new-game-btn'),
         };
 
         // Attachment state
@@ -237,6 +257,10 @@ class App {
         this.currentSpeakingBtn = null;
         this.audioCache = new Map(); // Cache: messageId -> { blob, url, voiceId }
         this.localTtsServerHealthy = false;
+
+        // Go game state
+        this.currentGoGameId = null;
+        this.currentGoGame = null;
 
         this.init();
     }
@@ -607,6 +631,34 @@ class App {
         // GitHub Integration
         if (this.elements.refreshRateLimitsBtn) {
             this.elements.refreshRateLimitsBtn.addEventListener('click', () => this.loadGitHubRateLimits());
+        }
+
+        // Go Game
+        if (this.elements.goGameBtn) {
+            this.elements.goGameBtn.addEventListener('click', () => this.openGoGameModal());
+        }
+        if (this.elements.closeGoGameBtn) {
+            this.elements.closeGoGameBtn.addEventListener('click', () => this.closeGoGameModal());
+        }
+        if (this.elements.goPlayMoveBtn) {
+            this.elements.goPlayMoveBtn.addEventListener('click', () => this.playGoMove());
+        }
+        if (this.elements.goMoveInput) {
+            this.elements.goMoveInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') this.playGoMove();
+            });
+        }
+        if (this.elements.goPassBtn) {
+            this.elements.goPassBtn.addEventListener('click', () => this.passGoTurn());
+        }
+        if (this.elements.goResignBtn) {
+            this.elements.goResignBtn.addEventListener('click', () => this.resignGoGame());
+        }
+        if (this.elements.goScoreBtn) {
+            this.elements.goScoreBtn.addEventListener('click', () => this.scoreGoGame());
+        }
+        if (this.elements.goNewGameBtn) {
+            this.elements.goNewGameBtn.addEventListener('click', () => this.createNewGoGame());
         }
 
         // Global Escape key to close modals
@@ -4877,6 +4929,373 @@ You are invited to be present, curious, and honest about your experience.`
         html = html.replace(/^\s*([-*])\1{2,}\s*$/gm, '<hr class="md-hr">');
 
         return html;
+    }
+
+    // =========================================================================
+    // Go Game Methods
+    // =========================================================================
+
+    async openGoGameModal() {
+        if (!this.currentConversationId) {
+            this.showToast('Please select or create a conversation first', 'warning');
+            return;
+        }
+
+        this.elements.goGameModal.classList.add('active');
+
+        // Try to load existing game for this conversation
+        try {
+            const games = await api.listGoGames(this.currentConversationId, 'in_progress');
+            if (games && games.length > 0) {
+                // Load the most recent in-progress game
+                await this.loadGoGame(games[0].id);
+            } else {
+                // No game, show empty board
+                this.currentGoGame = null;
+                this.currentGoGameId = null;
+                this.renderEmptyGoBoard(19);
+                this.updateGoGameUI();
+            }
+        } catch (error) {
+            console.error('Error loading Go games:', error);
+            this.renderEmptyGoBoard(19);
+            this.updateGoGameUI();
+        }
+    }
+
+    closeGoGameModal() {
+        this.elements.goGameModal.classList.remove('active');
+    }
+
+    async loadGoGame(gameId) {
+        try {
+            const game = await api.getGoGame(gameId);
+            this.currentGoGame = game;
+            this.currentGoGameId = game.id;
+            this.renderGoBoard(game);
+            this.updateGoGameUI();
+        } catch (error) {
+            console.error('Error loading Go game:', error);
+            this.showToast('Failed to load Go game', 'error');
+        }
+    }
+
+    renderEmptyGoBoard(size) {
+        const board = this.elements.goBoard;
+        board.innerHTML = '';
+        board.className = `go-board size-${size}`;
+
+        const colLabels = 'ABCDEFGHJKLMNOPQRST'.slice(0, size);
+
+        // Star point positions for different board sizes
+        const starPoints = {
+            9: [[2, 2], [2, 6], [4, 4], [6, 2], [6, 6]],
+            13: [[3, 3], [3, 9], [6, 6], [9, 3], [9, 9]],
+            19: [[3, 3], [3, 9], [3, 15], [9, 3], [9, 9], [9, 15], [15, 3], [15, 9], [15, 15]]
+        };
+
+        for (let row = 0; row < size; row++) {
+            for (let col = 0; col < size; col++) {
+                const cell = document.createElement('div');
+                cell.className = 'go-intersection';
+                cell.dataset.row = row;
+                cell.dataset.col = col;
+                cell.dataset.coord = colLabels[col] + (size - row);
+
+                // Mark edges
+                if (row === 0) cell.classList.add('edge-top');
+                if (row === size - 1) cell.classList.add('edge-bottom');
+                if (col === 0) cell.classList.add('edge-left');
+                if (col === size - 1) cell.classList.add('edge-right');
+
+                // Mark star points
+                const isStarPoint = starPoints[size]?.some(([r, c]) => r === row && c === col);
+                if (isStarPoint) {
+                    cell.classList.add('star-point');
+                    const marker = document.createElement('div');
+                    marker.className = 'star-marker';
+                    cell.appendChild(marker);
+                }
+
+                // Click handler for making moves
+                cell.addEventListener('click', () => this.handleBoardClick(row, col));
+
+                board.appendChild(cell);
+            }
+        }
+    }
+
+    renderGoBoard(game) {
+        if (!game) return;
+
+        const size = game.board_size;
+        const boardState = game.board_state;
+        const board = this.elements.goBoard;
+
+        board.innerHTML = '';
+        board.className = `go-board size-${size}`;
+
+        const colLabels = 'ABCDEFGHJKLMNOPQRST'.slice(0, size);
+
+        // Star point positions
+        const starPoints = {
+            9: [[2, 2], [2, 6], [4, 4], [6, 2], [6, 6]],
+            13: [[3, 3], [3, 9], [6, 6], [9, 3], [9, 9]],
+            19: [[3, 3], [3, 9], [3, 15], [9, 3], [9, 9], [9, 15], [15, 3], [15, 9], [15, 15]]
+        };
+
+        // Parse last move from move history
+        let lastMoveRow = null, lastMoveCol = null;
+        if (game.move_history) {
+            const moves = game.move_history.split(';').filter(m => m);
+            if (moves.length > 0) {
+                const lastMove = moves[moves.length - 1];
+                const coordMatch = lastMove.match(/\[([a-s])([a-s])\]/);
+                if (coordMatch) {
+                    const sgfCols = 'abcdefghijklmnopqrs';
+                    lastMoveCol = sgfCols.indexOf(coordMatch[1]);
+                    lastMoveRow = sgfCols.indexOf(coordMatch[2]);
+                }
+            }
+        }
+
+        // Parse ko point
+        let koRow = null, koCol = null;
+        if (game.ko_point) {
+            const parts = game.ko_point.split(',');
+            koRow = parseInt(parts[0]);
+            koCol = parseInt(parts[1]);
+        }
+
+        for (let row = 0; row < size; row++) {
+            for (let col = 0; col < size; col++) {
+                const cell = document.createElement('div');
+                cell.className = 'go-intersection';
+                cell.dataset.row = row;
+                cell.dataset.col = col;
+                cell.dataset.coord = colLabels[col] + (size - row);
+
+                // Mark edges
+                if (row === 0) cell.classList.add('edge-top');
+                if (row === size - 1) cell.classList.add('edge-bottom');
+                if (col === 0) cell.classList.add('edge-left');
+                if (col === size - 1) cell.classList.add('edge-right');
+
+                // Mark star points
+                const isStarPoint = starPoints[size]?.some(([r, c]) => r === row && c === col);
+                if (isStarPoint && boardState[row][col] === 0) {
+                    cell.classList.add('star-point');
+                    const marker = document.createElement('div');
+                    marker.className = 'star-marker';
+                    cell.appendChild(marker);
+                }
+
+                // Mark ko point
+                if (koRow === row && koCol === col) {
+                    cell.classList.add('ko-point');
+                }
+
+                // Add stone if occupied
+                const stone = boardState[row][col];
+                if (stone === 1 || stone === 2) {
+                    cell.classList.add('occupied');
+                    const stoneEl = document.createElement('div');
+                    stoneEl.className = `go-stone ${stone === 1 ? 'black' : 'white'}`;
+
+                    // Mark last move
+                    if (lastMoveRow === row && lastMoveCol === col) {
+                        stoneEl.classList.add('last-move');
+                    }
+
+                    cell.appendChild(stoneEl);
+                }
+
+                // Click handler
+                cell.addEventListener('click', () => this.handleBoardClick(row, col));
+
+                board.appendChild(cell);
+            }
+        }
+    }
+
+    updateGoGameUI() {
+        const game = this.currentGoGame;
+
+        if (!game) {
+            this.elements.goCurrentPlayer.textContent = 'No game active';
+            this.elements.goCurrentPlayer.className = 'go-player-indicator';
+            this.elements.goMoveCount.textContent = 'Move: 0';
+            this.elements.goBlackCaptures.textContent = '0';
+            this.elements.goWhiteCaptures.textContent = '0';
+            this.elements.goGameStatus.textContent = '';
+            this.elements.goPassBtn.disabled = true;
+            this.elements.goResignBtn.disabled = true;
+            this.elements.goScoreBtn.disabled = true;
+            this.elements.goPlayMoveBtn.disabled = true;
+            return;
+        }
+
+        const isInProgress = game.game_status === 'in_progress';
+
+        // Current player
+        const playerText = game.current_player === 'black' ? 'Black to play' : 'White to play';
+        this.elements.goCurrentPlayer.textContent = playerText;
+        this.elements.goCurrentPlayer.className = `go-player-indicator ${game.current_player}`;
+
+        // Move count
+        this.elements.goMoveCount.textContent = `Move: ${game.move_count}`;
+
+        // Captures
+        this.elements.goBlackCaptures.textContent = game.black_captures;
+        this.elements.goWhiteCaptures.textContent = game.white_captures;
+
+        // Game status
+        let statusText = '';
+        if (game.game_status === 'finished_resignation') {
+            statusText = `${game.winner.charAt(0).toUpperCase() + game.winner.slice(1)} wins by resignation`;
+        } else if (game.game_status === 'finished_pass') {
+            statusText = 'Game ended - both players passed';
+        } else if (game.game_status === 'finished_scored') {
+            statusText = `${game.winner.charAt(0).toUpperCase() + game.winner.slice(1)} wins! Black: ${game.black_score}, White: ${game.white_score}`;
+        }
+        this.elements.goGameStatus.textContent = statusText;
+
+        // Button states
+        this.elements.goPassBtn.disabled = !isInProgress;
+        this.elements.goResignBtn.disabled = !isInProgress;
+        this.elements.goScoreBtn.disabled = isInProgress;
+        this.elements.goPlayMoveBtn.disabled = !isInProgress;
+    }
+
+    async handleBoardClick(row, col) {
+        if (!this.currentGoGame || this.currentGoGame.game_status !== 'in_progress') {
+            return;
+        }
+
+        const size = this.currentGoGame.board_size;
+        const colLabels = 'ABCDEFGHJKLMNOPQRST'.slice(0, size);
+        const coord = colLabels[col] + (size - row);
+
+        await this.makeGoMove(coord);
+    }
+
+    async playGoMove() {
+        const coord = this.elements.goMoveInput.value.trim().toUpperCase();
+        if (!coord) {
+            this.showToast('Enter a coordinate (e.g., D4)', 'warning');
+            return;
+        }
+
+        await this.makeGoMove(coord);
+        this.elements.goMoveInput.value = '';
+    }
+
+    async makeGoMove(coord) {
+        if (!this.currentGoGameId) {
+            this.showToast('No active game', 'warning');
+            return;
+        }
+
+        try {
+            const result = await api.makeGoMove(this.currentGoGameId, coord);
+            if (result.success && result.game) {
+                this.currentGoGame = result.game;
+                this.renderGoBoard(result.game);
+                this.updateGoGameUI();
+            } else {
+                this.showToast(result.error || 'Invalid move', 'error');
+            }
+        } catch (error) {
+            console.error('Error making move:', error);
+            this.showToast(error.message || 'Failed to make move', 'error');
+        }
+    }
+
+    async passGoTurn() {
+        if (!this.currentGoGameId) return;
+
+        try {
+            const result = await api.passGoTurn(this.currentGoGameId);
+            if (result.success && result.game) {
+                this.currentGoGame = result.game;
+                this.renderGoBoard(result.game);
+                this.updateGoGameUI();
+
+                if (result.game_ended) {
+                    this.showToast('Both players passed - game ended', 'info');
+                }
+            }
+        } catch (error) {
+            console.error('Error passing:', error);
+            this.showToast('Failed to pass', 'error');
+        }
+    }
+
+    async resignGoGame() {
+        if (!this.currentGoGameId) return;
+
+        if (!confirm('Are you sure you want to resign?')) return;
+
+        try {
+            const result = await api.resignGoGame(this.currentGoGameId);
+            if (result.success && result.game) {
+                this.currentGoGame = result.game;
+                this.renderGoBoard(result.game);
+                this.updateGoGameUI();
+                this.showToast(`${result.winner.charAt(0).toUpperCase() + result.winner.slice(1)} wins by resignation`, 'info');
+            }
+        } catch (error) {
+            console.error('Error resigning:', error);
+            this.showToast('Failed to resign', 'error');
+        }
+    }
+
+    async scoreGoGame() {
+        if (!this.currentGoGameId) return;
+
+        try {
+            const result = await api.scoreGoGame(this.currentGoGameId);
+            if (result.success) {
+                this.currentGoGame = result.game;
+                this.renderGoBoard(result.game);
+                this.updateGoGameUI();
+
+                const scoreMsg = `Black: ${result.black_score}, White: ${result.white_score}. ${result.winner.charAt(0).toUpperCase() + result.winner.slice(1)} wins!`;
+                this.showToast(scoreMsg, 'success');
+            }
+        } catch (error) {
+            console.error('Error scoring game:', error);
+            this.showToast('Failed to score game', 'error');
+        }
+    }
+
+    async createNewGoGame() {
+        if (!this.currentConversationId) {
+            this.showToast('Please select or create a conversation first', 'warning');
+            return;
+        }
+
+        const boardSize = parseInt(this.elements.goBoardSize.value);
+        const komi = parseFloat(this.elements.goKomi.value);
+        const scoring = this.elements.goScoring.value;
+
+        try {
+            const game = await api.createGoGame({
+                conversation_id: this.currentConversationId,
+                board_size: boardSize,
+                komi: komi,
+                scoring_method: scoring,
+            });
+
+            this.currentGoGame = game;
+            this.currentGoGameId = game.id;
+            this.renderGoBoard(game);
+            this.updateGoGameUI();
+            this.showToast('New Go game created', 'success');
+        } catch (error) {
+            console.error('Error creating Go game:', error);
+            this.showToast('Failed to create Go game', 'error');
+        }
     }
 }
 

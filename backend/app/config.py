@@ -260,6 +260,15 @@ class Settings(BaseSettings):
     # Shared notes accessible to all entities: {notes_base_dir}/shared/
     notes_base_dir: str = "./notes"
 
+    # Go Game settings
+    # Enable Go game feature for conversations
+    go_enabled: bool = True
+    # Default komi (compensation points for white)
+    # Japanese rules: 6.5, Chinese rules: 7.5
+    go_default_komi: float = 6.5
+    # Default scoring method: "japanese" (territory) or "chinese" (area)
+    go_default_scoring: str = "japanese"
+
     # Codebase Navigator settings
     # Enable codebase navigation tools for AI entities
     # Uses Mistral Devstral for cost-efficient codebase exploration

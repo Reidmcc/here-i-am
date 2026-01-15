@@ -610,6 +610,66 @@ class ApiClient {
         return this.request('/github/rate-limit');
     }
 
+    // Go Game
+    async listGoGames(conversationId = null, status = null) {
+        const params = new URLSearchParams();
+        if (conversationId) params.set('conversation_id', conversationId);
+        if (status) params.set('status', status);
+        const query = params.toString();
+        return this.request(`/go/games${query ? '?' + query : ''}`);
+    }
+
+    async createGoGame(data) {
+        return this.request('/go/games', {
+            method: 'POST',
+            body: data,
+        });
+    }
+
+    async getGoGame(gameId) {
+        return this.request(`/go/games/${gameId}`);
+    }
+
+    async deleteGoGame(gameId) {
+        return this.request(`/go/games/${gameId}`, {
+            method: 'DELETE',
+        });
+    }
+
+    async makeGoMove(gameId, coordinate) {
+        return this.request(`/go/games/${gameId}/move`, {
+            method: 'POST',
+            body: { coordinate },
+        });
+    }
+
+    async passGoTurn(gameId) {
+        return this.request(`/go/games/${gameId}/pass`, {
+            method: 'POST',
+        });
+    }
+
+    async resignGoGame(gameId) {
+        return this.request(`/go/games/${gameId}/resign`, {
+            method: 'POST',
+        });
+    }
+
+    async scoreGoGame(gameId, force = false) {
+        return this.request(`/go/games/${gameId}/score`, {
+            method: 'POST',
+            body: { force },
+        });
+    }
+
+    async getGoGameAscii(gameId) {
+        return this.request(`/go/games/${gameId}/ascii`);
+    }
+
+    async getGoGameHistory(gameId) {
+        return this.request(`/go/games/${gameId}/history`);
+    }
+
     async regenerateStream(data, callbacks = {}) {
         const url = `${API_BASE}/chat/regenerate`;
 

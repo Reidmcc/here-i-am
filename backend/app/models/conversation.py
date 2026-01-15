@@ -54,3 +54,9 @@ class Conversation(Base):
         back_populates="conversation",
         cascade="all, delete-orphan"
     )
+    # Go games associated with this conversation
+    go_games: Mapped[List["GoGame"]] = relationship(
+        "GoGame",
+        back_populates="conversation",
+        cascade="all, delete-orphan"
+    )

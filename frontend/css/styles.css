@@ -2890,3 +2890,369 @@ h4.md-header {
     color: var(--text-muted);
     font-style: italic;
 }
+
+/* ============================================================================
+   Go Game Styles
+   ============================================================================ */
+
+/* Go Game Modal */
+.go-game-modal-content {
+    max-width: 700px;
+    width: 95%;
+}
+
+.go-game-body {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+/* Game Controls */
+.go-game-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 16px;
+    background-color: var(--bg-tertiary);
+    border-radius: 8px;
+}
+
+.go-game-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.go-player-indicator {
+    font-weight: 600;
+    font-size: 1rem;
+}
+
+.go-player-indicator.black {
+    color: var(--text-primary);
+}
+
+.go-player-indicator.white {
+    color: #aaa;
+}
+
+.go-move-count {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.go-captures {
+    display: flex;
+    gap: 20px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.go-game-status {
+    font-size: 0.9rem;
+    color: var(--accent);
+    font-weight: 500;
+    text-align: center;
+    padding: 8px;
+    background-color: var(--bg-primary);
+    border-radius: 4px;
+}
+
+.go-game-status:empty {
+    display: none;
+}
+
+/* Go Board Container */
+.go-board-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+}
+
+/* Go Board */
+.go-board {
+    display: grid;
+    background-color: #dcb35c;
+    padding: 16px;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    position: relative;
+}
+
+.go-board.size-9 {
+    grid-template-columns: repeat(9, 1fr);
+    grid-template-rows: repeat(9, 1fr);
+    gap: 0;
+    width: 270px;
+    height: 270px;
+}
+
+.go-board.size-13 {
+    grid-template-columns: repeat(13, 1fr);
+    grid-template-rows: repeat(13, 1fr);
+    gap: 0;
+    width: 390px;
+    height: 390px;
+}
+
+.go-board.size-19 {
+    grid-template-columns: repeat(19, 1fr);
+    grid-template-rows: repeat(19, 1fr);
+    gap: 0;
+    width: 570px;
+    height: 570px;
+}
+
+/* Board intersection (each cell) */
+.go-intersection {
+    width: 30px;
+    height: 30px;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+/* Draw grid lines */
+.go-intersection::before {
+    content: '';
+    position: absolute;
+    background-color: #5a4a3a;
+}
+
+/* Horizontal line */
+.go-intersection::before {
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 1px;
+    transform: translateY(-50%);
+}
+
+.go-intersection::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    background-color: #5a4a3a;
+    transform: translateX(-50%);
+}
+
+/* Edge intersections - hide lines that go off the board */
+.go-intersection.edge-top::after {
+    top: 50%;
+}
+
+.go-intersection.edge-bottom::after {
+    bottom: 50%;
+}
+
+.go-intersection.edge-left::before {
+    left: 50%;
+}
+
+.go-intersection.edge-right::before {
+    right: 50%;
+}
+
+/* Star points (hoshi) */
+.go-intersection.star-point::before {
+    z-index: 1;
+}
+
+.go-intersection.star-point .star-marker {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    background-color: #5a4a3a;
+    border-radius: 50%;
+    z-index: 2;
+}
+
+/* Go Stones */
+.go-stone {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    z-index: 10;
+    position: relative;
+    box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+.go-stone.black {
+    background: radial-gradient(circle at 30% 30%, #4a4a4a, #1a1a1a);
+}
+
+.go-stone.white {
+    background: radial-gradient(circle at 30% 30%, #ffffff, #d0d0d0);
+    border: 1px solid #aaa;
+}
+
+/* Last move marker */
+.go-stone.last-move::after {
+    content: '';
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+
+.go-stone.black.last-move::after {
+    background-color: #fff;
+}
+
+.go-stone.white.last-move::after {
+    background-color: #333;
+}
+
+/* Ko point marker */
+.go-intersection.ko-point::after {
+    content: '×';
+    position: absolute;
+    color: #c44;
+    font-size: 18px;
+    font-weight: bold;
+    z-index: 5;
+}
+
+/* Hover effect for empty intersections */
+.go-intersection:hover:not(.occupied) {
+    cursor: pointer;
+}
+
+.go-intersection:hover:not(.occupied)::before,
+.go-intersection:hover:not(.occupied)::after {
+    opacity: 0.7;
+}
+
+/* Coordinate input */
+.go-coordinate-input {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.go-coordinate-input input {
+    width: 80px;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    text-transform: uppercase;
+    text-align: center;
+    font-family: var(--font-mono);
+}
+
+/* Game Actions */
+.go-game-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+}
+
+/* New Game Section */
+.go-new-game-section {
+    border-top: 1px solid var(--border-color);
+    padding-top: 16px;
+}
+
+.go-new-game-section summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-weight: 500;
+    padding: 8px 0;
+}
+
+.go-new-game-section summary:hover {
+    color: var(--text-primary);
+}
+
+.go-new-game-options {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding-top: 12px;
+}
+
+.go-new-game-options .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.go-new-game-options label {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.go-new-game-options select,
+.go-new-game-options input {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+/* Board coordinate labels */
+.go-board-labels {
+    display: contents;
+}
+
+.go-label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 500;
+    color: #5a4a3a;
+}
+
+/* Score display */
+.go-score-display {
+    background-color: var(--bg-primary);
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 12px;
+}
+
+.go-score-display h4 {
+    margin: 0 0 12px 0;
+    color: var(--text-primary);
+    font-size: 1rem;
+}
+
+.go-score-details {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    font-size: 0.9rem;
+}
+
+.go-score-details .label {
+    color: var(--text-muted);
+}
+
+.go-score-details .value {
+    color: var(--text-primary);
+    font-weight: 500;
+    text-align: right;
+}
+
+.go-score-winner {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-color);
+    text-align: center;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--accent);
+}
