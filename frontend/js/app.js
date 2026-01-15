@@ -5170,9 +5170,15 @@ You are invited to be present, curious, and honest about your experience.`
         }
 
         const isInProgress = game.game_status === 'in_progress';
+        const isHumanTurn = this.isHumanTurn();
 
-        // Current player
-        const playerText = game.current_player === 'black' ? 'Black to play' : 'White to play';
+        // Current player with AI indicator
+        let playerText = game.current_player === 'black' ? 'Black to play' : 'White to play';
+        if (isInProgress && !isHumanTurn) {
+            playerText += ' (AI thinking...)';
+        } else if (isInProgress && isHumanTurn) {
+            playerText += ' (Your turn)';
+        }
         this.elements.goCurrentPlayer.textContent = playerText;
         this.elements.goCurrentPlayer.className = `go-player-indicator ${game.current_player}`;
 
@@ -5194,11 +5200,12 @@ You are invited to be present, curious, and honest about your experience.`
         }
         this.elements.goGameStatus.textContent = statusText;
 
-        // Button states
-        this.elements.goPassBtn.disabled = !isInProgress;
-        this.elements.goResignBtn.disabled = !isInProgress;
+        // Button states - disable when it's AI's turn
+        const canAct = isInProgress && isHumanTurn;
+        this.elements.goPassBtn.disabled = !canAct;
+        this.elements.goResignBtn.disabled = !isInProgress;  // Can always resign
         this.elements.goScoreBtn.disabled = isInProgress;
-        this.elements.goPlayMoveBtn.disabled = !isInProgress;
+        this.elements.goPlayMoveBtn.disabled = !canAct;
     }
 
     getHumanPlayerColor() {
@@ -5401,12 +5408,18 @@ You are invited to be present, curious, and honest about your experience.`
         const komi = parseFloat(this.elements.goKomi.value);
         const scoring = this.elements.goScoring.value;
 
+        // Assign the current entity as white (AI opponent), human plays black
+        const aiEntityId = this.selectedEntityId && this.selectedEntityId !== 'multi-entity'
+            ? this.selectedEntityId
+            : null;
+
         try {
             const game = await api.createGoGame({
                 conversation_id: this.currentConversationId,
                 board_size: boardSize,
                 komi: komi,
                 scoring_method: scoring,
+                white_entity_id: aiEntityId,  // AI plays white, human plays black
             });
 
             this.currentGoGame = game;
