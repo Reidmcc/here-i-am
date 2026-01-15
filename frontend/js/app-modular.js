@@ -136,6 +136,21 @@ import {
     cancelImport,
     resetImportModal
 } from './modules/import-export.js';
+import {
+    setElements as setGoGameElements,
+    initGoGameController,
+    loadGoGameForConversation,
+    buildGoGameContext,
+    parseGoMoveFromResponse,
+    executeGoAIMove,
+    showGoNewGameModal,
+    hideGoNewGameModal,
+    createGoGame,
+    toggleGoPanel,
+    passGoTurn,
+    resignGoGame,
+    scoreGoGame,
+} from './modules/go-game.js';
 
 // Reference to global API client
 const api = window.api;
@@ -304,6 +319,31 @@ class App {
 
             // Toast container
             toastContainer: document.getElementById('toast-container'),
+
+            // Go Game Panel
+            goPanel: document.getElementById('go-panel'),
+            goNewGameBtn: document.getElementById('go-new-game-btn'),
+            goToggleBtn: document.getElementById('go-toggle-btn'),
+            goTurnIndicator: document.getElementById('go-turn-indicator'),
+            goBoardContainer: document.getElementById('go-board-container'),
+            goEmptyState: document.getElementById('go-empty-state'),
+            goStartGameBtn: document.getElementById('go-start-game-btn'),
+            goGameInfo: document.getElementById('go-game-info'),
+            goMoveCount: document.getElementById('go-move-count'),
+            goBlackCaptures: document.getElementById('go-black-captures'),
+            goWhiteCaptures: document.getElementById('go-white-captures'),
+            goControls: document.getElementById('go-controls'),
+            goPassBtn: document.getElementById('go-pass-btn'),
+            goResignBtn: document.getElementById('go-resign-btn'),
+            goScoreBtn: document.getElementById('go-score-btn'),
+
+            // Go Game Modal
+            goNewGameModal: document.getElementById('go-new-game-modal'),
+            goBoardSize: document.getElementById('go-board-size'),
+            goPlayerColor: document.getElementById('go-player-color'),
+            goKomi: document.getElementById('go-komi'),
+            goCancelNewGame: document.getElementById('go-cancel-new-game'),
+            goCreateGame: document.getElementById('go-create-game'),
         };
     }
 
@@ -366,6 +406,13 @@ class App {
             showMultiEntityModal: () => showMultiEntityModal(),
             copyMessage: (content, btn) => copyMessage(content, btn),
             speakMessage: (content, btn, id) => speakMessage(content, btn, id),
+            getGoGameContext: () => buildGoGameContext(),
+            executeGoMove: async (responseContent) => {
+                const moveInfo = parseGoMoveFromResponse(responseContent);
+                if (moveInfo) {
+                    await executeGoAIMove(moveInfo);
+                }
+            },
         });
 
         // Initialize memory module
@@ -386,6 +433,10 @@ class App {
         setImportExportCallbacks({
             loadConversations: () => loadConversations(),
         });
+
+        // Initialize Go game module
+        setGoGameElements(this.elements);
+        initGoGameController();
     }
 
     /**
@@ -514,11 +565,24 @@ class App {
         this.elements.deleteVoiceBtn?.addEventListener('click', () => deleteVoice());
         document.getElementById('edit-voice-btn')?.addEventListener('click', () => showVoiceEditModal());
 
+        // Go Game Panel
+        this.elements.goNewGameBtn?.addEventListener('click', () => showGoNewGameModal());
+        this.elements.goStartGameBtn?.addEventListener('click', () => showGoNewGameModal());
+        this.elements.goToggleBtn?.addEventListener('click', () => toggleGoPanel());
+        this.elements.goPassBtn?.addEventListener('click', () => passGoTurn());
+        this.elements.goResignBtn?.addEventListener('click', () => resignGoGame());
+        this.elements.goScoreBtn?.addEventListener('click', () => scoreGoGame());
+
+        // Go Game Modal
+        this.elements.goCancelNewGame?.addEventListener('click', () => hideGoNewGameModal());
+        this.elements.goCreateGame?.addEventListener('click', () => createGoGame());
+
         // Global keyboard shortcuts
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 closeActiveModal();
                 closeAllDropdowns();
+                hideGoNewGameModal();
             }
         });
 
@@ -672,9 +736,12 @@ class App {
     /**
      * Handle conversation loaded callback
      */
-    onConversationLoaded(conversation, messages) {
+    async onConversationLoaded(conversation, messages) {
         // Handle input change to update button states
         this.handleInputChange();
+
+        // Load Go game for this conversation
+        await loadGoGameForConversation(conversation.id);
     }
 
     /**
