@@ -201,6 +201,31 @@ class App {
             githubReposList: document.getElementById('github-repos-list'),
             githubRateLimits: document.getElementById('github-rate-limits'),
             refreshRateLimitsBtn: document.getElementById('refresh-rate-limits-btn'),
+
+            // Go Game Panel
+            goPanel: document.getElementById('go-panel'),
+            goNewGameBtn: document.getElementById('go-new-game-btn'),
+            goToggleBtn: document.getElementById('go-toggle-btn'),
+            goTurnIndicator: document.getElementById('go-turn-indicator'),
+            goBoardContainer: document.getElementById('go-board-container'),
+            goEmptyState: document.getElementById('go-empty-state'),
+            goStartGameBtn: document.getElementById('go-start-game-btn'),
+            goGameInfo: document.getElementById('go-game-info'),
+            goMoveCount: document.getElementById('go-move-count'),
+            goBlackCaptures: document.getElementById('go-black-captures'),
+            goWhiteCaptures: document.getElementById('go-white-captures'),
+            goControls: document.getElementById('go-controls'),
+            goPassBtn: document.getElementById('go-pass-btn'),
+            goResignBtn: document.getElementById('go-resign-btn'),
+            goScoreBtn: document.getElementById('go-score-btn'),
+
+            // Go Game Modal
+            goNewGameModal: document.getElementById('go-new-game-modal'),
+            goBoardSize: document.getElementById('go-board-size'),
+            goPlayerColor: document.getElementById('go-player-color'),
+            goKomi: document.getElementById('go-komi'),
+            goCancelNewGame: document.getElementById('go-cancel-new-game'),
+            goCreateGame: document.getElementById('go-create-game'),
         };
 
         // Attachment state
@@ -238,6 +263,13 @@ class App {
         this.audioCache = new Map(); // Cache: messageId -> { blob, url, voiceId }
         this.localTtsServerHealthy = false;
 
+        // Go Game Controller
+        this.goGame = new GoGameController({
+            onGameUpdate: (game) => this.updateGoGameUI(game),
+            onError: (msg) => this.showToast(msg, 'error'),
+            getConversationId: () => this.currentConversationId,
+        });
+
         this.init();
     }
 
@@ -252,6 +284,11 @@ class App {
         await this.loadConfig();
         await this.checkTTSStatus();
         this.updateModelIndicator();
+
+        // Initialize Go board container
+        if (this.elements.goBoardContainer) {
+            this.goGame.initBoard(this.elements.goBoardContainer);
+        }
     }
 
     loadEntitySystemPromptsFromStorage() {
@@ -607,6 +644,34 @@ class App {
         // GitHub Integration
         if (this.elements.refreshRateLimitsBtn) {
             this.elements.refreshRateLimitsBtn.addEventListener('click', () => this.loadGitHubRateLimits());
+        }
+
+        // Go Game Panel
+        if (this.elements.goNewGameBtn) {
+            this.elements.goNewGameBtn.addEventListener('click', () => this.showGoNewGameModal());
+        }
+        if (this.elements.goStartGameBtn) {
+            this.elements.goStartGameBtn.addEventListener('click', () => this.showGoNewGameModal());
+        }
+        if (this.elements.goToggleBtn) {
+            this.elements.goToggleBtn.addEventListener('click', () => this.toggleGoPanel());
+        }
+        if (this.elements.goPassBtn) {
+            this.elements.goPassBtn.addEventListener('click', () => this.goGame.pass());
+        }
+        if (this.elements.goResignBtn) {
+            this.elements.goResignBtn.addEventListener('click', () => this.goGame.resign());
+        }
+        if (this.elements.goScoreBtn) {
+            this.elements.goScoreBtn.addEventListener('click', () => this.goGame.score());
+        }
+
+        // Go Game Modal
+        if (this.elements.goCancelNewGame) {
+            this.elements.goCancelNewGame.addEventListener('click', () => this.hideGoNewGameModal());
+        }
+        if (this.elements.goCreateGame) {
+            this.elements.goCreateGame.addEventListener('click', () => this.createGoGame());
         }
 
         // Global Escape key to close modals
@@ -1671,12 +1736,19 @@ class App {
         const streamingMessage = this.createStreamingMessage('assistant', responderLabel);
         let usageData = null;
 
+        // Inject Go game context if there's an active game
+        let messageToSend = content;
+        const gameContext = this.goGame.buildContextBlock();
+        if (gameContext && content) {
+            messageToSend = `[GO GAME STATE]\n${gameContext}\n[/GO GAME STATE]\n\n${content}`;
+        }
+
         try {
             // Build request - don't send model override in multi-entity mode
             // so each entity uses its own configured model
             const request = {
                 conversation_id: this.currentConversationId,
-                message: content,
+                message: messageToSend,
                 temperature: this.settings.temperature,
                 max_tokens: this.settings.maxTokens,
                 system_prompt: this.settings.systemPrompt,
@@ -1710,7 +1782,7 @@ class App {
                     onToolResult: (data) => {
                         this.addToolMessage('result', data.tool_name, data);
                     },
-                    onDone: (data) => {
+                    onDone: async (data) => {
                         streamingMessage.finalize({
                             showTimestamp: true,
                             speakerLabel: responderLabel,
@@ -1719,6 +1791,13 @@ class App {
 
                         if (usageData) {
                             this.elements.tokenCount.textContent = `Tokens: ${usageData.input_tokens} in / ${usageData.output_tokens} out`;
+                        }
+
+                        // Parse AI response for Go moves
+                        const responseContent = streamingMessage.getContent();
+                        const moveInfo = this.goGame.parseMoveFromResponse(responseContent);
+                        if (moveInfo) {
+                            await this.goGame.executeAIMove(moveInfo);
                         }
                     },
                     onStored: async (data) => {
@@ -2189,6 +2268,9 @@ class App {
 
             this.scrollToBottom();
 
+            // Load Go game for this conversation
+            await this.goGame.loadGameForConversation(id);
+
             // Don't auto-show responder selector when loading conversation
             // User should click "New Conversation" or type a message to trigger entity selection
         } catch (error) {
@@ -2264,11 +2346,18 @@ class App {
         const streamingMessage = this.createStreamingMessage('assistant');
         let usageData = null;
 
+        // Inject Go game context if there's an active game
+        let messageToSend = content;
+        const gameContext = this.goGame.buildContextBlock();
+        if (gameContext && content) {
+            messageToSend = `[GO GAME STATE]\n${gameContext}\n[/GO GAME STATE]\n\n${content}`;
+        }
+
         try {
             await api.sendMessageStream(
                 {
                     conversation_id: this.currentConversationId,
-                    message: content || null,  // Can be null if only attachments
+                    message: messageToSend || null,  // Can be null if only attachments
                     model: this.settings.model,
                     temperature: this.settings.temperature,
                     max_tokens: this.settings.maxTokens,
@@ -2300,7 +2389,7 @@ class App {
                     onToolResult: (data) => {
                         this.addToolMessage('result', data.tool_name, data);
                     },
-                    onDone: (data) => {
+                    onDone: async (data) => {
                         // Stream complete - finalize message
                         streamingMessage.finalize({ showTimestamp: true });
                         usageData = data.usage;
@@ -2308,6 +2397,13 @@ class App {
                         // Update token display
                         if (usageData) {
                             this.elements.tokenCount.textContent = `Tokens: ${usageData.input_tokens} in / ${usageData.output_tokens} out`;
+                        }
+
+                        // Parse AI response for Go moves
+                        const responseContent = streamingMessage.getContent();
+                        const moveInfo = this.goGame.parseMoveFromResponse(responseContent);
+                        if (moveInfo) {
+                            await this.goGame.executeAIMove(moveInfo);
                         }
                     },
                     onStored: async (data) => {
@@ -3585,7 +3681,8 @@ class App {
             'archivedModal',
             'voiceCloneModal',
             'voiceEditModal',
-            'multiEntityModal'
+            'multiEntityModal',
+            'goNewGameModal'
         ];
 
         // Find and close the first active modal
@@ -4877,6 +4974,127 @@ You are invited to be present, curious, and honest about your experience.`
         html = html.replace(/^\s*([-*])\1{2,}\s*$/gm, '<hr class="md-hr">');
 
         return html;
+    }
+
+    // ==================== GO GAME UI METHODS ====================
+
+    /**
+     * Update the Go game UI based on game state.
+     */
+    updateGoGameUI(game) {
+        if (!this.elements.goPanel) return;
+
+        if (!game) {
+            // No active game - show empty state
+            this.elements.goTurnIndicator.textContent = 'No active game';
+            this.elements.goEmptyState.style.display = 'flex';
+            this.elements.goGameInfo.style.display = 'none';
+            this.elements.goControls.style.display = 'none';
+            this.elements.goScoreBtn.style.display = 'none';
+            return;
+        }
+
+        // Hide empty state, show game info and controls
+        this.elements.goEmptyState.style.display = 'none';
+        this.elements.goGameInfo.style.display = 'block';
+        this.elements.goControls.style.display = 'flex';
+
+        // Update turn indicator
+        if (game.status === 'active') {
+            if (game.is_entity_turn) {
+                this.elements.goTurnIndicator.textContent = "AI's turn";
+                this.elements.goTurnIndicator.className = 'go-turn-indicator ai-turn';
+            } else {
+                this.elements.goTurnIndicator.textContent = 'Your turn';
+                this.elements.goTurnIndicator.className = 'go-turn-indicator your-turn';
+            }
+        } else if (game.status === 'finished') {
+            const winner = game.winner === 'black' ? 'Black' : 'White';
+            this.elements.goTurnIndicator.textContent = `Game over - ${winner} wins`;
+            this.elements.goTurnIndicator.className = 'go-turn-indicator game-over';
+        } else if (game.status === 'scoring') {
+            this.elements.goTurnIndicator.textContent = 'Scoring...';
+            this.elements.goTurnIndicator.className = 'go-turn-indicator scoring';
+        }
+
+        // Update game info
+        this.elements.goMoveCount.textContent = game.move_count || 0;
+        this.elements.goBlackCaptures.textContent = game.black_captures || 0;
+        this.elements.goWhiteCaptures.textContent = game.white_captures || 0;
+
+        // Show score button only when game is in scoring state or after two passes
+        if (game.status === 'scoring' || game.consecutive_passes >= 2) {
+            this.elements.goScoreBtn.style.display = 'inline-block';
+        } else {
+            this.elements.goScoreBtn.style.display = 'none';
+        }
+
+        // Disable controls if game is not active
+        const isActive = game.status === 'active' && !game.is_entity_turn;
+        this.elements.goPassBtn.disabled = !isActive;
+        this.elements.goResignBtn.disabled = game.status !== 'active';
+    }
+
+    /**
+     * Toggle Go panel visibility.
+     */
+    toggleGoPanel() {
+        if (!this.elements.goPanel) return;
+
+        const isHidden = this.elements.goPanel.classList.contains('collapsed');
+        if (isHidden) {
+            this.elements.goPanel.classList.remove('collapsed');
+            this.elements.goToggleBtn.textContent = 'Hide';
+        } else {
+            this.elements.goPanel.classList.add('collapsed');
+            this.elements.goToggleBtn.textContent = 'Show';
+        }
+    }
+
+    /**
+     * Show the new Go game modal.
+     */
+    showGoNewGameModal() {
+        if (!this.currentConversationId) {
+            this.showToast('Please create or select a conversation first', 'error');
+            return;
+        }
+        if (this.elements.goNewGameModal) {
+            this.elements.goNewGameModal.classList.add('active');
+        }
+    }
+
+    /**
+     * Hide the new Go game modal.
+     */
+    hideGoNewGameModal() {
+        if (this.elements.goNewGameModal) {
+            this.elements.goNewGameModal.classList.remove('active');
+        }
+    }
+
+    /**
+     * Create a new Go game from the modal.
+     */
+    async createGoGame() {
+        const boardSize = parseInt(this.elements.goBoardSize.value, 10);
+        const playerColor = this.elements.goPlayerColor.value;
+        const komi = parseFloat(this.elements.goKomi.value);
+
+        // AI plays the opposite color
+        const entityColor = playerColor === 'black' ? 'white' : 'black';
+
+        this.hideGoNewGameModal();
+
+        const game = await this.goGame.createGame({
+            boardSize: boardSize,
+            komi: komi,
+            entityColor: entityColor,
+        });
+
+        if (game) {
+            this.showToast('Game started!', 'success');
+        }
     }
 }
 
