@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Here I Am</title>
     <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="css/go-board.css">
 </head>
 <body>
     <div class="app-container">
@@ -115,6 +116,54 @@
                 <div class="input-meta">
                     <span id="token-count" class="token-count"></span>
                     <span id="model-indicator" class="model-indicator"></span>
+                </div>
+            </div>
+
+            <!-- Go Game Panel -->
+            <div class="go-panel" id="go-panel">
+                <div class="go-panel-header">
+                    <span class="go-panel-title">Go Game</span>
+                    <div class="go-panel-actions">
+                        <button class="go-panel-btn" id="go-new-game-btn">New Game</button>
+                        <button class="go-panel-btn" id="go-toggle-btn">Hide</button>
+                    </div>
+                </div>
+
+                <div class="go-turn-indicator" id="go-turn-indicator">
+                    No active game
+                </div>
+
+                <div class="go-board-container" id="go-board-container">
+                    <div class="go-empty-state" id="go-empty-state">
+                        <p>No active game</p>
+                        <button class="go-panel-btn primary" id="go-start-game-btn">Start a Game</button>
+                    </div>
+                </div>
+
+                <div class="go-game-info" id="go-game-info" style="display: none;">
+                    <div class="go-info-row">
+                        <span class="go-info-label">Move</span>
+                        <span class="go-info-value" id="go-move-count">0</span>
+                    </div>
+                    <div class="go-info-row">
+                        <span class="go-info-label">Captures</span>
+                        <div class="go-captures">
+                            <span class="go-capture-item">
+                                <span class="go-stone-icon black"></span>
+                                <span id="go-black-captures">0</span>
+                            </span>
+                            <span class="go-capture-item">
+                                <span class="go-stone-icon white"></span>
+                                <span id="go-white-captures">0</span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="go-controls" id="go-controls" style="display: none;">
+                    <button class="go-control-btn" id="go-pass-btn">Pass</button>
+                    <button class="go-control-btn" id="go-resign-btn">Resign</button>
+                    <button class="go-control-btn" id="go-score-btn" style="display: none;">Score</button>
                 </div>
             </div>
         </main>
@@ -669,6 +718,40 @@
         </div>
     </div>
 
+    <!-- New Go Game Modal -->
+    <div class="modal" id="go-new-game-modal">
+        <div class="modal-content go-new-game-dialog">
+            <h3>New Go Game</h3>
+
+            <div class="go-dialog-field">
+                <label for="go-board-size">Board Size</label>
+                <select id="go-board-size">
+                    <option value="9">9×9 (Quick)</option>
+                    <option value="13">13×13 (Medium)</option>
+                    <option value="19" selected>19×19 (Full)</option>
+                </select>
+            </div>
+
+            <div class="go-dialog-field">
+                <label for="go-player-color">You Play As</label>
+                <select id="go-player-color">
+                    <option value="white">White (AI plays Black, moves first)</option>
+                    <option value="black">Black (You move first)</option>
+                </select>
+            </div>
+
+            <div class="go-dialog-field">
+                <label for="go-komi">Komi (compensation for White)</label>
+                <input type="number" id="go-komi" value="6.5" step="0.5" min="0" max="10">
+            </div>
+
+            <div class="go-dialog-buttons">
+                <button class="go-panel-btn" id="go-cancel-new-game">Cancel</button>
+                <button class="go-panel-btn primary" id="go-create-game">Start Game</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Loading Overlay -->
     <div class="loading-overlay" id="loading-overlay">
         <div class="loading-spinner"></div>
@@ -677,6 +760,8 @@
     <!-- Toast Notifications -->
     <div class="toast-container" id="toast-container"></div>
 
+    <script src="js/go-board.js"></script>
+    <script src="js/go-game.js"></script>
     <script src="js/api.js?v=20251208-debug"></script>
     <script src="js/app.js?v=20251208-debug2"></script>
 </body>
