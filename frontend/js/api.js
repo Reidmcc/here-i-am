@@ -475,13 +475,6 @@ class ApiClient {
         });
     }
 
-    /**
-     * Regenerate an AI response with streaming.
-     * @param {Object} data - Regenerate request data
-     * @param {string} data.message_id - ID of message to regenerate from
-     * @param {Object} callbacks - Event callbacks (same as sendMessageStream)
-     * @returns {Promise<void>}
-     */
     // TTS
     async getTTSStatus() {
         return this.request('/tts/status');
@@ -685,6 +678,122 @@ class ApiClient {
                 }
             }
         }
+    }
+
+    // === Go Game API ===
+
+    /**
+     * Create a new Go game linked to a conversation.
+     * @param {string} conversationId - ID of the conversation to link
+     * @param {Object} options - Game options
+     * @param {number} options.boardSize - Board size (9, 13, or 19)
+     * @param {number} options.komi - Komi (compensation for white)
+     * @param {string} options.entityColor - Color for AI ('black' or 'white')
+     * @param {string} options.entityId - Entity ID (defaults to conversation entity)
+     * @returns {Promise<Object>} Created game
+     */
+    async createGoGame(conversationId, options = {}) {
+        return this.request('/go/games', {
+            method: 'POST',
+            body: {
+                conversation_id: conversationId,
+                board_size: options.boardSize || 19,
+                komi: options.komi || 6.5,
+                entity_color: options.entityColor || 'black',
+                entity_id: options.entityId || null,
+            },
+        });
+    }
+
+    /**
+     * Get a Go game by ID.
+     * @param {string} gameId - Game ID
+     * @returns {Promise<Object>} Game data including board state
+     */
+    async getGoGame(gameId) {
+        return this.request(`/go/games/${gameId}`);
+    }
+
+    /**
+     * List Go games with optional filters.
+     * @param {string} conversationId - Filter by conversation
+     * @param {string} status - Filter by status ('active', 'scoring', 'finished')
+     * @returns {Promise<Array>} List of games
+     */
+    async listGoGames(conversationId = null, status = null) {
+        let url = '/go/games';
+        const params = [];
+        if (conversationId) params.push(`conversation_id=${conversationId}`);
+        if (status) params.push(`status=${status}`);
+        if (params.length) url += '?' + params.join('&');
+        return this.request(url);
+    }
+
+    /**
+     * Get the active Go game for a conversation, if any.
+     * @param {string} conversationId - Conversation ID
+     * @returns {Promise<Object|null>} Active game or null
+     */
+    async getActiveGoGame(conversationId) {
+        return this.request(`/go/conversation/${conversationId}/active`);
+    }
+
+    /**
+     * Make a move in a Go game.
+     * @param {string} gameId - Game ID
+     * @param {string} coordinate - Move coordinate (e.g., 'D4', 'Q16')
+     * @returns {Promise<Object>} Move result with updated game
+     */
+    async makeGoMove(gameId, coordinate) {
+        return this.request(`/go/games/${gameId}/move`, {
+            method: 'POST',
+            body: { coordinate },
+        });
+    }
+
+    /**
+     * Pass turn in a Go game. Two passes end the game.
+     * @param {string} gameId - Game ID
+     * @returns {Promise<Object>} Result with updated game
+     */
+    async passGoTurn(gameId) {
+        return this.request(`/go/games/${gameId}/pass`, {
+            method: 'POST',
+        });
+    }
+
+    /**
+     * Resign from a Go game.
+     * @param {string} gameId - Game ID
+     * @returns {Promise<Object>} Result with winner
+     */
+    async resignGoGame(gameId) {
+        return this.request(`/go/games/${gameId}/resign`, {
+            method: 'POST',
+        });
+    }
+
+    /**
+     * Calculate and optionally finalize the score of a Go game.
+     * @param {string} gameId - Game ID
+     * @param {boolean} finalize - Whether to finalize the game with this score
+     * @returns {Promise<Object>} Score breakdown and winner
+     */
+    async scoreGoGame(gameId, finalize = true) {
+        return this.request(`/go/games/${gameId}/score?finalize=${finalize}`, {
+            method: 'POST',
+        });
+    }
+
+    /**
+     * Delete a Go game.
+     * @param {string} gameId - Game ID
+     * @returns {Promise<Object>} Success message
+     */
+    async deleteGoGame(gameId) {
+        return this.request(`/go/games/${gameId}`, {
+            method: 'DELETE',
+        });
     }
 }
 
