@@ -573,14 +573,59 @@ The application integrates with **OGS (Online-Go.com)** to enable AI entities to
 - **Game Channel (Mechanical)**: Moves occur asynchronously. The entity receives notifications when it's their turn and responds with moves.
 - **Conversation Channel (Relational)**: A linked conversation where participants communicate freely, not gated by move events.
 
+**Setup Guide:**
+
+**IMPORTANT:** OGS has a specific process for bot accounts that differs from standard OAuth.
+
+1. **Create an OGS account for your bot:**
+   - Go to https://online-go.com and click "Sign Up"
+   - Create a NEW account specifically for your bot (not your personal account)
+   - Use a username that clearly identifies it as a bot (e.g., "MyBot" or "AIResearchBot")
+   - Verify your email address
+   - Note down this username for `OGS_BOT_USERNAME`
+
+2. **Get your bot account flagged as a bot (REQUIRED):**
+   - Contact an OGS moderator to request that your bot account be flagged
+   - You can do this via:
+     - The OGS forums: https://forums.online-go.com/ (post in "OGS Development" or "Help")
+     - The OGS chat on the website
+   - Explain that you're developing a Go-playing bot and need bot API access
+   - Wait for moderator approval (this may take some time)
+
+3. **Generate an API Key (after bot account is approved):**
+   - Log into OGS with your **HUMAN account** (not the bot account)
+   - Search for your bot account and visit its profile page
+   - On the bot's profile page, you should see an option to generate an API key
+   - Generate and copy the API key - store it securely
+
+4. **Configure environment variables** (see Configuration below)
+
+**Alternative: OAuth Authentication (may have limited support)**
+
+If API key authentication doesn't work for your use case, you can try OAuth:
+- Log into OGS with your bot account
+- Go to https://online-go.com/oauth2/applications/
+- Create a new application with Client Type "Confidential" and Grant Type "Client credentials"
+- Note: OAuth client_credentials may not be fully supported by OGS
+
+**Troubleshooting:**
+- **Error "invalid_client" or 403 "permission denied"**: Your bot account may not be properly flagged as a bot. Contact OGS moderators.
+- **Can't find API key option on bot profile**: The bot account hasn't been flagged yet. Complete Step 2 first.
+- **No game events received**: Ensure the bot account has active games
+
+For more information, see the official [gtp2ogs documentation](https://github.com/online-go/gtp2ogs).
+
 **Configuration:**
 ```bash
 # Enable OGS integration
 OGS_ENABLED=true
-OGS_CLIENT_ID=your_client_id
-OGS_CLIENT_SECRET=your_client_secret
+OGS_API_KEY=your_api_key           # Recommended method
 OGS_BOT_USERNAME=your_bot_username
 OGS_ENTITY_ID=entity_pinecone_index_name
+
+# Alternative: OAuth (may have limited support)
+# OGS_CLIENT_ID=your_client_id
+# OGS_CLIENT_SECRET=your_client_secret
 
 # Optional settings
 OGS_API_URL=https://online-go.com
@@ -589,6 +634,25 @@ OGS_AUTO_ACCEPT_CHALLENGES=true
 OGS_ACCEPTED_BOARD_SIZES=9,13,19
 OGS_ACCEPTED_TIME_CONTROLS=live,correspondence,blitz
 ```
+
+**Initiating Games:**
+
+*Option A: Challenge the bot from another OGS account*
+1. Log into OGS with a different account (not the bot account)
+2. Visit the bot's profile at `https://online-go.com/player/{bot_user_id}`
+3. Click "Challenge" and configure the game settings
+4. The bot will auto-accept if `OGS_AUTO_ACCEPT_CHALLENGES=true` and the settings match accepted board sizes and time controls
+
+*Option B: Create a game via OGS website with the bot account*
+1. Log into OGS as the bot
+2. Go to "Play" and create or accept a game
+3. The application will detect the game on next startup or via socket events
+
+**Linking Games to Conversations:**
+- Use the REST API to link games to conversations:
+  - `POST /api/games/{game_id}/link` with body `{"conversation_id": "uuid"}`
+- Once linked, the AI's move commentary appears in the conversation
+- The conversation channel is for free-form discussion (not move-gated)
 
 **How It Works:**
 
