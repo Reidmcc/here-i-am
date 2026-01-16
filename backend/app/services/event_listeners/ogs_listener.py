@@ -160,10 +160,17 @@ class OGSEventListener(BaseEventListener):
         # Use call() instead of emit() to get the response with user info
         try:
             response = await self._sio.call("authenticate", auth_data, timeout=10)
+            logger.debug(f"{self.name}: Raw authentication response: {response}")
 
             if isinstance(response, dict):
                 # API key auth returns user info in response
-                user_id = response.get("id") or response.get("user_id") or response.get("bot_id")
+                # Try multiple possible field names for user ID
+                user_id = (
+                    response.get("id") or
+                    response.get("user_id") or
+                    response.get("bot_id") or
+                    response.get("player_id")
+                )
                 username = response.get("username") or response.get("bot_username")
 
                 if user_id:
@@ -173,9 +180,20 @@ class OGSEventListener(BaseEventListener):
                     raise RuntimeError(f"Authentication failed: {response.get('error')}")
                 else:
                     # Response might be empty on success for some auth types
-                    logger.info(f"{self.name}: Authentication response: {response}")
+                    # Log all keys to help debug
+                    logger.warning(
+                        f"{self.name}: Auth response has no recognized user_id field. "
+                        f"Keys: {list(response.keys())}, Response: {response}"
+                    )
+            elif isinstance(response, (int, str)) and response:
+                # Some auth systems might return just the user ID
+                try:
+                    self._ogs_service._user_id = int(response)
+                    logger.info(f"{self.name}: Authenticated as user {response} (direct ID response)")
+                except (ValueError, TypeError):
+                    logger.warning(f"{self.name}: Unexpected auth response format: {response}")
             else:
-                logger.debug(f"{self.name}: Authentication response type: {type(response)}, value: {response}")
+                logger.warning(f"{self.name}: Authentication response type: {type(response)}, value: {response}")
 
             self._authenticated = True
 
@@ -192,10 +210,36 @@ class OGSEventListener(BaseEventListener):
         """Subscribe to events for all active games."""
         games = await self._ogs_service.get_active_games()
 
-        for game in games:
-            await self.subscribe_to_game(game.game_id)
+        if games:
+            for game in games:
+                await self.subscribe_to_game(game.game_id)
+            logger.info(f"{self.name}: Subscribed to {len(games)} active games")
+        else:
+            # No games found - this could be because:
+            # 1. API key auth: REST API doesn't work with bot API keys
+            # 2. No active games exist
+            # 3. user_id wasn't set yet when get_active_games was called
+            if self._ogs_service._user_id:
+                logger.info(
+                    f"{self.name}: No active games found for user {self._ogs_service._user_id}. "
+                    "Will detect new games via socket notifications."
+                )
+            else:
+                logger.warning(
+                    f"{self.name}: No active games found and user_id not set. "
+                    "Socket notifications may not work correctly."
+                )
 
-        logger.info(f"{self.name}: Subscribed to {len(games)} active games")
+            # Request active games via socket notification subscription
+            if self._sio:
+                try:
+                    # Subscribe to notifications for this user
+                    await self._sio.emit("notification/connect", {
+                        "player_id": self._ogs_service._user_id
+                    })
+                    logger.debug(f"{self.name}: Subscribed to notifications")
+                except Exception as e:
+                    logger.debug(f"{self.name}: Could not subscribe to notifications: {e}")
 
     async def subscribe_to_game(self, game_id: int) -> None:
         """Subscribe to events for a specific game."""
@@ -253,9 +297,10 @@ class OGSEventListener(BaseEventListener):
         )
 
     async def _handle_notification(self, data: Dict[str, Any]) -> None:
-        """Handle an OGS notification (challenge, etc)."""
+        """Handle an OGS notification (challenge, yourMove, gameStarted, etc)."""
         notification_type = data.get("type", "unknown")
-        logger.debug(f"{self.name}: Notification: {notification_type}")
+        logger.info(f"{self.name}: Received notification: {notification_type}")
+        logger.debug(f"{self.name}: Notification data: {data}")
 
         if notification_type == "challenge":
             await self._emit_event(
@@ -268,8 +313,9 @@ class OGSEventListener(BaseEventListener):
             )
         elif notification_type == "gameStarted":
             # New game started - subscribe to it
-            game_id = data.get("game", {}).get("id")
+            game_id = data.get("game", {}).get("id") or data.get("game_id")
             if game_id:
+                logger.info(f"{self.name}: Game started notification for game {game_id}")
                 await self.subscribe_to_game(game_id)
                 await self._emit_event(
                     event_type="game_started",
@@ -279,6 +325,29 @@ class OGSEventListener(BaseEventListener):
                         **data
                     }
                 )
+        elif notification_type == "yourMove":
+            # It's our turn in a game - subscribe if we haven't already
+            game_id = data.get("game_id") or data.get("game", {}).get("id")
+            if game_id:
+                logger.info(f"{self.name}: Your move notification for game {game_id}")
+                if game_id not in self._subscribed_games:
+                    await self.subscribe_to_game(game_id)
+                # Emit event so the game move handler processes it
+                await self._emit_event(
+                    event_type="game_move",
+                    external_id=str(game_id),
+                    payload={
+                        "source": "ogs",
+                        "game_id": game_id,
+                        **data
+                    }
+                )
+        elif notification_type == "game":
+            # Generic game notification - might indicate an active game
+            game_id = data.get("game_id") or data.get("id")
+            if game_id and game_id not in self._subscribed_games:
+                logger.info(f"{self.name}: Game notification for game {game_id}, subscribing")
+                await self.subscribe_to_game(game_id)
 
     def to_dict(self) -> Dict[str, Any]:
         """Return listener status as a dictionary."""
@@ -287,5 +356,6 @@ class OGSEventListener(BaseEventListener):
             "authenticated": self._authenticated,
             "subscribed_games": list(self._subscribed_games),
             "ogs_user_id": self._ogs_service._user_id,
+            "bot_username": settings.ogs_bot_username,
         })
         return base

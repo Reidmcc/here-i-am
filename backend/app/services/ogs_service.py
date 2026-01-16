@@ -316,6 +316,7 @@ class OGSService:
         about active games.
         """
         if not await self._ensure_authenticated():
+            logger.warning("OGS: Not authenticated, cannot fetch active games")
             return []
 
         # If using API key and user_id not yet set (will be set by socket auth),
@@ -324,6 +325,7 @@ class OGSService:
             logger.info("OGS: API key auth - user_id not yet available, will discover games via socket")
             return []
 
+        logger.info(f"OGS: Fetching active games for user {self._user_id}")
         client = await self._get_client()
 
         try:
@@ -337,25 +339,44 @@ class OGSService:
             data = response.json()
             games = []
 
-            for game_data in data.get("results", []):
+            results = data.get("results", [])
+            logger.debug(f"OGS: REST API returned {len(results)} game results")
+
+            for game_data in results:
                 game = await self._parse_game_data(game_data)
                 if game:
                     games.append(game)
                     self._active_games[game.game_id] = game
 
-            logger.info(f"OGS: Found {len(games)} active games")
+            logger.info(f"OGS: Found {len(games)} active games via REST API")
             return games
 
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401 and self._using_api_key:
-                # API key auth may not work with REST API - this is expected
-                logger.warning("OGS: REST API auth failed with API key (expected) - will discover games via socket")
+            if e.response.status_code == 401:
+                if self._using_api_key:
+                    # API key auth may not work with REST API - this is expected
+                    logger.info(
+                        "OGS: REST API returned 401 with API key auth (expected behavior). "
+                        "Will discover games via socket notifications (yourMove, gameStarted)."
+                    )
+                else:
+                    logger.warning(f"OGS: REST API returned 401 with OAuth - token may be expired")
+                return []
+            elif e.response.status_code == 403:
+                logger.warning(
+                    f"OGS: REST API returned 403 - access denied. "
+                    "This may indicate the bot account is not properly configured."
+                )
                 return []
             logger.error(f"OGS: Error fetching active games: {e.response.status_code} - {e.response.text}")
             return []
         except Exception as e:
             logger.error(f"OGS: Error fetching active games: {e}")
             return []
+
+    def get_cached_games(self) -> List[OGSGame]:
+        """Return the list of cached active games (discovered via socket or REST)."""
+        return list(self._active_games.values())
 
     async def get_game(self, game_id: int) -> Optional[OGSGame]:
         """
