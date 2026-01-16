@@ -60,7 +60,10 @@ export async function checkGamesStatus() {
  */
 function updateGamesButtonVisibility() {
     if (elements.gamesBtn) {
-        elements.gamesBtn.style.display = state.gamesEnabled ? '' : 'none';
+        elements.gamesBtn.style.display = state.gamesEnabled ? 'block' : 'none';
+        console.log('[Games] Button visibility updated:', state.gamesEnabled ? 'visible' : 'hidden');
+    } else {
+        console.warn('[Games] gamesBtn element not found');
     }
 }
 
