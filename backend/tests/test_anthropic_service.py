@@ -609,7 +609,7 @@ class TestCacheBreakpointPlacement:
         first_context_content1 = messages1[0]["content"]
         first_context_content2 = messages2[0]["content"]
 
-        assert "[THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN]" in first_context_content1
+        assert "[THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN. DO NOT WRITE FOR OTHER PARTICIPANTS. DO NOT LABEL YOUR MESSAGES WITH YOUR NAME.]" in first_context_content1
         assert first_context_content1 == first_context_content2
 
     def test_multi_entity_header_consistent_across_entities(self):
@@ -657,8 +657,8 @@ class TestCacheBreakpointPlacement:
         first_content_claude = messages_claude[0]["content"]
         first_content_gpt = messages_gpt[0]["content"]
 
-        assert "[THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN]" in first_content_claude
-        assert "[THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN]" in first_content_gpt
+        assert "[THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN. DO NOT WRITE FOR OTHER PARTICIPANTS. DO NOT LABEL YOUR MESSAGES WITH YOUR NAME.]" in first_content_claude
+        assert "[THIS IS A CONVERSATION BETWEEN MULTIPLE AI AND ONE HUMAN. DO NOT WRITE FOR OTHER PARTICIPANTS. DO NOT LABEL YOUR MESSAGES WITH YOUR NAME.]" in first_content_gpt
         # The header is now the same regardless of responding entity (simplified for cache stability)
         assert first_content_claude == first_content_gpt
 
