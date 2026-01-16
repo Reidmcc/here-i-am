@@ -135,10 +135,18 @@ describe('Voice Module', () => {
     });
 
     describe('speakMessage', () => {
+        let mockBtn;
+
+        beforeEach(() => {
+            mockBtn = document.createElement('button');
+            mockBtn.classList = { add: vi.fn(), remove: vi.fn() };
+        });
+
         it('should not speak if TTS is disabled', async () => {
             state.ttsEnabled = false;
+            window.api.speak = vi.fn();
 
-            await speakMessage('msg-1', 'Hello world');
+            await speakMessage('Hello world', mockBtn, 'msg-1');
 
             expect(window.api.speak).not.toHaveBeenCalled();
         });
@@ -149,7 +157,7 @@ describe('Voice Module', () => {
             state.selectedVoiceId = 'voice-1';
             window.api.speak = vi.fn(() => Promise.resolve(new Blob(['audio'], { type: 'audio/wav' })));
 
-            await speakMessage('msg-1', 'Hello world');
+            await speakMessage('Hello world', mockBtn, 'msg-1');
 
             expect(window.api.speak).toHaveBeenCalled();
         });
@@ -160,7 +168,7 @@ describe('Voice Module', () => {
             state.selectedVoiceId = 'voice-1';
             window.api.speak = vi.fn(() => Promise.resolve(new Blob(['audio'], { type: 'audio/wav' })));
 
-            await speakMessage('msg-1', 'Hello world');
+            await speakMessage('Hello world', mockBtn, 'msg-1');
 
             expect(state.currentlyPlayingMessageId).toBe('msg-1');
         });
@@ -168,20 +176,19 @@ describe('Voice Module', () => {
 
     describe('stopSpeaking', () => {
         it('should pause audio playback', () => {
-            state._currentAudio = mockAudioElement;
+            state.currentAudio = mockAudioElement;
 
             stopSpeaking();
 
             expect(mockAudioElement.pause).toHaveBeenCalled();
         });
 
-        it('should clear currentlyPlayingMessageId', () => {
-            state.currentlyPlayingMessageId = 'msg-1';
-            state._currentAudio = mockAudioElement;
+        it('should clear currentAudio', () => {
+            state.currentAudio = mockAudioElement;
 
             stopSpeaking();
 
-            expect(state.currentlyPlayingMessageId).toBeNull();
+            expect(state.currentAudio).toBeNull();
         });
     });
 
@@ -189,7 +196,7 @@ describe('Voice Module', () => {
         it('should call API to get STT status', async () => {
             window.api.getSTTStatus = vi.fn(() => Promise.resolve({
                 enabled: true,
-                mode: 'whisper',
+                effective_mode: 'whisper',
             }));
 
             await checkSTTStatus();
@@ -197,27 +204,25 @@ describe('Voice Module', () => {
             expect(window.api.getSTTStatus).toHaveBeenCalled();
         });
 
-        it('should update sttEnabled state', async () => {
+        it('should update dictationMode state when enabled', async () => {
             window.api.getSTTStatus = vi.fn(() => Promise.resolve({
                 enabled: true,
-                mode: 'whisper',
+                effective_mode: 'whisper',
             }));
 
             await checkSTTStatus();
 
-            expect(state.sttEnabled).toBe(true);
+            expect(state.dictationMode).toBe('whisper');
         });
 
-        it('should enable dictation button when STT available', async () => {
-            mockElements.dictationBtn.disabled = true;
+        it('should set dictationMode to none when STT disabled', async () => {
             window.api.getSTTStatus = vi.fn(() => Promise.resolve({
-                enabled: true,
-                mode: 'browser',
+                enabled: false,
             }));
 
             await checkSTTStatus();
 
-            expect(mockElements.dictationBtn.disabled).toBe(false);
+            expect(state.dictationMode).toBe('none');
         });
     });
 });

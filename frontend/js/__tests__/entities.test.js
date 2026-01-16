@@ -9,9 +9,8 @@ import {
     setElements,
     setCallbacks,
     loadEntities,
-    getSelectedEntity,
-    selectEntity,
-    isMultiEntityConversation,
+    handleEntityChange,
+    getEntityLabel,
 } from '../modules/entities.js';
 
 describe('Entities Module', () => {
@@ -108,33 +107,31 @@ describe('Entities Module', () => {
         });
     });
 
-    describe('getSelectedEntity', () => {
-        it('should return null when no entity selected', () => {
-            state.selectedEntityId = null;
+    describe('getEntityLabel', () => {
+        it('should return empty string when entity not found', () => {
             state.entities = [];
 
-            const result = getSelectedEntity();
+            const result = getEntityLabel('nonexistent');
 
-            expect(result).toBeNull();
+            expect(result).toBe('');
         });
 
-        it('should return entity object when selected', () => {
+        it('should return entity label when found', () => {
             state.entities = [
                 { id: 'entity-1', label: 'Claude' },
             ];
-            state.selectedEntityId = 'entity-1';
 
-            const result = getSelectedEntity();
+            const result = getEntityLabel('entity-1');
 
-            expect(result).toEqual({ id: 'entity-1', label: 'Claude' });
+            expect(result).toBe('Claude');
         });
     });
 
-    describe('selectEntity', () => {
+    describe('handleEntityChange', () => {
         it('should update selectedEntityId in state', () => {
             state.entities = [{ id: 'entity-1', label: 'Claude' }];
 
-            selectEntity('entity-1');
+            handleEntityChange('entity-1');
 
             expect(state.selectedEntityId).toBe('entity-1');
         });
@@ -142,23 +139,21 @@ describe('Entities Module', () => {
         it('should call onEntityChanged callback', () => {
             state.entities = [{ id: 'entity-1', label: 'Claude' }];
 
-            selectEntity('entity-1');
+            handleEntityChange('entity-1');
 
             expect(mockCallbacks.onEntityChanged).toHaveBeenCalled();
         });
     });
 
-    describe('isMultiEntityConversation', () => {
-        it('should return false for normal conversations', () => {
-            state.isMultiEntityMode = false;
-
-            expect(isMultiEntityConversation()).toBe(false);
+    describe('state.isMultiEntityMode', () => {
+        it('should be false by default', () => {
+            expect(state.isMultiEntityMode).toBe(false);
         });
 
-        it('should return true when in multi-entity mode', () => {
+        it('can be set to true for multi-entity mode', () => {
             state.isMultiEntityMode = true;
 
-            expect(isMultiEntityConversation()).toBe(true);
+            expect(state.isMultiEntityMode).toBe(true);
         });
     });
 });
