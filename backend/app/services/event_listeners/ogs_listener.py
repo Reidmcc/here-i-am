@@ -103,11 +103,14 @@ class OGSEventListener(BaseEventListener):
         @self._sio.event
         async def connect():
             logger.info(f"{self.name}: Socket connected")
+            # Pass socket reference to OGS service for move submission
+            self._ogs_service.set_socket_client(self._sio)
 
         @self._sio.event
         async def disconnect():
             logger.warning(f"{self.name}: Socket disconnected")
             self._authenticated = False
+            self._ogs_service.set_socket_client(None)
             self._on_disconnect()
 
         @self._sio.event
@@ -130,26 +133,60 @@ class OGSEventListener(BaseEventListener):
         if not self._sio:
             raise RuntimeError("Not connected")
 
-        # First authenticate via REST API to get token
+        # Initialize auth state in ogs_service
         success = await self._ogs_service.authenticate()
         if not success:
-            raise RuntimeError("Failed to authenticate with OGS API")
+            raise RuntimeError("Failed to initialize OGS authentication")
 
-        # Send authentication to socket
-        # OGS uses a specific authentication message format
-        auth_data = {
-            "auth": self._ogs_service._access_token,
-            "player_id": self._ogs_service._user_id,
-        }
+        # Build authentication data based on auth method
+        if self._ogs_service._using_api_key:
+            # API key authentication format (per gtp2ogs):
+            # {jwt: "", bot_username: ..., bot_apikey: ...}
+            auth_data = {
+                "jwt": "",
+                "bot_username": settings.ogs_bot_username,
+                "bot_apikey": self._ogs_service._access_token,
+            }
+            logger.info(f"{self.name}: Authenticating via API key for bot '{settings.ogs_bot_username}'")
+        else:
+            # OAuth token authentication format:
+            # {auth: <token>, player_id: <id>}
+            auth_data = {
+                "auth": self._ogs_service._access_token,
+                "player_id": self._ogs_service._user_id,
+            }
+            logger.info(f"{self.name}: Authenticating via OAuth token")
 
-        # Emit authenticate event
-        await self._sio.emit("authenticate", auth_data)
+        # Use call() instead of emit() to get the response with user info
+        try:
+            response = await self._sio.call("authenticate", auth_data, timeout=10)
 
-        # Wait briefly for authentication to process
-        await asyncio.sleep(0.5)
+            if isinstance(response, dict):
+                # API key auth returns user info in response
+                user_id = response.get("id") or response.get("user_id") or response.get("bot_id")
+                username = response.get("username") or response.get("bot_username")
 
-        self._authenticated = True
-        logger.info(f"{self.name}: Authenticated with user ID {self._ogs_service._user_id}")
+                if user_id:
+                    self._ogs_service._user_id = user_id
+                    logger.info(f"{self.name}: Authenticated as user {user_id} ({username})")
+                elif "error" in response:
+                    raise RuntimeError(f"Authentication failed: {response.get('error')}")
+                else:
+                    # Response might be empty on success for some auth types
+                    logger.info(f"{self.name}: Authentication response: {response}")
+            else:
+                logger.debug(f"{self.name}: Authentication response type: {type(response)}, value: {response}")
+
+            self._authenticated = True
+
+        except asyncio.TimeoutError:
+            raise RuntimeError("Socket authentication timed out")
+        except Exception as e:
+            if "error" in str(e).lower() or "fail" in str(e).lower():
+                raise RuntimeError(f"Socket authentication failed: {e}")
+            # If we got here without explicit error, might still be authenticated
+            logger.warning(f"{self.name}: Authentication returned: {e}")
+            self._authenticated = True
 
     async def _subscribe_to_active_games(self) -> None:
         """Subscribe to events for all active games."""
@@ -191,7 +228,12 @@ class OGSEventListener(BaseEventListener):
         logger.debug(f"{self.name}: Game event {event_name} for game {game_id}")
 
         # Determine event type based on OGS event structure
-        if "move" in data:
+        if "gamedata" in data or "width" in data:
+            # This is gamedata - update the cache
+            event_type = "game_data"
+            gamedata = data.get("gamedata", data)
+            self._ogs_service.update_game_from_socket(game_id, gamedata)
+        elif "move" in data:
             event_type = "game_move"
         elif "phase" in data:
             event_type = "game_phase"
