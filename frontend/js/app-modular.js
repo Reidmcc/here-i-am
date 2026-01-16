@@ -149,7 +149,8 @@ import {
     unlinkGame,
     goToGameConversation,
     updateGameIndicator,
-    refreshGames
+    refreshGames,
+    getConversationBoardState
 } from './modules/games.js';
 
 // Reference to global API client
@@ -391,6 +392,13 @@ class App {
             showMultiEntityModal: () => showMultiEntityModal(),
             copyMessage: (content, btn) => copyMessage(content, btn),
             speakMessage: (content, btn, id) => speakMessage(content, btn, id),
+            getGoGameContext: async () => {
+                if (!state.currentConversationId) return null;
+                const boardState = await getConversationBoardState(state.currentConversationId);
+                if (!boardState) return null;
+                // Format board state for injection into message
+                return `${boardState.board_ascii}\nYour color: ${boardState.our_color}\nYour turn: ${boardState.our_turn}`;
+            },
         });
 
         // Initialize memory module

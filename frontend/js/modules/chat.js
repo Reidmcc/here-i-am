@@ -140,7 +140,7 @@ export async function sendMessage(skipEntityModal = false) {
     // Inject Go game context if there's an active game
     let messageToSend = content;
     if (callbacks.getGoGameContext) {
-        const gameContext = callbacks.getGoGameContext();
+        const gameContext = await callbacks.getGoGameContext();
         if (gameContext && content) {
             messageToSend = `[GO GAME STATE]\n${gameContext}\n[/GO GAME STATE]\n\n${content}`;
         }
@@ -279,7 +279,7 @@ export async function sendMessageWithResponder() {
     // Inject Go game context if there's an active game
     let messageToSend = content;
     if (callbacks.getGoGameContext) {
-        const gameContext = callbacks.getGoGameContext();
+        const gameContext = await callbacks.getGoGameContext();
         if (gameContext && content) {
             messageToSend = `[GO GAME STATE]\n${gameContext}\n[/GO GAME STATE]\n\n${content}`;
         }

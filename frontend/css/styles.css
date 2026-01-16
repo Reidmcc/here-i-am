@@ -2897,13 +2897,14 @@ h4.md-header {
 
 /* Games button in sidebar */
 .games-btn {
+    flex: 1;
+    padding: 10px;
     background-color: var(--bg-tertiary);
     color: var(--text-secondary);
     border: 1px solid var(--border-color);
-    padding: 8px 12px;
     border-radius: 6px;
     cursor: pointer;
-    font-size: 0.875rem;
+    font-size: 0.85rem;
     transition: all 0.2s;
 }
 
