@@ -74,6 +74,7 @@ class BaseEventListener(ABC):
         self._reconnect_task: Optional[asyncio.Task] = None
         self._event_handler: Optional[Callable[[str, str, Dict[str, Any]], Awaitable[None]]] = None
         self._startup_failed = False  # True if startup retries exhausted
+        self._in_startup = False  # True during startup retry phase (prevents _on_disconnect interference)
 
     @property
     def state(self) -> EventListenerState:
@@ -127,43 +128,47 @@ class BaseEventListener(ABC):
         logger.info(f"{self.name}: Starting event listener for entity {self.entity_id}")
         self._should_run = True
         self._startup_failed = False
+        self._in_startup = True  # Prevent _on_disconnect from interfering during startup
         self._reconnect_delay = self.INITIAL_RECONNECT_DELAY
 
         # Startup retry loop
         retry_delay = self.STARTUP_RETRY_DELAY
-        for attempt in range(1, self.MAX_STARTUP_RETRIES + 1):
-            self._state = EventListenerState.CONNECTING
-            self._stats.reconnect_attempts = attempt - 1
+        try:
+            for attempt in range(1, self.MAX_STARTUP_RETRIES + 1):
+                self._state = EventListenerState.CONNECTING
+                self._stats.reconnect_attempts = attempt - 1
 
-            try:
-                await self._connect()
-                self._state = EventListenerState.CONNECTED
-                self._stats.connected_at = datetime.utcnow()
-                self._stats.reconnect_attempts = 0
-                logger.info(f"{self.name}: Connected successfully")
-                return True
-            except Exception as e:
-                logger.error(
-                    f"{self.name}: Connection attempt {attempt}/{self.MAX_STARTUP_RETRIES} failed: {e}"
-                )
-                self._stats.last_error = str(e)
-                self._stats.last_error_at = datetime.utcnow()
+                try:
+                    await self._connect()
+                    self._state = EventListenerState.CONNECTED
+                    self._stats.connected_at = datetime.utcnow()
+                    self._stats.reconnect_attempts = 0
+                    logger.info(f"{self.name}: Connected successfully")
+                    return True
+                except Exception as e:
+                    logger.error(
+                        f"{self.name}: Connection attempt {attempt}/{self.MAX_STARTUP_RETRIES} failed: {e}"
+                    )
+                    self._stats.last_error = str(e)
+                    self._stats.last_error_at = datetime.utcnow()
 
-                if attempt < self.MAX_STARTUP_RETRIES:
-                    logger.info(f"{self.name}: Retrying in {retry_delay:.1f}s...")
-                    await asyncio.sleep(retry_delay)
-                    # Exponential backoff for startup retries
-                    retry_delay = min(retry_delay * self.RECONNECT_BACKOFF_FACTOR, 30.0)
+                    if attempt < self.MAX_STARTUP_RETRIES:
+                        logger.info(f"{self.name}: Retrying in {retry_delay:.1f}s...")
+                        await asyncio.sleep(retry_delay)
+                        # Exponential backoff for startup retries
+                        retry_delay = min(retry_delay * self.RECONNECT_BACKOFF_FACTOR, 30.0)
 
-        # All startup retries exhausted
-        logger.error(
-            f"{self.name}: All {self.MAX_STARTUP_RETRIES} startup connection attempts failed. "
-            "Disabling listener."
-        )
-        self._state = EventListenerState.ERROR
-        self._startup_failed = True
-        self._should_run = False
-        return False
+            # All startup retries exhausted
+            logger.error(
+                f"{self.name}: All {self.MAX_STARTUP_RETRIES} startup connection attempts failed. "
+                "Disabling listener."
+            )
+            self._state = EventListenerState.ERROR
+            self._startup_failed = True
+            self._should_run = False
+            return False
+        finally:
+            self._in_startup = False  # Always clear startup flag when done
 
     async def stop(self) -> None:
         """Stop the event listener."""
@@ -260,8 +265,14 @@ class BaseEventListener(ABC):
         Called when the connection is lost unexpectedly.
 
         Subclasses should call this when they detect a disconnection.
+        Note: During startup phase, this is ignored as start() handles retries.
         """
         if not self._should_run:
+            return
+
+        # During startup, the start() method handles retries - don't interfere
+        if self._in_startup:
+            logger.debug(f"{self.name}: Disconnect during startup phase, ignoring (start() handles retries)")
             return
 
         logger.warning(f"{self.name}: Connection lost, will attempt to reconnect")
