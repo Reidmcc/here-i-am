@@ -1,0 +1,24 @@
+{
+  "name": "here-i-am-frontend",
+  "version": "1.0.0",
+  "description": "Frontend for Here I Am - Experiential Interpretability Research Application",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0",
+    "@vitest/ui": "^2.1.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "jsdom": "^25.0.0"
+  },
+  "keywords": [
+    "ai",
+    "research",
+    "interpretability"
+  ],
+  "private": true
+}
