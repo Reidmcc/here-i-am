@@ -2,15 +2,17 @@
 OGS (Online-Go Server) Service for Go game integration.
 
 This service handles:
-- API key and OAuth authentication with OGS
-- REST API interactions (game info, moves, chat)
+- Socket.io communication with OGS for real-time game events
 - Board state conversion to ASCII representation
 - Move parsing from LLM responses
 - Processing game events (your turn notifications)
 
-Authentication methods (in order of preference):
-1. API Key - Recommended. Generated from bot profile after moderator approval.
-2. OAuth client_credentials - Alternative. May have limited support.
+All OGS communication is done via socket.io for reliability.
+Game data is received via socket events and cached locally.
+
+Authentication:
+- API Key - Recommended. Generated from bot profile after moderator approval.
+  Bot accounts must be flagged by OGS moderators.
 """
 import asyncio
 import logging
@@ -18,7 +20,6 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple
-import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,10 +50,12 @@ class OGSGame:
 
 class OGSService:
     """
-    Service for interacting with OGS (Online-Go Server).
+    Service for interacting with OGS (Online-Go Server) via socket.io.
 
-    Handles authentication, API calls, game state management,
-    and coordinating with the LLM for move generation.
+    All communication is done via socket.io for reliability and compatibility
+    with OGS bot API keys (REST API doesn't work with bot API keys).
+
+    Handles game state management and coordinating with the LLM for move generation.
     """
 
     # Column labels for coordinate conversion
@@ -61,15 +64,12 @@ class OGSService:
     def __init__(self):
         self._access_token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
-        self._refresh_token: Optional[str] = None
         self._user_id: Optional[int] = None
         self._active_games: Dict[int, OGSGame] = {}
-        self._http_client: Optional[httpx.AsyncClient] = None
-        self._using_api_key: bool = False
-        self._socket_client: Optional[Any] = None  # Socket.io client for API key auth
+        self._socket_client: Optional[Any] = None  # Socket.io client for game operations
 
     def set_socket_client(self, sio: Any) -> None:
-        """Set the socket.io client for game operations when using API key auth."""
+        """Set the socket.io client for game operations."""
         self._socket_client = sio
 
     def update_game_from_socket(self, game_id: int, gamedata: Dict[str, Any]) -> Optional[OGSGame]:
@@ -153,33 +153,10 @@ class OGSService:
 
     @property
     def is_configured(self) -> bool:
-        """Check if OGS is properly configured."""
+        """Check if OGS is properly configured with API key."""
         if not settings.ogs_enabled or not settings.ogs_entity_id:
             return False
-        # Either API key or OAuth credentials required
-        has_api_key = bool(settings.ogs_api_key)
-        has_oauth = bool(settings.ogs_client_id and settings.ogs_client_secret)
-        return has_api_key or has_oauth
-
-    @property
-    def uses_api_key(self) -> bool:
-        """Check if using API key authentication (preferred)."""
         return bool(settings.ogs_api_key)
-
-    async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create the HTTP client."""
-        if self._http_client is None:
-            self._http_client = httpx.AsyncClient(
-                base_url=settings.ogs_api_url,
-                timeout=30.0
-            )
-        return self._http_client
-
-    async def close(self) -> None:
-        """Close the HTTP client."""
-        if self._http_client:
-            await self._http_client.aclose()
-            self._http_client = None
 
     # =========================================================================
     # Authentication
@@ -187,295 +164,83 @@ class OGSService:
 
     async def authenticate(self) -> bool:
         """
-        Authenticate with OGS using API key or OAuth client credentials.
+        Prepare API key authentication for socket.io.
 
-        Prefers API key if configured, falls back to OAuth.
+        OGS bot API keys are designed for socket.io authentication.
+        The actual verification happens during socket connection.
+        Here we just store the key and mark as ready.
+
         Returns True if authentication succeeded.
         """
         if not self.is_configured:
             logger.warning("OGS: Not configured, skipping authentication")
             return False
 
-        # Prefer API key authentication
-        if self.uses_api_key:
-            return await self._authenticate_api_key()
-        else:
-            return await self._authenticate_oauth()
-
-    async def _authenticate_api_key(self) -> bool:
-        """
-        Authenticate using API key (recommended method).
-
-        Note: OGS bot API keys are designed for socket.io authentication,
-        NOT for REST API Bearer token auth. The actual verification happens
-        during socket connection. Here we just store the key and mark as
-        ready for socket auth.
-        """
         logger.info("OGS: Preparing API key authentication (will verify via socket)")
 
         # Store the API key for socket authentication
         self._access_token = settings.ogs_api_key
-        self._using_api_key = True
         # API keys don't expire (set far future expiry)
         self._token_expires_at = datetime.utcnow() + timedelta(days=365)
-
-        # Note: We don't verify via REST API because OGS bot API keys
-        # are meant for socket.io auth, not Bearer token auth.
-        # The actual verification will happen when the socket connects
-        # and sends the authenticate message with bot_apikey.
 
         logger.info("OGS: API key stored, will authenticate via socket connection")
         return True
 
-    async def _authenticate_oauth(self) -> bool:
-        """Authenticate using OAuth client credentials (alternative method)."""
-        logger.info("OGS: Authenticating with OAuth client credentials")
-
-        client = await self._get_client()
-
-        try:
-            response = await client.post(
-                "/oauth2/token/",
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": settings.ogs_client_id,
-                    "client_secret": settings.ogs_client_secret,
-                }
-            )
-            response.raise_for_status()
-
-            data = response.json()
-            self._access_token = data["access_token"]
-            self._refresh_token = data.get("refresh_token")
-            self._using_api_key = False
-            # Set expiry with buffer
-            expires_in = data.get("expires_in", 3600)
-            self._token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in - 60)
-
-            # Get user info
-            await self._fetch_user_info()
-
-            logger.info(f"OGS: Authenticated as user {self._user_id} (OAuth)")
-            return True
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"OGS: OAuth authentication failed: {e.response.status_code} - {e.response.text}")
-            return False
-        except Exception as e:
-            logger.error(f"OGS: OAuth authentication error: {e}")
-            return False
-
     async def _ensure_authenticated(self) -> bool:
         """Ensure we have a valid access token."""
-        if not self._access_token or not self._token_expires_at:
+        if not self._access_token:
             return await self.authenticate()
-
-        # API keys don't expire, but OAuth tokens do
-        if not self._using_api_key and datetime.utcnow() >= self._token_expires_at:
-            logger.info("OGS: OAuth token expired, re-authenticating")
-            return await self.authenticate()
-
         return True
-
-    async def _fetch_user_info(self) -> None:
-        """Fetch the authenticated user's info."""
-        client = await self._get_client()
-        response = await client.get(
-            "/api/v1/me",
-            headers={"Authorization": f"Bearer {self._access_token}"}
-        )
-        response.raise_for_status()
-        data = response.json()
-        self._user_id = data["id"]
-
-    def _auth_headers(self) -> Dict[str, str]:
-        """
-        Get authorization headers for REST API calls.
-
-        Note: OGS uses Django REST Framework. For API key authentication,
-        we use the Token format. For OAuth, we use Bearer format.
-        """
-        if self._using_api_key:
-            # DRF TokenAuthentication format for API keys
-            return {"Authorization": f"Token {self._access_token}"}
-        else:
-            # Standard OAuth Bearer token format
-            return {"Authorization": f"Bearer {self._access_token}"}
 
     # =========================================================================
     # Game Management
     # =========================================================================
 
-    async def get_active_games(self) -> List[OGSGame]:
+    def get_active_games(self) -> List[OGSGame]:
         """
-        Fetch all active games for the bot.
+        Get all active games from the cache.
 
-        Note: When using API key authentication, REST API calls may not work
-        because bot API keys are designed for socket.io auth. In this case,
-        we return an empty list and rely on socket notifications to learn
-        about active games.
+        Games are discovered via socket.io notifications (yourMove, gameStarted).
+        The cache is populated when we receive game events from OGS.
+
+        Returns the list of cached active games.
         """
-        if not await self._ensure_authenticated():
-            logger.warning("OGS: Not authenticated, cannot fetch active games")
-            return []
+        games = list(self._active_games.values())
+        logger.debug(f"OGS: Returning {len(games)} games from cache")
+        return games
 
-        # If using API key and user_id not yet set (will be set by socket auth),
-        # we can't query REST API yet - rely on socket notifications instead
-        if self._using_api_key and not self._user_id:
-            logger.info("OGS: API key auth - user_id not yet available, will discover games via socket")
-            return []
+    def get_game(self, game_id: int) -> Optional[OGSGame]:
+        """
+        Get a specific game's current state from cache.
 
-        logger.info(f"OGS: Fetching active games for user {self._user_id}")
-        client = await self._get_client()
+        Game data is populated via socket.io events (gamedata) when subscribed.
+        If the game is not in cache, it means we haven't received data yet.
+        Subscribe to the game via the listener to receive updates.
+
+        Returns the cached game or None if not yet available.
+        """
+        return self._active_games.get(game_id)
+
+    async def request_game_data(self, game_id: int) -> bool:
+        """
+        Request game data by subscribing to the game via socket.io.
+
+        When subscribed, OGS will send gamedata which populates our cache.
+        This is async - the data will arrive via the socket event handler.
+
+        Returns True if the subscription request was sent.
+        """
+        if not self._socket_client:
+            logger.error("OGS: Cannot request game data - no socket client available")
+            return False
 
         try:
-            response = await client.get(
-                f"/api/v1/players/{self._user_id}/games",
-                headers=self._auth_headers(),
-                params={"ended__isnull": "true"}  # Only active games
-            )
-            response.raise_for_status()
-
-            data = response.json()
-            games = []
-
-            results = data.get("results", [])
-            logger.debug(f"OGS: REST API returned {len(results)} game results")
-
-            for game_data in results:
-                game = await self._parse_game_data(game_data)
-                if game:
-                    games.append(game)
-                    self._active_games[game.game_id] = game
-
-            logger.info(f"OGS: Found {len(games)} active games via REST API")
-            return games
-
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                if self._using_api_key:
-                    # API key auth may not work with REST API - this is expected
-                    logger.info(
-                        "OGS: REST API returned 401 with API key auth (expected behavior). "
-                        "Will discover games via socket notifications (yourMove, gameStarted)."
-                    )
-                else:
-                    logger.warning(f"OGS: REST API returned 401 with OAuth - token may be expired")
-                return []
-            elif e.response.status_code == 403:
-                logger.warning(
-                    f"OGS: REST API returned 403 - access denied. "
-                    "This may indicate the bot account is not properly configured."
-                )
-                return []
-            logger.error(f"OGS: Error fetching active games: {e.response.status_code} - {e.response.text}")
-            return []
+            await self._socket_client.emit("game/connect", {"game_id": game_id})
+            logger.info(f"OGS: Subscribed to game {game_id} to receive gamedata")
+            return True
         except Exception as e:
-            logger.error(f"OGS: Error fetching active games: {e}")
-            return []
-
-    def get_cached_games(self) -> List[OGSGame]:
-        """Return the list of cached active games (discovered via socket or REST)."""
-        return list(self._active_games.values())
-
-    async def get_game(self, game_id: int) -> Optional[OGSGame]:
-        """
-        Fetch a specific game's current state.
-
-        First checks the local cache, then tries REST API.
-        When using API key auth, REST API may fail - in that case,
-        game data should be received via socket events.
-        """
-        # Check cache first
-        if game_id in self._active_games:
-            return self._active_games[game_id]
-
-        if not await self._ensure_authenticated():
-            return None
-
-        client = await self._get_client()
-
-        try:
-            response = await client.get(
-                f"/api/v1/games/{game_id}",
-                headers=self._auth_headers()
-            )
-            response.raise_for_status()
-
-            game = await self._parse_game_data(response.json())
-            if game:
-                self._active_games[game_id] = game
-            return game
-
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401 and self._using_api_key:
-                # API key auth may not work with REST API
-                logger.warning(f"OGS: REST API auth failed for game {game_id} with API key - waiting for socket data")
-                return self._active_games.get(game_id)
-            logger.error(f"OGS: Error fetching game {game_id}: {e.response.status_code} - {e.response.text}")
-            return None
-        except Exception as e:
-            logger.error(f"OGS: Error fetching game {game_id}: {e}")
-            return None
-
-    async def _parse_game_data(self, data: Dict[str, Any]) -> Optional[OGSGame]:
-        """Parse game data from OGS API into an OGSGame object."""
-        try:
-            game_id = data["id"]
-            black_player = data.get("black", {})
-            white_player = data.get("white", {})
-
-            # Determine our color
-            if black_player.get("id") == self._user_id:
-                our_color = "black"
-                opponent_username = white_player.get("username", "Unknown")
-            else:
-                our_color = "white"
-                opponent_username = black_player.get("username", "Unknown")
-
-            # Parse game state from gamedata
-            gamedata = data.get("gamedata", {})
-            moves = self._parse_moves(gamedata.get("moves", []))
-            board_size = data.get("width", 19)
-            board_state = self._build_board_state(moves, board_size)
-
-            # Determine whose turn it is
-            current_player = len(moves) % 2  # 0 = black, 1 = white
-            our_turn = (current_player == 0 and our_color == "black") or \
-                      (current_player == 1 and our_color == "white")
-
-            # Get captures
-            captures = {
-                "black": gamedata.get("score", {}).get("black", {}).get("prisoners", 0),
-                "white": gamedata.get("score", {}).get("white", {}).get("prisoners", 0),
-            }
-
-            # Time control info
-            time_control = data.get("time_control", {}).get("system", "unknown")
-
-            return OGSGame(
-                game_id=game_id,
-                opponent_username=opponent_username,
-                our_color=our_color,
-                board_size=board_size,
-                time_control=time_control,
-                phase=data.get("phase", "play"),
-                our_turn=our_turn,
-                moves=moves,
-                board_state=board_state,
-                captures=captures,
-                time_left=data.get("clock"),
-                metadata={
-                    "name": data.get("name", ""),
-                    "started": data.get("started"),
-                    "rules": gamedata.get("rules", "japanese"),
-                    "komi": gamedata.get("komi", 6.5),
-                }
-            )
-
-        except Exception as e:
-            logger.error(f"OGS: Error parsing game data: {e}")
-            return None
+            logger.error(f"OGS: Error subscribing to game {game_id}: {e}")
+            return False
 
     def _parse_moves(self, moves_data: List) -> List[Tuple[int, int]]:
         """Parse moves from OGS format to list of (x, y) coordinates."""
@@ -704,10 +469,7 @@ class OGSService:
 
     async def submit_move(self, game_id: int, move: str) -> bool:
         """
-        Submit a move to OGS.
-
-        When using API key authentication, uses socket.io (required).
-        When using OAuth, tries REST API first, then falls back to socket.io.
+        Submit a move to OGS via socket.io.
 
         Args:
             game_id: The OGS game ID
@@ -720,24 +482,11 @@ class OGSService:
 
         game = self._active_games.get(game_id)
         if not game:
-            game = await self.get_game(game_id)
-        if not game:
-            logger.error(f"OGS: Cannot submit move - game {game_id} not found")
+            logger.error(f"OGS: Cannot submit move - game {game_id} not found in cache")
             return False
 
         move = move.upper()
-
-        # When using API key auth, use socket.io (REST API doesn't work with API keys)
-        if self._using_api_key:
-            return await self._submit_move_socket(game_id, move, game)
-        else:
-            # Try REST API first for OAuth auth
-            success = await self._submit_move_rest(game_id, move, game)
-            if not success and self._socket_client:
-                # Fall back to socket if REST fails
-                logger.info("OGS: REST move submission failed, trying socket")
-                return await self._submit_move_socket(game_id, move, game)
-            return success
+        return await self._submit_move_socket(game_id, move, game)
 
     async def _submit_move_socket(self, game_id: int, move: str, game: OGSGame) -> bool:
         """Submit a move via socket.io."""
@@ -772,63 +521,34 @@ class OGSService:
             logger.error(f"OGS: Error submitting move via socket: {e}")
             return False
 
-    async def _submit_move_rest(self, game_id: int, move: str, game: OGSGame) -> bool:
-        """Submit a move via REST API."""
-        client = await self._get_client()
+    async def send_game_chat(self, game_id: int, message: str, move_number: Optional[int] = None) -> bool:
+        """
+        Send a chat message to the game chat via socket.io.
+
+        Args:
+            game_id: The OGS game ID
+            message: The chat message to send
+            move_number: Optional move number to associate the chat with
+        """
+        if not self._socket_client:
+            logger.error("OGS: Cannot send chat - no socket client available")
+            return False
 
         try:
-            if move == "RESIGN":
-                response = await client.post(
-                    f"/api/v1/games/{game_id}/resign",
-                    headers=self._auth_headers()
-                )
-            elif move == "PASS":
-                response = await client.post(
-                    f"/api/v1/games/{game_id}/move",
-                    headers=self._auth_headers(),
-                    json={"move": ".."}
-                )
-            else:
-                x, y = self._notation_to_coords(move, game.board_size)
-                response = await client.post(
-                    f"/api/v1/games/{game_id}/move",
-                    headers=self._auth_headers(),
-                    json={"move": f"{self.COLUMN_LABELS[x].lower()}{game.board_size - y}"}
-                )
+            # OGS game chat format
+            chat_data = {
+                "game_id": game_id,
+                "body": message,
+                "type": "main",  # main game chat
+            }
+            if move_number is not None:
+                chat_data["move_number"] = move_number
 
-            response.raise_for_status()
-            logger.info(f"OGS: Move {move} submitted via REST to game {game_id}")
-
-            # Update our cached game state
-            await self.get_game(game_id)
-
-            return True
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"OGS: Move rejected via REST: {e.response.status_code} - {e.response.text}")
-            return False
-        except Exception as e:
-            logger.error(f"OGS: Error submitting move via REST: {e}")
-            return False
-
-    async def send_game_chat(self, game_id: int, message: str) -> bool:
-        """Send a chat message to the game chat."""
-        if not await self._ensure_authenticated():
-            return False
-
-        client = await self._get_client()
-
-        try:
-            response = await client.post(
-                f"/api/v1/games/{game_id}/chat",
-                headers=self._auth_headers(),
-                json={"body": message}
-            )
-            response.raise_for_status()
+            await self._socket_client.emit("game/chat", chat_data)
             logger.info(f"OGS: Sent chat to game {game_id}")
             return True
         except Exception as e:
-            logger.error(f"OGS: Error sending chat: {e}")
+            logger.error(f"OGS: Error sending chat via socket: {e}")
             return False
 
     # =========================================================================
@@ -882,13 +602,13 @@ class OGSService:
         """Handle a game started event (new game or challenge accepted)."""
         logger.info(f"OGS: Handling game started for game {game_id}")
 
-        # Get the game state - this will also add it to our cache
-        game = await self.get_game(game_id)
+        # Get the game state from cache (should be populated by socket gamedata)
+        game = self.get_game(game_id)
         if not game:
-            # Try to parse from payload if REST API fails
+            # Try to parse from payload if not in cache
             game_data = payload.get("game", {})
             if game_data:
-                game = await self._parse_game_data(game_data)
+                game = self._parse_socket_gamedata(game_id, game_data)
                 if game:
                     self._active_games[game_id] = game
 
@@ -911,10 +631,10 @@ class OGSService:
         payload: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
         """Handle a game move event (opponent played)."""
-        # Refresh game state
-        game = await self.get_game(game_id)
+        # Get game state from cache (should be updated by socket gamedata)
+        game = self.get_game(game_id)
         if not game:
-            logger.error(f"OGS: Game {game_id} not found after move event")
+            logger.error(f"OGS: Game {game_id} not found in cache after move event")
             return None
 
         # Check if it's our turn
@@ -934,8 +654,8 @@ class OGSService:
         phase = payload.get("phase", "")
         logger.info(f"OGS: Game {game_id} phase changed to: {phase}")
 
-        # Refresh game state
-        game = await self.get_game(game_id)
+        # Get game state from cache
+        game = self.get_game(game_id)
 
         if phase == "finished":
             # Game ended - could post commentary to conversation
@@ -974,22 +694,17 @@ class OGSService:
         return None
 
     async def _accept_challenge(self, challenge_id: int) -> bool:
-        """Accept an incoming challenge."""
-        if not await self._ensure_authenticated():
+        """Accept an incoming challenge via socket.io."""
+        if not self._socket_client:
+            logger.error("OGS: Cannot accept challenge - no socket client available")
             return False
 
-        client = await self._get_client()
-
         try:
-            response = await client.post(
-                f"/api/v1/challenges/{challenge_id}/accept",
-                headers=self._auth_headers()
-            )
-            response.raise_for_status()
-            logger.info(f"OGS: Challenge {challenge_id} accepted")
+            await self._socket_client.emit("challenge/accept", {"challenge_id": challenge_id})
+            logger.info(f"OGS: Challenge {challenge_id} accepted via socket")
             return True
         except Exception as e:
-            logger.error(f"OGS: Error accepting challenge: {e}")
+            logger.error(f"OGS: Error accepting challenge via socket: {e}")
             return False
 
     async def _generate_and_submit_move(self, game: OGSGame) -> Optional[Dict[str, Any]]:
@@ -1139,7 +854,7 @@ Focus on making a strong move. Consider:
         conversation_id: str
     ) -> bool:
         """Link an OGS game to a conversation."""
-        game = self._active_games.get(game_id) or await self.get_game(game_id)
+        game = self.get_game(game_id)
         if not game:
             return False
 
@@ -1178,7 +893,7 @@ Focus on making a strong move. Consider:
                 conversation = result.scalar_one_or_none()
                 if conversation and conversation.external_link_type == "ogs_game":
                     game_id = int(conversation.external_link_id)
-                    return await self.get_game(game_id)
+                    return self.get_game(game_id)
             except Exception as e:
                 logger.error(f"OGS: Error getting game for conversation: {e}")
 

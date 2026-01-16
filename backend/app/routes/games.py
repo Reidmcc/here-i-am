@@ -103,10 +103,7 @@ async def list_games(
     If entity_id is provided, only games for that entity are returned.
     Currently, all games belong to the configured OGS entity.
 
-    Games can be discovered via:
-    1. REST API (if available)
-    2. Socket events (yourMove, gameStarted notifications)
-    3. Previously cached games
+    Games are discovered via socket.io events (yourMove, gameStarted notifications).
     """
     ogs_service = _get_ogs_service()
 
@@ -114,14 +111,8 @@ async def list_games(
     if entity_id and entity_id != settings.ogs_entity_id:
         return []
 
-    # Try to get games via REST API
-    games = await ogs_service.get_active_games()
-
-    # If REST returned no games, also check cached games (discovered via socket)
-    if not games:
-        games = ogs_service.get_cached_games()
-        if games:
-            logger.info(f"Using {len(games)} cached games (discovered via socket)")
+    # Get games from cache (populated by socket.io events)
+    games = ogs_service.get_active_games()
 
     return [
         GameResponse(
@@ -147,12 +138,13 @@ async def get_game(game_id: int):
     Get detailed information about a specific game.
 
     Includes ASCII board representation and full game context.
+    Game data is populated via socket.io events.
     """
     ogs_service = _get_ogs_service()
 
-    game = await ogs_service.get_game(game_id)
+    game = ogs_service.get_game(game_id)
     if not game:
-        raise HTTPException(status_code=404, detail="Game not found")
+        raise HTTPException(status_code=404, detail="Game not found in cache")
 
     return GameDetailResponse(
         game_id=game.game_id,
@@ -190,7 +182,7 @@ async def link_game(
     ogs_service = _get_ogs_service()
 
     # Get the game
-    game = await ogs_service.get_game(game_id)
+    game = ogs_service.get_game(game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
@@ -258,7 +250,7 @@ async def unlink_game(
     """
     ogs_service = _get_ogs_service()
 
-    game = await ogs_service.get_game(game_id)
+    game = ogs_service.get_game(game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
@@ -295,7 +287,7 @@ async def get_game_conversation(
     """
     ogs_service = _get_ogs_service()
 
-    game = await ogs_service.get_game(game_id)
+    game = ogs_service.get_game(game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
@@ -349,7 +341,7 @@ async def get_conversation_board_state(
         raise HTTPException(status_code=400, detail="Conversation is not linked to an OGS game")
 
     game_id = int(conversation.external_link_id)
-    game = await ogs_service.get_game(game_id)
+    game = ogs_service.get_game(game_id)
 
     if not game:
         raise HTTPException(status_code=404, detail="Linked game not found")

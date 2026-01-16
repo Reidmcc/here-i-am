@@ -567,15 +567,18 @@ The application supports an **External Event System** that enables AI entities t
 
 ### OGS (Online-Go Server) Integration
 
-The application integrates with **OGS (Online-Go.com)** to enable AI entities to play Go games in real-time.
+The application integrates with **OGS (Online-Go.com)** to enable AI entities to play Go games in real-time via socket.io.
+
+**Socket.io-Only Architecture:**
+All OGS communication is done via socket.io for reliability. This is required because OGS bot API keys only work with socket.io authentication, not REST API calls.
 
 **Dual-Channel Model:**
-- **Game Channel (Mechanical)**: Moves occur asynchronously. The entity receives notifications when it's their turn and responds with moves.
+- **Game Channel (Mechanical)**: Moves occur asynchronously. The entity receives notifications when it's their turn and responds with moves via socket.io.
 - **Conversation Channel (Relational)**: A linked conversation where participants communicate freely, not gated by move events.
 
 **Setup Guide:**
 
-**IMPORTANT:** OGS has a specific process for bot accounts that differs from standard OAuth.
+**IMPORTANT:** OGS has a specific process for bot accounts.
 
 1. **Create an OGS account for your bot:**
    - Go to https://online-go.com and click "Sign Up"
@@ -600,18 +603,10 @@ The application integrates with **OGS (Online-Go.com)** to enable AI entities to
 
 4. **Configure environment variables** (see Configuration below)
 
-**Alternative: OAuth Authentication (may have limited support)**
-
-If API key authentication doesn't work for your use case, you can try OAuth:
-- Log into OGS with your bot account
-- Go to https://online-go.com/oauth2/applications/
-- Create a new application with Client Type "Confidential" and Grant Type "Client credentials"
-- Note: OAuth client_credentials may not be fully supported by OGS
-
 **Troubleshooting:**
 - **Error "invalid_client" or 403 "permission denied"**: Your bot account may not be properly flagged as a bot. Contact OGS moderators.
 - **Can't find API key option on bot profile**: The bot account hasn't been flagged yet. Complete Step 2 first.
-- **No game events received**: Ensure the bot account has active games
+- **No game events received**: Ensure the bot account has active games and the socket.io connection is established.
 
 For more information, see the official [gtp2ogs documentation](https://github.com/online-go/gtp2ogs).
 
@@ -619,16 +614,11 @@ For more information, see the official [gtp2ogs documentation](https://github.co
 ```bash
 # Enable OGS integration
 OGS_ENABLED=true
-OGS_API_KEY=your_api_key           # Recommended method
-OGS_BOT_USERNAME=your_bot_username
+OGS_API_KEY=your_api_key           # Required - bot API key from OGS
+OGS_BOT_USERNAME=your_bot_username # Required - bot account username
 OGS_ENTITY_ID=entity_pinecone_index_name
 
-# Alternative: OAuth (may have limited support)
-# OGS_CLIENT_ID=your_client_id
-# OGS_CLIENT_SECRET=your_client_secret
-
 # Optional settings
-OGS_API_URL=https://online-go.com
 OGS_SOCKET_URL=https://online-go.com
 OGS_AUTO_ACCEPT_CHALLENGES=true
 OGS_ACCEPTED_BOARD_SIZES=9,13,19
@@ -707,8 +697,11 @@ For game-linked conversations, consecutive same-role messages are consolidated b
 
 **Technical Notes:**
 - Requires `python-socketio[asyncio_client]>=5.10.0`
-- OGS uses OAuth client credentials authentication
+- All OGS communication is via socket.io (no REST API calls)
+- Authentication uses API key via socket.io `authenticate` event
+- Game data received via socket.io events (gamedata, move notifications)
 - Game subscriptions managed per-game via socket.io
+- Move submission, chat, and challenge acceptance all via socket.io
 - Reconnection handled automatically with exponential backoff
 
 ---
@@ -760,7 +753,7 @@ here-i-am/
 │   │   │   ├── styletts2_service.py  # Local StyleTTS 2 client service
 │   │   │   ├── whisper_service.py    # Local Whisper STT client service
 │   │   │   ├── event_service.py      # External event system management
-│   │   │   ├── ogs_service.py        # OGS (Online-Go Server) API client
+│   │   │   ├── ogs_service.py        # OGS (Online-Go Server) socket.io client
 │   │   │   └── event_listeners/      # Event listener implementations
 │   │   │       ├── base.py           # BaseEventListener abstract class
 │   │   │       └── ogs_listener.py   # OGS socket.io listener
@@ -2235,11 +2228,13 @@ Some state persists across page refreshes:
     - No build step required - ES6 modules work directly in browser
 
 28. **OGS (Online-Go Server) Integration**
-    - Set `OGS_ENABLED=true` and configure OAuth credentials to enable
+    - Set `OGS_ENABLED=true` and configure API key credentials to enable
     - Requires `python-socketio[asyncio_client]>=5.10.0`
+    - All OGS communication is via socket.io (no REST API calls)
     - The OGSEventListener connects on application startup if configured
-    - Uses OAuth client credentials flow for authentication
-    - Game events are received via socket.io, moves submitted via REST API
+    - Authentication uses API key via socket.io `authenticate` event
+    - Game events, moves, chat, and challenges all handled via socket.io
+    - Game data is cached locally when received from socket events
     - Board state is converted to ASCII for LLM understanding
     - Moves parsed from `MOVE: <coordinate>` format in LLM response
     - Go learning notes (`go-notes.md`) are auto-injected into move prompts
