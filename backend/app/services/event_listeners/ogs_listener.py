@@ -129,7 +129,7 @@ class OGSEventListener(BaseEventListener):
             await self._handle_notification(data)
 
     async def _authenticate(self) -> None:
-        """Authenticate with OGS socket server."""
+        """Authenticate with OGS socket server using API key."""
         if not self._sio:
             raise RuntimeError("Not connected")
 
@@ -138,24 +138,14 @@ class OGSEventListener(BaseEventListener):
         if not success:
             raise RuntimeError("Failed to initialize OGS authentication")
 
-        # Build authentication data based on auth method
-        if self._ogs_service._using_api_key:
-            # API key authentication format (per gtp2ogs):
-            # {jwt: "", bot_username: ..., bot_apikey: ...}
-            auth_data = {
-                "jwt": "",
-                "bot_username": settings.ogs_bot_username,
-                "bot_apikey": self._ogs_service._access_token,
-            }
-            logger.info(f"{self.name}: Authenticating via API key for bot '{settings.ogs_bot_username}'")
-        else:
-            # OAuth token authentication format:
-            # {auth: <token>, player_id: <id>}
-            auth_data = {
-                "auth": self._ogs_service._access_token,
-                "player_id": self._ogs_service._user_id,
-            }
-            logger.info(f"{self.name}: Authenticating via OAuth token")
+        # API key authentication format (per gtp2ogs):
+        # {jwt: "", bot_username: ..., bot_apikey: ...}
+        auth_data = {
+            "jwt": "",
+            "bot_username": settings.ogs_bot_username,
+            "bot_apikey": self._ogs_service._access_token,
+        }
+        logger.info(f"{self.name}: Authenticating via API key for bot '{settings.ogs_bot_username}'")
 
         # Use call() instead of emit() to get the response with user info
         try:
@@ -207,39 +197,33 @@ class OGSEventListener(BaseEventListener):
             self._authenticated = True
 
     async def _subscribe_to_active_games(self) -> None:
-        """Subscribe to events for all active games."""
-        games = await self._ogs_service.get_active_games()
+        """
+        Subscribe to notifications to receive game events.
 
-        if games:
-            for game in games:
-                await self.subscribe_to_game(game.game_id)
-            logger.info(f"{self.name}: Subscribed to {len(games)} active games")
+        Games are discovered via socket.io notifications (yourMove, gameStarted).
+        When we receive a notification about a game, we subscribe to it.
+        """
+        # Subscribe to notifications for this user
+        if self._sio and self._ogs_service._user_id:
+            try:
+                await self._sio.emit("notification/connect", {
+                    "player_id": self._ogs_service._user_id
+                })
+                logger.info(f"{self.name}: Subscribed to notifications for user {self._ogs_service._user_id}")
+            except Exception as e:
+                logger.error(f"{self.name}: Could not subscribe to notifications: {e}")
         else:
-            # No games found - this could be because:
-            # 1. API key auth: REST API doesn't work with bot API keys
-            # 2. No active games exist
-            # 3. user_id wasn't set yet when get_active_games was called
-            if self._ogs_service._user_id:
-                logger.info(
-                    f"{self.name}: No active games found for user {self._ogs_service._user_id}. "
-                    "Will detect new games via socket notifications."
-                )
+            if not self._ogs_service._user_id:
+                logger.warning(f"{self.name}: Cannot subscribe to notifications - user_id not set")
             else:
-                logger.warning(
-                    f"{self.name}: No active games found and user_id not set. "
-                    "Socket notifications may not work correctly."
-                )
+                logger.warning(f"{self.name}: Cannot subscribe to notifications - socket not connected")
 
-            # Request active games via socket notification subscription
-            if self._sio:
-                try:
-                    # Subscribe to notifications for this user
-                    await self._sio.emit("notification/connect", {
-                        "player_id": self._ogs_service._user_id
-                    })
-                    logger.debug(f"{self.name}: Subscribed to notifications")
-                except Exception as e:
-                    logger.debug(f"{self.name}: Could not subscribe to notifications: {e}")
+        # Also subscribe to any games already in cache (from previous session)
+        cached_games = self._ogs_service.get_active_games()
+        if cached_games:
+            for game in cached_games:
+                await self.subscribe_to_game(game.game_id)
+            logger.info(f"{self.name}: Subscribed to {len(cached_games)} cached games")
 
     async def subscribe_to_game(self, game_id: int) -> None:
         """Subscribe to events for a specific game."""
