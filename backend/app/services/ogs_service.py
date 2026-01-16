@@ -828,16 +828,25 @@ class OGSService:
         Returns response data including message_id, conversation_id, entity_id
         if a response was generated.
         """
-        logger.info(f"OGS: Processing event {event_type} for game {external_id}")
+        logger.info(f"OGS: Processing event {event_type} for {external_id}")
 
-        game_id = int(external_id)
+        # Handle challenge events separately - they don't have numeric game IDs
+        if event_type == "challenge":
+            return await self._handle_challenge(payload)
+
+        # For game events, parse the game_id from external_id
+        # Handle format like "1941392:uuid" by taking just the numeric part
+        try:
+            game_id_str = external_id.split(":")[0] if ":" in external_id else external_id
+            game_id = int(game_id_str)
+        except ValueError:
+            logger.error(f"OGS: Invalid game ID format: {external_id}")
+            return None
 
         if event_type == "game_move":
             return await self._handle_game_move(game_id, payload)
         elif event_type == "game_phase":
             return await self._handle_game_phase(game_id, payload)
-        elif event_type == "challenge":
-            return await self._handle_challenge(payload)
         else:
             logger.warning(f"OGS: Unknown event type: {event_type}")
             return None
