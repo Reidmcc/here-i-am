@@ -686,6 +686,45 @@ class ApiClient {
             }
         }
     }
+
+    // Games (OGS Integration)
+    async listGames(entityId = null) {
+        let url = '/games/';
+        if (entityId) {
+            url += `?entity_id=${entityId}`;
+        }
+        return this.request(url);
+    }
+
+    async getGame(gameId) {
+        return this.request(`/games/${gameId}`);
+    }
+
+    async linkGame(gameId, conversationId = null) {
+        return this.request(`/games/${gameId}/link`, {
+            method: 'POST',
+            body: { conversation_id: conversationId },
+        });
+    }
+
+    async unlinkGame(gameId) {
+        return this.request(`/games/${gameId}/link`, {
+            method: 'DELETE',
+        });
+    }
+
+    async getGameConversation(gameId) {
+        return this.request(`/games/${gameId}/conversation`);
+    }
+
+    async getConversationBoardState(conversationId) {
+        return this.request(`/games/conversation/${conversationId}/board`);
+    }
+
+    // Events (External Event System)
+    async getEventsStatus() {
+        return this.request('/events/status');
+    }
 }
 
 // Export singleton instance as global (needed for ES6 modules)
