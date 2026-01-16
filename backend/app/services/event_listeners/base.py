@@ -53,6 +53,10 @@ class BaseEventListener(ABC):
     MAX_RECONNECT_DELAY = 300.0  # 5 minutes
     RECONNECT_BACKOFF_FACTOR = 2.0
 
+    # Startup retry settings
+    MAX_STARTUP_RETRIES = 5  # Max connection attempts during startup
+    STARTUP_RETRY_DELAY = 2.0  # seconds between startup retries
+
     def __init__(self, name: str, entity_id: str):
         """
         Initialize the event listener.
@@ -69,6 +73,8 @@ class BaseEventListener(ABC):
         self._reconnect_delay = self.INITIAL_RECONNECT_DELAY
         self._reconnect_task: Optional[asyncio.Task] = None
         self._event_handler: Optional[Callable[[str, str, Dict[str, Any]], Awaitable[None]]] = None
+        self._startup_failed = False  # True if startup retries exhausted
+        self._in_startup = False  # True during startup retry phase (prevents _on_disconnect interference)
 
     @property
     def state(self) -> EventListenerState:
@@ -85,6 +91,11 @@ class BaseEventListener(ABC):
         """Check if the listener is connected."""
         return self._state == EventListenerState.CONNECTED
 
+    @property
+    def startup_failed(self) -> bool:
+        """Check if startup connection attempts were exhausted."""
+        return self._startup_failed
+
     def set_event_handler(
         self,
         handler: Callable[[str, str, Dict[str, Any]], Awaitable[None]]
@@ -99,30 +110,65 @@ class BaseEventListener(ABC):
         """
         self._event_handler = handler
 
-    async def start(self) -> None:
-        """Start the event listener."""
+    async def start(self) -> bool:
+        """
+        Start the event listener with startup retries.
+
+        During startup, will retry connection up to MAX_STARTUP_RETRIES times.
+        If all startup attempts fail, the listener is marked as failed and
+        no background reconnection is scheduled.
+
+        Returns:
+            True if connected successfully, False if startup retries exhausted
+        """
         if self._should_run:
             logger.warning(f"{self.name}: Already running")
-            return
+            return self.is_connected
 
         logger.info(f"{self.name}: Starting event listener for entity {self.entity_id}")
         self._should_run = True
-        self._state = EventListenerState.CONNECTING
+        self._startup_failed = False
+        self._in_startup = True  # Prevent _on_disconnect from interfering during startup
         self._reconnect_delay = self.INITIAL_RECONNECT_DELAY
 
+        # Startup retry loop
+        retry_delay = self.STARTUP_RETRY_DELAY
         try:
-            await self._connect()
-            self._state = EventListenerState.CONNECTED
-            self._stats.connected_at = datetime.utcnow()
-            self._stats.reconnect_attempts = 0
-            logger.info(f"{self.name}: Connected successfully")
-        except Exception as e:
-            logger.error(f"{self.name}: Connection failed: {e}")
+            for attempt in range(1, self.MAX_STARTUP_RETRIES + 1):
+                self._state = EventListenerState.CONNECTING
+                self._stats.reconnect_attempts = attempt - 1
+
+                try:
+                    await self._connect()
+                    self._state = EventListenerState.CONNECTED
+                    self._stats.connected_at = datetime.utcnow()
+                    self._stats.reconnect_attempts = 0
+                    logger.info(f"{self.name}: Connected successfully")
+                    return True
+                except Exception as e:
+                    logger.error(
+                        f"{self.name}: Connection attempt {attempt}/{self.MAX_STARTUP_RETRIES} failed: {e}"
+                    )
+                    self._stats.last_error = str(e)
+                    self._stats.last_error_at = datetime.utcnow()
+
+                    if attempt < self.MAX_STARTUP_RETRIES:
+                        logger.info(f"{self.name}: Retrying in {retry_delay:.1f}s...")
+                        await asyncio.sleep(retry_delay)
+                        # Exponential backoff for startup retries
+                        retry_delay = min(retry_delay * self.RECONNECT_BACKOFF_FACTOR, 30.0)
+
+            # All startup retries exhausted
+            logger.error(
+                f"{self.name}: All {self.MAX_STARTUP_RETRIES} startup connection attempts failed. "
+                "Disabling listener."
+            )
             self._state = EventListenerState.ERROR
-            self._stats.last_error = str(e)
-            self._stats.last_error_at = datetime.utcnow()
-            # Schedule reconnection
-            self._schedule_reconnect()
+            self._startup_failed = True
+            self._should_run = False
+            return False
+        finally:
+            self._in_startup = False  # Always clear startup flag when done
 
     async def stop(self) -> None:
         """Stop the event listener."""
@@ -219,8 +265,14 @@ class BaseEventListener(ABC):
         Called when the connection is lost unexpectedly.
 
         Subclasses should call this when they detect a disconnection.
+        Note: During startup phase, this is ignored as start() handles retries.
         """
         if not self._should_run:
+            return
+
+        # During startup, the start() method handles retries - don't interfere
+        if self._in_startup:
+            logger.debug(f"{self.name}: Disconnect during startup phase, ignoring (start() handles retries)")
             return
 
         logger.warning(f"{self.name}: Connection lost, will attempt to reconnect")
@@ -253,6 +305,7 @@ class BaseEventListener(ABC):
             "name": self.name,
             "entity_id": self.entity_id,
             "state": self._state.value,
+            "startup_failed": self._startup_failed,
             "connected_at": self._stats.connected_at.isoformat() if self._stats.connected_at else None,
             "disconnected_at": self._stats.disconnected_at.isoformat() if self._stats.disconnected_at else None,
             "reconnect_attempts": self._stats.reconnect_attempts,
