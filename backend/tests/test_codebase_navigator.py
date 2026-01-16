@@ -312,7 +312,8 @@ class TestNavigatorClient:
         """Test client raises error without API key."""
         client = NavigatorClient(api_key=None)
 
-        with patch("app.services.codebase_navigator.client.settings") as mock_settings:
+        # Patch app.config.settings since it's imported lazily inside the api_key property
+        with patch("app.config.settings") as mock_settings:
             mock_settings.mistral_api_key = ""
 
             with pytest.raises(NavigatorNotConfiguredError):
@@ -574,7 +575,8 @@ class TestNavigatorTools:
     @pytest.mark.asyncio
     async def test_navigate_codebase_not_configured(self):
         """Test navigate_codebase returns error when not configured."""
-        with patch("app.services.codebase_navigator_tools.codebase_navigator_service") as mock_service:
+        # Patch the service where it's imported from (inside the function)
+        with patch("app.services.codebase_navigator_service.codebase_navigator_service") as mock_service:
             mock_service.is_configured.return_value = False
 
             result = await navigate_codebase("Test task")
