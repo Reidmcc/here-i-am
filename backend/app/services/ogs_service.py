@@ -673,7 +673,10 @@ class OGSService:
 
         challenge_id = payload.get("id")
         board_size = payload.get("width", 19)
-        time_control = payload.get("time_control", {}).get("system", "unknown")
+        time_control_data = payload.get("time_control", {})
+        # OGS challenges have a "speed" field for the category (live, correspondence, blitz)
+        # and a "system" field for the timing system (byoyomi, fischer, etc.)
+        time_control = time_control_data.get("speed", time_control_data.get("system", "unknown"))
 
         # Check if we accept this challenge
         accepted_sizes = settings.get_ogs_accepted_board_sizes()
