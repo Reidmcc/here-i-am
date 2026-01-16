@@ -362,6 +362,7 @@ html, body {
     padding: 16px;
     border-top: 1px solid var(--border-color);
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
 }
 
@@ -2895,15 +2896,16 @@ h4.md-header {
  * Games (OGS Integration) Styles
  * ============================================================================= */
 
-/* Games button in sidebar */
+/* Games button in sidebar - full width on its own row */
 .games-btn {
+    width: 100%;
+    padding: 10px;
     background-color: var(--bg-tertiary);
     color: var(--text-secondary);
     border: 1px solid var(--border-color);
-    padding: 8px 12px;
     border-radius: 6px;
     cursor: pointer;
-    font-size: 0.875rem;
+    font-size: 0.85rem;
     transition: all 0.2s;
 }
 
