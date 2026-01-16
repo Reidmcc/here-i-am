@@ -86,28 +86,57 @@ class EventService:
             logger.warning("EventService: Already running")
             return
 
-        logger.info(f"EventService: Starting with {len(self._listeners)} listener(s)")
+        listener_count = len(self._listeners)
+        logger.info(f"EventService: Starting with {listener_count} listener(s)")
         self._running = True
 
         # Start all listeners concurrently
+        # Note: We copy items() to list to avoid modification during iteration
         start_tasks = [
             self._start_listener(listener_id, listener)
-            for listener_id, listener in self._listeners.items()
+            for listener_id, listener in list(self._listeners.items())
         ]
 
         if start_tasks:
-            await asyncio.gather(*start_tasks, return_exceptions=True)
+            results = await asyncio.gather(*start_tasks, return_exceptions=True)
+            # Count successes (True values, excluding exceptions)
+            succeeded = sum(1 for r in results if r is True)
+            failed = listener_count - succeeded
+            if failed > 0:
+                logger.warning(
+                    f"EventService: {failed} listener(s) failed to start and were disabled"
+                )
+            logger.info(f"EventService: {succeeded}/{listener_count} listener(s) started successfully")
 
         self._startup_complete = True
         logger.info("EventService: Startup complete")
 
-    async def _start_listener(self, listener_id: str, listener: BaseEventListener) -> None:
-        """Start a single listener with error handling."""
+    async def _start_listener(self, listener_id: str, listener: BaseEventListener) -> bool:
+        """
+        Start a single listener with error handling.
+
+        Returns:
+            True if listener started successfully, False if startup failed
+        """
         try:
-            await listener.start()
-            logger.info(f"EventService: Started listener {listener_id}")
+            success = await listener.start()
+            if success:
+                logger.info(f"EventService: Started listener {listener_id}")
+                return True
+            else:
+                # Startup retries exhausted - unregister the listener
+                logger.warning(
+                    f"EventService: Listener {listener_id} failed to connect after retries. "
+                    "Unregistering and continuing without it."
+                )
+                self.unregister_listener(listener_id)
+                # Also remove the event handler for this source
+                if listener_id in self._event_handlers:
+                    del self._event_handlers[listener_id]
+                return False
         except Exception as e:
             logger.error(f"EventService: Failed to start listener {listener_id}: {e}")
+            return False
 
     async def stop(self) -> None:
         """Stop the event service and all listeners."""
