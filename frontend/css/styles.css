@@ -2890,3 +2890,319 @@ h4.md-header {
     color: var(--text-muted);
     font-style: italic;
 }
+
+/* =============================================================================
+ * Games (OGS Integration) Styles
+ * ============================================================================= */
+
+/* Games button in sidebar */
+.games-btn {
+    background-color: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.875rem;
+    transition: all 0.2s;
+}
+
+.games-btn:hover {
+    background-color: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+/* Games status section */
+.games-status-section {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+/* Events status display */
+.events-status-container {
+    flex: 1;
+}
+
+.events-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.875rem;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background-color: var(--bg-tertiary);
+}
+
+.events-status.connected {
+    color: var(--success);
+}
+
+.events-status.disconnected {
+    color: var(--warning);
+}
+
+.events-status.error {
+    color: var(--danger);
+}
+
+.events-status .status-icon {
+    font-size: 1rem;
+}
+
+.events-status .bot-name {
+    margin-left: auto;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+/* Games list */
+.games-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.games-empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-secondary);
+}
+
+.games-empty p {
+    margin-bottom: 8px;
+}
+
+.games-empty .text-muted {
+    font-size: 0.875rem;
+    color: var(--text-muted);
+}
+
+/* Game item */
+.game-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 16px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    transition: border-color 0.2s;
+}
+
+.game-item:hover {
+    border-color: var(--accent);
+}
+
+.game-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.game-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.game-opponent {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+/* Stone icon (black/white indicator) */
+.stone-icon {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    vertical-align: middle;
+}
+
+.stone-icon.black {
+    background-color: #1a1a1a;
+    border: 1px solid #444;
+}
+
+.stone-icon.white {
+    background-color: #f0f0f0;
+    border: 1px solid #888;
+}
+
+/* Turn indicator */
+.turn-indicator {
+    font-size: 0.75rem;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background-color: var(--bg-elevated);
+    color: var(--text-muted);
+}
+
+.turn-indicator.your-turn {
+    background-color: var(--accent-subtle);
+    color: var(--accent);
+    font-weight: 500;
+}
+
+/* Game details */
+.game-details {
+    display: flex;
+    gap: 12px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.game-details span {
+    display: flex;
+    align-items: center;
+}
+
+/* Link status */
+.game-link-status {
+    margin-top: 4px;
+}
+
+.link-status {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.link-status.linked {
+    color: var(--success);
+}
+
+/* Game actions */
+.game-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-left: 16px;
+}
+
+.game-actions button {
+    white-space: nowrap;
+}
+
+/* Game board modal */
+.game-board-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.game-board-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.game-board-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.1rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.game-board-status {
+    display: flex;
+    gap: 16px;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.turn-status {
+    padding: 4px 12px;
+    background-color: var(--accent-subtle);
+    border-radius: 4px;
+    color: var(--accent);
+}
+
+.game-board-captures {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    padding: 8px 12px;
+    background-color: var(--bg-tertiary);
+    border-radius: 4px;
+}
+
+/* ASCII board display */
+.game-board-ascii {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    line-height: 1.2;
+    background-color: var(--bg-primary);
+    padding: 16px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text-primary);
+}
+
+.game-board-actions {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+/* Game indicator in chat header */
+.game-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 0.8rem;
+}
+
+.game-indicator-icon {
+    color: var(--accent);
+}
+
+.game-indicator-text {
+    color: var(--text-secondary);
+}
+
+.game-indicator-btn {
+    padding: 2px 8px;
+    font-size: 0.75rem;
+    background-color: var(--bg-elevated);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.game-indicator-btn:hover {
+    background-color: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+/* Loading states for games */
+.games-list .loading-text,
+.game-board-container .loading-text {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-muted);
+}
+
+.game-board-container .error-text {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--danger);
+}

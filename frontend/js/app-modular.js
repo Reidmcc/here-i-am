@@ -136,6 +136,21 @@ import {
     cancelImport,
     resetImportModal
 } from './modules/import-export.js';
+import {
+    setElements as setGamesElements,
+    setCallbacks as setGamesCallbacks,
+    checkGamesStatus,
+    loadGames,
+    showGamesModal,
+    hideGamesModal,
+    viewGame,
+    hideGameBoardModal,
+    linkGameToConversation,
+    unlinkGame,
+    goToGameConversation,
+    updateGameIndicator,
+    refreshGames
+} from './modules/games.js';
 
 // Reference to global API client
 const api = window.api;
@@ -302,6 +317,16 @@ class App {
             importProgressBar: document.getElementById('import-progress-bar'),
             importProgressText: document.getElementById('import-progress-text'),
 
+            // Games (OGS Integration)
+            gamesBtn: document.getElementById('games-btn'),
+            gamesModal: document.getElementById('games-modal'),
+            gamesList: document.getElementById('games-list'),
+            eventsStatusContainer: document.getElementById('events-status-container'),
+            refreshGamesBtn: document.getElementById('refresh-games-btn'),
+            gameBoardModal: document.getElementById('game-board-modal'),
+            gameBoardContainer: document.getElementById('game-board-container'),
+            gameIndicator: document.getElementById('game-indicator'),
+
             // Toast container
             toastContainer: document.getElementById('toast-container'),
         };
@@ -385,6 +410,13 @@ class App {
         setImportExportElements(this.elements);
         setImportExportCallbacks({
             loadConversations: () => loadConversations(),
+        });
+
+        // Initialize games module (OGS integration)
+        setGamesElements(this.elements);
+        setGamesCallbacks({
+            loadConversations: () => loadConversations(),
+            loadConversation: (id) => loadConversation(id),
         });
     }
 
@@ -514,6 +546,13 @@ class App {
         this.elements.deleteVoiceBtn?.addEventListener('click', () => deleteVoice());
         document.getElementById('edit-voice-btn')?.addEventListener('click', () => showVoiceEditModal());
 
+        // Games modal (OGS Integration)
+        this.elements.gamesBtn?.addEventListener('click', () => showGamesModal());
+        document.getElementById('close-games')?.addEventListener('click', () => hideGamesModal());
+        this.elements.refreshGamesBtn?.addEventListener('click', () => refreshGames());
+        document.getElementById('close-game-board')?.addEventListener('click', () => hideGameBoardModal());
+        document.getElementById('close-board-btn')?.addEventListener('click', () => hideGameBoardModal());
+
         // Global keyboard shortcuts
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
@@ -556,6 +595,9 @@ class App {
 
         // Check STT status
         await checkSTTStatus();
+
+        // Check games/OGS status
+        await checkGamesStatus();
 
         // Load GitHub repos info
         await this.loadGitHubReposInfo();
@@ -675,6 +717,9 @@ class App {
     onConversationLoaded(conversation, messages) {
         // Handle input change to update button states
         this.handleInputChange();
+
+        // Update game indicator if conversation is linked to an OGS game
+        updateGameIndicator(conversation);
     }
 
     /**
@@ -785,6 +830,11 @@ window.app = {
     loadConversation: (id) => loadConversation(id),
     unarchiveConversation: (id) => unarchiveConversation(id),
     selectResponder: (entityId) => selectResponder(entityId),
+    // Games (OGS Integration)
+    viewGame: (gameId) => viewGame(gameId),
+    linkGameToConversation: (gameId, conversationId) => linkGameToConversation(gameId, conversationId),
+    unlinkGame: (gameId) => unlinkGame(gameId),
+    goToGameConversation: (conversationId) => goToGameConversation(conversationId),
 };
 
 // Initialize app when DOM is ready

@@ -68,6 +68,10 @@ class ConversationResponse(BaseModel):
     entities: Optional[List[EntityInfo]] = None
     # Per-entity system prompts: { entity_id: system_prompt, ... }
     entity_system_prompts: Optional[dict] = None
+    # External link fields (for OGS game integration, etc.)
+    external_link_type: Optional[str] = None
+    external_link_id: Optional[str] = None
+    external_link_metadata: Optional[dict] = None
 
     class Config:
         from_attributes = True

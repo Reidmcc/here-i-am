@@ -50,7 +50,8 @@ export function closeActiveModal() {
         'voiceCloneModal',
         'voiceEditModal',
         'multiEntityModal',
-        'goNewGameModal'
+        'gamesModal',
+        'gameBoardModal'
     ];
 
     // Find and close the first active modal
@@ -77,7 +78,8 @@ export function isModalOpen() {
         'voiceCloneModal',
         'voiceEditModal',
         'multiEntityModal',
-        'goNewGameModal'
+        'gamesModal',
+        'gameBoardModal'
     ];
 
     for (const modalName of modalNames) {

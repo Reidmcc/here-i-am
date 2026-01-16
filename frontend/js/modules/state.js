@@ -75,8 +75,11 @@ export const state = {
         files: []
     },
 
-    // Go game reference
-    goGame: null,
+    // Games (OGS Integration)
+    games: [],
+    selectedGameId: null,
+    gamesEnabled: false,
+    eventsStatus: null,
 
     // Pending actions for modals
     pendingArchiveId: null,
