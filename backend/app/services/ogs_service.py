@@ -316,6 +316,7 @@ class OGSService:
         about active games.
         """
         if not await self._ensure_authenticated():
+            logger.warning("OGS: Not authenticated, cannot fetch active games")
             return []
 
         # If using API key and user_id not yet set (will be set by socket auth),
@@ -324,6 +325,7 @@ class OGSService:
             logger.info("OGS: API key auth - user_id not yet available, will discover games via socket")
             return []
 
+        logger.info(f"OGS: Fetching active games for user {self._user_id}")
         client = await self._get_client()
 
         try:
@@ -337,25 +339,44 @@ class OGSService:
             data = response.json()
             games = []
 
-            for game_data in data.get("results", []):
+            results = data.get("results", [])
+            logger.debug(f"OGS: REST API returned {len(results)} game results")
+
+            for game_data in results:
                 game = await self._parse_game_data(game_data)
                 if game:
                     games.append(game)
                     self._active_games[game.game_id] = game
 
-            logger.info(f"OGS: Found {len(games)} active games")
+            logger.info(f"OGS: Found {len(games)} active games via REST API")
             return games
 
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401 and self._using_api_key:
-                # API key auth may not work with REST API - this is expected
-                logger.warning("OGS: REST API auth failed with API key (expected) - will discover games via socket")
+            if e.response.status_code == 401:
+                if self._using_api_key:
+                    # API key auth may not work with REST API - this is expected
+                    logger.info(
+                        "OGS: REST API returned 401 with API key auth (expected behavior). "
+                        "Will discover games via socket notifications (yourMove, gameStarted)."
+                    )
+                else:
+                    logger.warning(f"OGS: REST API returned 401 with OAuth - token may be expired")
+                return []
+            elif e.response.status_code == 403:
+                logger.warning(
+                    f"OGS: REST API returned 403 - access denied. "
+                    "This may indicate the bot account is not properly configured."
+                )
                 return []
             logger.error(f"OGS: Error fetching active games: {e.response.status_code} - {e.response.text}")
             return []
         except Exception as e:
             logger.error(f"OGS: Error fetching active games: {e}")
             return []
+
+    def get_cached_games(self) -> List[OGSGame]:
+        """Return the list of cached active games (discovered via socket or REST)."""
+        return list(self._active_games.values())
 
     async def get_game(self, game_id: int) -> Optional[OGSGame]:
         """
@@ -847,9 +868,42 @@ class OGSService:
             return await self._handle_game_move(game_id, payload)
         elif event_type == "game_phase":
             return await self._handle_game_phase(game_id, payload)
+        elif event_type == "game_started":
+            return await self._handle_game_started(game_id, payload)
         else:
             logger.warning(f"OGS: Unknown event type: {event_type}")
             return None
+
+    async def _handle_game_started(
+        self,
+        game_id: int,
+        payload: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Handle a game started event (new game or challenge accepted)."""
+        logger.info(f"OGS: Handling game started for game {game_id}")
+
+        # Get the game state - this will also add it to our cache
+        game = await self.get_game(game_id)
+        if not game:
+            # Try to parse from payload if REST API fails
+            game_data = payload.get("game", {})
+            if game_data:
+                game = await self._parse_game_data(game_data)
+                if game:
+                    self._active_games[game_id] = game
+
+        if game:
+            logger.info(
+                f"OGS: Game {game_id} started - playing {game.our_color} vs {game.opponent_username}, "
+                f"our_turn={game.our_turn}"
+            )
+            # If it's our turn, generate a move
+            if game.our_turn:
+                return await self._generate_and_submit_move(game)
+        else:
+            logger.warning(f"OGS: Could not fetch game {game_id} details after game_started event")
+
+        return None
 
     async def _handle_game_move(
         self,

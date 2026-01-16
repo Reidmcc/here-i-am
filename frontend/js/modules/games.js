@@ -215,14 +215,14 @@ async function updateEventsStatusDisplay() {
         }
 
         const ogsStatus = status.listeners.ogs;
-        const isConnected = ogsStatus.status === 'connected';
+        const isConnected = ogsStatus.state === 'connected';
         const statusClass = isConnected ? 'connected' : 'disconnected';
         const statusIcon = isConnected ? '&#x2713;' : '&#x2715;';
 
         elements.eventsStatusContainer.innerHTML = `
             <div class="events-status ${statusClass}">
                 <span class="status-icon">${statusIcon}</span>
-                <span>OGS: ${ogsStatus.status}</span>
+                <span>OGS: ${ogsStatus.state}</span>
                 ${ogsStatus.bot_username ? `<span class="bot-name">Bot: ${escapeHtml(ogsStatus.bot_username)}</span>` : ''}
             </div>
         `;

@@ -102,6 +102,11 @@ async def list_games(
 
     If entity_id is provided, only games for that entity are returned.
     Currently, all games belong to the configured OGS entity.
+
+    Games can be discovered via:
+    1. REST API (if available)
+    2. Socket events (yourMove, gameStarted notifications)
+    3. Previously cached games
     """
     ogs_service = _get_ogs_service()
 
@@ -109,7 +114,14 @@ async def list_games(
     if entity_id and entity_id != settings.ogs_entity_id:
         return []
 
+    # Try to get games via REST API
     games = await ogs_service.get_active_games()
+
+    # If REST returned no games, also check cached games (discovered via socket)
+    if not games:
+        games = ogs_service.get_cached_games()
+        if games:
+            logger.info(f"Using {len(games)} cached games (discovered via socket)")
 
     return [
         GameResponse(
