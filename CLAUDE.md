@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2026-01-13
+**Last Updated:** 2026-01-16
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -608,11 +608,26 @@ here-i-am/
 │   ├── run_whisper.py         # Whisper server entry point
 │   ├── migrate_multi_entity.py  # Database migration script
 │   └── .env.example
-├── frontend/                   # Vanilla JavaScript SPA
+├── frontend/                   # Vanilla JavaScript SPA (ES6 Modules)
 │   ├── css/styles.css
 │   ├── js/
-│   │   ├── api.js             # API client wrapper
-│   │   └── app.js             # Main application logic
+│   │   ├── api.js             # API client wrapper (singleton)
+│   │   ├── app.js             # Legacy monolithic app (deprecated, kept for reference)
+│   │   ├── app-modular.js     # Main entry point - orchestrates all modules
+│   │   └── modules/           # ES6 feature modules
+│   │       ├── state.js       # Centralized state management
+│   │       ├── utils.js       # Utility functions (escaping, markdown, etc.)
+│   │       ├── theme.js       # Theme switching (dark/light)
+│   │       ├── modals.js      # Modal dialog management
+│   │       ├── entities.js    # Entity management and selection
+│   │       ├── conversations.js  # Conversation CRUD operations
+│   │       ├── messages.js    # Message rendering and actions
+│   │       ├── attachments.js # File/image attachment handling
+│   │       ├── memories.js    # Memory display and search
+│   │       ├── voice.js       # TTS/STT functionality
+│   │       ├── chat.js        # Message sending and streaming
+│   │       ├── settings.js    # Settings modal management
+│   │       └── import-export.js  # Conversation import/export
 │   └── index.html
 └── README.md
 ```
@@ -622,9 +637,9 @@ here-i-am/
 1. **Routes Layer** (`routes/`) - FastAPI endpoints, request validation
 2. **Services Layer** (`services/`) - Business logic, external API calls
 3. **Models Layer** (`models/`) - Database schema, ORM relationships
-4. **Frontend** - Vanilla JS SPA consuming REST API
+4. **Frontend** - Modular ES6 JavaScript SPA consuming REST API
 
-**Pattern:** Clean separation of concerns with singleton services.
+**Pattern:** Clean separation of concerns with singleton services (backend) and modular architecture (frontend).
 
 ---
 
@@ -652,9 +667,11 @@ here-i-am/
 
 ### Frontend
 
-- **Pure JavaScript** (ES6+) - No framework
+- **Pure JavaScript** (ES6+) - No framework, using native ES6 modules
+- **Modular Architecture** - 13 semantic modules with centralized state
 - **CSS3** with CSS variables for theming
 - **REST API** communication via `fetch()`
+- **No Build Step** - ES6 modules loaded directly in browser
 
 ### Database Support
 
@@ -1248,11 +1265,12 @@ python run.py
 
 ### JavaScript Style
 
-1. **Class-Based Architecture:** Single `App` class manages state
-2. **Async/Await:** Modern promise handling
-3. **DOM Caching:** Elements cached in constructor
-4. **Event Delegation:** Centralized event binding
-5. **Template Literals:** For HTML generation
+1. **Modular ES6 Architecture:** 13 semantic modules with single orchestrator (`app-modular.js`)
+2. **Centralized State:** All state in `state.js`, mutated directly (no Redux-style immutability)
+3. **Dependency Injection:** Modules receive elements and callbacks via setter functions
+4. **Async/Await:** Modern promise handling throughout
+5. **DOM Caching:** Elements cached once in orchestrator, passed to modules
+6. **Template Literals:** For HTML generation
 
 ### Naming Conventions
 
@@ -1291,9 +1309,10 @@ python run.py
    }
    ```
 
-4. **Call from frontend** (`frontend/js/app.js`)
+4. **Call from appropriate frontend module** (e.g., `frontend/js/modules/conversations.js`)
    ```javascript
-   const result = await this.api.newEndpoint();
+   const api = window.api;
+   const result = await api.newEndpoint();
    ```
 
 ### Adding a New Database Model
@@ -1599,13 +1618,146 @@ conversation: Conversation
 
 ## Frontend Architecture
 
-### Single Page Application Structure
+### Modular ES6 Architecture Overview
 
-**HTML:** Semantic structure with modals
+The frontend was refactored from a monolithic `app.js` (~5,100 lines) into a modular architecture with 13 semantic modules (~7,100 lines total). This provides better separation of concerns, testability, and maintainability.
+
+**Architecture Pattern:**
+- **Orchestrator** (`app-modular.js`) - Caches DOM elements, initializes modules, coordinates callbacks
+- **Centralized State** (`modules/state.js`) - Single source of truth for all application state
+- **Feature Modules** (`modules/*.js`) - Each handles a specific domain (chat, entities, memories, etc.)
+- **API Client** (`api.js`) - Singleton wrapper around `fetch()`, accessed via `window.api`
+
+### Module Dependency Graph
+
+```
+app-modular.js (orchestrator)
+    ├── state.js (centralized state - no dependencies)
+    ├── utils.js (helpers - depends on state)
+    ├── theme.js (theme switching)
+    ├── modals.js (modal management)
+    ├── entities.js → state, utils, modals, api
+    ├── conversations.js → state, utils, modals, entities, api
+    ├── messages.js → state, utils
+    ├── attachments.js → state, utils
+    ├── memories.js → state, utils, modals, api
+    ├── voice.js → state, utils, modals, api
+    ├── chat.js → state, utils, messages, attachments, memories, api
+    ├── settings.js → state, utils, modals, theme, voice
+    └── import-export.js → state, utils, modals, api
+```
+
+### Module Responsibilities
+
+| Module | Lines | Responsibility |
+|--------|-------|----------------|
+| `state.js` | ~220 | Centralized state object, reset helpers, localStorage persistence |
+| `utils.js` | ~200 | HTML escaping, markdown rendering, text truncation, file reading |
+| `theme.js` | ~50 | Dark/light theme switching and persistence |
+| `modals.js` | ~100 | Modal show/hide, dropdown closing, active modal tracking |
+| `entities.js` | ~450 | Entity loading, selection, multi-entity modal, responder selector |
+| `conversations.js` | ~600 | Conversation CRUD, list rendering, archiving, switching |
+| `messages.js` | ~450 | Message rendering, speaker labels, tool display, action buttons |
+| `attachments.js` | ~330 | Drag-drop handling, file validation, preview generation |
+| `memories.js` | ~450 | Memory panel, search modal, statistics, orphan cleanup |
+| `voice.js` | ~840 | TTS/STT, voice selection, cloning, recording |
+| `chat.js` | ~840 | Message sending, streaming, regeneration, continuation mode |
+| `settings.js` | ~290 | Settings modal, presets, model selection, per-entity prompts |
+| `import-export.js` | ~430 | Export to JSON, import from OpenAI/Anthropic, progress tracking |
+
+### Module Initialization Pattern
+
+Each module follows a consistent pattern for dependency injection:
+
+```javascript
+// In each module (e.g., entities.js)
+import { state } from './state.js';
+import { showToast } from './utils.js';
+
+const api = window.api;  // Global API singleton
+
+let elements = {};       // DOM elements from orchestrator
+let callbacks = {};      // Callbacks for inter-module coordination
+
+export function setElements(els) { elements = els; }
+export function setCallbacks(cbs) { callbacks = { ...callbacks, ...cbs }; }
+
+export async function loadEntities() {
+    // Implementation using state, elements, callbacks, api
+}
+```
+
+The orchestrator initializes each module:
+
+```javascript
+// In app-modular.js
+initializeModules() {
+    setEntityElements(this.elements);
+    setEntityCallbacks({
+        onEntityLoaded: () => this.onEntityLoaded(),
+        onEntityChanged: () => this.loadConversations(),
+    });
+    // ... repeat for all 13 modules
+}
+```
+
+### Centralized State (state.js)
+
+All application state lives in a single exported object:
+
+```javascript
+export const state = {
+    // Conversation state
+    currentConversationId: null,
+    conversations: [],
+
+    // Entity state
+    selectedEntityId: null,
+    entities: [],
+    isMultiEntityMode: false,
+    currentConversationEntities: [],
+    pendingResponderId: null,
+
+    // UI state
+    isLoading: false,
+    activeModal: null,
+
+    // Settings
+    settings: {
+        model: 'claude-sonnet-4-5-20250929',
+        temperature: 1.0,
+        maxTokens: 8192,
+        systemPrompt: '',
+        conversationType: 'NORMAL',
+    },
+
+    // Memory state
+    retrievedMemories: {},
+    expandedMemoryIds: new Set(),
+
+    // Voice state
+    ttsEnabled: false,
+    sttEnabled: false,
+    selectedVoiceId: null,
+
+    // Attachments
+    pendingAttachments: { images: [], files: [] },
+};
+```
+
+**State is mutated directly** (no immutability pattern):
+```javascript
+state.currentConversationId = conversationId;
+state.isMultiEntityMode = true;
+```
+
+### HTML Structure
+
+**Semantic structure with modals:**
 - Main chat area with message list
 - Sidebar with entity selector and conversation list
 - Collapsible memories panel
-- Modal dialogs (settings, memories, confirmations)
+- Modal dialogs (settings, memories, entity selection, confirmations)
 - Toast notifications
 
 **CSS:** Dark theme with CSS variables
@@ -1619,45 +1771,29 @@ conversation: Conversation
 }
 ```
 
-**JavaScript Architecture:**
+### Key Architectural Decisions
 
-1. **API Client** (`api.js`) - Wrapper around fetch()
-   ```javascript
-   class API {
-       async request(endpoint, options = {}) { ... }
-       async getConversations() { ... }
-       async sendMessage(data) { ... }
-   }
-   ```
+1. **No Module Bundler** - ES6 modules loaded directly in browser via `<script type="module">`
+2. **Global API Singleton** - `window.api` accessed by all modules (avoids circular imports)
+3. **Callback-Based Coordination** - Modules don't import each other; orchestrator injects callbacks
+4. **Direct State Mutation** - Pragmatic choice for research software; simpler than Redux patterns
+5. **Element Caching** - All DOM queries done once in orchestrator, passed to modules
 
-2. **Application** (`app.js`) - Single `App` class
-   ```javascript
-   class App {
-       constructor() {
-           this.api = new API();
-           this.currentConversationId = null;
-           this.settings = { ... };
-           this.retrievedMemories = {};
-           this.cacheElements();
-           this.bindEvents();
-       }
-   }
-   ```
+### Legacy Code
 
-### State Management
+The original `app.js` (~4,900 lines) is kept for reference but **not loaded**. The HTML now loads `app-modular.js`:
 
-**In-Memory State:**
-- `currentConversationId` - Active conversation
-- `selectedEntityId` - Currently selected AI entity (or `"multi-entity"`)
-- `entities` - List of available entities
-- `settings` - Chat configuration (model, temp, etc.)
-- `retrievedMemories` - Map of conversation_id -> memory list
-- `cachedElements` - DOM element references
-- `isMultiEntityMode` - Whether in multi-entity conversation mode
-- `currentConversationEntities` - Array of entity IDs for multi-entity conversations
-- `pendingResponderId` - Selected entity for next response in multi-entity mode
+```html
+<script type="module" src="js/app-modular.js"></script>
+```
 
-**No State Persistence:** State resets on page refresh (conversations loaded from DB)
+### localStorage Persistence
+
+Some state persists across page refreshes:
+- Theme preference
+- Selected entity and voice
+- Per-entity system prompts
+- Researcher name
 
 ### Key Features
 
@@ -1860,6 +1996,15 @@ conversation: Conversation
     - Frontend validates file types and sizes before upload
     - Backend re-validates attachments for security
 
+27. **Frontend Modular Architecture**
+    - The frontend was refactored from monolithic `app.js` to modular ES6 architecture
+    - **`app.js` is DEPRECATED** - kept for reference but not loaded
+    - **`app-modular.js`** is the active entry point
+    - All frontend features are now in `frontend/js/modules/` directory
+    - State is centralized in `modules/state.js`
+    - Modules communicate via callbacks injected by the orchestrator
+    - No build step required - ES6 modules work directly in browser
+
 ### Common Pitfalls
 
 **When modifying memory retrieval:**
@@ -1883,6 +2028,14 @@ conversation: Conversation
 - Test both streaming and non-streaming endpoints
 - Verify speaker labels display correctly in both stored messages and streaming
 - Test continuation mode (null message) flow
+
+**When modifying frontend:**
+- Do NOT edit `app.js` - it is deprecated and not loaded
+- Edit appropriate module in `frontend/js/modules/`
+- Add new state to `modules/state.js`
+- Inter-module communication uses callbacks set via `setCallbacks()`
+- Use `window.api` for API calls (global singleton)
+- DOM elements are cached in orchestrator - access via `elements` object
 
 ### Performance Considerations
 
@@ -1952,7 +2105,7 @@ conversation: Conversation
 - Web tools: `backend/app/services/web_tools.py`
 - Tool registration: `backend/app/services/__init__.py`
 - Agentic loop: `backend/app/services/session_manager.py` (process_message_stream)
-- Frontend tool display: `frontend/js/app.js` (addToolMessage)
+- Frontend tool display: `frontend/js/modules/messages.js` (renderToolUseContent)
 - Tool CSS styles: `frontend/css/styles.css` (.tool-message, .tool-indicator)
 
 **Text-to-Speech:**
@@ -1993,10 +2146,26 @@ conversation: Conversation
 - Presets: `backend/app/main.py` (get_presets endpoint)
 - Environment: `backend/.env.example`
 
-**Frontend:**
-- API client: `frontend/js/api.js`
-- Main app: `frontend/js/app.js`
+**Frontend (Modular Architecture):**
+- Entry point: `frontend/js/app-modular.js` (orchestrator)
+- API client: `frontend/js/api.js` (singleton, accessed via `window.api`)
+- Legacy app: `frontend/js/app.js` (deprecated, kept for reference)
 - Styles: `frontend/css/styles.css`
+
+**Frontend Modules** (`frontend/js/modules/`):
+- State management: `state.js`
+- Utilities: `utils.js`
+- Theme switching: `theme.js`
+- Modal management: `modals.js`
+- Entity management: `entities.js`
+- Conversation CRUD: `conversations.js`
+- Message rendering: `messages.js`
+- File attachments: `attachments.js`
+- Memory display: `memories.js`
+- Voice (TTS/STT): `voice.js`
+- Chat/streaming: `chat.js`
+- Settings modal: `settings.js`
+- Import/export: `import-export.js`
 
 **Database:**
 - Models: `backend/app/models/`
@@ -2014,7 +2183,8 @@ conversation: Conversation
 - Chat routes (responding_entity_id): `backend/app/routes/chat.py`
 - Session manager (multi-entity state): `backend/app/services/session_manager.py`
 - Anthropic service (context header): `backend/app/services/anthropic_service.py`
-- Frontend entity modal/responder: `frontend/js/app.js`
+- Frontend entity handling: `frontend/js/modules/entities.js`
+- Frontend chat handling: `frontend/js/modules/chat.js`
 
 **Conversation Management:**
 - Conversation model: `backend/app/models/conversation.py`
