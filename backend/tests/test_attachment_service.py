@@ -3,6 +3,10 @@ Unit tests for AttachmentService and attachment processing functions.
 
 These tests are self-contained and import the attachment_service module
 directly to avoid database initialization issues.
+
+IMPORTANT: This test file temporarily patches sys.modules['app.config'] to
+avoid database initialization. The original module is saved and restored
+immediately after loading attachment_service to prevent test pollution.
 """
 import pytest
 import base64
@@ -14,6 +18,10 @@ from unittest.mock import patch, MagicMock
 # Set up path for direct module import
 backend_path = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_path))
+
+# CRITICAL: Save original app.config module if it exists, so we can restore it later
+# This prevents test pollution affecting other test files
+_original_app_config = sys.modules.get('app.config', None)
 
 # Create mock settings before importing
 mock_settings = MagicMock()
@@ -28,8 +36,9 @@ mock_settings.is_allowed_image_type = MagicMock(return_value=True)
 mock_settings.is_allowed_text_file = MagicMock(return_value=True)
 
 # Patch settings before importing the module
-sys.modules['app.config'] = MagicMock()
-sys.modules['app.config'].settings = mock_settings
+_mock_app_config = MagicMock()
+_mock_app_config.settings = mock_settings
+sys.modules['app.config'] = _mock_app_config
 
 # Now we can import functions directly from the attachment_service module
 import importlib.util
@@ -39,6 +48,15 @@ spec = importlib.util.spec_from_file_location(
 )
 attachment_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(attachment_module)
+
+# CRITICAL: Restore original app.config IMMEDIATELY after loading the module
+# The attachment_module has already captured the mock settings it needs
+# This prevents test pollution for other test files that import app.config
+if _original_app_config is not None:
+    sys.modules['app.config'] = _original_app_config
+else:
+    # If there was no original, remove the mock so it can be loaded fresh
+    del sys.modules['app.config']
 
 # Extract functions we need to test
 build_file_context_block = attachment_module.build_file_context_block

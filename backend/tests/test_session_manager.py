@@ -491,6 +491,7 @@ class TestSessionManager:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
+            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(
                 sample_conversation.id,
@@ -537,6 +538,7 @@ class TestSessionManager:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
+            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(
                 sample_conversation.id,
@@ -804,6 +806,7 @@ class TestMultiEntityMemoryIsolation:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
+            mock_settings.use_memory_in_context = False
             mock_settings.get_entity_by_index.return_value = MagicMock(
                 label="Claude",
                 default_model="claude-sonnet-4-5-20250929",
@@ -840,6 +843,7 @@ class TestMultiEntityMemoryIsolation:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
+            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(
                 sample_conversation.id,
@@ -889,7 +893,7 @@ class TestMultiEntityMemoryIsolation:
         assert session.responding_entity_label == "Claude"
 
     def test_multi_entity_add_exchange_labels_messages(self):
-        """Test that add_exchange labels messages in multi-entity conversations."""
+        """Test that add_exchange labels assistant messages in multi-entity conversations."""
         session = ConversationSession(
             conversation_id="conv-123",
             is_multi_entity=True,
@@ -899,8 +903,8 @@ class TestMultiEntityMemoryIsolation:
         session.add_exchange("Hello!", "Hi there!")
 
         assert len(session.conversation_context) == 2
-        # Human messages should be labeled
-        assert session.conversation_context[0]["content"] == "[Human]: Hello!"
+        # Human messages are NOT labeled (only one human in conversation)
+        assert session.conversation_context[0]["content"] == "Hello!"
         # Assistant messages should be labeled with responding entity
         assert session.conversation_context[1]["content"] == "[Claude]: Hi there!"
 
@@ -1102,6 +1106,7 @@ class TestCacheStateManagement:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
+            mock_settings.use_memory_in_context = False
 
             # Load without preserving - should use full context length
             session1 = await manager.load_session_from_db(
@@ -1137,6 +1142,7 @@ class TestCacheStateManagement:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
+            mock_settings.use_memory_in_context = False
 
             # Load with preserved value larger than actual context
             session = await manager.load_session_from_db(
@@ -1251,6 +1257,7 @@ class TestSystemPromptSelection:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
+            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1284,6 +1291,7 @@ class TestSystemPromptSelection:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
+            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1317,6 +1325,7 @@ class TestSystemPromptSelection:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
+            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1367,6 +1376,7 @@ class TestSystemPromptSelection:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
+            mock_settings.use_memory_in_context = False
             mock_entity = MagicMock()
             mock_entity.label = "Claude"
             mock_entity.default_model = "claude-sonnet-4-5-20250929"
@@ -1428,6 +1438,7 @@ class TestSystemPromptSelection:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
+            mock_settings.use_memory_in_context = False
 
             # Mock entity configs
             def get_entity(eid):
@@ -1511,6 +1522,7 @@ class TestSystemPromptSelection:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
+            mock_settings.use_memory_in_context = False
             mock_entity = MagicMock()
             mock_entity.label = "GPT"
             mock_entity.default_model = "gpt-4o"
@@ -1555,6 +1567,7 @@ class TestSystemPromptSelection:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
+            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1587,6 +1600,7 @@ class TestSystemPromptSelection:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
+            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1618,6 +1632,7 @@ class TestSystemPromptSelection:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
+            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1651,6 +1666,7 @@ class TestSystemPromptSelection:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
+            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1683,6 +1699,7 @@ class TestSystemPromptSelection:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
+            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
