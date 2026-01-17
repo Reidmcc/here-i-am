@@ -316,6 +316,8 @@ describe('Memories Module', () => {
     describe('cleanupOrphans', () => {
         it('should not cleanup if no orphan data', async () => {
             state._orphanData = null;
+            // Create the mock before testing that it wasn't called
+            window.api.cleanupOrphanedRecords = vi.fn();
 
             await cleanupOrphans();
 
