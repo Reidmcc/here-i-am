@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2026-01-16
+**Last Updated:** 2026-01-17
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -381,6 +381,72 @@ The application provides a **memory_query** tool that allows AI entities to inte
 - Tool is in the `MEMORY` category
 - Only available for Anthropic (Claude) and OpenAI (GPT) models
 
+### Codebase Navigator System
+
+The application supports **intelligent codebase exploration** using Mistral's Devstral model. This allows AI entities to efficiently explore and understand codebases by delegating navigation tasks to a specialized model with a 256k context window.
+
+**Available Tools:**
+- **navigate_codebase** - Main query tool for finding relevant files for a task
+- **navigate_codebase_structure** - Get architecture overview and key entry points
+- **navigate_find_entry_points** - Find where to start implementing changes
+- **navigate_assess_impact** - Assess what might be affected by changes
+- **navigate_trace_dependencies** - Trace imports and dependencies
+- **navigator_invalidate_cache** - Force cache invalidation after code changes
+
+**How It Works:**
+
+1. **Indexing**: The navigator indexes codebases by scanning files matching configurable patterns
+2. **Chunking**: Large codebases are split into chunks that fit Devstral's context window
+3. **Query Types**:
+   - `relevance` - Find files relevant to implementing a task (default)
+   - `structure` - Understand codebase architecture and organization
+   - `dependencies` - Trace imports and dependencies
+   - `entry_points` - Find where to start modifications
+   - `impact` - Assess what might be affected by changes
+4. **Caching**: Responses are cached with configurable TTL to avoid redundant API calls
+
+**Integration with GitHub Tools:**
+The codebase navigator integrates with GitHub repository configurations. Repositories with `local_clone_path` configured can be navigated using the repo label:
+```python
+navigate_codebase(task="Add user authentication", repo="My Project")
+```
+
+If only one repository has `local_clone_path` configured, it will be used automatically.
+
+**Configuration:**
+```bash
+# Enable codebase navigator (default: false)
+CODEBASE_NAVIGATOR_ENABLED=true
+
+# Mistral API key (required for navigator)
+MISTRAL_API_KEY=your_mistral_api_key
+
+# Devstral model to use
+CODEBASE_NAVIGATOR_MODEL=devstral-small-latest  # Options: devstral-small-latest, devstral-medium-latest
+
+# API settings
+CODEBASE_NAVIGATOR_TIMEOUT=120              # API timeout in seconds
+CODEBASE_NAVIGATOR_MAX_RETRIES=3            # Max retries for API calls
+CODEBASE_NAVIGATOR_MAX_TOKENS_PER_CHUNK=200000  # Max tokens per chunk (leave headroom in 256k context)
+CODEBASE_NAVIGATOR_MAX_RESULTS=50           # Max files to return per query
+
+# Caching
+CODEBASE_NAVIGATOR_CACHE_ENABLED=true       # Enable response caching
+CODEBASE_NAVIGATOR_CACHE_DIR=.navigator_cache  # Cache directory
+CODEBASE_NAVIGATOR_CACHE_TTL_HOURS=24       # Cache TTL in hours
+
+# File patterns (JSON arrays)
+CODEBASE_NAVIGATOR_DEFAULT_INCLUDES='["*.py","*.js","*.ts","*.jsx","*.tsx","*.java","*.go","*.rs","*.c","*.cpp","*.h","*.json","*.yaml","*.yml","*.toml","*.md","*.sql","*.graphql","*.html","*.css","*.scss"]'
+CODEBASE_NAVIGATOR_DEFAULT_EXCLUDES='["node_modules/","venv/",".venv/","__pycache__/",".git/","dist/","build/",".next/","*.min.js","*.map","*.lock","*.bundle.js"]'
+```
+
+**Technical Notes:**
+- Tools registered via `register_codebase_navigator_tools()` in `services/__init__.py`
+- Uses Mistral Devstral model (256k context window) for cost-efficient exploration
+- Requires `local_clone_path` in GitHub repository configuration to work
+- Results include file categorization (DIRECT relevance, CONTEXT, AFFECTED)
+- Only available for Anthropic (Claude) and OpenAI (GPT) models
+
 ### Whisper Speech-to-Text (STT)
 
 The application supports **local speech-to-text** using OpenAI's Whisper model via the `faster-whisper` library. This enables voice input in the research interface.
@@ -579,6 +645,16 @@ here-i-am/
 │   │   │   ├── github_tools.py       # GitHub tool implementations
 │   │   │   ├── notes_service.py      # Entity notes storage service
 │   │   │   ├── notes_tools.py        # Entity notes tool implementations
+│   │   │   ├── codebase_navigator_service.py  # Codebase navigation with Devstral
+│   │   │   ├── codebase_navigator_tools.py    # Codebase navigator tool definitions
+│   │   │   ├── codebase_navigator/   # Codebase navigator module
+│   │   │   │   ├── __init__.py       # Module exports
+│   │   │   │   ├── models.py         # Data structures
+│   │   │   │   ├── indexer.py        # Codebase indexing
+│   │   │   │   ├── client.py         # Mistral API client
+│   │   │   │   ├── cache.py          # Response caching
+│   │   │   │   └── exceptions.py     # Custom exceptions
+│   │   │   ├── attachment_service.py # File attachment handling
 │   │   │   ├── tts_service.py        # Unified TTS (ElevenLabs/XTTS/StyleTTS2)
 │   │   │   ├── xtts_service.py       # Local XTTS v2 client service
 │   │   │   ├── styletts2_service.py  # Local StyleTTS 2 client service
@@ -655,6 +731,7 @@ here-i-am/
 | AI Integration | Anthropic SDK | 0.18.1 | Claude API client |
 | AI Integration | OpenAI SDK | 1.12.0 | GPT API client |
 | AI Integration | Google GenAI SDK | 1.0.0+ | Gemini API client |
+| AI Integration | Mistral SDK | - | Devstral codebase navigation (optional) |
 | Vector DB | Pinecone | 6.0.0 | Semantic memory storage |
 | Validation | Pydantic | 2.6.1 | Request/response schemas |
 | Database | aiosqlite / asyncpg | - | SQLite dev / PostgreSQL prod |
@@ -904,6 +981,15 @@ GITHUB_REPOS='[...]'                    # Repository configuration (JSON array, 
 # Entity Notes (optional, persistent notes for AI entities)
 NOTES_ENABLED=true                      # Enable entity notes (default: true)
 NOTES_BASE_DIR=./notes                  # Base directory for notes storage
+
+# Codebase Navigator (optional, intelligent codebase exploration with Devstral)
+# Requires MISTRAL_API_KEY and local_clone_path in GitHub repo config
+# CODEBASE_NAVIGATOR_ENABLED=true       # Enable codebase navigation tools
+# MISTRAL_API_KEY=...                   # Required for Devstral model
+# CODEBASE_NAVIGATOR_MODEL=devstral-small-latest  # Model: devstral-small-latest or devstral-medium-latest
+# CODEBASE_NAVIGATOR_TIMEOUT=120        # API timeout in seconds
+# CODEBASE_NAVIGATOR_CACHE_ENABLED=true # Enable response caching
+# CODEBASE_NAVIGATOR_CACHE_TTL_HOURS=24 # Cache TTL in hours
 
 # ElevenLabs TTS (optional, cloud-based text-to-speech)
 ELEVENLABS_API_KEY=...                  # Enables TTS feature
@@ -2005,6 +2091,15 @@ Some state persists across page refreshes:
     - Modules communicate via callbacks injected by the orchestrator
     - No build step required - ES6 modules work directly in browser
 
+28. **Codebase Navigator System**
+    - Requires `CODEBASE_NAVIGATOR_ENABLED=true` and `MISTRAL_API_KEY`
+    - Also requires `local_clone_path` in at least one GitHub repository config
+    - Uses Mistral's Devstral model (256k context window) for cost-efficient exploration
+    - Results are cached with configurable TTL to avoid redundant API calls
+    - Codebase navigator tools work with Anthropic (Claude) and OpenAI (GPT) models only
+    - No REST API endpoints - only available via tool system during conversations
+    - Cache is automatically invalidated when codebase content hash changes
+
 ### Common Pitfalls
 
 **When modifying memory retrieval:**
@@ -2141,6 +2236,18 @@ Some state persists across page refreshes:
 - Context injection: `backend/app/services/anthropic_service.py` (index.md loading)
 - Tests: `backend/tests/test_notes_service.py`
 
+**Codebase Navigator:**
+- Navigator service: `backend/app/services/codebase_navigator_service.py`
+- Navigator tools: `backend/app/services/codebase_navigator_tools.py`
+- Navigator module: `backend/app/services/codebase_navigator/`
+  - Models: `models.py` (data structures)
+  - Indexer: `indexer.py` (codebase scanning/chunking)
+  - Client: `client.py` (Mistral API communication)
+  - Cache: `cache.py` (response caching)
+  - Exceptions: `exceptions.py` (custom errors)
+- Tool registration: `backend/app/services/__init__.py`
+- Tests: `backend/tests/test_codebase_navigator.py`
+
 **Configuration:**
 - Settings: `backend/app/config.py`
 - Presets: `backend/app/main.py` (get_presets endpoint)
@@ -2213,10 +2320,10 @@ DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"  # Google default
 #   gemini-2.0-flash, gemini-2.0-flash-lite
 
 # Memory settings (config.py)
-initial_retrieval_top_k = 5  # First retrieval in conversation
-retrieval_top_k = 5          # Subsequent retrievals
-similarity_threshold = 0.3   # Tuned for llama-text-embed-v2
-retrieval_candidate_multiplier = 2  # Fetch 2x candidates, re-rank by significance
+initial_retrieval_top_k = 3  # First retrieval in conversation
+retrieval_top_k = 3          # Subsequent retrievals
+similarity_threshold = 0.4   # Tuned for llama-text-embed-v2
+retrieval_candidate_multiplier = 3  # Fetch 3x candidates, re-rank by significance
 recency_boost_strength = 1.2  # Max recency boost
 significance_floor = 0.25     # Minimum significance value
 significance_half_life_days = 60  # Significance halves every 60 days
@@ -2277,6 +2384,16 @@ embedding_scale = 1.0             # Classifier free guidance
 notes_enabled = True              # Enable persistent notes for entities
 notes_base_dir = "./notes"        # Base directory for notes storage
 # Allowed file extensions: .md, .json, .txt, .html, .xml, .yaml, .yml
+
+# Codebase Navigator defaults (config.py)
+codebase_navigator_enabled = False    # Must be explicitly enabled
+codebase_navigator_model = "devstral-small-latest"  # Mistral Devstral model
+codebase_navigator_timeout = 120      # API timeout in seconds
+codebase_navigator_max_retries = 3    # Max retries for API calls
+codebase_navigator_max_tokens_per_chunk = 200000  # Max tokens per codebase chunk
+codebase_navigator_max_results = 50   # Max files returned per query
+codebase_navigator_cache_enabled = True   # Enable response caching
+codebase_navigator_cache_ttl_hours = 24   # Cache TTL in hours
 
 # Whisper STT defaults (config.py)
 whisper_enabled = False           # Must be explicitly enabled
