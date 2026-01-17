@@ -21,10 +21,15 @@ describe('Voice Module', () => {
     beforeEach(() => {
         // Reset state
         state.ttsEnabled = false;
-        state.sttEnabled = false;
-        state.selectedVoiceId = null;
+        state.ttsProvider = null;
         state.ttsVoices = [];
-        state.currentlyPlayingMessageId = null;
+        state.localTtsServerHealthy = false;
+        state.selectedVoiceId = null;
+        state.currentAudio = null;
+        state.currentSpeakingBtn = null;
+        state.audioCache = new Map();
+        state.dictationMode = 'none';
+        state.isRecording = false;
 
         // Create mock audio element
         mockAudioElement = {
@@ -33,23 +38,30 @@ describe('Voice Module', () => {
             pause: vi.fn(),
             addEventListener: vi.fn(),
             removeEventListener: vi.fn(),
+            onended: null,
+            onerror: null,
         };
 
         // Create mock elements
         mockElements = {
-            ttsToggle: document.createElement('input'),
-            ttsVoiceSelect: document.createElement('select'),
-            sttToggle: document.createElement('input'),
-            dictationBtn: document.createElement('button'),
+            ttsProviderGroup: document.createElement('div'),
+            ttsProviderName: document.createElement('span'),
+            ttsProviderStatus: document.createElement('span'),
+            voiceCloneGroup: document.createElement('div'),
+            voiceSelectGroup: document.createElement('div'),
+            voiceSelect: document.createElement('select'),
+            voiceManageGroup: document.createElement('div'),
+            voiceList: document.createElement('div'),
+            styletts2ParamsGroup: document.createElement('div'),
+            voiceBtn: document.createElement('button'),
+            messageInput: document.createElement('textarea'),
         };
-        mockElements.ttsToggle.type = 'checkbox';
-        mockElements.sttToggle.type = 'checkbox';
 
         // Add default option to voice select
         const defaultOption = document.createElement('option');
         defaultOption.value = '';
         defaultOption.textContent = 'Select Voice';
-        mockElements.ttsVoiceSelect.appendChild(defaultOption);
+        mockElements.voiceSelect.appendChild(defaultOption);
 
         setElements(mockElements);
 
@@ -66,62 +78,138 @@ describe('Voice Module', () => {
     describe('checkTTSStatus', () => {
         it('should call API to get TTS status', async () => {
             window.api.getTTSStatus = vi.fn(() => Promise.resolve({
-                enabled: true,
+                configured: true,
                 provider: 'elevenlabs',
+                voices: [],
             }));
-            window.api.listTTSVoices = vi.fn(() => Promise.resolve([]));
 
             await checkTTSStatus();
 
             expect(window.api.getTTSStatus).toHaveBeenCalled();
         });
 
-        it('should update ttsEnabled state', async () => {
+        it('should update ttsEnabled state when configured', async () => {
             window.api.getTTSStatus = vi.fn(() => Promise.resolve({
-                enabled: true,
+                configured: true,
                 provider: 'elevenlabs',
+                voices: [{ voice_id: 'v1', label: 'Voice 1' }],
             }));
-            window.api.listTTSVoices = vi.fn(() => Promise.resolve([]));
 
             await checkTTSStatus();
 
             expect(state.ttsEnabled).toBe(true);
         });
 
-        it('should load voices when TTS is enabled', async () => {
+        it('should set ttsEnabled to false when not configured', async () => {
             window.api.getTTSStatus = vi.fn(() => Promise.resolve({
-                enabled: true,
-                provider: 'styletts2',
+                configured: false,
             }));
-            window.api.listTTSVoices = vi.fn(() => Promise.resolve([
-                { voice_id: 'voice-1', label: 'Voice 1' },
-            ]));
 
             await checkTTSStatus();
 
-            expect(window.api.listTTSVoices).toHaveBeenCalled();
+            expect(state.ttsEnabled).toBe(false);
+        });
+
+        it('should store voices from TTS status response', async () => {
+            const voices = [
+                { voice_id: 'voice-1', label: 'Voice 1' },
+                { voice_id: 'voice-2', label: 'Voice 2' },
+            ];
+            window.api.getTTSStatus = vi.fn(() => Promise.resolve({
+                configured: true,
+                provider: 'styletts2',
+                voices: voices,
+                server_healthy: true,
+            }));
+
+            await checkTTSStatus();
+
+            expect(state.ttsVoices).toEqual(voices);
+            expect(state.ttsProvider).toBe('styletts2');
+            expect(state.localTtsServerHealthy).toBe(true);
+        });
+
+        it('should set default voice when none selected', async () => {
+            window.api.getTTSStatus = vi.fn(() => Promise.resolve({
+                configured: true,
+                provider: 'elevenlabs',
+                voices: [{ voice_id: 'voice-1', label: 'Voice 1' }],
+            }));
+
+            await checkTTSStatus();
+
+            expect(state.selectedVoiceId).toBe('voice-1');
         });
     });
 
     describe('updateTTSUI', () => {
-        it('should enable toggle when TTS is available', () => {
+        it('should show provider group when TTS is enabled', () => {
             state.ttsEnabled = true;
+            state.ttsProvider = 'elevenlabs';
+            mockElements.ttsProviderGroup.style.display = 'none';
 
             updateTTSUI();
 
-            expect(mockElements.ttsToggle.disabled).toBe(false);
+            expect(mockElements.ttsProviderGroup.style.display).toBe('block');
         });
 
-        it('should disable toggle when TTS is unavailable', () => {
+        it('should hide provider group when TTS is disabled', () => {
             state.ttsEnabled = false;
+            mockElements.ttsProviderGroup.style.display = 'block';
 
             updateTTSUI();
 
-            expect(mockElements.ttsToggle.disabled).toBe(true);
+            expect(mockElements.ttsProviderGroup.style.display).toBe('none');
+        });
+
+        it('should show voice cloning option for XTTS provider', () => {
+            state.ttsEnabled = true;
+            state.ttsProvider = 'xtts';
+
+            updateTTSUI();
+
+            expect(mockElements.voiceCloneGroup.style.display).toBe('block');
+        });
+
+        it('should show voice cloning option for StyleTTS2 provider', () => {
+            state.ttsEnabled = true;
+            state.ttsProvider = 'styletts2';
+
+            updateTTSUI();
+
+            expect(mockElements.voiceCloneGroup.style.display).toBe('block');
+        });
+
+        it('should hide voice cloning for ElevenLabs provider', () => {
+            state.ttsEnabled = true;
+            state.ttsProvider = 'elevenlabs';
+
+            updateTTSUI();
+
+            expect(mockElements.voiceCloneGroup.style.display).toBe('none');
+        });
+
+        it('should show StyleTTS2 params group for StyleTTS2 provider', () => {
+            state.ttsEnabled = true;
+            state.ttsProvider = 'styletts2';
+
+            updateTTSUI();
+
+            expect(mockElements.styletts2ParamsGroup.style.display).toBe('block');
+        });
+
+        it('should hide StyleTTS2 params group for other providers', () => {
+            state.ttsEnabled = true;
+            state.ttsProvider = 'xtts';
+
+            updateTTSUI();
+
+            expect(mockElements.styletts2ParamsGroup.style.display).toBe('none');
         });
 
         it('should populate voice select with available voices', () => {
             state.ttsEnabled = true;
+            state.ttsProvider = 'elevenlabs';
             state.ttsVoices = [
                 { voice_id: 'voice-1', label: 'Voice 1' },
                 { voice_id: 'voice-2', label: 'Voice 2' },
@@ -129,8 +217,8 @@ describe('Voice Module', () => {
 
             updateTTSUI();
 
-            // +1 for default option
-            expect(mockElements.ttsVoiceSelect.options.length).toBeGreaterThan(1);
+            expect(mockElements.voiceSelect.innerHTML).toContain('Voice 1');
+            expect(mockElements.voiceSelect.innerHTML).toContain('Voice 2');
         });
     });
 
@@ -139,38 +227,53 @@ describe('Voice Module', () => {
 
         beforeEach(() => {
             mockBtn = document.createElement('button');
-            mockBtn.classList = { add: vi.fn(), remove: vi.fn() };
-        });
-
-        it('should not speak if TTS is disabled', async () => {
-            state.ttsEnabled = false;
-            window.api.speak = vi.fn();
-
-            await speakMessage('Hello world', mockBtn, 'msg-1');
-
-            expect(window.api.speak).not.toHaveBeenCalled();
-        });
-
-        it('should call API to speak message', async () => {
+            mockBtn.classList.add = vi.fn();
+            mockBtn.classList.remove = vi.fn();
             state.ttsEnabled = true;
-            state.ttsUserEnabled = true;
-            state.selectedVoiceId = 'voice-1';
-            window.api.speak = vi.fn(() => Promise.resolve(new Blob(['audio'], { type: 'audio/wav' })));
-
-            await speakMessage('Hello world', mockBtn, 'msg-1');
-
-            expect(window.api.speak).toHaveBeenCalled();
+            state.audioCache = new Map();
         });
 
-        it('should set currentlyPlayingMessageId', async () => {
-            state.ttsEnabled = true;
-            state.ttsUserEnabled = true;
-            state.selectedVoiceId = 'voice-1';
-            window.api.speak = vi.fn(() => Promise.resolve(new Blob(['audio'], { type: 'audio/wav' })));
+        it('should stop if clicking the same button while playing', async () => {
+            state.currentAudio = mockAudioElement;
+            state.currentSpeakingBtn = mockBtn;
 
             await speakMessage('Hello world', mockBtn, 'msg-1');
 
-            expect(state.currentlyPlayingMessageId).toBe('msg-1');
+            expect(mockAudioElement.pause).toHaveBeenCalled();
+        });
+
+        it('should call API to speak message when not cached', async () => {
+            window.api.textToSpeech = vi.fn(() => Promise.resolve(new Blob(['audio'], { type: 'audio/wav' })));
+
+            await speakMessage('Hello world', mockBtn, 'msg-1');
+
+            expect(window.api.textToSpeech).toHaveBeenCalled();
+        });
+
+        it('should use cached audio if available with same voice', async () => {
+            const cachedBlob = new Blob(['audio'], { type: 'audio/wav' });
+            const cachedUrl = 'blob:cached-url';
+            state.selectedVoiceId = 'voice-1';
+            state.audioCache.set('msg-1', {
+                blob: cachedBlob,
+                url: cachedUrl,
+                voiceId: 'voice-1',
+            });
+
+            window.api.textToSpeech = vi.fn();
+
+            await speakMessage('Hello world', mockBtn, 'msg-1');
+
+            expect(window.api.textToSpeech).not.toHaveBeenCalled();
+            expect(mockAudioElement.play).toHaveBeenCalled();
+        });
+
+        it('should set loading class on button during synthesis', async () => {
+            window.api.textToSpeech = vi.fn(() => Promise.resolve(new Blob(['audio'], { type: 'audio/wav' })));
+
+            await speakMessage('Hello world', mockBtn, 'msg-1');
+
+            expect(mockBtn.classList.add).toHaveBeenCalledWith('loading');
         });
     });
 
@@ -189,6 +292,22 @@ describe('Voice Module', () => {
             stopSpeaking();
 
             expect(state.currentAudio).toBeNull();
+        });
+
+        it('should reset button state', () => {
+            const mockBtn = {
+                classList: {
+                    remove: vi.fn(),
+                },
+                title: 'Stop',
+            };
+            state.currentSpeakingBtn = mockBtn;
+
+            stopSpeaking();
+
+            expect(mockBtn.classList.remove).toHaveBeenCalledWith('loading', 'speaking');
+            expect(mockBtn.title).toBe('Read aloud');
+            expect(state.currentSpeakingBtn).toBeNull();
         });
     });
 
@@ -223,6 +342,29 @@ describe('Voice Module', () => {
             await checkSTTStatus();
 
             expect(state.dictationMode).toBe('none');
+        });
+
+        it('should show voice button when STT enabled', async () => {
+            mockElements.voiceBtn.style.display = 'none';
+            window.api.getSTTStatus = vi.fn(() => Promise.resolve({
+                enabled: true,
+                effective_mode: 'browser',
+            }));
+
+            await checkSTTStatus();
+
+            expect(mockElements.voiceBtn.style.display).toBe('flex');
+        });
+
+        it('should hide voice button when STT disabled', async () => {
+            mockElements.voiceBtn.style.display = 'flex';
+            window.api.getSTTStatus = vi.fn(() => Promise.resolve({
+                enabled: false,
+            }));
+
+            await checkSTTStatus();
+
+            expect(mockElements.voiceBtn.style.display).toBe('none');
         });
     });
 });
