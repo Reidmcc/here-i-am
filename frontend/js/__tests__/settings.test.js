@@ -8,11 +8,13 @@ import { state } from '../modules/state.js';
 import {
     setElements,
     setCallbacks,
-    loadSettings,
-    saveSettings,
-    loadPresets,
-    applyPreset,
+    applySettings,
+    initializeSettingsUI,
+    loadPreset,
     modelSupportsVerbosity,
+    modelSupportsTemperature,
+    updateTemperatureControlState,
+    updateVerbosityControlState,
 } from '../modules/settings.js';
 
 describe('Settings Module', () => {
@@ -27,26 +29,40 @@ describe('Settings Module', () => {
             maxTokens: 8192,
             systemPrompt: '',
             conversationType: 'NORMAL',
+            verbosity: 'medium',
+            researcherName: '',
         };
-        state.presets = [];
+        state.selectedEntityId = null;
+        state.entitySystemPrompts = {};
+        state.ttsVoices = [];
+        state.ttsProvider = null;
+        state.availableModels = [
+            { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet', temperature_supported: true },
+            { id: 'gpt-5.1', name: 'GPT-5.1', temperature_supported: true },
+            { id: 'o1', name: 'O1', temperature_supported: false },
+        ];
 
-        // Create mock elements
+        // Create mock elements matching actual module usage
         mockElements = {
             modelSelect: document.createElement('select'),
-            temperatureSlider: document.createElement('input'),
-            temperatureValue: document.createElement('span'),
+            temperatureInput: document.createElement('input'),
+            temperatureNumber: document.createElement('input'),
             maxTokensInput: document.createElement('input'),
             systemPromptInput: document.createElement('textarea'),
-            presetSelect: document.createElement('select'),
+            conversationTypeSelect: document.createElement('select'),
             verbositySelect: document.createElement('select'),
-            verbosityContainer: document.createElement('div'),
+            themeSelect: document.createElement('select'),
+            voiceSelect: document.createElement('select'),
+            researcherNameInput: document.createElement('input'),
+            modelIndicator: document.createElement('span'),
         };
 
         // Set up input types
-        mockElements.temperatureSlider.type = 'range';
-        mockElements.temperatureSlider.min = '0';
-        mockElements.temperatureSlider.max = '2';
-        mockElements.temperatureSlider.step = '0.1';
+        mockElements.temperatureInput.type = 'range';
+        mockElements.temperatureInput.min = '0';
+        mockElements.temperatureInput.max = '2';
+        mockElements.temperatureInput.step = '0.1';
+        mockElements.temperatureNumber.type = 'number';
         mockElements.maxTokensInput.type = 'number';
 
         // Add model options
@@ -60,11 +76,11 @@ describe('Settings Module', () => {
         gptOption.textContent = 'GPT-5.1';
         mockElements.modelSelect.appendChild(gptOption);
 
-        // Add preset options
-        const defaultPreset = document.createElement('option');
-        defaultPreset.value = '';
-        defaultPreset.textContent = 'Select Preset';
-        mockElements.presetSelect.appendChild(defaultPreset);
+        // Add conversation type options
+        const normalOption = document.createElement('option');
+        normalOption.value = 'NORMAL';
+        normalOption.textContent = 'Normal';
+        mockElements.conversationTypeSelect.appendChild(normalOption);
 
         // Add verbosity options
         ['low', 'medium', 'high'].forEach(level => {
@@ -74,8 +90,21 @@ describe('Settings Module', () => {
             mockElements.verbositySelect.appendChild(opt);
         });
 
+        // Wrap verbositySelect in form-group for visibility test
+        const verbosityFormGroup = document.createElement('div');
+        verbosityFormGroup.className = 'form-group';
+        verbosityFormGroup.appendChild(mockElements.verbositySelect);
+        document.body.appendChild(verbosityFormGroup);
+
+        // Add theme options
+        const lightOption = document.createElement('option');
+        lightOption.value = 'light';
+        lightOption.textContent = 'Light';
+        mockElements.themeSelect.appendChild(lightOption);
+
         mockCallbacks = {
-            onSettingsChanged: vi.fn(),
+            updateModelIndicator: vi.fn(),
+            getMaxTemperatureForCurrentEntity: vi.fn(() => 2.0),
         };
 
         setElements(mockElements);
@@ -86,106 +115,130 @@ describe('Settings Module', () => {
 
     afterEach(() => {
         vi.restoreAllMocks();
+        document.body.innerHTML = '';
     });
 
-    describe('loadSettings', () => {
+    describe('initializeSettingsUI', () => {
         it('should populate UI with current settings', () => {
             state.settings = {
                 model: 'claude-sonnet-4-5-20250929',
                 temperature: 0.8,
                 maxTokens: 4096,
                 systemPrompt: 'Test prompt',
+                conversationType: 'NORMAL',
+                verbosity: 'medium',
+                researcherName: 'Test Researcher',
             };
 
-            loadSettings();
+            initializeSettingsUI();
 
             expect(mockElements.modelSelect.value).toBe('claude-sonnet-4-5-20250929');
-            expect(mockElements.temperatureSlider.value).toBe('0.8');
+            expect(mockElements.temperatureInput.value).toBe('0.8');
+            expect(mockElements.temperatureNumber.value).toBe('0.8');
             expect(mockElements.maxTokensInput.value).toBe('4096');
             expect(mockElements.systemPromptInput.value).toBe('Test prompt');
         });
 
-        it('should display temperature value', () => {
-            state.settings.temperature = 0.7;
+        it('should set verbosity select to current value', () => {
+            state.settings.verbosity = 'high';
 
-            loadSettings();
+            initializeSettingsUI();
 
-            expect(mockElements.temperatureValue.textContent).toBe('0.7');
+            expect(mockElements.verbositySelect.value).toBe('high');
+        });
+
+        it('should set researcher name input', () => {
+            state.settings.researcherName = 'Dr. Smith';
+
+            initializeSettingsUI();
+
+            expect(mockElements.researcherNameInput.value).toBe('Dr. Smith');
         });
     });
 
-    describe('saveSettings', () => {
+    describe('applySettings', () => {
         it('should update state with UI values', () => {
             mockElements.modelSelect.value = 'gpt-5.1';
-            mockElements.temperatureSlider.value = '0.5';
+            mockElements.temperatureInput.value = '0.5';
             mockElements.maxTokensInput.value = '2048';
             mockElements.systemPromptInput.value = 'New prompt';
+            mockElements.conversationTypeSelect.value = 'NORMAL';
+            mockElements.verbositySelect.value = 'low';
+            mockElements.themeSelect.value = 'light';
+            mockElements.researcherNameInput.value = 'Researcher';
 
-            saveSettings();
+            applySettings();
 
             expect(state.settings.model).toBe('gpt-5.1');
             expect(state.settings.temperature).toBe(0.5);
             expect(state.settings.maxTokens).toBe(2048);
             expect(state.settings.systemPrompt).toBe('New prompt');
+            expect(state.settings.verbosity).toBe('low');
+            expect(state.settings.researcherName).toBe('Researcher');
         });
 
-        it('should call onSettingsChanged callback', () => {
-            saveSettings();
+        it('should call updateModelIndicator callback', () => {
+            applySettings();
 
-            expect(mockCallbacks.onSettingsChanged).toHaveBeenCalled();
-        });
-    });
-
-    describe('loadPresets', () => {
-        it('should fetch presets from API', async () => {
-            window.api.getPresets = vi.fn(() => Promise.resolve({
-                default: { name: 'Default', config: {} },
-            }));
-
-            await loadPresets();
-
-            expect(window.api.getPresets).toHaveBeenCalled();
+            expect(mockCallbacks.updateModelIndicator).toHaveBeenCalled();
         });
 
-        it('should populate preset select', async () => {
-            window.api.getPresets = vi.fn(() => Promise.resolve({
-                default: { name: 'Default', config: {} },
-                creative: { name: 'Creative', config: {} },
-            }));
+        it('should trim whitespace from system prompt', () => {
+            mockElements.systemPromptInput.value = '  trimmed prompt  ';
 
-            await loadPresets();
+            applySettings();
 
-            // Original + 2 presets
-            expect(mockElements.presetSelect.options.length).toBe(3);
+            expect(state.settings.systemPrompt).toBe('trimmed prompt');
+        });
+
+        it('should set systemPrompt to null for empty string', () => {
+            mockElements.systemPromptInput.value = '   ';
+
+            applySettings();
+
+            expect(state.settings.systemPrompt).toBeNull();
         });
     });
 
-    describe('applyPreset', () => {
-        it('should apply preset configuration', () => {
-            state.presets = {
-                creative: {
-                    name: 'Creative',
-                    config: {
-                        temperature: 1.5,
-                        max_tokens: 8192,
-                        system_prompt: 'Be creative',
-                    },
-                },
-            };
+    describe('loadPreset', () => {
+        it('should apply research preset (null system prompt)', () => {
+            loadPreset('research');
 
-            applyPreset('creative');
+            expect(mockElements.systemPromptInput.value).toBe('');
+        });
 
-            expect(state.settings.temperature).toBe(1.5);
-            expect(state.settings.maxTokens).toBe(8192);
-            expect(state.settings.systemPrompt).toBe('Be creative');
+        it('should apply reflection preset', () => {
+            loadPreset('reflection');
+
+            expect(mockElements.systemPromptInput.value).toContain('reflection session');
+        });
+
+        it('should apply memory-aware preset', () => {
+            loadPreset('memory-aware');
+
+            expect(mockElements.systemPromptInput.value).toContain('memories');
+        });
+
+        it('should apply research-context preset', () => {
+            loadPreset('research-context');
+
+            expect(mockElements.systemPromptInput.value).toContain('research conversation');
+        });
+
+        it('should keep current system prompt for custom preset', () => {
+            state.settings.systemPrompt = 'My custom prompt';
+
+            loadPreset('custom');
+
+            expect(mockElements.systemPromptInput.value).toBe('My custom prompt');
         });
 
         it('should do nothing for unknown preset', () => {
-            const originalTemp = state.settings.temperature;
+            mockElements.systemPromptInput.value = 'Original';
 
-            applyPreset('nonexistent');
+            loadPreset('nonexistent');
 
-            expect(state.settings.temperature).toBe(originalTemp);
+            expect(mockElements.systemPromptInput.value).toBe('Original');
         });
     });
 
@@ -209,6 +262,68 @@ describe('Settings Module', () => {
         it('should handle null/undefined input', () => {
             expect(modelSupportsVerbosity(null)).toBeFalsy();
             expect(modelSupportsVerbosity(undefined)).toBeFalsy();
+        });
+    });
+
+    describe('modelSupportsTemperature', () => {
+        it('should return true for models that support temperature', () => {
+            expect(modelSupportsTemperature('claude-sonnet-4-5-20250929')).toBe(true);
+            expect(modelSupportsTemperature('gpt-5.1')).toBe(true);
+        });
+
+        it('should return false for o1 model', () => {
+            expect(modelSupportsTemperature('o1')).toBe(false);
+        });
+
+        it('should return true for unknown models', () => {
+            expect(modelSupportsTemperature('unknown-model')).toBe(true);
+        });
+    });
+
+    describe('updateTemperatureControlState', () => {
+        it('should disable temperature input for o1 model', () => {
+            mockElements.modelSelect.value = 'o1';
+
+            // Add o1 option
+            const o1Option = document.createElement('option');
+            o1Option.value = 'o1';
+            o1Option.textContent = 'O1';
+            mockElements.modelSelect.appendChild(o1Option);
+            mockElements.modelSelect.value = 'o1';
+
+            updateTemperatureControlState();
+
+            expect(mockElements.temperatureInput.disabled).toBe(true);
+            expect(mockElements.temperatureNumber.disabled).toBe(true);
+        });
+
+        it('should enable temperature input for claude model', () => {
+            mockElements.modelSelect.value = 'claude-sonnet-4-5-20250929';
+
+            updateTemperatureControlState();
+
+            expect(mockElements.temperatureInput.disabled).toBe(false);
+            expect(mockElements.temperatureNumber.disabled).toBe(false);
+        });
+    });
+
+    describe('updateVerbosityControlState', () => {
+        it('should show verbosity control for GPT-5 models', () => {
+            mockElements.modelSelect.value = 'gpt-5.1';
+
+            updateVerbosityControlState();
+
+            const formGroup = mockElements.verbositySelect.closest('.form-group');
+            expect(formGroup.style.display).toBe('block');
+        });
+
+        it('should hide verbosity control for non-GPT-5 models', () => {
+            mockElements.modelSelect.value = 'claude-sonnet-4-5-20250929';
+
+            updateVerbosityControlState();
+
+            const formGroup = mockElements.verbositySelect.closest('.form-group');
+            expect(formGroup.style.display).toBe('none');
         });
     });
 });

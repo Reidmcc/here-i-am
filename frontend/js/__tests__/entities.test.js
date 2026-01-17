@@ -108,22 +108,29 @@ describe('Entities Module', () => {
     });
 
     describe('getEntityLabel', () => {
-        it('should return empty string when entity not found', () => {
+        it('should return input ID when entity not found', () => {
             state.entities = [];
 
             const result = getEntityLabel('nonexistent');
 
-            expect(result).toBe('');
+            // When entity is not found, function returns the input ID as fallback
+            expect(result).toBe('nonexistent');
         });
 
         it('should return entity label when found', () => {
             state.entities = [
-                { id: 'entity-1', label: 'Claude' },
+                { index_name: 'entity-1', label: 'Claude' },
             ];
 
             const result = getEntityLabel('entity-1');
 
             expect(result).toBe('Claude');
+        });
+
+        it('should return Multi-Entity for multi-entity mode', () => {
+            const result = getEntityLabel('multi-entity');
+
+            expect(result).toBe('Multi-Entity');
         });
     });
 
