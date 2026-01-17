@@ -188,8 +188,9 @@ class App {
             attachmentPreview: document.getElementById('attachment-preview'),
             attachmentList: document.getElementById('attachment-list'),
 
-            // Voice
+            // Voice / Dictation
             dictationBtn: document.getElementById('dictation-btn'),
+            voiceBtn: document.getElementById('dictation-btn'),  // Alias for voice.js compatibility
 
             // Sidebar buttons
             settingsBtn: document.getElementById('settings-btn'),
@@ -214,11 +215,25 @@ class App {
             voiceSelect: document.getElementById('voice-select'),
             voiceSelectGroup: document.getElementById('voice-select-group'),
 
+            // TTS provider info
+            ttsProviderGroup: document.getElementById('tts-provider-group'),
+            ttsProviderName: document.getElementById('tts-provider-name'),
+            ttsProviderStatus: document.getElementById('tts-provider-status'),
+
+            // Voice cloning group
+            voiceCloneGroup: document.getElementById('voice-clone-group'),
+
+            // Voice management
+            voiceManageGroup: document.getElementById('voice-manage-group'),
+            voiceList: document.getElementById('voice-list'),
+
             // StyleTTS 2 parameters
             styletts2ParamsGroup: document.getElementById('styletts2-params-group'),
             styletts2Alpha: document.getElementById('styletts2-alpha'),
             styletts2Beta: document.getElementById('styletts2-beta'),
             styletts2DiffusionSteps: document.getElementById('styletts2-diffusion-steps'),
+            styletts2EmbeddingScale: document.getElementById('styletts2-embedding-scale'),
+            styletts2Speed: document.getElementById('styletts2-speed'),
 
             // GitHub settings
             githubReposContainer: document.getElementById('github-repos-container'),
@@ -228,9 +243,10 @@ class App {
             memoriesModal: document.getElementById('memories-modal'),
 
             // Memory panel (sidebar)
+            memoriesPanel: document.getElementById('memories-panel'),
+            memoriesToggle: document.getElementById('memories-toggle'),
             memoryCount: document.getElementById('memory-count'),
             memoriesContent: document.getElementById('memories-content'),
-            toggleMemoryPanelBtn: document.getElementById('toggle-memory-panel'),
 
             // Archive modal
             archiveModal: document.getElementById('archive-modal'),
@@ -251,7 +267,7 @@ class App {
             // Multi-entity modal
             multiEntityModal: document.getElementById('multi-entity-modal'),
             multiEntityList: document.getElementById('multi-entity-list'),
-            multiEntityConfirm: document.getElementById('multi-entity-confirm'),
+            confirmMultiEntity: document.getElementById('confirm-multi-entity'),
 
             // Entity responder selector
             entityResponderSelector: document.getElementById('entity-responder-selector'),
@@ -273,6 +289,7 @@ class App {
 
             // Voice edit modal
             voiceEditModal: document.getElementById('voice-edit-modal'),
+            voiceEditId: document.getElementById('voice-edit-id'),
             voiceEditName: document.getElementById('voice-edit-name'),
             voiceEditDescription: document.getElementById('voice-edit-description'),
             voiceEditTemperature: document.getElementById('voice-edit-temperature'),
@@ -282,7 +299,11 @@ class App {
             voiceEditAlpha: document.getElementById('voice-edit-alpha'),
             voiceEditBeta: document.getElementById('voice-edit-beta'),
             voiceEditDiffusionSteps: document.getElementById('voice-edit-diffusion-steps'),
-            saveVoiceEditBtn: document.getElementById('save-voice-edit-btn'),
+            voiceEditEmbeddingScale: document.getElementById('voice-edit-embedding-scale'),
+            voiceEditStatus: document.getElementById('voice-edit-status'),
+            xttsParamsSection: document.getElementById('xtts-params-section'),
+            styletts2ParamsSection: document.getElementById('styletts2-params-section'),
+            saveVoiceEditBtn: document.getElementById('save-voice-edit'),
             deleteVoiceBtn: document.getElementById('delete-voice-btn'),
 
             // Import modal elements
@@ -420,6 +441,11 @@ class App {
         this.elements.exportBtn?.addEventListener('click', () => exportConversation());
         this.elements.archivedBtn?.addEventListener('click', () => showArchivedModal());
 
+        // Memory panel toggle (in chat area)
+        this.elements.memoriesToggle?.addEventListener('click', () => {
+            this.elements.memoriesPanel?.classList.toggle('collapsed');
+        });
+
         // Attachments
         this.elements.attachBtn?.addEventListener('click', () => this.elements.fileInput?.click());
         this.elements.fileInput?.addEventListener('change', (e) => handleFileSelect(e));
@@ -494,7 +520,7 @@ class App {
         // Multi-entity modal
         document.getElementById('close-multi-entity')?.addEventListener('click', () => hideMultiEntityModal());
         document.getElementById('cancel-multi-entity')?.addEventListener('click', () => hideMultiEntityModal());
-        this.elements.multiEntityConfirm?.addEventListener('click', () => confirmMultiEntitySelection());
+        this.elements.confirmMultiEntity?.addEventListener('click', () => confirmMultiEntitySelection());
 
         // Entity responder selector
         this.elements.cancelResponderBtn?.addEventListener('click', () => cancelResponderSelection());
@@ -785,6 +811,8 @@ window.app = {
     loadConversation: (id) => loadConversation(id),
     unarchiveConversation: (id) => unarchiveConversation(id),
     selectResponder: (entityId) => selectResponder(entityId),
+    showVoiceEditModal: (voiceId) => showVoiceEditModal(voiceId),
+    deleteVoice: (voiceId) => deleteVoice(voiceId),
 };
 
 // Initialize app when DOM is ready
