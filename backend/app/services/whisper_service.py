@@ -3,6 +3,7 @@ Whisper STT Service
 
 Client service for communicating with the local Whisper STT server.
 """
+import asyncio
 import logging
 from typing import Optional, Dict, Any
 
@@ -36,16 +37,21 @@ class WhisperService:
             return False
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            # Use 10s timeout - Whisper server may be busy during transcription
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(f"{self.api_url}/health")
                 if response.status_code == 200:
                     data = response.json()
                     self._server_healthy = data.get("model_loaded", False)
                     return self._server_healthy
+        except httpx.ConnectError as e:
+            logger.warning(f"Whisper server health check failed: ConnectError: {e}")
+        except httpx.TimeoutException:
+            logger.warning("Whisper server health check failed: TimeoutException: server took too long to respond")
         except Exception as e:
-            logger.warning(f"Whisper server health check failed: {e}")
-            self._server_healthy = False
+            logger.warning(f"Whisper server health check failed: {type(e).__name__}: {e}")
 
+        self._server_healthy = False
         return False
 
     async def transcribe(
@@ -120,7 +126,7 @@ class WhisperService:
     async def get_status(self) -> Dict[str, Any]:
         """Get Whisper server status information including dictation mode preference."""
         dictation_mode = self.dictation_mode
-        
+
         if not self.enabled:
             effective_mode = "browser" if dictation_mode != "whisper" else "none"
             return {
@@ -132,34 +138,52 @@ class WhisperService:
                 "effective_mode": effective_mode,
             }
 
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{self.api_url}/health")
-                if response.status_code == 200:
-                    data = response.json()
-                    server_healthy = data.get("model_loaded", False)
-                    
-                    # Determine effective mode based on config and server health
-                    if dictation_mode == "whisper":
-                        effective_mode = "whisper" if server_healthy else "none"
-                    elif dictation_mode == "browser":
-                        effective_mode = "browser"
-                    else:  # auto
-                        effective_mode = "whisper" if server_healthy else "browser"
-                    
-                    return {
-                        "enabled": effective_mode != "none",
-                        "configured": True,
-                        "provider": "whisper",
-                        "server_healthy": server_healthy,
-                        "model": data.get("model", "unknown"),
-                        "device": data.get("device", "unknown"),
-                        "cuda_available": data.get("cuda_available", False),
-                        "dictation_mode": dictation_mode,
-                        "effective_mode": effective_mode,
-                    }
-        except Exception as e:
-            logger.warning(f"Failed to get Whisper status: {e}")
+        # Retry once on connection failure (handles brief server unavailability)
+        max_retries = 2
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                # Use 10s timeout (matches XTTS service) - Whisper server may be busy during transcription
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(f"{self.api_url}/health")
+                    if response.status_code == 200:
+                        data = response.json()
+                        server_healthy = data.get("model_loaded", False)
+
+                        # Determine effective mode based on config and server health
+                        if dictation_mode == "whisper":
+                            effective_mode = "whisper" if server_healthy else "none"
+                        elif dictation_mode == "browser":
+                            effective_mode = "browser"
+                        else:  # auto
+                            effective_mode = "whisper" if server_healthy else "browser"
+
+                        return {
+                            "enabled": effective_mode != "none",
+                            "configured": True,
+                            "provider": "whisper",
+                            "server_healthy": server_healthy,
+                            "model": data.get("model", "unknown"),
+                            "device": data.get("device", "unknown"),
+                            "cuda_available": data.get("cuda_available", False),
+                            "dictation_mode": dictation_mode,
+                            "effective_mode": effective_mode,
+                        }
+                    else:
+                        last_error = f"HTTP {response.status_code}"
+            except httpx.ConnectError as e:
+                last_error = f"ConnectError: {e}"
+                # Brief retry delay for connection issues
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.5)
+            except httpx.TimeoutException:
+                last_error = "TimeoutException: server took too long to respond"
+            except Exception as e:
+                last_error = f"{type(e).__name__}: {e}"
+
+        # Log with detailed error type for easier debugging
+        logger.warning(f"Failed to get Whisper status: {last_error}")
 
         # Server unreachable
         if dictation_mode == "whisper":
