@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2026-01-17
+**Last Updated:** 2026-01-20
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -705,6 +705,35 @@ here-i-am/
 │   │       ├── settings.js    # Settings modal management
 │   │       └── import-export.js  # Conversation import/export
 │   └── index.html
+├── frontend-svelte/            # Svelte 5 + Vite SPA (parallel implementation)
+│   ├── public/                # Static assets
+│   ├── src/
+│   │   ├── App.svelte         # Root orchestrator component
+│   │   ├── main.js            # Entry point
+│   │   ├── app.css            # Global styles with CSS variables
+│   │   ├── components/
+│   │   │   ├── common/        # Reusable UI (Button, Modal, Toast, Loading)
+│   │   │   ├── layout/        # Layout (Sidebar, ChatArea)
+│   │   │   ├── chat/          # Chat components (MessageList, InputArea, etc.)
+│   │   │   └── modals/        # Modal dialogs (Settings, Memories, etc.)
+│   │   ├── lib/
+│   │   │   ├── api.js         # REST API client with SSE streaming
+│   │   │   ├── utils.js       # Utility functions
+│   │   │   └── stores/        # Svelte stores (8 specialized stores)
+│   │   │       ├── app.js     # Theme, loading, modals, toasts
+│   │   │       ├── conversations.js
+│   │   │       ├── entities.js
+│   │   │       ├── messages.js
+│   │   │       ├── memories.js
+│   │   │       ├── settings.js
+│   │   │       ├── voice.js   # TTS/STT state
+│   │   │       └── attachments.js
+│   │   └── test/              # Test setup (Vitest)
+│   ├── index.html
+│   ├── package.json
+│   ├── vite.config.js         # Vite config with API proxy
+│   ├── vitest.config.js       # Test configuration
+│   └── svelte.config.js
 └── README.md
 ```
 
@@ -742,13 +771,28 @@ here-i-am/
 | Local STT | faster-whisper | - | Whisper speech-to-text (optional) |
 | Utilities | tiktoken, numpy, scipy | - | Token counting, embeddings, audio |
 
-### Frontend
+### Frontend (Vanilla JavaScript)
 
 - **Pure JavaScript** (ES6+) - No framework, using native ES6 modules
 - **Modular Architecture** - 13 semantic modules with centralized state
 - **CSS3** with CSS variables for theming
 - **REST API** communication via `fetch()`
 - **No Build Step** - ES6 modules loaded directly in browser
+
+### Frontend (Svelte + Vite) - Parallel Implementation
+
+| Component | Technology | Version | Purpose |
+|-----------|-----------|---------|---------|
+| Framework | Svelte | 5.43.8 | Reactive component framework |
+| Build Tool | Vite | 7.2.4 | Fast dev server with HMR |
+| Testing | Vitest | 3.0.0 | Unit testing framework |
+| Test Utils | @testing-library/svelte | 5.2.6 | Component testing |
+
+- **Component-Based Architecture** - 20+ Svelte components organized hierarchically
+- **Reactive Stores** - 8 specialized Svelte stores for state management
+- **Scoped CSS** - Styles automatically scoped to components
+- **Hot Module Replacement** - Instant feedback during development
+- **API Proxy** - Vite proxies `/api` to backend during development
 
 ### Database Support
 
@@ -1285,11 +1329,36 @@ python run.py
 ./start-whisper.sh       # Whisper STT server (port 8030)
 
 # Check current conversations
-# Open http://localhost:8000 in browser
+# Open http://localhost:8000 in browser (vanilla frontend)
 
 # Access API docs
 # http://localhost:8000/docs (Swagger UI)
 # http://localhost:8000/redoc (ReDoc)
+```
+
+### Svelte Frontend Development
+
+```bash
+# From project root, open a separate terminal
+cd frontend-svelte
+
+# Install dependencies (first time only)
+npm install
+
+# Start Vite dev server (port 5173)
+npm run dev
+# Open http://localhost:5173 in browser
+# Note: Backend must be running on port 8000
+
+# Run tests
+npm run test             # Run once
+npm run test:watch       # Watch mode
+npm run test:ui          # Interactive UI dashboard
+npm run test:coverage    # With coverage report
+
+# Build for production
+npm run build            # Output to dist/
+npm run preview          # Preview production build
 ```
 
 ---
@@ -1911,6 +1980,132 @@ Some state persists across page refreshes:
 
 ---
 
+## Svelte Frontend Architecture
+
+The `frontend-svelte` directory contains a **parallel implementation** of the Here I Am research interface using Svelte 5 and Vite. Both frontends communicate with the same backend API and provide equivalent functionality.
+
+### Why Two Frontends?
+
+- **Parallel development** - Allows A/B testing or gradual migration
+- **Modern tooling** - Svelte provides reactive updates and Vite enables fast HMR
+- **Component encapsulation** - Scoped CSS and self-contained components
+- **Testing infrastructure** - Built-in unit testing with Vitest
+- **Future flexibility** - Can switch or deprecate either frontend as needed
+
+### Svelte Architecture Overview
+
+**Architecture Pattern:**
+- **Root Component** (`App.svelte`) - Orchestrates all child components, handles initial data loading
+- **Reactive Stores** (`lib/stores/`) - 8 specialized stores replace centralized state object
+- **Component Hierarchy** - Layout → Feature → Common components
+- **API Client** (`lib/api.js`) - Comprehensive REST client with SSE streaming support
+
+### Component Hierarchy
+
+```
+App.svelte (root orchestrator)
+├── Sidebar.svelte
+│   ├── Entity selector dropdown
+│   ├── Conversation list
+│   └── Action buttons
+├── ChatArea.svelte
+│   ├── MessageList.svelte
+│   │   ├── MessageItem.svelte (per message)
+│   │   └── StreamingMessage.svelte
+│   ├── InputArea.svelte (with attachments, voice)
+│   ├── MemoriesPanel.svelte
+│   └── EntityResponderSelector.svelte
+├── Toast notifications
+└── Modals (Settings, Memories, Delete, Rename, etc.)
+```
+
+### Svelte Stores Architecture
+
+Unlike the vanilla frontend's single state object, Svelte uses **reactive stores**:
+
+| Store | Purpose |
+|-------|---------|
+| `app.js` | Theme, loading, modals, toasts, available models |
+| `conversations.js` | Conversation list, current conversation, archives |
+| `entities.js` | Entity list, selection, multi-entity state |
+| `messages.js` | Messages, streaming state, editing |
+| `memories.js` | Retrieved memories, search results, stats |
+| `settings.js` | Model, temperature, system prompt, presets |
+| `voice.js` | TTS/STT state, voices, audio playback |
+| `attachments.js` | Pending attachments, validation, drag state |
+
+**Store Pattern:**
+```javascript
+// Writable stores for simple values
+export const theme = writable('dark');
+
+// Derived stores for computed values
+export const selectedEntity = derived(
+    [entities, selectedEntityId],
+    ([$entities, $id]) => $entities.find(e => e.index_name === $id)
+);
+
+// Custom stores with helpers
+export const { subscribe, set, update } = createConversationsStore();
+```
+
+### Component Communication
+
+- **Props** for data input (`export let message`)
+- **Events** for parent notification (`dispatch('regenerate', { id })`)
+- **Stores** for cross-component state (imported directly)
+
+### Styling System
+
+- **CSS Variables** for theming (same variables as vanilla frontend)
+- **Scoped styles** - Each component's `<style>` block is automatically scoped
+- **Theme switching** via `.theme-light` / `.theme-dark` classes on `<html>`
+
+### Running the Svelte Frontend
+
+```bash
+cd frontend-svelte
+
+# Install dependencies
+npm install
+
+# Development (runs on port 5173, proxies /api to backend)
+npm run dev
+
+# Testing
+npm run test         # Run once
+npm run test:watch   # Watch mode
+npm run test:ui      # Interactive UI
+
+# Production build
+npm run build        # Output to dist/
+npm run preview      # Preview production build
+```
+
+**Note:** The backend must be running on port 8000 for the Svelte frontend to work (Vite proxies API requests).
+
+### Comparison: Svelte vs Vanilla JS
+
+| Aspect | Svelte | Vanilla JS |
+|--------|--------|-----------|
+| **Reactivity** | Automatic (compiler) | Manual (event handlers) |
+| **State** | Reactive stores | Direct object mutation |
+| **Components** | `.svelte` files | ES6 modules |
+| **CSS** | Scoped per component | Global/module-scoped |
+| **Build** | Vite (required) | None (direct ES6) |
+| **Testing** | Vitest + testing-library | Jest (backend only) |
+| **Bundle Size** | ~50KB (with Svelte runtime) | ~7KB |
+| **HMR** | Yes (Vite) | Browser refresh |
+
+### When to Use Which Frontend
+
+- **Vanilla JS** (`frontend/`) - Currently served by backend, production-ready
+- **Svelte** (`frontend-svelte/`) - Modern development experience, requires separate dev server
+
+Both frontends implement identical features and connect to the same backend API.
+
+---
+
 ## Gotchas & Important Notes
 
 ### Critical Implementation Details
@@ -2082,7 +2277,7 @@ Some state persists across page refreshes:
     - Frontend validates file types and sizes before upload
     - Backend re-validates attachments for security
 
-27. **Frontend Modular Architecture**
+27. **Frontend Modular Architecture (Vanilla JS)**
     - The frontend was refactored from monolithic `app.js` to modular ES6 architecture
     - **`app.js` is DEPRECATED** - kept for reference but not loaded
     - **`app-modular.js`** is the active entry point
@@ -2091,7 +2286,17 @@ Some state persists across page refreshes:
     - Modules communicate via callbacks injected by the orchestrator
     - No build step required - ES6 modules work directly in browser
 
-28. **Codebase Navigator System**
+28. **Svelte Frontend (Parallel Implementation)**
+    - Located in `frontend-svelte/` - a complete reimplementation using Svelte 5 + Vite
+    - Runs on port 5173 (Vite dev server), proxies API to backend on port 8000
+    - Uses 8 specialized Svelte stores instead of centralized state object
+    - 20+ Svelte components with scoped CSS
+    - **Both frontends are fully functional** - choose based on development preference
+    - Svelte frontend requires `npm install` and `npm run dev` to run
+    - Vanilla frontend served directly by backend at port 8000
+    - Tests: run `npm run test` in `frontend-svelte/` directory
+
+29. **Codebase Navigator System**
     - Requires `CODEBASE_NAVIGATOR_ENABLED=true` and `MISTRAL_API_KEY`
     - Also requires `local_clone_path` in at least one GitHub repository config
     - Uses Mistral's Devstral model (256k context window) for cost-efficient exploration
@@ -2124,13 +2329,21 @@ Some state persists across page refreshes:
 - Verify speaker labels display correctly in both stored messages and streaming
 - Test continuation mode (null message) flow
 
-**When modifying frontend:**
+**When modifying vanilla frontend (`frontend/`):**
 - Do NOT edit `app.js` - it is deprecated and not loaded
 - Edit appropriate module in `frontend/js/modules/`
 - Add new state to `modules/state.js`
 - Inter-module communication uses callbacks set via `setCallbacks()`
 - Use `window.api` for API calls (global singleton)
 - DOM elements are cached in orchestrator - access via `elements` object
+
+**When modifying Svelte frontend (`frontend-svelte/`):**
+- Edit appropriate component in `src/components/`
+- Add new state to appropriate store in `src/lib/stores/`
+- Use Svelte's reactive stores directly in components (import from stores)
+- API calls via imported functions from `src/lib/api.js`
+- Component communication via props (down) and events (up)
+- Run `npm run test` to verify changes don't break existing functionality
 
 ### Performance Considerations
 
@@ -2253,13 +2466,13 @@ Some state persists across page refreshes:
 - Presets: `backend/app/main.py` (get_presets endpoint)
 - Environment: `backend/.env.example`
 
-**Frontend (Modular Architecture):**
+**Frontend - Vanilla JS (Modular Architecture):**
 - Entry point: `frontend/js/app-modular.js` (orchestrator)
 - API client: `frontend/js/api.js` (singleton, accessed via `window.api`)
 - Legacy app: `frontend/js/app.js` (deprecated, kept for reference)
 - Styles: `frontend/css/styles.css`
 
-**Frontend Modules** (`frontend/js/modules/`):
+**Frontend Vanilla Modules** (`frontend/js/modules/`):
 - State management: `state.js`
 - Utilities: `utils.js`
 - Theme switching: `theme.js`
@@ -2273,6 +2486,31 @@ Some state persists across page refreshes:
 - Chat/streaming: `chat.js`
 - Settings modal: `settings.js`
 - Import/export: `import-export.js`
+
+**Frontend - Svelte + Vite:**
+- Entry point: `frontend-svelte/src/main.js`
+- Root component: `frontend-svelte/src/App.svelte`
+- API client: `frontend-svelte/src/lib/api.js`
+- Utilities: `frontend-svelte/src/lib/utils.js`
+- Global styles: `frontend-svelte/src/app.css`
+- Vite config: `frontend-svelte/vite.config.js`
+- Test config: `frontend-svelte/vitest.config.js`
+
+**Svelte Stores** (`frontend-svelte/src/lib/stores/`):
+- App state: `app.js` (theme, loading, modals, toasts)
+- Conversations: `conversations.js`
+- Entities: `entities.js`
+- Messages: `messages.js`
+- Memories: `memories.js`
+- Settings: `settings.js`
+- Voice: `voice.js`
+- Attachments: `attachments.js`
+
+**Svelte Components** (`frontend-svelte/src/components/`):
+- Common: `common/` (Button, Modal, Toast, Loading)
+- Layout: `layout/` (Sidebar, ChatArea)
+- Chat: `chat/` (MessageList, MessageItem, InputArea, etc.)
+- Modals: `modals/` (SettingsModal, MemoriesModal, etc.)
 
 **Database:**
 - Models: `backend/app/models/`
