@@ -122,12 +122,14 @@ class WhisperService:
         dictation_mode = self.dictation_mode
         
         if not self.enabled:
+            effective_mode = "browser" if dictation_mode != "whisper" else "none"
             return {
+                "enabled": effective_mode != "none",
                 "configured": False,
                 "provider": "none",
                 "server_healthy": False,
                 "dictation_mode": dictation_mode,
-                "effective_mode": "browser" if dictation_mode != "whisper" else "none",
+                "effective_mode": effective_mode,
             }
 
         try:
@@ -146,6 +148,7 @@ class WhisperService:
                         effective_mode = "whisper" if server_healthy else "browser"
                     
                     return {
+                        "enabled": effective_mode != "none",
                         "configured": True,
                         "provider": "whisper",
                         "server_healthy": server_healthy,
@@ -165,8 +168,9 @@ class WhisperService:
             effective_mode = "browser"
         else:  # auto
             effective_mode = "browser"
-            
+
         return {
+            "enabled": effective_mode != "none",
             "configured": True,
             "provider": "whisper",
             "server_healthy": False,
