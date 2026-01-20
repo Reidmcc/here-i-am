@@ -1,0 +1,267 @@
+/* Global CSS Variables and Base Styles */
+
+/* CSS Variables - Dark Mode Theme (Default) */
+:root {
+    /* Background colors - deep dark palette */
+    --bg-primary: #0d0d0d;
+    --bg-secondary: #161616;
+    --bg-tertiary: #1e1e1e;
+    --bg-elevated: #252525;
+
+    /* Text colors - high contrast for readability */
+    --text-primary: #f0f0f0;
+    --text-secondary: #b0b0b0;
+    --text-muted: #707070;
+
+    /* Accent colors - refined blue palette */
+    --accent: #5c8aff;
+    --accent-hover: #4a7aef;
+    --accent-subtle: rgba(92, 138, 255, 0.15);
+
+    /* Message backgrounds */
+    --human-bg: #1a2a42;
+    --assistant-bg: #1e1e1e;
+    --memory-bg: #1e2a1a;
+
+    /* Border and dividers */
+    --border-color: #2a2a2a;
+    --border-subtle: #222222;
+
+    /* Status colors */
+    --danger: #e55c5c;
+    --danger-hover: #d44444;
+    --success: #4caf7c;
+    --warning: #e5a54c;
+
+    /* Effects */
+    --shadow: rgba(0, 0, 0, 0.5);
+    --shadow-lg: rgba(0, 0, 0, 0.7);
+    --glow: rgba(92, 138, 255, 0.2);
+
+    /* Typography */
+    --font-mono: 'Consolas', 'Monaco', 'Courier New', monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
+    /* Scrollbar colors */
+    --scrollbar-thumb: #333;
+    --scrollbar-thumb-hover: #444;
+
+    /* Overlay and hover states */
+    --overlay-bg: rgba(0, 0, 0, 0.7);
+    --overlay-light: rgba(0, 0, 0, 0.5);
+    --hover-overlay: rgba(255, 255, 255, 0.05);
+    --memory-item-inner: rgba(0, 0, 0, 0.2);
+    --active-text-muted: rgba(255, 255, 255, 0.7);
+}
+
+/* Light Mode Theme - System Preference */
+@media (prefers-color-scheme: light) {
+    :root {
+        --bg-primary: #f5f5f5;
+        --bg-secondary: #ffffff;
+        --bg-tertiary: #eaeaea;
+        --bg-elevated: #ffffff;
+        --text-primary: #1a1a1a;
+        --text-secondary: #4a4a4a;
+        --text-muted: #888888;
+        --accent: #3b6fd9;
+        --accent-hover: #2d5bc4;
+        --accent-subtle: rgba(59, 111, 217, 0.12);
+        --human-bg: #dce7f7;
+        --assistant-bg: #f0f0f0;
+        --memory-bg: #e8f0e4;
+        --border-color: #d8d8d8;
+        --border-subtle: #e5e5e5;
+        --danger: #dc4444;
+        --danger-hover: #c33636;
+        --success: #2d9d5c;
+        --warning: #d4880a;
+        --shadow: rgba(0, 0, 0, 0.1);
+        --shadow-lg: rgba(0, 0, 0, 0.15);
+        --glow: rgba(59, 111, 217, 0.25);
+        --scrollbar-thumb: #c0c0c0;
+        --scrollbar-thumb-hover: #a0a0a0;
+        --overlay-bg: rgba(0, 0, 0, 0.5);
+        --overlay-light: rgba(0, 0, 0, 0.3);
+        --hover-overlay: rgba(0, 0, 0, 0.04);
+        --memory-item-inner: rgba(0, 0, 0, 0.06);
+        --active-text-muted: rgba(255, 255, 255, 0.8);
+    }
+}
+
+/* Manual Light Theme Class */
+:root.theme-light {
+    --bg-primary: #f5f5f5;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #eaeaea;
+    --bg-elevated: #ffffff;
+    --text-primary: #1a1a1a;
+    --text-secondary: #4a4a4a;
+    --text-muted: #888888;
+    --accent: #3b6fd9;
+    --accent-hover: #2d5bc4;
+    --accent-subtle: rgba(59, 111, 217, 0.12);
+    --human-bg: #dce7f7;
+    --assistant-bg: #f0f0f0;
+    --memory-bg: #e8f0e4;
+    --border-color: #d8d8d8;
+    --border-subtle: #e5e5e5;
+    --danger: #dc4444;
+    --danger-hover: #c33636;
+    --success: #2d9d5c;
+    --warning: #d4880a;
+    --shadow: rgba(0, 0, 0, 0.1);
+    --shadow-lg: rgba(0, 0, 0, 0.15);
+    --glow: rgba(59, 111, 217, 0.25);
+    --scrollbar-thumb: #c0c0c0;
+    --scrollbar-thumb-hover: #a0a0a0;
+    --overlay-bg: rgba(0, 0, 0, 0.5);
+    --overlay-light: rgba(0, 0, 0, 0.3);
+    --hover-overlay: rgba(0, 0, 0, 0.04);
+    --memory-item-inner: rgba(0, 0, 0, 0.06);
+    --active-text-muted: rgba(255, 255, 255, 0.8);
+}
+
+/* Manual Dark Theme Class */
+:root.theme-dark {
+    --bg-primary: #0d0d0d;
+    --bg-secondary: #161616;
+    --bg-tertiary: #1e1e1e;
+    --bg-elevated: #252525;
+    --text-primary: #f0f0f0;
+    --text-secondary: #b0b0b0;
+    --text-muted: #707070;
+    --accent: #5c8aff;
+    --accent-hover: #4a7aef;
+    --accent-subtle: rgba(92, 138, 255, 0.15);
+    --human-bg: #1a2a42;
+    --assistant-bg: #1e1e1e;
+    --memory-bg: #1e2a1a;
+    --border-color: #2a2a2a;
+    --border-subtle: #222222;
+    --danger: #e55c5c;
+    --danger-hover: #d44444;
+    --success: #4caf7c;
+    --warning: #e5a54c;
+    --shadow: rgba(0, 0, 0, 0.5);
+    --shadow-lg: rgba(0, 0, 0, 0.7);
+    --glow: rgba(92, 138, 255, 0.2);
+    --scrollbar-thumb: #333;
+    --scrollbar-thumb-hover: #444;
+    --overlay-bg: rgba(0, 0, 0, 0.7);
+    --overlay-light: rgba(0, 0, 0, 0.5);
+    --hover-overlay: rgba(255, 255, 255, 0.05);
+    --memory-item-inner: rgba(0, 0, 0, 0.2);
+    --active-text-muted: rgba(255, 255, 255, 0.7);
+}
+
+/* Reset and Base */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    height: 100%;
+    font-family: var(--font-sans);
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+#app {
+    height: 100%;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-primary);
+}
+
+::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background-color: var(--scrollbar-thumb-hover);
+}
+
+/* Firefox scrollbar */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) var(--bg-primary);
+}
+
+/* Animation keyframes */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes bounce {
+    0%, 80%, 100% { transform: translateY(0); }
+    40% { transform: translateY(-6px); }
+}
+
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateX(100px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+@keyframes pulse-speaking {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+@keyframes pulse-recording {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(229, 92, 92, 0.4);
+    }
+    50% {
+        box-shadow: 0 0 0 8px rgba(229, 92, 92, 0);
+    }
+}
+
+@keyframes pulse-transcribing {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+/* Responsive base */
+@media (max-width: 768px) {
+    html {
+        font-size: 14px;
+    }
+}

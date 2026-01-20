@@ -1,0 +1,359 @@
+<script>
+    import { onMount } from 'svelte';
+    import Sidebar from './components/layout/Sidebar.svelte';
+    import ChatArea from './components/layout/ChatArea.svelte';
+    import ToastContainer from './components/common/Toast.svelte';
+    import LoadingOverlay from './components/common/Loading.svelte';
+    import SettingsModal from './components/modals/SettingsModal.svelte';
+    import MemoriesModal from './components/modals/MemoriesModal.svelte';
+    import DeleteModal from './components/modals/DeleteModal.svelte';
+    import RenameModal from './components/modals/RenameModal.svelte';
+    import ArchivedModal from './components/modals/ArchivedModal.svelte';
+    import MultiEntityModal from './components/modals/MultiEntityModal.svelte';
+    import ImportExportModal from './components/modals/ImportExportModal.svelte';
+
+    import { theme, isLoading, activeModal, showToast, availableModels, githubRepos, githubRateLimits } from './lib/stores/app.js';
+    import { entities, selectedEntityId, isMultiEntityMode, resetMultiEntityState, currentConversationEntities } from './lib/stores/entities.js';
+    import { conversations, currentConversationId, currentConversation, resetConversationState, getNextRequestId, isValidRequestId } from './lib/stores/conversations.js';
+    import { messages, resetMessagesState } from './lib/stores/messages.js';
+    import { resetMemoriesState } from './lib/stores/memories.js';
+    import { settings, presets } from './lib/stores/settings.js';
+    import { ttsEnabled, ttsProvider, voices, sttEnabled, sttProvider, dictationMode } from './lib/stores/voice.js';
+    import * as api from './lib/api.js';
+
+    // Modal context for delete/rename
+    let deleteContext = { title: '', id: null, type: 'conversation' };
+    let renameContext = { title: '', id: null, type: 'conversation' };
+
+    // Initialize theme on mount
+    onMount(async () => {
+        // Apply saved theme
+        const savedTheme = $theme;
+        if (savedTheme && savedTheme !== 'system') {
+            document.documentElement.classList.add(`theme-${savedTheme}`);
+        }
+
+        // Load initial data
+        await loadInitialData();
+    });
+
+    async function loadInitialData() {
+        try {
+            // Load entities
+            const entitiesData = await api.listEntities();
+            entities.set(entitiesData);
+
+            // Select first entity if none selected
+            if (!$selectedEntityId && entitiesData.length > 0) {
+                selectedEntityId.set(entitiesData[0].index_name);
+            }
+
+            // Load conversations for selected entity
+            if ($selectedEntityId) {
+                await loadConversations();
+            }
+
+            // Load presets
+            const presetsData = await api.getPresets();
+            presets.set(presetsData);
+
+            // Load chat config (available models)
+            const config = await api.getChatConfig();
+            if (config?.available_models) {
+                availableModels.set(config.available_models);
+            }
+
+            // Load TTS status
+            await loadTTSStatus();
+
+            // Load STT status
+            await loadSTTStatus();
+
+            // Load GitHub repos if available
+            try {
+                const repos = await api.listGitHubRepos();
+                githubRepos.set(repos);
+            } catch (e) {
+                // GitHub not configured, ignore
+            }
+        } catch (error) {
+            showToast(`Failed to load initial data: ${error.message}`, 'error');
+        }
+    }
+
+    async function loadConversations() {
+        const requestId = getNextRequestId();
+        try {
+            const entityId = $isMultiEntityMode ? 'multi-entity' : $selectedEntityId;
+            const data = await api.listConversations(50, 0, entityId);
+
+            // Only update if this is still the current request
+            if (isValidRequestId(requestId)) {
+                conversations.set(data);
+            }
+        } catch (error) {
+            showToast(`Failed to load conversations: ${error.message}`, 'error');
+        }
+    }
+
+    async function loadTTSStatus() {
+        try {
+            const status = await api.getTTSStatus();
+            ttsEnabled.set(status.enabled);
+            ttsProvider.set(status.provider);
+
+            if (status.enabled) {
+                const voiceList = await api.listTTSVoices();
+                voices.set(voiceList);
+            }
+        } catch (e) {
+            // TTS not available
+        }
+    }
+
+    async function loadSTTStatus() {
+        try {
+            const status = await api.getSTTStatus();
+            sttEnabled.set(status.enabled);
+            sttProvider.set(status.provider);
+            dictationMode.set(status.mode || 'auto');
+        } catch (e) {
+            // STT not available
+        }
+    }
+
+    // Handle entity change
+    async function handleEntityChange(event) {
+        const entityId = event.detail;
+
+        if (entityId === 'multi-entity') {
+            // Show multi-entity modal
+            activeModal.set('multi-entity');
+        } else {
+            resetMultiEntityState();
+            selectedEntityId.set(entityId);
+            resetConversationState();
+            resetMessagesState();
+            resetMemoriesState();
+            await loadConversations();
+        }
+    }
+
+    // Handle conversation selection
+    async function handleSelectConversation(event) {
+        const conversationId = event.detail;
+        await loadConversation(conversationId);
+    }
+
+    async function loadConversation(conversationId) {
+        if (!conversationId) {
+            resetConversationState();
+            resetMessagesState();
+            resetMemoriesState();
+            return;
+        }
+
+        isLoading.set(true);
+        try {
+            const [conv, msgs] = await Promise.all([
+                api.getConversation(conversationId),
+                api.getConversationMessages(conversationId)
+            ]);
+
+            currentConversationId.set(conversationId);
+            currentConversation.set(conv);
+            messages.set(msgs);
+            resetMemoriesState();
+
+            // Handle multi-entity conversation
+            if (conv.conversation_type === 'multi_entity' && conv.entities) {
+                isMultiEntityMode.set(true);
+            }
+        } catch (error) {
+            showToast(`Failed to load conversation: ${error.message}`, 'error');
+        } finally {
+            isLoading.set(false);
+        }
+    }
+
+    // Handle new conversation
+    async function handleNewConversation() {
+        resetConversationState();
+        resetMessagesState();
+        resetMemoriesState();
+    }
+
+    // Reload conversations when needed
+    function handleConversationsUpdated() {
+        loadConversations();
+    }
+
+    // Modal helpers
+    function closeModal() {
+        activeModal.set(null);
+    }
+
+    function openSettings() {
+        activeModal.set('settings');
+    }
+
+    function openMemories() {
+        activeModal.set('memories');
+    }
+
+    function openArchived() {
+        activeModal.set('archived');
+    }
+
+    function openImportExport() {
+        activeModal.set('import-export');
+    }
+
+    // Delete conversation
+    function handleDeleteRequest(event) {
+        const { id, title } = event.detail;
+        deleteContext = { id, title, type: 'conversation' };
+        activeModal.set('delete');
+    }
+
+    async function handleDeleteConfirm() {
+        if (!deleteContext.id) return;
+        try {
+            await api.deleteConversation(deleteContext.id);
+            if ($currentConversationId === deleteContext.id) {
+                resetConversationState();
+                resetMessagesState();
+                resetMemoriesState();
+            }
+            await loadConversations();
+            showToast('Conversation deleted', 'success');
+        } catch (error) {
+            showToast(`Failed to delete: ${error.message}`, 'error');
+        }
+        closeModal();
+    }
+
+    // Rename conversation
+    function handleRenameRequest(event) {
+        const { id, title } = event.detail;
+        renameContext = { id, title, type: 'conversation' };
+        activeModal.set('rename');
+    }
+
+    async function handleRenameConfirm(event) {
+        const { title } = event.detail;
+        if (!renameContext.id) return;
+        try {
+            await api.updateConversation(renameContext.id, { title });
+            await loadConversations();
+            if ($currentConversationId === renameContext.id) {
+                currentConversation.update(c => c ? { ...c, title } : c);
+            }
+            showToast('Conversation renamed', 'success');
+        } catch (error) {
+            showToast(`Failed to rename: ${error.message}`, 'error');
+        }
+        closeModal();
+    }
+
+    // Multi-entity conversation creation
+    async function handleMultiEntityCreate(event) {
+        const { entityIds } = event.detail;
+        try {
+            isMultiEntityMode.set(true);
+            currentConversationEntities.set(entityIds);
+            selectedEntityId.set('multi-entity');
+            resetConversationState();
+            resetMessagesState();
+            resetMemoriesState();
+            await loadConversations();
+            showToast('Multi-entity mode enabled', 'success');
+        } catch (error) {
+            showToast(`Failed to create: ${error.message}`, 'error');
+        }
+        closeModal();
+    }
+
+    // Archived unarchive handler
+    function handleUnarchive() {
+        loadConversations();
+    }
+</script>
+
+<div class="app-container">
+    <Sidebar
+        on:entityChange={handleEntityChange}
+        on:selectConversation={handleSelectConversation}
+        on:newConversation={handleNewConversation}
+        on:conversationsUpdated={handleConversationsUpdated}
+        on:openSettings={openSettings}
+        on:openMemories={openMemories}
+        on:openArchived={openArchived}
+        on:openImportExport={openImportExport}
+        on:deleteConversation={handleDeleteRequest}
+        on:renameConversation={handleRenameRequest}
+    />
+    <ChatArea
+        on:conversationCreated={handleConversationsUpdated}
+        on:loadConversation={(e) => loadConversation(e.detail)}
+    />
+</div>
+
+<ToastContainer />
+<LoadingOverlay />
+
+<!-- Modals - conditionally rendered -->
+{#if $activeModal === 'settings'}
+    <SettingsModal on:close={closeModal} />
+{/if}
+
+{#if $activeModal === 'memories'}
+    <MemoriesModal on:close={closeModal} />
+{/if}
+
+{#if $activeModal === 'delete'}
+    <DeleteModal
+        title={deleteContext.title}
+        itemType={deleteContext.type}
+        on:close={closeModal}
+        on:confirm={handleDeleteConfirm}
+    />
+{/if}
+
+{#if $activeModal === 'rename'}
+    <RenameModal
+        currentTitle={renameContext.title}
+        itemType={renameContext.type}
+        on:close={closeModal}
+        on:confirm={handleRenameConfirm}
+    />
+{/if}
+
+{#if $activeModal === 'archived'}
+    <ArchivedModal
+        on:close={closeModal}
+        on:unarchive={handleUnarchive}
+    />
+{/if}
+
+{#if $activeModal === 'multi-entity'}
+    <MultiEntityModal
+        on:close={closeModal}
+        on:create={handleMultiEntityCreate}
+    />
+{/if}
+
+{#if $activeModal === 'import-export'}
+    <ImportExportModal
+        on:close={closeModal}
+        on:import={handleConversationsUpdated}
+    />
+{/if}
+
+<style>
+    .app-container {
+        display: flex;
+        height: 100vh;
+        overflow: hidden;
+    }
+</style>
