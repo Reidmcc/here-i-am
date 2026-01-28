@@ -22,6 +22,7 @@ function createTimeout(ms, controller) {
 
 /**
  * Base request helper with timeout protection
+ * Timeout covers both the fetch AND the response body parsing
  */
 async function request(endpoint, options = {}) {
     const url = `${API_BASE}${endpoint}`;
@@ -48,23 +49,28 @@ async function request(endpoint, options = {}) {
         config.body = JSON.stringify(config.body);
     }
 
+    // Set up timeout that aborts the request
+    const timeoutId = setTimeout(() => {
+        controller.abort();
+    }, timeout);
+
     try {
-        const response = await Promise.race([
-            fetch(url, config),
-            createTimeout(timeout, controller)
-        ]);
+        const response = await fetch(url, config);
 
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
             throw new Error(error.detail || `HTTP ${response.status}`);
         }
 
-        return response.json();
+        const data = await response.json();
+        return data;
     } catch (error) {
         if (error.name === 'AbortError') {
-            throw new Error(`Request to ${endpoint} was aborted`);
+            throw new Error(`Request timed out after ${timeout}ms`);
         }
         throw error;
+    } finally {
+        clearTimeout(timeoutId);
     }
 }
 
