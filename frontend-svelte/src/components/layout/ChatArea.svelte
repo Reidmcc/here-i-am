@@ -201,7 +201,8 @@
 
         } catch (error) {
             if (error.name !== 'AbortError') {
-                showToast(`Error: ${error.message}`, 'error');
+                const message = error?.message || String(error);
+                showToast(`Error: ${message}`, 'error');
             }
             stopStreaming();
         } finally {
@@ -260,7 +261,8 @@
             });
 
         } catch (error) {
-            showToast(`Error: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Error: ${message}`, 'error');
             stopStreaming();
         } finally {
             isLoading.set(false);
@@ -277,7 +279,8 @@
             ));
             showToast('Message updated', 'success');
         } catch (error) {
-            showToast(`Failed to update message: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to update message: ${message}`, 'error');
         }
     }
 
@@ -289,7 +292,8 @@
             messages.update(msgs => msgs.filter(m => m.id !== messageId));
             showToast('Message deleted', 'success');
         } catch (error) {
-            showToast(`Failed to delete message: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to delete message: ${message}`, 'error');
         }
     }
 

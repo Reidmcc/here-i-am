@@ -108,7 +108,8 @@
                 conversations.set(data);
             }
         } catch (error) {
-            showToast(`Failed to load conversations: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to load conversations: ${message}`, 'error');
         }
     }
 
@@ -186,7 +187,8 @@
                 isMultiEntityMode.set(true);
             }
         } catch (error) {
-            showToast(`Failed to load conversation: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to load conversation: ${message}`, 'error');
         } finally {
             isLoading.set(false);
         }
@@ -244,7 +246,8 @@
             await loadConversations();
             showToast('Conversation deleted', 'success');
         } catch (error) {
-            showToast(`Failed to delete: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to delete: ${message}`, 'error');
         }
         closeModal();
     }
@@ -267,7 +270,8 @@
             }
             showToast('Conversation renamed', 'success');
         } catch (error) {
-            showToast(`Failed to rename: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to rename: ${message}`, 'error');
         }
         closeModal();
     }
@@ -285,7 +289,8 @@
             await loadConversations();
             showToast('Multi-entity mode enabled', 'success');
         } catch (error) {
-            showToast(`Failed to create: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to create: ${message}`, 'error');
         }
         closeModal();
     }

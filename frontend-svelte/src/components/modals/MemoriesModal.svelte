@@ -33,14 +33,12 @@
 
         isSearching = true;
         try {
-            const response = await api.searchMemories({
-                query: searchQuery,
-                entity_id: $selectedEntityId,
-                top_k: 20
-            });
+            // searchMemories(query, topK, includeContent, entityId)
+            const response = await api.searchMemories(searchQuery, 20, true, $selectedEntityId);
             searchResults = response.results || [];
         } catch (error) {
-            showToast(`Search failed: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Search failed: ${message}`, 'error');
         } finally {
             isSearching = false;
         }
@@ -51,10 +49,13 @@
 
         isLoadingAll = true;
         try {
-            const response = await api.getMemories($selectedEntityId, 100);
-            allMemories = response.memories || [];
+            // listMemories(options) takes an options object
+            const response = await api.getMemories({ entityId: $selectedEntityId, limit: 100 });
+            // Backend returns array directly, not { memories: [...] }
+            allMemories = Array.isArray(response) ? response : [];
         } catch (error) {
-            showToast(`Failed to load memories: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to load memories: ${message}`, 'error');
         } finally {
             isLoadingAll = false;
         }
@@ -84,7 +85,8 @@
             showToast('Memory deleted', 'success');
             await loadStats();
         } catch (error) {
-            showToast(`Failed to delete: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to delete: ${message}`, 'error');
         }
     }
 

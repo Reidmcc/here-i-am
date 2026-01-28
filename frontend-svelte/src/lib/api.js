@@ -19,6 +19,42 @@ const API_BASE = 'http://localhost:8000/api';
 const DEFAULT_TIMEOUT_MS = 10000;
 
 /**
+ * Extract error message from backend response
+ * Handles both string errors and FastAPI validation error arrays
+ */
+function extractErrorMessage(error, fallback = 'Unknown error') {
+    if (!error) return fallback;
+
+    // Handle string detail
+    if (typeof error.detail === 'string') {
+        return error.detail;
+    }
+
+    // Handle FastAPI validation errors (array of objects)
+    if (Array.isArray(error.detail)) {
+        const messages = error.detail.map(e => {
+            if (typeof e === 'string') return e;
+            if (e.msg) return e.msg;
+            if (e.message) return e.message;
+            return JSON.stringify(e);
+        });
+        return messages.join('; ');
+    }
+
+    // Handle object with message property
+    if (error.message) {
+        return error.message;
+    }
+
+    // Handle detail as object
+    if (error.detail && typeof error.detail === 'object') {
+        return JSON.stringify(error.detail);
+    }
+
+    return fallback;
+}
+
+/**
  * Create a timeout promise that rejects after specified milliseconds
  */
 function createTimeout(ms, controller) {
@@ -72,8 +108,8 @@ async function request(endpoint, options = {}) {
         debug('Response received: ' + response.status + ' ' + response.statusText);
 
         if (!response.ok) {
-            const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(error.detail || `HTTP ${response.status}`);
+            const error = await response.json().catch(() => ({}));
+            throw new Error(extractErrorMessage(error, `HTTP ${response.status}`));
         }
 
         debug('Parsing response body...');
@@ -334,8 +370,8 @@ export async function importExternalConversationsStream(data, callbacks = {}, si
     });
 
     if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-        throw new Error(error.detail || `HTTP ${response.status}`);
+        const error = await response.json().catch(() => ({}));
+        throw new Error(extractErrorMessage(error, `HTTP ${response.status}`));
     }
 
     await processSSEStream(
@@ -378,8 +414,8 @@ export async function sendMessageStream(data, callbacks = {}, signal = null) {
     });
 
     if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-        throw new Error(error.detail || `HTTP ${response.status}`);
+        const error = await response.json().catch(() => ({}));
+        throw new Error(extractErrorMessage(error, `HTTP ${response.status}`));
     }
 
     await processSSEStream(
@@ -426,8 +462,8 @@ export async function regenerateStream(data, callbacks = {}) {
     });
 
     if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-        throw new Error(error.detail || `HTTP ${response.status}`);
+        const error = await response.json().catch(() => ({}));
+        throw new Error(extractErrorMessage(error, `HTTP ${response.status}`));
     }
 
     await processSSEStream(response, callbacks, handleStreamEvent);
@@ -550,8 +586,8 @@ export async function textToSpeech(text, voiceId = null, styletts2Params = null)
     });
 
     if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-        throw new Error(error.detail || `HTTP ${response.status}`);
+        const error = await response.json().catch(() => ({}));
+        throw new Error(extractErrorMessage(error, `HTTP ${response.status}`));
     }
 
     return response.blob();
@@ -580,8 +616,8 @@ export async function cloneVoice(audioFile, label, description = '', options = {
     });
 
     if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-        throw new Error(error.detail || `HTTP ${response.status}`);
+        const error = await response.json().catch(() => ({}));
+        throw new Error(extractErrorMessage(error, `HTTP ${response.status}`));
     }
 
     return response.json();
@@ -631,8 +667,8 @@ export async function transcribeAudio(audioBlob, language = null) {
     });
 
     if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-        throw new Error(error.detail || `HTTP ${response.status}`);
+        const error = await response.json().catch(() => ({}));
+        throw new Error(extractErrorMessage(error, `HTTP ${response.status}`));
     }
 
     return response.json();

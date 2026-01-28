@@ -68,7 +68,8 @@
                 dispatch('selectConversation', null);
             }
         } catch (error) {
-            showToast(`Failed to archive: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to archive: ${message}`, 'error');
         }
     }
 
