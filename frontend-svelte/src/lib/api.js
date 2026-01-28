@@ -1,9 +1,14 @@
 /**
  * API Client for Here I Am backend
  * Ported for Svelte frontend
+ *
+ * Uses direct CORS-based requests to the backend (no proxy).
+ * Configure VITE_API_BASE_URL in .env files for different environments.
  */
 
-const API_BASE = '/api';
+// In development: http://localhost:8000/api (direct to backend)
+// In production: /api (same-origin, served by FastAPI)
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
 
 /** Default timeout for API requests (10 seconds) */
 const DEFAULT_TIMEOUT_MS = 10000;

@@ -2,6 +2,18 @@ import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 
 // https://vite.dev/config/
+//
+// Architecture: Direct CORS-based requests (no proxy)
+// -------------------------------------------------
+// The Svelte frontend makes direct requests to the backend API.
+// This avoids Vite's http-proxy which has known issues with hanging requests.
+//
+// Development: VITE_API_BASE_URL=http://localhost:8000/api (in .env.development)
+// Production:  VITE_API_BASE_URL=/api (in .env.production, or omit for default)
+//
+// The backend has CORS configured to allow requests from any origin in development.
+// For production, update backend CORS to restrict to your domain.
+
 export default defineConfig({
   plugins: [svelte()],
   server: {
@@ -11,31 +23,7 @@ export default defineConfig({
     hmr: {
       port: 5173,
     },
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-        // Configure proxy with proper error handling
-        // The http-proxy library has known issues with hanging requests
-        configure: (proxy, options) => {
-          // Handle proxy errors - return 502 to browser instead of hanging
-          proxy.on('error', (err, req, res) => {
-            console.error('[vite-proxy] Proxy error:', err.message);
-            if (!res.headersSent) {
-              res.writeHead(502, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({
-                detail: `Backend unavailable: ${err.message}`
-              }));
-            }
-          });
-
-          // Log proxy requests for debugging
-          proxy.on('proxyReq', (proxyReq, req) => {
-            console.log('[vite-proxy] Proxying:', req.method, req.url);
-          });
-        },
-      },
-    },
+    // No proxy needed - using direct CORS-based requests to backend
   },
   build: {
     outDir: 'dist',
