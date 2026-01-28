@@ -12,9 +12,10 @@
     import ToastContainer from './components/common/Toast.svelte';
     import LoadingOverlay from './components/common/Loading.svelte';
 
-    // Test MessageList + InputArea together
+    // Test MessageList + InputArea + MemoriesPanel together
     import MessageList from './components/chat/MessageList.svelte';
     import InputArea from './components/chat/InputArea.svelte';
+    import MemoriesPanel from './components/chat/MemoriesPanel.svelte';
 
     // Debug helper
     function debug(msg) {
@@ -23,13 +24,14 @@
     }
 
     onMount(() => {
-        debug('onMount called - MessageList + InputArea test');
+        debug('onMount called - MessageList + InputArea + MemoriesPanel test');
     });
 </script>
 
 <div class="app-container">
     <main class="chat-area">
-        <h1>MessageList + InputArea Test</h1>
+        <h1>Three Components Test</h1>
+        <MemoriesPanel />
         <div class="messages-container">
             <MessageList />
         </div>
