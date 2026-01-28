@@ -11,16 +11,8 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 // The backend has CORS configured to allow requests from any origin in development.
 // For production, update backend CORS to restrict to your domain.
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig({
   plugins: [svelte()],
-  define: {
-    // API base URL - injected at build time
-    // Development: direct to backend on port 8000
-    // Production: same-origin (served by FastAPI)
-    '__API_BASE__': JSON.stringify(
-      mode === 'production' ? '/api' : 'http://localhost:8000/api'
-    ),
-  },
   server: {
     port: 5173,
     strictPort: true,
@@ -40,4 +32,4 @@ export default defineConfig(({ mode }) => ({
       '$components': '/src/components',
     },
   },
-}))
+})
