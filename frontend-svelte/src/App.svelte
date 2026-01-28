@@ -52,7 +52,9 @@
         try {
             // Load entities first
             debug('Loading entities...');
-            const entityList = await api.listEntities();
+            const entityResponse = await api.listEntities();
+            // API returns { entities: [...], default_entity: "..." }
+            const entityList = entityResponse.entities || [];
             entities.set(entityList);
             debug('Entities loaded: ' + entityList.length);
 
