@@ -3,7 +3,7 @@
 
     // Stores
     import { currentConversation, currentConversationId } from './lib/stores/conversations.js';
-    import { messages } from './lib/stores/messages.js';
+    import { messages, responderSelectorMode } from './lib/stores/messages.js';
     import { settings } from './lib/stores/settings.js';
     import { isLoading, showToast } from './lib/stores/app.js';
     import * as api from './lib/api.js';
@@ -12,8 +12,8 @@
     import ToastContainer from './components/common/Toast.svelte';
     import LoadingOverlay from './components/common/Loading.svelte';
 
-    // Test MemoriesPanel
-    import MemoriesPanel from './components/chat/MemoriesPanel.svelte';
+    // Test EntityResponderSelector
+    import EntityResponderSelector from './components/chat/EntityResponderSelector.svelte';
 
     // Debug helper
     function debug(msg) {
@@ -22,15 +22,19 @@
     }
 
     onMount(() => {
-        debug('onMount called - MemoriesPanel test');
+        debug('onMount called - EntityResponderSelector test');
+        // Set mode to make it visible
+        responderSelectorMode.set('send');
     });
 </script>
 
 <div class="app-container">
     <main class="chat-area">
-        <h1>MemoriesPanel Test</h1>
-        <MemoriesPanel />
+        <h1>EntityResponderSelector Test</h1>
         <div class="spacer"></div>
+        {#if $responderSelectorMode}
+            <EntityResponderSelector mode={$responderSelectorMode} />
+        {/if}
     </main>
 </div>
 
