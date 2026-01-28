@@ -67,6 +67,22 @@
         isLoading.set(true);
 
         try {
+            // Create conversation if one doesn't exist
+            let conversationId = $currentConversationId;
+            if (!conversationId) {
+                const createData = {
+                    entity_id: $isMultiEntityMode ? 'multi-entity' : respondingEntityId,
+                };
+                if ($isMultiEntityMode && $currentConversationEntities.length > 0) {
+                    createData.entity_ids = $currentConversationEntities;
+                    createData.conversation_type = 'multi_entity';
+                }
+                const newConv = await api.createConversation(createData);
+                conversationId = newConv.id;
+                currentConversationId.set(conversationId);
+                addConversationToList(newConv);
+            }
+
             // Get entity-specific system prompt
             const entityPrompts = entitySystemPrompts.getForEntity(respondingEntityId);
             const systemPrompt = entityPrompts || $settings.systemPrompt;
@@ -74,15 +90,13 @@
             // Prepare request data
             const requestData = {
                 message: content,
-                conversation_id: $currentConversationId,
-                entity_id: $isMultiEntityMode ? 'multi-entity' : respondingEntityId,
+                conversation_id: conversationId,
                 responding_entity_id: $isMultiEntityMode ? respondingEntityId : undefined,
                 model: $settings.model,
                 temperature: $settings.temperature,
                 max_tokens: $settings.maxTokens,
                 system_prompt: systemPrompt || undefined,
-                conversation_type: $settings.conversationType,
-                researcher_name: $researcherName || undefined,
+                user_display_name: $researcherName || undefined,
             };
 
             // Add attachments if present
