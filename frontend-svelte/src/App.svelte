@@ -61,13 +61,16 @@
             // Select first entity if none selected, preferring the default entity
             if (!$selectedEntityId && entitiesList.length > 0) {
                 const defaultEntityId = response.default_entity || entitiesList[0].index_name;
+                debug('Setting selectedEntityId to: ' + defaultEntityId);
                 selectedEntityId.set(defaultEntityId);
             }
 
             // Mark initialization complete - UI can now render
+            debug('Setting initializationComplete = true');
             initializationComplete = true;
 
             // Load remaining data in parallel (non-blocking)
+            debug('Starting background tasks...');
             const loadTasks = [];
 
             // Load conversations for selected entity
