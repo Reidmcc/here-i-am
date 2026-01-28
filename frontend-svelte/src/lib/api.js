@@ -5,6 +5,12 @@
  * Uses direct CORS-based requests to the backend (no proxy).
  */
 
+// Debug helper - writes to visible debug div
+function debug(msg) {
+    const el = document.getElementById('debug-log');
+    if (el) el.innerHTML += '[api] ' + msg + '<br>';
+}
+
 // Direct connection to backend API
 // For production builds served by FastAPI, change to '/api'
 const API_BASE = 'http://localhost:8000/api';
@@ -33,7 +39,7 @@ async function request(endpoint, options = {}) {
     const timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
     const controller = new AbortController();
 
-    console.log(`[api] Request starting: ${endpoint}`);
+    debug('Request: ' + endpoint + ' URL: ' + url);
 
     const defaultHeaders = {
         'Content-Type': 'application/json',
@@ -61,21 +67,21 @@ async function request(endpoint, options = {}) {
     }, timeout);
 
     try {
-        console.log(`[api] Fetching: ${url}`);
+        debug('Calling fetch()...');
         const response = await fetch(url, config);
-        console.log(`[api] Response received: ${response.status} ${response.statusText}`);
+        debug('Response received: ' + response.status + ' ' + response.statusText);
 
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
             throw new Error(error.detail || `HTTP ${response.status}`);
         }
 
-        console.log(`[api] Parsing response body...`);
+        debug('Parsing response body...');
         const data = await response.json();
-        console.log(`[api] Response parsed successfully`);
+        debug('Response parsed successfully');
         return data;
     } catch (error) {
-        console.error(`[api] Request failed:`, error.message);
+        debug('Request failed: ' + error.message);
         if (error.name === 'AbortError') {
             throw new Error(`Request timed out after ${timeout}ms`);
         }
