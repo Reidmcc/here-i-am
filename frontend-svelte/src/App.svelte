@@ -3,7 +3,7 @@
 
     // Stores
     import { currentConversation, currentConversationId } from './lib/stores/conversations.js';
-    import { messages } from './lib/stores/messages.js';
+    import { messages, responderSelectorMode } from './lib/stores/messages.js';
     import { settings } from './lib/stores/settings.js';
     import { isLoading, showToast } from './lib/stores/app.js';
     import * as api from './lib/api.js';
@@ -12,10 +12,11 @@
     import ToastContainer from './components/common/Toast.svelte';
     import LoadingOverlay from './components/common/Loading.svelte';
 
-    // Test MessageList + InputArea + MemoriesPanel together
+    // All four ChatArea child components
     import MessageList from './components/chat/MessageList.svelte';
     import InputArea from './components/chat/InputArea.svelte';
     import MemoriesPanel from './components/chat/MemoriesPanel.svelte';
+    import EntityResponderSelector from './components/chat/EntityResponderSelector.svelte';
 
     // Debug helper
     function debug(msg) {
@@ -24,18 +25,21 @@
     }
 
     onMount(() => {
-        debug('onMount called - MessageList + InputArea + MemoriesPanel test');
+        debug('onMount called - All four components test');
     });
 </script>
 
 <div class="app-container">
     <main class="chat-area">
-        <h1>Three Components Test</h1>
+        <h1>All Four Components Test</h1>
         <MemoriesPanel />
         <div class="messages-container">
             <MessageList />
         </div>
         <InputArea />
+        {#if $responderSelectorMode}
+            <EntityResponderSelector mode={$responderSelectorMode} />
+        {/if}
     </main>
 </div>
 
