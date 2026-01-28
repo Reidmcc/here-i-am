@@ -22,11 +22,14 @@ function createTimeout(ms, controller) {
 
 /**
  * Base request helper with timeout protection
+ * Timeout covers both the fetch AND the response body parsing
  */
 async function request(endpoint, options = {}) {
     const url = `${API_BASE}${endpoint}`;
     const timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
     const controller = new AbortController();
+
+    console.log(`[api] Request starting: ${endpoint}`);
 
     const defaultHeaders = {
         'Content-Type': 'application/json',
@@ -48,23 +51,33 @@ async function request(endpoint, options = {}) {
         config.body = JSON.stringify(config.body);
     }
 
+    // Set up timeout that aborts the request
+    const timeoutId = setTimeout(() => {
+        controller.abort();
+    }, timeout);
+
     try {
-        const response = await Promise.race([
-            fetch(url, config),
-            createTimeout(timeout, controller)
-        ]);
+        console.log(`[api] Fetching: ${url}`);
+        const response = await fetch(url, config);
+        console.log(`[api] Response received: ${response.status} ${response.statusText}`);
 
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
             throw new Error(error.detail || `HTTP ${response.status}`);
         }
 
-        return response.json();
+        console.log(`[api] Parsing response body...`);
+        const data = await response.json();
+        console.log(`[api] Response parsed successfully`);
+        return data;
     } catch (error) {
+        console.error(`[api] Request failed:`, error.message);
         if (error.name === 'AbortError') {
-            throw new Error(`Request to ${endpoint} was aborted`);
+            throw new Error(`Request timed out after ${timeout}ms`);
         }
         throw error;
+    } finally {
+        clearTimeout(timeoutId);
     }
 }
 
