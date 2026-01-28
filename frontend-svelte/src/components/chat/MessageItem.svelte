@@ -94,7 +94,8 @@
             isSpeaking = true;
             await playAudio(url);
         } catch (error) {
-            showToast(`TTS Error: ${error.message}`, 'error');
+            const errorMessage = error?.message || String(error);
+            showToast(`TTS Error: ${errorMessage}`, 'error');
         } finally {
             isLoadingAudio = false;
             isSpeaking = false;

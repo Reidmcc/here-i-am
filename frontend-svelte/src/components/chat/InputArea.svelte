@@ -79,7 +79,8 @@
                     pendingAttachments.addFile(result.file, result.content);
                 }
             } catch (error) {
-                showToast(error.message, 'error');
+                const message = error?.message || String(error);
+                showToast(message, 'error');
             }
         }
 
@@ -121,7 +122,8 @@
                     pendingAttachments.addFile(result.file, result.content);
                 }
             } catch (error) {
-                showToast(error.message, 'error');
+                const message = error?.message || String(error);
+                showToast(message, 'error');
             }
         }
     }
@@ -162,7 +164,8 @@
             }, 1000);
 
         } catch (error) {
-            showToast(`Could not start recording: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Could not start recording: ${message}`, 'error');
         }
     }
 
@@ -186,7 +189,8 @@
                 autoResize();
             }
         } catch (error) {
-            showToast(`Transcription failed: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Transcription failed: ${message}`, 'error');
         }
     }
 

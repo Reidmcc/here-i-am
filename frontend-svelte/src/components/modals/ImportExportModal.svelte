@@ -35,7 +35,8 @@
             const result = await api.previewExternalImport(file);
             importPreview = result;
         } catch (error) {
-            showToast(`Failed to preview: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to preview: ${message}`, 'error');
             importFile = null;
         } finally {
             isPreviewLoading = false;
@@ -66,14 +67,16 @@
                         close();
                     },
                     onError: (error) => {
-                        showToast(`Import failed: ${error.message}`, 'error');
+                        const message = error?.message || String(error);
+                        showToast(`Import failed: ${message}`, 'error');
                     }
                 },
                 controller.signal
             );
         } catch (error) {
             if (error.name !== 'AbortError') {
-                showToast(`Import failed: ${error.message}`, 'error');
+                const message = error?.message || String(error);
+                showToast(`Import failed: ${message}`, 'error');
             }
         } finally {
             isImporting = false;
@@ -87,8 +90,10 @@
         }
 
         try {
-            const response = await api.getConversations($selectedEntityId);
-            const conversations = response.conversations || [];
+            // listConversations(limit, offset, entityId) returns array directly
+            const response = await api.getConversations(50, 0, $selectedEntityId);
+            // Backend returns array directly, not { conversations: [...] }
+            const conversations = Array.isArray(response) ? response : [];
 
             if (conversations.length === 0) {
                 showToast('No conversations to export', 'info');
@@ -111,7 +116,8 @@
             downloadFile(JSON.stringify(exportData, null, 2), filename, 'application/json');
             showToast('Export completed', 'success');
         } catch (error) {
-            showToast(`Export failed: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Export failed: ${message}`, 'error');
         }
     }
 
