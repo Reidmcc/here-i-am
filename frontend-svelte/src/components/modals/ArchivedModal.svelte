@@ -18,10 +18,13 @@
     async function loadArchived() {
         isLoading = true;
         try {
-            const response = await api.getArchivedConversations($selectedEntityId);
-            archivedConversations = response.conversations || [];
+            // listArchivedConversations(limit, offset, entityId) returns array directly
+            const response = await api.getArchivedConversations(50, 0, $selectedEntityId);
+            // Backend returns array directly, not { conversations: [...] }
+            archivedConversations = Array.isArray(response) ? response : [];
         } catch (error) {
-            showToast(`Failed to load archived: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to load archived: ${message}`, 'error');
         } finally {
             isLoading = false;
         }
@@ -38,7 +41,8 @@
             showToast('Conversation restored', 'success');
             dispatch('unarchive', { conversationId });
         } catch (error) {
-            showToast(`Failed to restore: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to restore: ${message}`, 'error');
         }
     }
 
@@ -52,7 +56,8 @@
             archivedConversations = archivedConversations.filter(c => c.id !== conversationId);
             showToast('Conversation deleted', 'success');
         } catch (error) {
-            showToast(`Failed to delete: ${error.message}`, 'error');
+            const message = error?.message || String(error);
+            showToast(`Failed to delete: ${message}`, 'error');
         }
     }
 
