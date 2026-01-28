@@ -1,59 +1,49 @@
 <script>
     import { onMount } from 'svelte';
 
-    // Stores
-    import { theme } from './lib/stores/app.js';
-    import { entities, selectedEntityId } from './lib/stores/entities.js';
-    import { conversations } from './lib/stores/conversations.js';
-    import * as api from './lib/api.js';
-
-    // Common components
-    import ToastContainer from './components/common/Toast.svelte';
-    import LoadingOverlay from './components/common/Loading.svelte';
-
-    // Just Sidebar - no ChatArea
-    import Sidebar from './components/layout/Sidebar.svelte';
-
     // Debug helper
     function debug(msg) {
         const el = document.getElementById('debug-log');
         if (el) el.innerHTML += '[App] ' + msg + '<br>';
     }
 
+    let count = 0;
+
     onMount(() => {
-        debug('onMount called - Sidebar only test');
+        debug('onMount called - pure minimal test');
     });
 </script>
 
-<div class="app-container">
-    <Sidebar />
-    <main class="placeholder">
-        <h1>Sidebar Only Test</h1>
-        <p>If you see this, Sidebar rendered successfully.</p>
-    </main>
+<div class="container">
+    <h1>Pure Minimal Test</h1>
+    <p>No external components imported.</p>
+    <button on:click={() => count++}>
+        Clicked {count} times
+    </button>
 </div>
 
-<ToastContainer />
-<LoadingOverlay />
-
 <style>
-    .app-container {
-        display: flex;
-        height: 100vh;
-        overflow: hidden;
-    }
-
-    .placeholder {
-        flex: 1;
+    .container {
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        color: var(--text-primary, #e0e0e0);
-        background: var(--bg-primary, #1a1a1a);
+        height: 100vh;
+        background: #1a1a1a;
+        color: #e0e0e0;
     }
 
-    .placeholder h1 {
+    h1 {
         color: #4a9eff;
+    }
+
+    button {
+        margin-top: 20px;
+        padding: 10px 20px;
+        background: #4a9eff;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
     }
 </style>
