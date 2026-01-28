@@ -9,7 +9,7 @@
     import ToastContainer from './components/common/Toast.svelte';
     import LoadingOverlay from './components/common/Loading.svelte';
 
-    // Import ChatArea but DON'T render it
+    // Test ChatArea with reactive block disabled
     import ChatArea from './components/layout/ChatArea.svelte';
 
     // Debug helper
@@ -19,16 +19,16 @@
     }
 
     onMount(() => {
-        debug('onMount called - ChatArea imported but not rendered');
+        debug('onMount called - ChatArea with disabled reactive block');
     });
 </script>
 
 <div class="app-container">
-    <main class="chat-area">
-        <h1>ChatArea Import Test</h1>
-        <p>ChatArea is imported but NOT rendered.</p>
-        <p>If you see this, the import itself works.</p>
-    </main>
+    <aside class="placeholder-sidebar">
+        <h2>ChatArea Test</h2>
+        <p>Reactive block disabled</p>
+    </aside>
+    <ChatArea />
 </div>
 
 <ToastContainer />
@@ -41,17 +41,15 @@
         overflow: hidden;
     }
 
-    .chat-area {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        background: #1a1a1a;
+    .placeholder-sidebar {
+        width: 280px;
+        background: #2d2d2d;
+        padding: 20px;
         color: #e0e0e0;
+        border-right: 1px solid #3d3d3d;
     }
 
-    h1 {
+    .placeholder-sidebar h2 {
         color: #4a9eff;
     }
 </style>

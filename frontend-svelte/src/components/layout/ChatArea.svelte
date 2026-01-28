@@ -19,13 +19,14 @@
     let messagesContainer;
 
     // Auto-scroll to bottom when messages change
-    $: if ($messages || $streamingContent) {
-        tick().then(() => {
-            if (messagesContainer) {
-                messagesContainer.scrollTop = messagesContainer.scrollHeight;
-            }
-        });
-    }
+    // DISABLED FOR DEBUGGING - this reactive block may cause hang
+    // $: if ($messages || $streamingContent) {
+    //     tick().then(() => {
+    //         if (messagesContainer) {
+    //             messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    //         }
+    //     });
+    // }
 
     async function handleSendMessage(event) {
         const { content, attachments } = event.detail;
