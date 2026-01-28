@@ -10,9 +10,13 @@
     import { ttsEnabled } from './lib/stores/voice.js';
     import * as api from './lib/api.js';
 
-    // Test importing common components
+    // Common components (confirmed working)
     import ToastContainer from './components/common/Toast.svelte';
     import LoadingOverlay from './components/common/Loading.svelte';
+
+    // Test importing layout components
+    import Sidebar from './components/layout/Sidebar.svelte';
+    import ChatArea from './components/layout/ChatArea.svelte';
 
     let message = 'Loading...';
 
@@ -22,13 +26,13 @@
     }
 
     onMount(() => {
-        debug('onMount called - common components imported successfully!');
-        message = 'Common components imported successfully!';
+        debug('onMount called - layout components imported successfully!');
+        message = 'Layout components imported successfully!';
     });
 </script>
 
 <h1>{message}</h1>
-<p>Common components: Toast ✓, Loading ✓</p>
+<p>Layout components: Sidebar ✓, ChatArea ✓</p>
 
 <ToastContainer />
 <LoadingOverlay />
