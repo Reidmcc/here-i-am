@@ -1,7 +1,7 @@
 <script>
     import { createEventDispatcher } from 'svelte';
     import Modal from '../common/Modal.svelte';
-    import { selectedEntityId, entities } from '../../lib/stores/entities.js';
+    import { selectedEntityId, selectedEntity } from '../../lib/stores/entities.js';
     import { showToast, createAbortController, abortStream } from '../../lib/stores/app.js';
     import { downloadFile } from '../../lib/utils.js';
     import * as api from '../../lib/api.js';
@@ -121,7 +121,7 @@
         if (fileInputEl) fileInputEl.value = '';
     }
 
-    $: currentEntity = $entities.find(e => e.index_name === $selectedEntityId);
+    $: currentEntity = $selectedEntity;
 </script>
 
 <Modal title="Import / Export" size="large" on:close={close}>

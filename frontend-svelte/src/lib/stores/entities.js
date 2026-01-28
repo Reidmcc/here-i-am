@@ -82,7 +82,7 @@ export const entitySystemPrompts = createEntitySystemPromptsStore();
 export const selectedEntity = derived(
     [entities, selectedEntityId],
     ([$entities, $selectedEntityId]) => {
-        if (!$selectedEntityId) return null;
+        if (!$selectedEntityId || !Array.isArray($entities)) return null;
         return $entities.find(e => e.index_name === $selectedEntityId) || null;
     }
 );
@@ -90,8 +90,10 @@ export const selectedEntity = derived(
 // Derived store: entities map for quick lookup
 export const entitiesMap = derived(entities, ($entities) => {
     const map = new Map();
-    for (const entity of $entities) {
-        map.set(entity.index_name, entity);
+    if (Array.isArray($entities)) {
+        for (const entity of $entities) {
+            map.set(entity.index_name, entity);
+        }
     }
     return map;
 });

@@ -4,7 +4,7 @@
     import { settings, presets, loadPresets, applyPreset, updateSettings } from '../../lib/stores/settings.js';
     import { theme } from '../../lib/stores/app.js';
     import { availableModels } from '../../lib/stores/app.js';
-    import { selectedEntityId, entities, entitySystemPrompts } from '../../lib/stores/entities.js';
+    import { selectedEntityId, entities, selectedEntity, entitySystemPrompts } from '../../lib/stores/entities.js';
     import { ttsEnabled, sttEnabled, voices, selectedVoiceId, loadVoices, ttsProvider, styletts2Params, updateStyleTTS2Params } from '../../lib/stores/voice.js';
     import { githubRepos, githubRateLimits } from '../../lib/stores/app.js';
     import * as api from '../../lib/api.js';
@@ -17,7 +17,7 @@
     let entityPrompt = '';
     let loadingRateLimits = false;
 
-    $: currentEntity = $entities.find(e => e.index_name === $selectedEntityId);
+    $: currentEntity = $selectedEntity;
 
     $: {
         // Load entity-specific system prompt when entity changes
