@@ -1,18 +1,16 @@
 <script>
     import { onMount } from 'svelte';
 
-    // Stores
-    import { theme } from './lib/stores/app.js';
-    import { entities, selectedEntityId } from './lib/stores/entities.js';
-    import { conversations } from './lib/stores/conversations.js';
+    // Stores that ChatArea uses
+    import { currentConversation, currentConversationId } from './lib/stores/conversations.js';
+    import { messages } from './lib/stores/messages.js';
+    import { settings } from './lib/stores/settings.js';
+    import { isLoading, showToast } from './lib/stores/app.js';
     import * as api from './lib/api.js';
 
     // Common components
     import ToastContainer from './components/common/Toast.svelte';
     import LoadingOverlay from './components/common/Loading.svelte';
-
-    // Just ChatArea - no Sidebar
-    import ChatArea from './components/layout/ChatArea.svelte';
 
     // Debug helper
     function debug(msg) {
@@ -21,16 +19,17 @@
     }
 
     onMount(() => {
-        debug('onMount called - ChatArea only test');
+        debug('onMount called - ChatArea stores test');
     });
 </script>
 
 <div class="app-container">
-    <aside class="placeholder-sidebar">
-        <h2>ChatArea Test</h2>
-        <p>Testing ChatArea alone</p>
-    </aside>
-    <ChatArea />
+    <main class="chat-area">
+        <h1>ChatArea Stores Test</h1>
+        <p>Testing ChatArea's store imports without child components.</p>
+        <p>Current conversation: {$currentConversationId || 'none'}</p>
+        <p>Messages count: {$messages.length}</p>
+    </main>
 </div>
 
 <ToastContainer />
@@ -43,15 +42,17 @@
         overflow: hidden;
     }
 
-    .placeholder-sidebar {
-        width: 280px;
-        background: #2d2d2d;
-        padding: 20px;
+    .chat-area {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #1a1a1a;
         color: #e0e0e0;
-        border-right: 1px solid #3d3d3d;
     }
 
-    .placeholder-sidebar h2 {
+    h1 {
         color: #4a9eff;
     }
 </style>
