@@ -11,31 +11,7 @@ export default defineConfig({
     hmr: {
       port: 5173,
     },
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-        // Configure proxy with proper error handling
-        // The http-proxy library has known issues with hanging requests
-        configure: (proxy, options) => {
-          // Handle proxy errors - return 502 to browser instead of hanging
-          proxy.on('error', (err, req, res) => {
-            console.error('[vite-proxy] Proxy error:', err.message);
-            if (!res.headersSent) {
-              res.writeHead(502, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({
-                detail: `Backend unavailable: ${err.message}`
-              }));
-            }
-          });
-
-          // Log proxy requests for debugging
-          proxy.on('proxyReq', (proxyReq, req) => {
-            console.log('[vite-proxy] Proxying:', req.method, req.url);
-          });
-        },
-      },
-    },
+    // No proxy needed - API client makes direct calls to backend with CORS
   },
   build: {
     outDir: 'dist',
