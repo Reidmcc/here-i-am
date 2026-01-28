@@ -1,3 +1,4 @@
+alert('main.js is running!');
 console.log('[main.js] Script starting...');
 
 let app;
