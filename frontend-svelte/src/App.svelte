@@ -70,14 +70,15 @@
 
             // Load config and other data in parallel
             debug('Loading config...');
-            const [configData] = await Promise.all([
-                api.getConfig(),
+            const [configData, presetsData] = await Promise.all([
+                api.getChatConfig(),
+                api.getPresets(),
                 loadTTSStatus(),
                 loadSTTStatus()
             ]);
 
-            if (configData.presets) {
-                presets.set(configData.presets);
+            if (presetsData) {
+                presets.set(presetsData);
             }
             if (configData.available_models) {
                 availableModels.set(configData.available_models);
