@@ -1,14 +1,7 @@
-// Debug helper - writes to a visible div since console isn't working
+// Debug helper - logs to browser console
 function debug(msg) {
-  const el = document.getElementById('debug-log');
-  if (el) el.innerHTML += msg + '<br>';
+  console.log('[main.js]', msg);
 }
-
-// Create debug div
-const debugDiv = document.createElement('div');
-debugDiv.id = 'debug-log';
-debugDiv.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#000;color:#0f0;padding:10px;font-family:monospace;font-size:12px;z-index:99999;max-height:200px;overflow:auto;';
-document.body.appendChild(debugDiv);
 
 debug('main.js starting...');
 

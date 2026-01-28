@@ -21,10 +21,9 @@
     import { ttsEnabled, ttsProvider, voices, sttEnabled, sttProvider, dictationMode } from './lib/stores/voice.js';
     import * as api from './lib/api.js';
 
-    // Debug helper - writes to visible debug div
+    // Debug helper - logs to browser console
     function debug(msg) {
-        const el = document.getElementById('debug-log');
-        if (el) el.innerHTML += '[App] ' + msg + '<br>';
+        console.log('[App]', msg);
     }
 
     // Modal context for delete/rename (using $state for Svelte 5 reactivity)
