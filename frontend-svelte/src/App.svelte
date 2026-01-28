@@ -25,6 +25,10 @@
     let deleteContext = { title: '', id: null, type: 'conversation' };
     let renameContext = { title: '', id: null, type: 'conversation' };
 
+    // Initialization state
+    let initializationComplete = false;
+    let initializationError = null;
+
     // Initialize theme on mount
     onMount(async () => {
         // Apply saved theme
@@ -39,7 +43,7 @@
 
     async function loadInitialData() {
         try {
-            // Load entities
+            // Load entities first (required for app to function)
             const entitiesData = await api.listEntities();
             entities.set(entitiesData);
 
@@ -48,35 +52,51 @@
                 selectedEntityId.set(entitiesData[0].index_name);
             }
 
+            // Mark initialization complete - UI can now render
+            initializationComplete = true;
+
+            // Load remaining data in parallel (non-blocking)
+            const loadTasks = [];
+
             // Load conversations for selected entity
             if ($selectedEntityId) {
-                await loadConversations();
+                loadTasks.push(loadConversations().catch(e => console.warn('Failed to load conversations:', e)));
             }
 
             // Load presets
-            const presetsData = await api.getPresets();
-            presets.set(presetsData);
+            loadTasks.push(
+                api.getPresets()
+                    .then(presetsData => presets.set(presetsData))
+                    .catch(e => console.warn('Failed to load presets:', e))
+            );
 
             // Load chat config (available models)
-            const config = await api.getChatConfig();
-            if (config?.available_models) {
-                availableModels.set(config.available_models);
-            }
+            loadTasks.push(
+                api.getChatConfig()
+                    .then(config => {
+                        if (config?.available_models) {
+                            availableModels.set(config.available_models);
+                        }
+                    })
+                    .catch(e => console.warn('Failed to load chat config:', e))
+            );
 
-            // Load TTS status
-            await loadTTSStatus();
-
-            // Load STT status
-            await loadSTTStatus();
+            // Load TTS/STT status
+            loadTasks.push(loadTTSStatus().catch(e => console.warn('Failed to load TTS status:', e)));
+            loadTasks.push(loadSTTStatus().catch(e => console.warn('Failed to load STT status:', e)));
 
             // Load GitHub repos if available
-            try {
-                const repos = await api.listGitHubRepos();
-                githubRepos.set(repos);
-            } catch (e) {
-                // GitHub not configured, ignore
-            }
+            loadTasks.push(
+                api.listGitHubRepos()
+                    .then(repos => githubRepos.set(repos))
+                    .catch(() => { /* GitHub not configured, ignore */ })
+            );
+
+            // Wait for all background tasks
+            await Promise.all(loadTasks);
         } catch (error) {
+            initializationError = error.message;
+            initializationComplete = true; // Allow UI to render error state
             showToast(`Failed to load initial data: ${error.message}`, 'error');
         }
     }
@@ -280,24 +300,38 @@
     }
 </script>
 
-<div class="app-container">
-    <Sidebar
-        on:entityChange={handleEntityChange}
-        on:selectConversation={handleSelectConversation}
-        on:newConversation={handleNewConversation}
-        on:conversationsUpdated={handleConversationsUpdated}
-        on:openSettings={openSettings}
-        on:openMemories={openMemories}
-        on:openArchived={openArchived}
-        on:openImportExport={openImportExport}
-        on:deleteConversation={handleDeleteRequest}
-        on:renameConversation={handleRenameRequest}
-    />
-    <ChatArea
-        on:conversationCreated={handleConversationsUpdated}
-        on:loadConversation={(e) => loadConversation(e.detail)}
-    />
-</div>
+{#if !initializationComplete}
+    <div class="init-loading">
+        <div class="init-spinner"></div>
+        <p>Connecting to backend...</p>
+    </div>
+{:else if initializationError}
+    <div class="init-error">
+        <h2>Failed to Connect</h2>
+        <p>{initializationError}</p>
+        <p class="hint">Make sure the backend server is running on port 8000.</p>
+        <button onclick={() => location.reload()}>Retry</button>
+    </div>
+{:else}
+    <div class="app-container">
+        <Sidebar
+            on:entityChange={handleEntityChange}
+            on:selectConversation={handleSelectConversation}
+            on:newConversation={handleNewConversation}
+            on:conversationsUpdated={handleConversationsUpdated}
+            on:openSettings={openSettings}
+            on:openMemories={openMemories}
+            on:openArchived={openArchived}
+            on:openImportExport={openImportExport}
+            on:deleteConversation={handleDeleteRequest}
+            on:renameConversation={handleRenameRequest}
+        />
+        <ChatArea
+            on:conversationCreated={handleConversationsUpdated}
+            on:loadConversation={(e) => loadConversation(e.detail)}
+        />
+    </div>
+{/if}
 
 <ToastContainer />
 <LoadingOverlay />
@@ -355,5 +389,60 @@
         display: flex;
         height: 100vh;
         overflow: hidden;
+    }
+
+    .init-loading,
+    .init-error {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        color: var(--text-primary, #e0e0e0);
+        background: var(--bg-primary, #1a1a1a);
+    }
+
+    .init-loading p,
+    .init-error p {
+        margin: 1rem 0 0.5rem;
+        font-size: 1rem;
+    }
+
+    .init-spinner {
+        width: 40px;
+        height: 40px;
+        border: 3px solid var(--bg-tertiary, #3d3d3d);
+        border-top-color: var(--accent, #4a9eff);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+
+    .init-error h2 {
+        margin: 0;
+        color: var(--error, #ff6b6b);
+    }
+
+    .init-error .hint {
+        color: var(--text-secondary, #888);
+        font-size: 0.875rem;
+    }
+
+    .init-error button {
+        margin-top: 1rem;
+        padding: 0.5rem 1.5rem;
+        background: var(--accent, #4a9eff);
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 1rem;
+    }
+
+    .init-error button:hover {
+        opacity: 0.9;
     }
 </style>
