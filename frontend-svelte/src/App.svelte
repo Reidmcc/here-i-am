@@ -11,9 +11,8 @@
     import ToastContainer from './components/common/Toast.svelte';
     import LoadingOverlay from './components/common/Loading.svelte';
 
-    // Layout components
+    // Just Sidebar - no ChatArea
     import Sidebar from './components/layout/Sidebar.svelte';
-    import ChatArea from './components/layout/ChatArea.svelte';
 
     // Debug helper
     function debug(msg) {
@@ -21,25 +20,18 @@
         if (el) el.innerHTML += '[App] ' + msg + '<br>';
     }
 
-    let initComplete = false;
-
     onMount(() => {
-        debug('onMount called');
-        initComplete = true;
-        debug('initComplete set to true');
+        debug('onMount called - Sidebar only test');
     });
 </script>
 
-{#if initComplete}
-    <div class="app-container">
-        <Sidebar />
-        <ChatArea />
-    </div>
-{:else}
-    <div class="loading">
-        <p>Loading...</p>
-    </div>
-{/if}
+<div class="app-container">
+    <Sidebar />
+    <main class="placeholder">
+        <h1>Sidebar Only Test</h1>
+        <p>If you see this, Sidebar rendered successfully.</p>
+    </main>
+</div>
 
 <ToastContainer />
 <LoadingOverlay />
@@ -51,12 +43,17 @@
         overflow: hidden;
     }
 
-    .loading {
+    .placeholder {
+        flex: 1;
         display: flex;
+        flex-direction: column;
         align-items: center;
         justify-content: center;
-        height: 100vh;
         color: var(--text-primary, #e0e0e0);
         background: var(--bg-primary, #1a1a1a);
+    }
+
+    .placeholder h1 {
+        color: #4a9eff;
     }
 </style>
