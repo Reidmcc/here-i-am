@@ -1,5 +1,5 @@
 <script>
-    import { createEventDispatcher, onMount } from 'svelte';
+    import { createEventDispatcher, onMount, tick } from 'svelte';
     import AttachmentPreview from './AttachmentPreview.svelte';
 
     import { isLoading } from '../../lib/stores/app.js';
@@ -186,6 +186,8 @@
             const result = await api.transcribeAudio(audioBlob);
             if (result.text) {
                 messageInput = (messageInput + ' ' + result.text).trim();
+                // Wait for Svelte to update the DOM before measuring scrollHeight
+                await tick();
                 autoResize();
             }
         } catch (error) {
