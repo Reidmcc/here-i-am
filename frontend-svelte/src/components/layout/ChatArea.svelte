@@ -1,5 +1,6 @@
 <script>
     import { createEventDispatcher, onMount, afterUpdate } from 'svelte';
+    import { get } from 'svelte/store';
     import MessageList from '../chat/MessageList.svelte';
     import InputArea from '../chat/InputArea.svelte';
     import MemoriesPanel from '../chat/MemoriesPanel.svelte';
@@ -177,20 +178,37 @@
                     // Streaming complete
                 },
                 onStored: (data) => {
-                    // Replace temp messages with stored ones
-                    if (data.human_message) {
+                    // Get the accumulated streaming content before clearing
+                    const currentContent = get(streamingContent);
+                    const currentTools = get(streamingTools);
+
+                    // Replace temp human message with stored one (using the ID from server)
+                    if (data.human_message_id) {
                         messages.update(msgs => {
+                            // Find the temp message to preserve its content
+                            const tempMsg = msgs.find(m => m.id.startsWith('temp-'));
                             // Remove temp human message
                             const filtered = msgs.filter(m => !m.id.startsWith('temp-'));
-                            return [...filtered, data.human_message];
+                            // Add message with real ID from server
+                            return [...filtered, {
+                                id: data.human_message_id,
+                                role: 'human',
+                                content: tempMsg?.content || content,
+                                created_at: tempMsg?.created_at || new Date().toISOString(),
+                                attachments: tempMsg?.attachments
+                            }];
                         });
                     }
 
-                    if (data.assistant_message) {
-                        // Add the stored assistant message
+                    // Create assistant message from the accumulated streaming content
+                    if (data.assistant_message_id && currentContent) {
                         const assistantMsg = {
-                            ...data.assistant_message,
-                            speakerLabel: $isMultiEntityMode ? getEntityLabel(respondingEntityId) : null
+                            id: data.assistant_message_id,
+                            role: 'assistant',
+                            content: currentContent,
+                            created_at: new Date().toISOString(),
+                            speakerLabel: $isMultiEntityMode ? getEntityLabel(respondingEntityId) : null,
+                            tool_use: currentTools.length > 0 ? currentTools : undefined
                         };
                         addMessage(assistantMsg);
                     }
