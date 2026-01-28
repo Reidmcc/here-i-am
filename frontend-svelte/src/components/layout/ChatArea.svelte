@@ -136,6 +136,9 @@
                 speakerLabel: $isMultiEntityMode ? getEntityLabel(respondingEntityId) : null
             });
 
+            // Turn off loading overlay once streaming starts - user can interact during streaming
+            isLoading.set(false);
+
             let conversationCreated = false;
 
             await api.sendMessageStream(requestData, {
@@ -234,6 +237,9 @@
 
         try {
             startStreaming();
+
+            // Turn off loading overlay once streaming starts - user can interact during streaming
+            isLoading.set(false);
 
             await api.regenerateStream({
                 message_id: messageId,
