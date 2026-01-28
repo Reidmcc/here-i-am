@@ -15,9 +15,25 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
-        // Timeout settings to prevent hangs when backend is unavailable
-        timeout: 15000,       // 15 second timeout for incoming request
-        proxyTimeout: 15000,  // 15 second timeout for proxy connection
+        // Configure proxy with proper error handling
+        // The http-proxy library has known issues with hanging requests
+        configure: (proxy, options) => {
+          // Handle proxy errors - return 502 to browser instead of hanging
+          proxy.on('error', (err, req, res) => {
+            console.error('[vite-proxy] Proxy error:', err.message);
+            if (!res.headersSent) {
+              res.writeHead(502, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                detail: `Backend unavailable: ${err.message}`
+              }));
+            }
+          });
+
+          // Log proxy requests for debugging
+          proxy.on('proxyReq', (proxyReq, req) => {
+            console.log('[vite-proxy] Proxying:', req.method, req.url);
+          });
+        },
       },
     },
   },

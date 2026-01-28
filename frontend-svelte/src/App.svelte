@@ -42,14 +42,20 @@
     });
 
     async function loadInitialData() {
+        console.log('[App] loadInitialData starting...');
         try {
             // Load entities first (required for app to function)
-            const entitiesData = await api.listEntities();
-            entities.set(entitiesData);
+            console.log('[App] Calling api.listEntities()...');
+            const response = await api.listEntities();
+            // API returns { entities: [...], default_entity: "..." }
+            const entitiesList = response.entities || [];
+            console.log('[App] Entities loaded:', entitiesList.length, 'entities');
+            entities.set(entitiesList);
 
-            // Select first entity if none selected
-            if (!$selectedEntityId && entitiesData.length > 0) {
-                selectedEntityId.set(entitiesData[0].index_name);
+            // Select first entity if none selected, preferring the default entity
+            if (!$selectedEntityId && entitiesList.length > 0) {
+                const defaultEntityId = response.default_entity || entitiesList[0].index_name;
+                selectedEntityId.set(defaultEntityId);
             }
 
             // Mark initialization complete - UI can now render
@@ -95,6 +101,7 @@
             // Wait for all background tasks
             await Promise.all(loadTasks);
         } catch (error) {
+            console.error('[App] loadInitialData error:', error);
             initializationError = error.message;
             initializationComplete = true; // Allow UI to render error state
             showToast(`Failed to load initial data: ${error.message}`, 'error');
