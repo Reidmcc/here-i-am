@@ -1,11 +1,14 @@
 <script>
-    import { onMount } from 'svelte';
+    import { onMount, tick } from 'svelte';
 
-    // Stores
-    import { currentConversation, currentConversationId } from './lib/stores/conversations.js';
-    import { messages, responderSelectorMode } from './lib/stores/messages.js';
-    import { settings } from './lib/stores/settings.js';
-    import { isLoading, showToast } from './lib/stores/app.js';
+    // All stores that ChatArea imports
+    import { currentConversation, currentConversationId, addConversationToList, updateConversationInList } from './lib/stores/conversations.js';
+    import { messages, streamingContent, streamingMessage, streamingTools, startStreaming, stopStreaming, addMessage, appendStreamingContent, addStreamingTool, updateStreamingToolResult, resetPendingMessage, pendingMessageContent, pendingMessageAttachments, responderSelectorMode } from './lib/stores/messages.js';
+    import { retrievedMemories, addMemories, resetMemoriesState } from './lib/stores/memories.js';
+    import { selectedEntityId, isMultiEntityMode, currentConversationEntities, pendingResponderId, getEntityLabel, entitySystemPrompts } from './lib/stores/entities.js';
+    import { settings, researcherName } from './lib/stores/settings.js';
+    import { isLoading, showToast, createAbortController, abortStream, streamAbortController } from './lib/stores/app.js';
+    import { pendingAttachments } from './lib/stores/attachments.js';
     import * as api from './lib/api.js';
 
     // Common components
@@ -25,13 +28,13 @@
     }
 
     onMount(() => {
-        debug('onMount called - All four components test');
+        debug('onMount called - Full ChatArea stores test');
     });
 </script>
 
 <div class="app-container">
     <main class="chat-area">
-        <h1>All Four Components Test</h1>
+        <h1>Full ChatArea Stores Test</h1>
         <MemoriesPanel />
         <div class="messages-container">
             <MessageList />
