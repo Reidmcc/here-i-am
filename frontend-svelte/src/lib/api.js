@@ -5,11 +5,29 @@
 
 const API_BASE = '/api';
 
+/** Default timeout for API requests (10 seconds) */
+const DEFAULT_TIMEOUT_MS = 10000;
+
 /**
- * Base request helper
+ * Create a timeout promise that rejects after specified milliseconds
+ */
+function createTimeout(ms, controller) {
+    return new Promise((_, reject) => {
+        setTimeout(() => {
+            controller.abort();
+            reject(new Error(`Request timed out after ${ms}ms`));
+        }, ms);
+    });
+}
+
+/**
+ * Base request helper with timeout protection
  */
 async function request(endpoint, options = {}) {
     const url = `${API_BASE}${endpoint}`;
+    const timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
+    const controller = new AbortController();
+
     const defaultHeaders = {
         'Content-Type': 'application/json',
     };
@@ -20,20 +38,34 @@ async function request(endpoint, options = {}) {
             ...defaultHeaders,
             ...options.headers,
         },
+        signal: controller.signal,
     };
+
+    // Remove custom timeout option before passing to fetch
+    delete config.timeout;
 
     if (config.body && typeof config.body === 'object' && !(config.body instanceof FormData)) {
         config.body = JSON.stringify(config.body);
     }
 
-    const response = await fetch(url, config);
+    try {
+        const response = await Promise.race([
+            fetch(url, config),
+            createTimeout(timeout, controller)
+        ]);
 
-    if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-        throw new Error(error.detail || `HTTP ${response.status}`);
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+            throw new Error(error.detail || `HTTP ${response.status}`);
+        }
+
+        return response.json();
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            throw new Error(`Request to ${endpoint} was aborted`);
+        }
+        throw error;
     }
-
-    return response.json();
 }
 
 /**
