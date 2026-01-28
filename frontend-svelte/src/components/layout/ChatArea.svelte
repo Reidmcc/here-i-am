@@ -1,5 +1,5 @@
 <script>
-    import { createEventDispatcher, onMount, tick } from 'svelte';
+    import { createEventDispatcher, onMount, afterUpdate } from 'svelte';
     import MessageList from '../chat/MessageList.svelte';
     import InputArea from '../chat/InputArea.svelte';
     import MemoriesPanel from '../chat/MemoriesPanel.svelte';
@@ -19,14 +19,12 @@
     let messagesContainer;
 
     // Auto-scroll to bottom when messages change
-    // DISABLED FOR DEBUGGING - this reactive block may cause hang
-    // $: if ($messages || $streamingContent) {
-    //     tick().then(() => {
-    //         if (messagesContainer) {
-    //             messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    //         }
-    //     });
-    // }
+    // Using afterUpdate instead of reactive $: with tick() to avoid hang
+    afterUpdate(() => {
+        if (messagesContainer) {
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+    });
 
     async function handleSendMessage(event) {
         const { content, attachments } = event.detail;
