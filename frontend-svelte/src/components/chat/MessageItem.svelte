@@ -14,9 +14,23 @@
 
     let isEditing = false;
     let editContent = '';
+    let editTextarea = null;
     let isCopied = false;
     let isSpeaking = false;
     let isLoadingAudio = false;
+
+    // Auto-resize textarea to fit content
+    function autoResize(textarea) {
+        if (!textarea) return;
+        textarea.style.height = 'auto';
+        textarea.style.height = textarea.scrollHeight + 'px';
+    }
+
+    // Auto-resize textarea when editing starts or content changes (e.g., from transcription)
+    $: if (isEditing && editTextarea && editContent !== undefined) {
+        // Use tick to ensure DOM is updated
+        setTimeout(() => autoResize(editTextarea), 0);
+    }
 
     // Get speaker label for multi-entity messages
     $: speakerLabel = isMultiEntity && message.speaker_entity_id
@@ -147,7 +161,9 @@
                 <div class="message-edit-form">
                     <textarea
                         class="message-edit-textarea"
+                        bind:this={editTextarea}
                         bind:value={editContent}
+                        on:input={(e) => autoResize(e.target)}
                         on:keydown={(e) => {
                             if (e.key === 'Escape') handleCancelEdit();
                             if (e.key === 'Enter' && e.ctrlKey) handleSaveEdit();
@@ -408,7 +424,8 @@
 
     .message-edit-textarea {
         width: 100%;
-        min-height: 80px;
+        min-height: 120px;
+        max-height: 400px;
         padding: 10px 12px;
         background-color: var(--bg-tertiary);
         border: 1px solid var(--accent);
@@ -416,8 +433,9 @@
         color: var(--text-primary);
         font-family: var(--font-sans);
         font-size: 0.95rem;
-        resize: vertical;
+        resize: none;
         line-height: 1.5;
+        overflow-y: auto;
     }
 
     .message-edit-textarea:focus {
