@@ -31,9 +31,9 @@
     let deleteContext = { title: '', id: null, type: 'conversation' };
     let renameContext = { title: '', id: null, type: 'conversation' };
 
-    // Initialization state
-    let initializationComplete = false;
-    let initializationError = null;
+    // Initialization state (using $state for Svelte 5 reactivity)
+    let initializationComplete = $state(false);
+    let initializationError = $state(null);
 
     // Initialize theme on mount
     onMount(async () => {
