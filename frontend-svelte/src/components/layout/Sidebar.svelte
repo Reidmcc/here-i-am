@@ -8,6 +8,9 @@
 
     const dispatch = createEventDispatcher();
 
+    // Mobile sidebar open state (controlled by parent)
+    export let isOpen = false;
+
     let openDropdownId = null;
 
     function handleEntityChange(event) {
@@ -83,7 +86,7 @@
 
 <svelte:window on:click={handleWindowClick} />
 
-<aside class="sidebar">
+<aside class="sidebar" class:open={isOpen}>
     <div class="sidebar-header">
         <h1 class="app-title">Here I Am</h1>
         <p class="app-subtitle">Experiential Research Interface</p>
