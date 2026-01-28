@@ -68,14 +68,13 @@
                 await loadConversations();
             }
 
-            // Load config and other data in parallel
+            // Load config and presets (critical for UI)
             debug('Loading config...');
             const [configData, presetsData] = await Promise.all([
                 api.getChatConfig(),
-                api.getPresets(),
-                loadTTSStatus(),
-                loadSTTStatus()
+                api.getPresets()
             ]);
+            debug('Config loaded');
 
             if (presetsData) {
                 presets.set(presetsData);
@@ -86,6 +85,11 @@
 
             debug('Initialization complete');
             initializationComplete = true;
+
+            // Load TTS/STT status in background (non-blocking)
+            // These are optional features and shouldn't delay the main UI
+            loadTTSStatus().catch(() => {});
+            loadSTTStatus().catch(() => {});
         } catch (error) {
             debug('Initialization error: ' + error.message);
             initializationError = error.message;
