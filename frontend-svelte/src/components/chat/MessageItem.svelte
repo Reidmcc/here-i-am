@@ -26,8 +26,8 @@
         textarea.style.height = textarea.scrollHeight + 'px';
     }
 
-    // Initialize textarea height when editing starts
-    $: if (isEditing && editTextarea) {
+    // Auto-resize textarea when editing starts or content changes (e.g., from transcription)
+    $: if (isEditing && editTextarea && editContent !== undefined) {
         // Use tick to ensure DOM is updated
         setTimeout(() => autoResize(editTextarea), 0);
     }
