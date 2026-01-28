@@ -15,8 +15,10 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        // Timeout settings to prevent hanging when backend is slow/unresponsive
+        timeout: 15000, // 15 second timeout for proxy to establish connection
+        proxyTimeout: 15000, // 15 second timeout for proxy to receive response
         // Configure proxy with proper error handling
-        // The http-proxy library has known issues with hanging requests
         configure: (proxy, options) => {
           // Handle proxy errors - return 502 to browser instead of hanging
           proxy.on('error', (err, req, res) => {
@@ -32,6 +34,11 @@ export default defineConfig({
           // Log proxy requests for debugging
           proxy.on('proxyReq', (proxyReq, req) => {
             console.log('[vite-proxy] Proxying:', req.method, req.url);
+          });
+
+          // Handle proxy response timeout
+          proxy.on('proxyRes', (proxyRes, req, res) => {
+            console.log('[vite-proxy] Response:', proxyRes.statusCode, req.url);
           });
         },
       },
