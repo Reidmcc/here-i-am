@@ -49,38 +49,11 @@
 
     async function loadInitialData() {
         debug('loadInitialData starting...');
-        try {
-            // Load entities first (required for app to function)
-            debug('Calling api.listEntities()...');
-            const response = await api.listEntities();
-            // API returns { entities: [...], default_entity: "..." }
-            const entitiesList = response.entities || [];
-            debug('Entities loaded: ' + entitiesList.length + ' entities');
-            entities.set(entitiesList);
 
-            // Select first entity if none selected, preferring the default entity
-            if (!$selectedEntityId && entitiesList.length > 0) {
-                const defaultEntityId = response.default_entity || entitiesList[0].index_name;
-                debug('Setting selectedEntityId to: ' + defaultEntityId);
-                selectedEntityId.set(defaultEntityId);
-            }
-
-            // Mark initialization complete - UI can now render
-            debug('Setting initializationComplete = true');
-            initializationComplete = true;
-            debug('initializationComplete is now: ' + initializationComplete);
-
-            // TEMPORARILY DISABLED - debugging why subsequent requests hang
-            // Load remaining data in parallel (non-blocking)
-            // debug('Starting background tasks...');
-            // const loadTasks = [];
-            // ... (disabled for debugging)
-        } catch (error) {
-            console.error('[App] loadInitialData error:', error);
-            initializationError = error.message;
-            initializationComplete = true; // Allow UI to render error state
-            showToast(`Failed to load initial data: ${error.message}`, 'error');
-        }
+        // BYPASS API CALL FOR DEBUGGING - just render the UI
+        debug('BYPASSING API - setting initializationComplete = true immediately');
+        initializationComplete = true;
+        debug('Done - UI should render now');
     }
 
     async function loadConversations() {
