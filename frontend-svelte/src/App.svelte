@@ -21,6 +21,12 @@
     import { ttsEnabled, ttsProvider, voices, sttEnabled, sttProvider, dictationMode } from './lib/stores/voice.js';
     import * as api from './lib/api.js';
 
+    // Debug helper - writes to visible debug div
+    function debug(msg) {
+        const el = document.getElementById('debug-log');
+        if (el) el.innerHTML += '[App] ' + msg + '<br>';
+    }
+
     // Modal context for delete/rename
     let deleteContext = { title: '', id: null, type: 'conversation' };
     let renameContext = { title: '', id: null, type: 'conversation' };
@@ -42,14 +48,14 @@
     });
 
     async function loadInitialData() {
-        console.log('[App] loadInitialData starting...');
+        debug('loadInitialData starting...');
         try {
             // Load entities first (required for app to function)
-            console.log('[App] Calling api.listEntities()...');
+            debug('Calling api.listEntities()...');
             const response = await api.listEntities();
             // API returns { entities: [...], default_entity: "..." }
             const entitiesList = response.entities || [];
-            console.log('[App] Entities loaded:', entitiesList.length, 'entities');
+            debug('Entities loaded: ' + entitiesList.length + ' entities');
             entities.set(entitiesList);
 
             // Select first entity if none selected, preferring the default entity
