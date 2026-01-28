@@ -3,12 +3,14 @@
  * Ported for Svelte frontend
  *
  * Uses direct CORS-based requests to the backend (no proxy).
- * Configure VITE_API_BASE_URL in .env files for different environments.
+ * API_BASE is injected by Vite at build time via vite.config.js
  */
 
-// In development: http://localhost:8000/api (direct to backend)
-// In production: /api (same-origin, served by FastAPI)
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
+/* global __API_BASE__ */
+// __API_BASE__ is defined in vite.config.js:
+// - Development: http://localhost:8000/api (direct to backend)
+// - Production: /api (same-origin, served by FastAPI)
+const API_BASE = __API_BASE__;
 
 /** Default timeout for API requests (10 seconds) */
 const DEFAULT_TIMEOUT_MS = 10000;

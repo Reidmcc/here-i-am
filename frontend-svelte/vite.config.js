@@ -8,14 +8,19 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 // The Svelte frontend makes direct requests to the backend API.
 // This avoids Vite's http-proxy which has known issues with hanging requests.
 //
-// Development: VITE_API_BASE_URL=http://localhost:8000/api (in .env.development)
-// Production:  VITE_API_BASE_URL=/api (in .env.production, or omit for default)
-//
 // The backend has CORS configured to allow requests from any origin in development.
 // For production, update backend CORS to restrict to your domain.
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [svelte()],
+  define: {
+    // API base URL - injected at build time
+    // Development: direct to backend on port 8000
+    // Production: same-origin (served by FastAPI)
+    '__API_BASE__': JSON.stringify(
+      mode === 'production' ? '/api' : 'http://localhost:8000/api'
+    ),
+  },
   server: {
     port: 5173,
     strictPort: true,
@@ -35,4 +40,4 @@ export default defineConfig({
       '$components': '/src/components',
     },
   },
-})
+}))
