@@ -152,7 +152,9 @@
                     }
                 },
                 onToken: (data) => {
-                    appendStreamingContent(data.token);
+                    if (data.content) {
+                        appendStreamingContent(data.content);
+                    }
                 },
                 onToolStart: (data) => {
                     addStreamingTool({
@@ -246,7 +248,9 @@
                 },
                 onStart: () => {},
                 onToken: (data) => {
-                    appendStreamingContent(data.token);
+                    if (data.content) {
+                        appendStreamingContent(data.content);
+                    }
                 },
                 onToolStart: (data) => {
                     addStreamingTool({
