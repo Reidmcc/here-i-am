@@ -5,8 +5,9 @@
 
 // In development, make direct calls to the backend (no proxy)
 // In production, use relative paths (served from same origin)
+// Using 127.0.0.1 instead of localhost to avoid potential DNS/CORS quirks
 const API_BASE = import.meta.env.DEV
-    ? 'http://localhost:8000/api'
+    ? 'http://127.0.0.1:8000/api'
     : '/api';
 
 /** Default timeout for API requests (10 seconds) */
