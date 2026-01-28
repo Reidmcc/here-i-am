@@ -12,8 +12,8 @@
     import ToastContainer from './components/common/Toast.svelte';
     import LoadingOverlay from './components/common/Loading.svelte';
 
-    // Test MessageList
-    import MessageList from './components/chat/MessageList.svelte';
+    // Test InputArea
+    import InputArea from './components/chat/InputArea.svelte';
 
     // Debug helper
     function debug(msg) {
@@ -22,16 +22,15 @@
     }
 
     onMount(() => {
-        debug('onMount called - MessageList test');
+        debug('onMount called - InputArea test');
     });
 </script>
 
 <div class="app-container">
     <main class="chat-area">
-        <h1>MessageList Test</h1>
-        <div class="messages-container">
-            <MessageList />
-        </div>
+        <h1>InputArea Test</h1>
+        <div class="spacer"></div>
+        <InputArea />
     </main>
 </div>
 
@@ -59,8 +58,7 @@
         text-align: center;
     }
 
-    .messages-container {
+    .spacer {
         flex: 1;
-        overflow-y: auto;
     }
 </style>
