@@ -68,47 +68,13 @@
             // Mark initialization complete - UI can now render
             debug('Setting initializationComplete = true');
             initializationComplete = true;
+            debug('initializationComplete is now: ' + initializationComplete);
 
+            // TEMPORARILY DISABLED - debugging why subsequent requests hang
             // Load remaining data in parallel (non-blocking)
-            debug('Starting background tasks...');
-            const loadTasks = [];
-
-            // Load conversations for selected entity
-            if ($selectedEntityId) {
-                loadTasks.push(loadConversations().catch(e => console.warn('Failed to load conversations:', e)));
-            }
-
-            // Load presets
-            loadTasks.push(
-                api.getPresets()
-                    .then(presetsData => presets.set(presetsData))
-                    .catch(e => console.warn('Failed to load presets:', e))
-            );
-
-            // Load chat config (available models)
-            loadTasks.push(
-                api.getChatConfig()
-                    .then(config => {
-                        if (config?.available_models) {
-                            availableModels.set(config.available_models);
-                        }
-                    })
-                    .catch(e => console.warn('Failed to load chat config:', e))
-            );
-
-            // Load TTS/STT status
-            loadTasks.push(loadTTSStatus().catch(e => console.warn('Failed to load TTS status:', e)));
-            loadTasks.push(loadSTTStatus().catch(e => console.warn('Failed to load STT status:', e)));
-
-            // Load GitHub repos if available
-            loadTasks.push(
-                api.listGitHubRepos()
-                    .then(repos => githubRepos.set(repos))
-                    .catch(() => { /* GitHub not configured, ignore */ })
-            );
-
-            // Wait for all background tasks
-            await Promise.all(loadTasks);
+            // debug('Starting background tasks...');
+            // const loadTasks = [];
+            // ... (disabled for debugging)
         } catch (error) {
             console.error('[App] loadInitialData error:', error);
             initializationError = error.message;
