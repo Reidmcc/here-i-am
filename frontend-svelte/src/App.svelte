@@ -27,9 +27,9 @@
         if (el) el.innerHTML += '[App] ' + msg + '<br>';
     }
 
-    // Modal context for delete/rename
-    let deleteContext = { title: '', id: null, type: 'conversation' };
-    let renameContext = { title: '', id: null, type: 'conversation' };
+    // Modal context for delete/rename (using $state for Svelte 5 reactivity)
+    let deleteContext = $state({ title: '', id: null, type: 'conversation' });
+    let renameContext = $state({ title: '', id: null, type: 'conversation' });
 
     // Initialization state (using $state for Svelte 5 reactivity)
     let initializationComplete = $state(false);
