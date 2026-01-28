@@ -1,32 +1,44 @@
-console.log('[main.js] Script starting...');
+// Debug helper - writes to a visible div since console isn't working
+function debug(msg) {
+  const el = document.getElementById('debug-log');
+  if (el) el.innerHTML += msg + '<br>';
+}
+
+// Create debug div
+const debugDiv = document.createElement('div');
+debugDiv.id = 'debug-log';
+debugDiv.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#000;color:#0f0;padding:10px;font-family:monospace;font-size:12px;z-index:99999;max-height:200px;overflow:auto;';
+document.body.appendChild(debugDiv);
+
+debug('main.js starting...');
 
 let app;
 
 try {
-  console.log('[main.js] Importing svelte...');
+  debug('Importing svelte...');
   const { mount } = await import('svelte');
-  console.log('[main.js] Svelte imported');
+  debug('Svelte imported');
 
-  console.log('[main.js] Importing CSS...');
+  debug('Importing CSS...');
   await import('./app.css');
-  console.log('[main.js] CSS imported');
+  debug('CSS imported');
 
-  console.log('[main.js] Importing App component...');
+  debug('Importing App component...');
   const { default: App } = await import('./App.svelte');
-  console.log('[main.js] App component imported');
+  debug('App component imported');
 
   const target = document.getElementById('app');
-  console.log('[main.js] Target element:', target);
+  debug('Target element: ' + (target ? 'found' : 'NOT FOUND'));
 
   if (!target) {
     throw new Error('#app element not found');
   }
 
-  console.log('[main.js] Mounting app...');
+  debug('Mounting app...');
   app = mount(App, { target });
-  console.log('[main.js] App mounted successfully');
+  debug('App mounted successfully - now calling onMount...');
 } catch (error) {
-  console.error('[main.js] FATAL ERROR:', error);
+  debug('FATAL ERROR: ' + error.message);
   document.body.innerHTML = `
     <div style="padding: 2rem; font-family: sans-serif; color: red;">
       <h1>Failed to start application</h1>

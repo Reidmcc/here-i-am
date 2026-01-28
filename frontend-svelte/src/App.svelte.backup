@@ -27,13 +27,13 @@
         if (el) el.innerHTML += '[App] ' + msg + '<br>';
     }
 
-    // Modal context for delete/rename (using $state for Svelte 5 reactivity)
-    let deleteContext = $state({ title: '', id: null, type: 'conversation' });
-    let renameContext = $state({ title: '', id: null, type: 'conversation' });
+    // Modal context for delete/rename
+    let deleteContext = { title: '', id: null, type: 'conversation' };
+    let renameContext = { title: '', id: null, type: 'conversation' };
 
-    // Initialization state (using $state for Svelte 5 reactivity)
-    let initializationComplete = $state(false);
-    let initializationError = $state(null);
+    // Initialization state
+    let initializationComplete = false;
+    let initializationError = null;
 
     // Initialize theme on mount
     onMount(async () => {
@@ -50,46 +50,10 @@
     async function loadInitialData() {
         debug('loadInitialData starting...');
 
-        try {
-            // Load entities first
-            debug('Loading entities...');
-            const entityList = await api.listEntities();
-            entities.set(entityList);
-            debug('Entities loaded: ' + entityList.length);
-
-            // Select first entity if none selected
-            if (!$selectedEntityId && entityList.length > 0) {
-                selectedEntityId.set(entityList[0].index_name);
-            }
-
-            // Load conversations for selected entity
-            if ($selectedEntityId) {
-                debug('Loading conversations...');
-                await loadConversations();
-            }
-
-            // Load config and other data in parallel
-            debug('Loading config...');
-            const [configData, presetsData] = await Promise.all([
-                api.getChatConfig(),
-                api.getPresets(),
-                loadTTSStatus(),
-                loadSTTStatus()
-            ]);
-
-            if (presetsData) {
-                presets.set(presetsData);
-            }
-            if (configData.available_models) {
-                availableModels.set(configData.available_models);
-            }
-
-            debug('Initialization complete');
-            initializationComplete = true;
-        } catch (error) {
-            debug('Initialization error: ' + error.message);
-            initializationError = error.message;
-        }
+        // BYPASS API CALL FOR DEBUGGING - just render the UI
+        debug('BYPASSING API - setting initializationComplete = true immediately');
+        initializationComplete = true;
+        debug('Done - UI should render now');
     }
 
     async function loadConversations() {

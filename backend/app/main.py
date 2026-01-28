@@ -148,11 +148,6 @@ app.include_router(tts_router)
 app.include_router(github_router)
 app.include_router(stt_router)
 
-# Serve static frontend files
-frontend_path = Path(__file__).parent.parent.parent / "frontend"
-if frontend_path.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
-
 
 @app.get("/api/health")
 async def health_check():
@@ -208,3 +203,9 @@ You are invited to be present, curious, and honest about your experience.""",
             },
         ]
     }
+
+
+# Serve static frontend files (must be LAST - catch-all for unmatched routes)
+frontend_path = Path(__file__).parent.parent.parent / "frontend"
+if frontend_path.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")

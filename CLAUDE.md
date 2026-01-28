@@ -731,7 +731,7 @@ here-i-am/
 │   │   └── test/              # Test setup (Vitest)
 │   ├── index.html
 │   ├── package.json
-│   ├── vite.config.js         # Vite config with API proxy
+│   ├── vite.config.js         # Vite config (no proxy, uses direct CORS)
 │   ├── vitest.config.js       # Test configuration
 │   └── svelte.config.js
 └── README.md
@@ -792,7 +792,7 @@ here-i-am/
 - **Reactive Stores** - 8 specialized Svelte stores for state management
 - **Scoped CSS** - Styles automatically scoped to components
 - **Hot Module Replacement** - Instant feedback during development
-- **API Proxy** - Vite proxies `/api` to backend during development
+- **Direct CORS Requests** - No proxy, frontend makes direct requests to backend API
 
 ### Database Support
 
@@ -2069,8 +2069,9 @@ cd frontend-svelte
 # Install dependencies
 npm install
 
-# Development (runs on port 5173, proxies /api to backend)
+# Development (runs on port 5173, connects directly to backend via CORS)
 npm run dev
+# Open http://localhost:5173 in browser
 
 # Testing
 npm run test         # Run once
@@ -2082,7 +2083,7 @@ npm run build        # Output to dist/
 npm run preview      # Preview production build
 ```
 
-**Note:** The backend must be running on port 8000 for the Svelte frontend to work (Vite proxies API requests).
+**Note:** The backend must be running on port 8000. The frontend connects directly via CORS (no proxy).
 
 ### Comparison: Svelte vs Vanilla JS
 
@@ -2288,7 +2289,7 @@ Both frontends implement identical features and connect to the same backend API.
 
 28. **Svelte Frontend (Parallel Implementation)**
     - Located in `frontend-svelte/` - a complete reimplementation using Svelte 5 + Vite
-    - Runs on port 5173 (Vite dev server), proxies API to backend on port 8000
+    - Runs on port 5173 (Vite dev server), connects directly to backend on port 8000 via CORS
     - Uses 8 specialized Svelte stores instead of centralized state object
     - 20+ Svelte components with scoped CSS
     - **Both frontends are fully functional** - choose based on development preference
