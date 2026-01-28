@@ -14,9 +14,18 @@
     import ToastContainer from './components/common/Toast.svelte';
     import LoadingOverlay from './components/common/Loading.svelte';
 
-    // Test importing layout components
+    // Layout components (confirmed working)
     import Sidebar from './components/layout/Sidebar.svelte';
     import ChatArea from './components/layout/ChatArea.svelte';
+
+    // Test importing modal components
+    import SettingsModal from './components/modals/SettingsModal.svelte';
+    import MemoriesModal from './components/modals/MemoriesModal.svelte';
+    import DeleteModal from './components/modals/DeleteModal.svelte';
+    import RenameModal from './components/modals/RenameModal.svelte';
+    import ArchivedModal from './components/modals/ArchivedModal.svelte';
+    import MultiEntityModal from './components/modals/MultiEntityModal.svelte';
+    import ImportExportModal from './components/modals/ImportExportModal.svelte';
 
     let message = 'Loading...';
 
@@ -26,13 +35,13 @@
     }
 
     onMount(() => {
-        debug('onMount called - layout components imported successfully!');
-        message = 'Layout components imported successfully!';
+        debug('onMount called - ALL components imported successfully!');
+        message = 'ALL components imported successfully!';
     });
 </script>
 
 <h1>{message}</h1>
-<p>Layout components: Sidebar ✓, ChatArea ✓</p>
+<p>All imports working!</p>
 
 <ToastContainer />
 <LoadingOverlay />
