@@ -1,7 +1,7 @@
 <script>
     import { createEventDispatcher, onMount } from 'svelte';
     import Modal from '../common/Modal.svelte';
-    import { selectedEntityId, entities, entitiesMap } from '../../lib/stores/entities.js';
+    import { selectedEntityId, selectedEntity, entitiesMap } from '../../lib/stores/entities.js';
     import { showToast } from '../../lib/stores/app.js';
     import { escapeHtml, truncateText, formatRelativeTime } from '../../lib/utils.js';
     import * as api from '../../lib/api.js';
@@ -18,7 +18,7 @@
     let isLoadingStats = false;
     let expandedIds = new Set();
 
-    $: currentEntity = $entities.find(e => e.index_name === $selectedEntityId);
+    $: currentEntity = $selectedEntity;
 
     onMount(async () => {
         await loadStats();

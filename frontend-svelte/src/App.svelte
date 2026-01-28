@@ -68,14 +68,13 @@
                 await loadConversations();
             }
 
-            // Load config and other data in parallel
+            // Load config and presets (critical for UI)
             debug('Loading config...');
             const [configData, presetsData] = await Promise.all([
                 api.getChatConfig(),
-                api.getPresets(),
-                loadTTSStatus(),
-                loadSTTStatus()
+                api.getPresets()
             ]);
+            debug('Config loaded');
 
             if (presetsData) {
                 presets.set(presetsData);
@@ -86,6 +85,11 @@
 
             debug('Initialization complete');
             initializationComplete = true;
+
+            // Load TTS/STT status in background (non-blocking)
+            // These are optional features and shouldn't delay the main UI
+            loadTTSStatus().catch(() => {});
+            loadSTTStatus().catch(() => {});
         } catch (error) {
             debug('Initialization error: ' + error.message);
             initializationError = error.message;
@@ -291,12 +295,7 @@
     }
 </script>
 
-{#if !initializationComplete}
-    <div class="init-loading">
-        <div class="init-spinner"></div>
-        <p>Connecting to backend...</p>
-    </div>
-{:else if initializationError}
+{#if initializationError}
     <div class="init-error">
         <h2>Failed to Connect</h2>
         <p>{initializationError}</p>
@@ -382,7 +381,6 @@
         overflow: hidden;
     }
 
-    .init-loading,
     .init-error {
         display: flex;
         flex-direction: column;
@@ -393,23 +391,9 @@
         background: var(--bg-primary, #1a1a1a);
     }
 
-    .init-loading p,
     .init-error p {
         margin: 1rem 0 0.5rem;
         font-size: 1rem;
-    }
-
-    .init-spinner {
-        width: 40px;
-        height: 40px;
-        border: 3px solid var(--bg-tertiary, #3d3d3d);
-        border-top-color: var(--accent, #4a9eff);
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-    }
-
-    @keyframes spin {
-        to { transform: rotate(360deg); }
     }
 
     .init-error h2 {
