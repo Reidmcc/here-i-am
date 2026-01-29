@@ -17,7 +17,7 @@
     import { conversations, currentConversationId, currentConversation, resetConversationState, getNextRequestId, isValidRequestId } from './lib/stores/conversations.js';
     import { messages, resetMessagesState } from './lib/stores/messages.js';
     import { resetMemoriesState } from './lib/stores/memories.js';
-    import { settings, setPresetsFromBackend, applyBackendDefaults } from './lib/stores/settings.js';
+    import { settings, setPresetsFromBackend, applyBackendDefaults, wasModifiedThisSession, updateSettingQuietly } from './lib/stores/settings.js';
     import { ttsEnabled, ttsProvider, voices, sttEnabled, sttProvider, dictationMode } from './lib/stores/voice.js';
     import * as api from './lib/api.js';
 
@@ -179,19 +179,21 @@
         const entity = getEntity(entityId);
         if (!entity) return;
 
-        // Apply entity's default model if specified
-        if (entity.default_model) {
-            settings.update(s => ({ ...s, model: entity.default_model }));
+        // Apply entity's default model if specified, but only if user hasn't
+        // explicitly changed the model during this session
+        if (entity.default_model && !wasModifiedThisSession('model')) {
+            updateSettingQuietly('model', entity.default_model);
             debug(`Applied entity model: ${entity.default_model}`);
         }
 
         // Restore entity-specific system prompt if stored
+        // System prompts are per-entity, so always apply them when switching
         const storedPrompt = entitySystemPrompts.getForEntity(entityId);
         if (storedPrompt !== undefined && storedPrompt !== '') {
-            settings.update(s => ({ ...s, systemPrompt: storedPrompt }));
+            updateSettingQuietly('systemPrompt', storedPrompt);
         } else {
             // Clear system prompt when switching to entity without stored prompt
-            settings.update(s => ({ ...s, systemPrompt: '' }));
+            updateSettingQuietly('systemPrompt', '');
         }
     }
 

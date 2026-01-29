@@ -17,6 +17,10 @@ const defaultSettings = {
 // Track whether backend defaults have been applied
 let backendDefaultsApplied = false;
 
+// Track which settings the user has explicitly modified during this session
+// This is NOT persisted - resets on page refresh, which is when .env should be re-applied
+const userModifiedThisSession = new Set();
+
 // Create persistent settings store
 function createSettingsStore() {
     let stored = defaultSettings;
@@ -144,14 +148,33 @@ export function applyPreset(presetId) {
     }
 }
 
-// Helper to update a single setting
+// Helper to update a single setting (marks as user-modified for this session)
 export function updateSetting(key, value) {
+    userModifiedThisSession.add(key);
     settings.update(s => ({ ...s, [key]: value }));
 }
 
-// Helper to update multiple settings at once
+// Helper to update multiple settings at once (marks as user-modified for this session)
 export function updateSettings(updates) {
+    Object.keys(updates).forEach(key => userModifiedThisSession.add(key));
     settings.update(s => ({ ...s, ...updates }));
+}
+
+/**
+ * Check if a setting was explicitly modified by the user during this session.
+ * Used to prevent automatic defaults (like entity switching) from overriding user choices.
+ */
+export function wasModifiedThisSession(key) {
+    return userModifiedThisSession.has(key);
+}
+
+/**
+ * Update a setting without marking it as user-modified.
+ * Used for applying defaults (backend config, entity defaults) that should
+ * not prevent future automatic updates.
+ */
+export function updateSettingQuietly(key, value) {
+    settings.update(s => ({ ...s, [key]: value }));
 }
 
 /**
