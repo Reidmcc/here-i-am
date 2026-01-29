@@ -78,20 +78,32 @@ function createEntitySystemPromptsStore() {
 
 export const entitySystemPrompts = createEntitySystemPromptsStore();
 
-// Per-entity model preferences for the current session
+// Per-entity session preferences (model, temperature, maxTokens, voice)
 // NOT persisted to localStorage - resets on page refresh to pick up .env changes
-function createEntityModelPreferencesStore() {
+// Structure: { entityId: { model, temperature, maxTokens, voiceId } }
+function createEntitySessionPreferencesStore() {
     const { subscribe, set, update } = writable({});
 
     return {
         subscribe,
         set,
-        setForEntity: (entityId, model) => {
-            update(prefs => ({ ...prefs, [entityId]: model }));
+        // Set a specific preference for an entity
+        setPreference: (entityId, key, value) => {
+            update(prefs => ({
+                ...prefs,
+                [entityId]: { ...(prefs[entityId] || {}), [key]: value }
+            }));
         },
+        // Get a specific preference for an entity (returns null if not set)
+        getPreference: (entityId, key) => {
+            const prefs = get({ subscribe });
+            return prefs[entityId]?.[key] ?? null;
+        },
+        // Get all preferences for an entity
         getForEntity: (entityId) => {
-            return get({ subscribe })[entityId] || null;
+            return get({ subscribe })[entityId] || {};
         },
+        // Clear all preferences for an entity
         clearForEntity: (entityId) => {
             update(prefs => {
                 const newPrefs = { ...prefs };
@@ -102,7 +114,13 @@ function createEntityModelPreferencesStore() {
     };
 }
 
-export const entityModelPreferences = createEntityModelPreferencesStore();
+export const entitySessionPreferences = createEntitySessionPreferencesStore();
+
+// Backward compatibility alias
+export const entityModelPreferences = {
+    setForEntity: (entityId, model) => entitySessionPreferences.setPreference(entityId, 'model', model),
+    getForEntity: (entityId) => entitySessionPreferences.getPreference(entityId, 'model'),
+};
 
 // Derived store: currently selected entity object
 export const selectedEntity = derived(

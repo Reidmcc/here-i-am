@@ -13,12 +13,12 @@
     import ImportExportModal from './components/modals/ImportExportModal.svelte';
 
     import { theme, isLoading, activeModal, showToast, availableModels, githubRepos, githubRateLimits } from './lib/stores/app.js';
-    import { entities, selectedEntityId, isMultiEntityMode, resetMultiEntityState, currentConversationEntities, getEntity, entitySystemPrompts, entityModelPreferences } from './lib/stores/entities.js';
+    import { entities, selectedEntityId, isMultiEntityMode, resetMultiEntityState, currentConversationEntities, getEntity, entitySystemPrompts, entitySessionPreferences } from './lib/stores/entities.js';
     import { conversations, currentConversationId, currentConversation, resetConversationState, getNextRequestId, isValidRequestId } from './lib/stores/conversations.js';
     import { messages, resetMessagesState } from './lib/stores/messages.js';
     import { resetMemoriesState } from './lib/stores/memories.js';
     import { settings, setPresetsFromBackend, applyBackendDefaults, updateSettingQuietly } from './lib/stores/settings.js';
-    import { ttsEnabled, ttsProvider, voices, sttEnabled, sttProvider, dictationMode } from './lib/stores/voice.js';
+    import { ttsEnabled, ttsProvider, voices, sttEnabled, sttProvider, dictationMode, selectedVoiceId } from './lib/stores/voice.js';
     import * as api from './lib/api.js';
 
     // Debug helper - logs to browser console
@@ -174,24 +174,42 @@
         }
     }
 
-    // Apply entity-specific settings (model, system prompt)
+    // Apply entity-specific settings (model, temperature, maxTokens, voice, system prompt)
     function applyEntitySettings(entityId) {
         const entity = getEntity(entityId);
         if (!entity) return;
 
-        // Check for user's model preference for this entity (session-only)
-        // Falls back to entity's default model from .env config
-        const userModelPref = entityModelPreferences.getForEntity(entityId);
-        if (userModelPref) {
-            updateSettingQuietly('model', userModelPref);
-            debug(`Applied user model preference for entity: ${userModelPref}`);
+        // Get user's session preferences for this entity
+        const prefs = entitySessionPreferences.getForEntity(entityId);
+
+        // Model: user preference > entity default from .env
+        if (prefs.model) {
+            updateSettingQuietly('model', prefs.model);
+            debug(`Applied user model preference: ${prefs.model}`);
         } else if (entity.default_model) {
             updateSettingQuietly('model', entity.default_model);
             debug(`Applied entity default model: ${entity.default_model}`);
         }
 
-        // Restore entity-specific system prompt if stored
-        // System prompts are per-entity, so always apply them when switching
+        // Temperature: user preference > keep current (from .env defaults)
+        if (prefs.temperature !== null && prefs.temperature !== undefined) {
+            updateSettingQuietly('temperature', prefs.temperature);
+            debug(`Applied user temperature preference: ${prefs.temperature}`);
+        }
+
+        // Max tokens: user preference > keep current (from .env defaults)
+        if (prefs.maxTokens !== null && prefs.maxTokens !== undefined) {
+            updateSettingQuietly('maxTokens', prefs.maxTokens);
+            debug(`Applied user maxTokens preference: ${prefs.maxTokens}`);
+        }
+
+        // Voice: user preference > keep current
+        if (prefs.voiceId !== null && prefs.voiceId !== undefined) {
+            selectedVoiceId.set(prefs.voiceId);
+            debug(`Applied user voice preference: ${prefs.voiceId}`);
+        }
+
+        // Restore entity-specific system prompt if stored (persisted to localStorage)
         const storedPrompt = entitySystemPrompts.getForEntity(entityId);
         if (storedPrompt !== undefined && storedPrompt !== '') {
             updateSettingQuietly('systemPrompt', storedPrompt);
