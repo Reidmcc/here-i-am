@@ -30,13 +30,14 @@ let storedBackendDefaults = {
 const userModifiedThisSession = new Set();
 
 // Fields that should NOT be persisted to localStorage
-// Model is excluded because it should always come from entity config or session preferences
-const NON_PERSISTENT_FIELDS = ['model'];
+// These are entity-specific settings managed via entitySessionPreferences (session-only)
+// and should default to entity config or backend defaults on each page load
+const NON_PERSISTENT_FIELDS = ['model', 'temperature', 'maxTokens'];
 
 // Create persistent settings store
-// Note: 'model' is intentionally NOT persisted to localStorage.
-// Model selection is managed per-entity via entitySessionPreferences (session-only)
-// and defaults to entity.default_model from .env on each page load.
+// Note: model, temperature, and maxTokens are intentionally NOT persisted to localStorage.
+// These settings are managed per-entity via entitySessionPreferences (session-only)
+// and default to entity.default_model or backend defaults from .env on each page load.
 function createSettingsStore() {
     let stored = defaultSettings;
     if (typeof localStorage !== 'undefined') {

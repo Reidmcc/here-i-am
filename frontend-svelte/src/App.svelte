@@ -14,7 +14,7 @@
 
     import { theme, isLoading, activeModal, showToast, availableModels, githubRepos, githubRateLimits } from './lib/stores/app.js';
     import { entities, selectedEntityId, isMultiEntityMode, resetMultiEntityState, currentConversationEntities, getEntity, entitySessionPreferences } from './lib/stores/entities.js';
-import { get } from 'svelte/store';
+    import { get } from 'svelte/store';
     import { conversations, currentConversationId, currentConversation, resetConversationState, getNextRequestId, isValidRequestId } from './lib/stores/conversations.js';
     import { messages, resetMessagesState } from './lib/stores/messages.js';
     import { resetMemoriesState } from './lib/stores/memories.js';
