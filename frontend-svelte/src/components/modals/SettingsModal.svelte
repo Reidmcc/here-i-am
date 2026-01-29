@@ -13,21 +13,23 @@
     const dispatch = createEventDispatcher();
 
     let activeTab = 'general';
-    let localSystemPrompt = '';
     let entityPrompt = '';
     let loadingRateLimits = false;
 
     $: currentEntity = $selectedEntity;
 
+    // Load entity-specific system prompt when entity changes or modal opens
     $: {
-        // Load entity-specific system prompt when entity changes
         if ($selectedEntityId) {
             entityPrompt = entitySystemPrompts.getForEntity($selectedEntityId);
         }
     }
 
     onMount(async () => {
-        localSystemPrompt = $settings.systemPrompt || '';
+        // Re-initialize entity prompt on modal mount to ensure fresh value
+        if ($selectedEntityId) {
+            entityPrompt = entitySystemPrompts.getForEntity($selectedEntityId);
+        }
         await loadPresets();
 
         if ($ttsEnabled) {
@@ -58,7 +60,6 @@
         const presetId = event.target.value;
         if (presetId) {
             applyPreset(presetId);
-            localSystemPrompt = $settings.systemPrompt || '';
         }
     }
 
@@ -75,8 +76,7 @@
     }
 
     function handleSystemPromptChange(event) {
-        localSystemPrompt = event.target.value;
-        updateSettings({ systemPrompt: localSystemPrompt });
+        updateSettings({ systemPrompt: event.target.value });
     }
 
     function handleEntityPromptChange(event) {
@@ -221,7 +221,7 @@
                     </p>
                     <textarea
                         class="prompt-textarea"
-                        value={localSystemPrompt}
+                        value={$settings.systemPrompt || ''}
                         on:input={handleSystemPromptChange}
                         placeholder="No system prompt (research mode)"
                         rows="4"
