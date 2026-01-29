@@ -13,7 +13,7 @@
     import ImportExportModal from './components/modals/ImportExportModal.svelte';
 
     import { theme, isLoading, activeModal, showToast, availableModels, githubRepos, githubRateLimits } from './lib/stores/app.js';
-    import { entities, selectedEntityId, isMultiEntityMode, resetMultiEntityState, currentConversationEntities } from './lib/stores/entities.js';
+    import { entities, selectedEntityId, isMultiEntityMode, resetMultiEntityState, currentConversationEntities, getEntity, entitySystemPrompts } from './lib/stores/entities.js';
     import { conversations, currentConversationId, currentConversation, resetConversationState, getNextRequestId, isValidRequestId } from './lib/stores/conversations.js';
     import { messages, resetMessagesState } from './lib/stores/messages.js';
     import { resetMemoriesState } from './lib/stores/memories.js';
@@ -58,13 +58,21 @@
             entities.set(entityList);
             debug('Entities loaded: ' + entityList.length);
 
-            // Select first entity if none selected
-            if (!$selectedEntityId && entityList.length > 0) {
-                selectedEntityId.set(entityList[0].index_name);
+            // Determine which entity to use (stored or first available)
+            let activeEntityId = $selectedEntityId;
+            if (!activeEntityId && entityList.length > 0) {
+                activeEntityId = entityList[0].index_name;
+                selectedEntityId.set(activeEntityId);
+            }
+
+            // Apply entity-specific settings (model, system prompt) on initial load
+            // This ensures the correct model is used when restoring from localStorage
+            if (activeEntityId) {
+                applyEntitySettings(activeEntityId);
             }
 
             // Load conversations for selected entity
-            if ($selectedEntityId) {
+            if (activeEntityId) {
                 debug('Loading conversations...');
                 await loadConversations();
             }
@@ -149,10 +157,35 @@
         } else {
             resetMultiEntityState();
             selectedEntityId.set(entityId);
+
+            // Apply entity-specific model and system prompt
+            applyEntitySettings(entityId);
+
             resetConversationState();
             resetMessagesState();
             resetMemoriesState();
             await loadConversations();
+        }
+    }
+
+    // Apply entity-specific settings (model, system prompt)
+    function applyEntitySettings(entityId) {
+        const entity = getEntity(entityId);
+        if (!entity) return;
+
+        // Apply entity's default model if specified
+        if (entity.default_model) {
+            settings.update(s => ({ ...s, model: entity.default_model }));
+            debug(`Applied entity model: ${entity.default_model}`);
+        }
+
+        // Restore entity-specific system prompt if stored
+        const storedPrompt = entitySystemPrompts.getForEntity(entityId);
+        if (storedPrompt !== undefined && storedPrompt !== '') {
+            settings.update(s => ({ ...s, systemPrompt: storedPrompt }));
+        } else {
+            // Clear system prompt when switching to entity without stored prompt
+            settings.update(s => ({ ...s, systemPrompt: '' }));
         }
     }
 
