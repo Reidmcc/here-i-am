@@ -13,7 +13,7 @@
     import ImportExportModal from './components/modals/ImportExportModal.svelte';
 
     import { theme, isLoading, activeModal, showToast, availableModels, githubRepos, githubRateLimits } from './lib/stores/app.js';
-    import { entities, selectedEntityId, isMultiEntityMode, resetMultiEntityState, currentConversationEntities, getEntity, entitySystemPrompts, entitySessionPreferences } from './lib/stores/entities.js';
+    import { entities, selectedEntityId, isMultiEntityMode, resetMultiEntityState, currentConversationEntities, getEntity, entitySessionPreferences } from './lib/stores/entities.js';
     import { conversations, currentConversationId, currentConversation, resetConversationState, getNextRequestId, isValidRequestId } from './lib/stores/conversations.js';
     import { messages, resetMessagesState } from './lib/stores/messages.js';
     import { resetMemoriesState } from './lib/stores/memories.js';
@@ -221,14 +221,9 @@
             debug(`Reset voice to default`);
         }
 
-        // Restore entity-specific system prompt if stored (persisted to localStorage)
-        const storedPrompt = entitySystemPrompts.getForEntity(entityId);
-        if (storedPrompt !== undefined && storedPrompt !== '') {
-            updateSettingQuietly('systemPrompt', storedPrompt);
-        } else {
-            // Clear system prompt when switching to entity without stored prompt
-            updateSettingQuietly('systemPrompt', '');
-        }
+        // Note: Entity-specific system prompts are stored separately in entitySystemPrompts
+        // and should NOT overwrite the global settings.systemPrompt. The entity prompt is
+        // combined with the global prompt when sending messages (in chat.js or the backend).
     }
 
     // Handle conversation selection
