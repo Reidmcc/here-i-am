@@ -3,7 +3,7 @@
  * Handles settings modal, configuration presets, and settings application
  */
 
-import { state, saveEntitySystemPromptsToStorage, saveSelectedVoiceToStorage, clearAudioCache, saveResearcherName } from './state.js';
+import { state, saveEntitySystemPromptsToStorage, saveEntityModelsToStorage, saveSelectedVoiceToStorage, clearAudioCache, saveResearcherName } from './state.js';
 import { showToast } from './utils.js';
 import { showModal, hideModal } from './modals.js';
 import { setTheme } from './theme.js';
@@ -49,13 +49,15 @@ export function applySettings() {
     state.settings.researcherName = elements.researcherNameInput.value.trim() || '';
     saveResearcherName(state.settings.researcherName);
 
-    // Save system prompt per-entity (for single-entity mode)
+    // Save system prompt and model per-entity (for single-entity mode)
     if (state.selectedEntityId && state.selectedEntityId !== 'multi-entity') {
         state.entitySystemPrompts[state.selectedEntityId] = state.settings.systemPrompt;
+        state.entityModels[state.selectedEntityId] = state.settings.model;
     }
 
-    // Persist entity system prompts to localStorage
+    // Persist entity system prompts and models to localStorage
     saveEntitySystemPromptsToStorage();
+    saveEntityModelsToStorage();
 
     // Apply theme
     setTheme(elements.themeSelect.value);
@@ -224,8 +226,19 @@ export function syncTemperatureInputs() {
 export function updateModelIndicator() {
     if (!elements.modelIndicator) return;
 
-    const modelName = state.settings.model || 'Unknown';
-    elements.modelIndicator.textContent = modelName;
+    // Look up friendly model name from available models
+    const modelId = state.settings.model;
+    let displayName = 'Unknown';
+
+    if (modelId && state.availableModels && state.availableModels.length > 0) {
+        const model = state.availableModels.find(m => m.id === modelId);
+        displayName = model ? model.name : modelId;
+    } else if (modelId) {
+        // Fallback to model ID if available models not loaded yet
+        displayName = modelId;
+    }
+
+    elements.modelIndicator.textContent = displayName;
 }
 
 /**
