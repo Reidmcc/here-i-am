@@ -17,7 +17,7 @@
     import { conversations, currentConversationId, currentConversation, resetConversationState, getNextRequestId, isValidRequestId } from './lib/stores/conversations.js';
     import { messages, resetMessagesState } from './lib/stores/messages.js';
     import { resetMemoriesState } from './lib/stores/memories.js';
-    import { settings, presets } from './lib/stores/settings.js';
+    import { settings, setPresetsFromBackend, applyBackendDefaults } from './lib/stores/settings.js';
     import { ttsEnabled, ttsProvider, voices, sttEnabled, sttProvider, dictationMode } from './lib/stores/voice.js';
     import * as api from './lib/api.js';
 
@@ -85,11 +85,17 @@
             ]);
             debug('Config loaded');
 
-            if (presetsData) {
-                presets.set(presetsData);
+            // Apply backend defaults to settings (only if user hasn't customized)
+            if (configData) {
+                applyBackendDefaults(configData);
+                if (configData.available_models) {
+                    availableModels.set(configData.available_models);
+                }
             }
-            if (configData.available_models) {
-                availableModels.set(configData.available_models);
+
+            // Set presets from backend (convert array to object keyed by slug)
+            if (presetsData) {
+                setPresetsFromBackend(presetsData);
             }
 
             debug('Initialization complete');
