@@ -209,10 +209,11 @@ export function handleEntityChange(entityId) {
  * Update model selector based on entity's LLM provider
  * @param {string} provider - LLM provider name
  */
-function updateModelSelectorForProvider(provider) {
+export function updateModelSelectorForProvider(provider) {
     if (!elements.modelSelect || !state.availableModels) return;
 
-    const models = state.availableModels[provider] || [];
+    // Filter models by provider from flat array
+    const models = state.availableModels.filter(m => m.provider === provider);
     elements.modelSelect.innerHTML = '';
 
     models.forEach(model => {
