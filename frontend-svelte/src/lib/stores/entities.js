@@ -78,6 +78,32 @@ function createEntitySystemPromptsStore() {
 
 export const entitySystemPrompts = createEntitySystemPromptsStore();
 
+// Per-entity model preferences for the current session
+// NOT persisted to localStorage - resets on page refresh to pick up .env changes
+function createEntityModelPreferencesStore() {
+    const { subscribe, set, update } = writable({});
+
+    return {
+        subscribe,
+        set,
+        setForEntity: (entityId, model) => {
+            update(prefs => ({ ...prefs, [entityId]: model }));
+        },
+        getForEntity: (entityId) => {
+            return get({ subscribe })[entityId] || null;
+        },
+        clearForEntity: (entityId) => {
+            update(prefs => {
+                const newPrefs = { ...prefs };
+                delete newPrefs[entityId];
+                return newPrefs;
+            });
+        }
+    };
+}
+
+export const entityModelPreferences = createEntityModelPreferencesStore();
+
 // Derived store: currently selected entity object
 export const selectedEntity = derived(
     [entities, selectedEntityId],

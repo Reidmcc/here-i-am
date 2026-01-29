@@ -13,11 +13,11 @@
     import ImportExportModal from './components/modals/ImportExportModal.svelte';
 
     import { theme, isLoading, activeModal, showToast, availableModels, githubRepos, githubRateLimits } from './lib/stores/app.js';
-    import { entities, selectedEntityId, isMultiEntityMode, resetMultiEntityState, currentConversationEntities, getEntity, entitySystemPrompts } from './lib/stores/entities.js';
+    import { entities, selectedEntityId, isMultiEntityMode, resetMultiEntityState, currentConversationEntities, getEntity, entitySystemPrompts, entityModelPreferences } from './lib/stores/entities.js';
     import { conversations, currentConversationId, currentConversation, resetConversationState, getNextRequestId, isValidRequestId } from './lib/stores/conversations.js';
     import { messages, resetMessagesState } from './lib/stores/messages.js';
     import { resetMemoriesState } from './lib/stores/memories.js';
-    import { settings, setPresetsFromBackend, applyBackendDefaults, wasModifiedThisSession, updateSettingQuietly } from './lib/stores/settings.js';
+    import { settings, setPresetsFromBackend, applyBackendDefaults, updateSettingQuietly } from './lib/stores/settings.js';
     import { ttsEnabled, ttsProvider, voices, sttEnabled, sttProvider, dictationMode } from './lib/stores/voice.js';
     import * as api from './lib/api.js';
 
@@ -179,11 +179,15 @@
         const entity = getEntity(entityId);
         if (!entity) return;
 
-        // Apply entity's default model if specified, but only if user hasn't
-        // explicitly changed the model during this session
-        if (entity.default_model && !wasModifiedThisSession('model')) {
+        // Check for user's model preference for this entity (session-only)
+        // Falls back to entity's default model from .env config
+        const userModelPref = entityModelPreferences.getForEntity(entityId);
+        if (userModelPref) {
+            updateSettingQuietly('model', userModelPref);
+            debug(`Applied user model preference for entity: ${userModelPref}`);
+        } else if (entity.default_model) {
             updateSettingQuietly('model', entity.default_model);
-            debug(`Applied entity model: ${entity.default_model}`);
+            debug(`Applied entity default model: ${entity.default_model}`);
         }
 
         // Restore entity-specific system prompt if stored

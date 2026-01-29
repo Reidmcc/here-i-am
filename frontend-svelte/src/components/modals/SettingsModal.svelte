@@ -4,7 +4,7 @@
     import { settings, presets, loadPresets, applyPreset, updateSettings } from '../../lib/stores/settings.js';
     import { theme } from '../../lib/stores/app.js';
     import { availableModels } from '../../lib/stores/app.js';
-    import { selectedEntityId, entities, selectedEntity, entitySystemPrompts } from '../../lib/stores/entities.js';
+    import { selectedEntityId, entities, selectedEntity, entitySystemPrompts, entityModelPreferences } from '../../lib/stores/entities.js';
     import { ttsEnabled, sttEnabled, voices, selectedVoiceId, loadVoices, ttsProvider, styletts2Params, updateStyleTTS2Params } from '../../lib/stores/voice.js';
     import { githubRepos, githubRateLimits } from '../../lib/stores/app.js';
     import * as api from '../../lib/api.js';
@@ -76,6 +76,10 @@
         });
         if (localModel !== $settings.model) {
             updateSettings({ model: localModel });
+            // Save as per-entity preference (session-only, resets on refresh)
+            if ($selectedEntityId && $selectedEntityId !== 'multi-entity') {
+                entityModelPreferences.setForEntity($selectedEntityId, localModel);
+            }
         }
     }
 
