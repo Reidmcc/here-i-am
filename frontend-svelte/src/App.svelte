@@ -50,13 +50,32 @@
         debug('loadInitialData starting...');
 
         try {
-            // Load entities first
-            debug('Loading entities...');
-            const entityResponse = await api.listEntities();
-            // API returns { entities: [...], default_entity: "..." }
+            // Load entities and config in parallel for faster startup
+            debug('Loading entities and config...');
+            const [entityResponse, configData, presetsData] = await Promise.all([
+                api.listEntities(),
+                api.getChatConfig(),
+                api.getPresets()
+            ]);
+
+            // Set up entities
             const entityList = entityResponse.entities || [];
             entities.set(entityList);
             debug('Entities loaded: ' + entityList.length);
+
+            // Apply backend defaults FIRST (stores .env values for reference)
+            if (configData) {
+                applyBackendDefaults(configData);
+                if (configData.available_models) {
+                    availableModels.set(configData.available_models);
+                }
+            }
+            debug('Backend defaults applied');
+
+            // Set presets from backend
+            if (presetsData) {
+                setPresetsFromBackend(presetsData);
+            }
 
             // Determine which entity to use (stored or first available)
             let activeEntityId = $selectedEntityId;
@@ -65,8 +84,8 @@
                 selectedEntityId.set(activeEntityId);
             }
 
-            // Apply entity-specific settings (model, system prompt) on initial load
-            // This ensures the correct model is used when restoring from localStorage
+            // Apply entity-specific settings AFTER backend defaults
+            // This allows entity defaults to override the global backend defaults
             if (activeEntityId) {
                 applyEntitySettings(activeEntityId);
             }
@@ -75,27 +94,6 @@
             if (activeEntityId) {
                 debug('Loading conversations...');
                 await loadConversations();
-            }
-
-            // Load config and presets (critical for UI)
-            debug('Loading config...');
-            const [configData, presetsData] = await Promise.all([
-                api.getChatConfig(),
-                api.getPresets()
-            ]);
-            debug('Config loaded');
-
-            // Apply backend defaults to settings (only if user hasn't customized)
-            if (configData) {
-                applyBackendDefaults(configData);
-                if (configData.available_models) {
-                    availableModels.set(configData.available_models);
-                }
-            }
-
-            // Set presets from backend (convert array to object keyed by slug)
-            if (presetsData) {
-                setPresetsFromBackend(presetsData);
             }
 
             debug('Initialization complete');
