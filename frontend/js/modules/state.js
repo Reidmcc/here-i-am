@@ -16,6 +16,7 @@ export const state = {
     selectedEntityId: null,
     entities: [],
     entitySystemPrompts: {},
+    entityModels: {},  // Per-entity model selection persistence
 
     // Multi-entity state
     isMultiEntityMode: false,
@@ -163,6 +164,31 @@ export function saveEntitySystemPromptsToStorage() {
         localStorage.setItem('entity_system_prompts', JSON.stringify(state.entitySystemPrompts));
     } catch (e) {
         console.warn('Failed to save entity system prompts:', e);
+    }
+}
+
+/**
+ * Load entity models from localStorage
+ */
+export function loadEntityModelsFromStorage() {
+    try {
+        const saved = localStorage.getItem('entity_models');
+        if (saved) {
+            state.entityModels = JSON.parse(saved);
+        }
+    } catch (e) {
+        console.warn('Failed to load entity models:', e);
+    }
+}
+
+/**
+ * Save entity models to localStorage
+ */
+export function saveEntityModelsToStorage() {
+    try {
+        localStorage.setItem('entity_models', JSON.stringify(state.entityModels));
+    } catch (e) {
+        console.warn('Failed to save entity models:', e);
     }
 }
 

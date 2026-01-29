@@ -169,17 +169,35 @@ export function handleEntityChange(entityId) {
         elements.continueBtn.style.display = 'none';
     }
 
-    // Update model to entity default
+    // Update model to entity's saved or default model
     const entity = state.entities.find(e => e.index_name === entityId);
     if (entity) {
-        if (entity.default_model) {
-            state.settings.model = entity.default_model;
-        }
-
-        // Update model selector based on provider
+        // Update model selector based on provider first (to populate valid options)
         const provider = entity.llm_provider || 'anthropic';
         if (provider) {
             updateModelSelectorForProvider(provider);
+        }
+
+        // Restore entity-specific model (saved user preference takes priority)
+        if (state.entityModels[entityId] !== undefined) {
+            // Verify the saved model is valid for this provider
+            const savedModel = state.entityModels[entityId];
+            const isValidModel = state.availableModels.some(
+                m => m.id === savedModel && m.provider === provider
+            );
+            if (isValidModel) {
+                state.settings.model = savedModel;
+            } else if (entity.default_model) {
+                // Saved model invalid for this provider, use default
+                state.settings.model = entity.default_model;
+            }
+        } else if (entity.default_model) {
+            state.settings.model = entity.default_model;
+        }
+
+        // Update the dropdown to reflect the selected model
+        if (elements.modelSelect) {
+            elements.modelSelect.value = state.settings.model;
         }
 
         // Restore entity-specific system prompt
