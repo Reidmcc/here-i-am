@@ -21,7 +21,8 @@ import {
     showEntityResponderSelector,
     hideEntityResponderSelector,
     selectResponder,
-    cancelResponderSelection
+    cancelResponderSelection,
+    updateModelSelectorForProvider
 } from './modules/entities.js';
 import {
     setElements as setConversationElements,
@@ -574,6 +575,9 @@ class App {
             state.settings.researcherName = savedResearcherName;
         }
 
+        // Load chat config (available models)
+        await this.loadChatConfig();
+
         // Load entities and conversations
         await loadEntities();
 
@@ -585,6 +589,18 @@ class App {
 
         // Load GitHub repos info
         await this.loadGitHubReposInfo();
+    }
+
+    /**
+     * Load chat configuration including available models
+     */
+    async loadChatConfig() {
+        try {
+            const config = await api.getChatConfig();
+            state.availableModels = config.available_models || [];
+        } catch (error) {
+            console.error('Failed to load chat config:', error);
+        }
     }
 
     /**
@@ -637,6 +653,15 @@ class App {
      * Handle entities loaded callback
      */
     onEntitiesLoaded(entities) {
+        // Update model selector for the selected entity's provider
+        if (state.selectedEntityId && entities.length > 0) {
+            const entity = entities.find(e => e.index_name === state.selectedEntityId);
+            if (entity) {
+                const provider = entity.llm_provider || 'anthropic';
+                updateModelSelectorForProvider(provider);
+            }
+        }
+
         // Entities loaded, load conversations for first entity
         if (entities.length > 0) {
             loadConversations();
