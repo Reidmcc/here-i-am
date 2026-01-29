@@ -17,7 +17,7 @@
     import { conversations, currentConversationId, currentConversation, resetConversationState, getNextRequestId, isValidRequestId } from './lib/stores/conversations.js';
     import { messages, resetMessagesState } from './lib/stores/messages.js';
     import { resetMemoriesState } from './lib/stores/memories.js';
-    import { settings, setPresetsFromBackend, applyBackendDefaults, updateSettingQuietly } from './lib/stores/settings.js';
+    import { settings, setPresetsFromBackend, applyBackendDefaults, updateSettingQuietly, getBackendDefaults } from './lib/stores/settings.js';
     import { ttsEnabled, ttsProvider, voices, sttEnabled, sttProvider, dictationMode, selectedVoiceId } from './lib/stores/voice.js';
     import * as api from './lib/api.js';
 
@@ -179,34 +179,48 @@
         const entity = getEntity(entityId);
         if (!entity) return;
 
-        // Get user's session preferences for this entity
+        // Get user's session preferences for this entity and backend defaults
         const prefs = entitySessionPreferences.getForEntity(entityId);
+        const backendDefaults = getBackendDefaults();
 
-        // Model: user preference > entity default from .env
+        // Model: user preference > entity default from .env > backend default
         if (prefs.model) {
             updateSettingQuietly('model', prefs.model);
             debug(`Applied user model preference: ${prefs.model}`);
         } else if (entity.default_model) {
             updateSettingQuietly('model', entity.default_model);
             debug(`Applied entity default model: ${entity.default_model}`);
+        } else if (backendDefaults.model) {
+            updateSettingQuietly('model', backendDefaults.model);
+            debug(`Applied backend default model: ${backendDefaults.model}`);
         }
 
-        // Temperature: user preference > keep current (from .env defaults)
+        // Temperature: user preference > backend default
         if (prefs.temperature !== null && prefs.temperature !== undefined) {
             updateSettingQuietly('temperature', prefs.temperature);
             debug(`Applied user temperature preference: ${prefs.temperature}`);
+        } else if (backendDefaults.temperature !== null) {
+            updateSettingQuietly('temperature', backendDefaults.temperature);
+            debug(`Applied backend default temperature: ${backendDefaults.temperature}`);
         }
 
-        // Max tokens: user preference > keep current (from .env defaults)
+        // Max tokens: user preference > backend default
         if (prefs.maxTokens !== null && prefs.maxTokens !== undefined) {
             updateSettingQuietly('maxTokens', prefs.maxTokens);
             debug(`Applied user maxTokens preference: ${prefs.maxTokens}`);
+        } else if (backendDefaults.maxTokens !== null) {
+            updateSettingQuietly('maxTokens', backendDefaults.maxTokens);
+            debug(`Applied backend default maxTokens: ${backendDefaults.maxTokens}`);
         }
 
-        // Voice: user preference > keep current
+        // Voice: user preference > no default (keep null/empty)
         if (prefs.voiceId !== null && prefs.voiceId !== undefined) {
             selectedVoiceId.set(prefs.voiceId);
             debug(`Applied user voice preference: ${prefs.voiceId}`);
+        } else {
+            // Reset to default (no specific voice selected)
+            selectedVoiceId.set(null);
+            debug(`Reset voice to default`);
         }
 
         // Restore entity-specific system prompt if stored (persisted to localStorage)

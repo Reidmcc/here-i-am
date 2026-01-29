@@ -17,6 +17,14 @@ const defaultSettings = {
 // Track whether backend defaults have been applied
 let backendDefaultsApplied = false;
 
+// Store backend defaults for reference when switching entities
+// These are the .env values that should be used when no user preference is set
+let storedBackendDefaults = {
+    model: null,
+    temperature: null,
+    maxTokens: null,
+};
+
 // Track which settings the user has explicitly modified during this session
 // This is NOT persisted - resets on page refresh, which is when .env should be re-applied
 const userModifiedThisSession = new Set();
@@ -192,12 +200,15 @@ export function applyBackendDefaults(configData) {
 
     if (configData.default_model) {
         updates.model = configData.default_model;
+        storedBackendDefaults.model = configData.default_model;
     }
     if (configData.default_temperature !== undefined) {
         updates.temperature = configData.default_temperature;
+        storedBackendDefaults.temperature = configData.default_temperature;
     }
     if (configData.default_max_tokens !== undefined) {
         updates.maxTokens = configData.default_max_tokens;
+        storedBackendDefaults.maxTokens = configData.default_max_tokens;
     }
 
     if (Object.keys(updates).length > 0) {
@@ -205,6 +216,14 @@ export function applyBackendDefaults(configData) {
     }
 
     backendDefaultsApplied = true;
+}
+
+/**
+ * Get the backend defaults loaded from .env config.
+ * Used when switching entities to reset settings that have no user preference.
+ */
+export function getBackendDefaults() {
+    return { ...storedBackendDefaults };
 }
 
 // Load presets from API (placeholder - actual loading in App.svelte)
