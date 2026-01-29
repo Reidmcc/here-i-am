@@ -84,9 +84,18 @@
                 addConversationToList(newConv);
             }
 
-            // Get entity-specific system prompt
-            const entityPrompts = entitySystemPrompts.getForEntity(respondingEntityId);
-            const systemPrompt = entityPrompts || $settings.systemPrompt;
+            // Get entity-specific system prompt (prepended to global prompt if both exist)
+            const entityPrompt = entitySystemPrompts.getForEntity(respondingEntityId);
+            const globalPrompt = $settings.systemPrompt;
+            // Combine: entity prompt prepended to global prompt (with separator if both exist)
+            let systemPrompt = '';
+            if (entityPrompt && globalPrompt) {
+                systemPrompt = `${entityPrompt}\n\n${globalPrompt}`;
+            } else if (entityPrompt) {
+                systemPrompt = entityPrompt;
+            } else if (globalPrompt) {
+                systemPrompt = globalPrompt;
+            }
 
             // Prepare request data
             const requestData = {
