@@ -11,9 +11,10 @@ function debug(msg) {
     if (el) el.innerHTML += '[api] ' + msg + '<br>';
 }
 
-// Direct connection to backend API
-// For production builds served by FastAPI, change to '/api'
-const API_BASE = 'http://localhost:8000/api';
+// API base URL - use relative path for production compatibility
+// In development, Vite dev server runs on port 5173 and the backend on port 8000
+// For production (served by FastAPI), relative path works directly
+const API_BASE = import.meta.env.DEV ? 'http://localhost:8000/api' : '/api';
 
 /** Default timeout for API requests (10 seconds) */
 const DEFAULT_TIMEOUT_MS = 10000;

@@ -13,12 +13,12 @@
     import ImportExportModal from './components/modals/ImportExportModal.svelte';
 
     import { theme, isLoading, activeModal, showToast, availableModels, githubRepos, githubRateLimits } from './lib/stores/app.js';
-    import { entities, selectedEntityId, isMultiEntityMode, resetMultiEntityState, currentConversationEntities, getEntity, entitySystemPrompts } from './lib/stores/entities.js';
+    import { entities, selectedEntityId, isMultiEntityMode, resetMultiEntityState, currentConversationEntities, getEntity, entitySystemPrompts, entitySessionPreferences } from './lib/stores/entities.js';
     import { conversations, currentConversationId, currentConversation, resetConversationState, getNextRequestId, isValidRequestId } from './lib/stores/conversations.js';
     import { messages, resetMessagesState } from './lib/stores/messages.js';
     import { resetMemoriesState } from './lib/stores/memories.js';
-    import { settings, presets } from './lib/stores/settings.js';
-    import { ttsEnabled, ttsProvider, voices, sttEnabled, sttProvider, dictationMode } from './lib/stores/voice.js';
+    import { settings, setPresetsFromBackend, applyBackendDefaults, updateSettingQuietly, getBackendDefaults } from './lib/stores/settings.js';
+    import { ttsEnabled, ttsProvider, voices, sttEnabled, sttProvider, dictationMode, selectedVoiceId } from './lib/stores/voice.js';
     import * as api from './lib/api.js';
 
     // Debug helper - logs to browser console
@@ -50,13 +50,32 @@
         debug('loadInitialData starting...');
 
         try {
-            // Load entities first
-            debug('Loading entities...');
-            const entityResponse = await api.listEntities();
-            // API returns { entities: [...], default_entity: "..." }
+            // Load entities and config in parallel for faster startup
+            debug('Loading entities and config...');
+            const [entityResponse, configData, presetsData] = await Promise.all([
+                api.listEntities(),
+                api.getChatConfig(),
+                api.getPresets()
+            ]);
+
+            // Set up entities
             const entityList = entityResponse.entities || [];
             entities.set(entityList);
             debug('Entities loaded: ' + entityList.length);
+
+            // Apply backend defaults FIRST (stores .env values for reference)
+            if (configData) {
+                applyBackendDefaults(configData);
+                if (configData.available_models) {
+                    availableModels.set(configData.available_models);
+                }
+            }
+            debug('Backend defaults applied');
+
+            // Set presets from backend
+            if (presetsData) {
+                setPresetsFromBackend(presetsData);
+            }
 
             // Determine which entity to use (stored or first available)
             let activeEntityId = $selectedEntityId;
@@ -65,8 +84,8 @@
                 selectedEntityId.set(activeEntityId);
             }
 
-            // Apply entity-specific settings (model, system prompt) on initial load
-            // This ensures the correct model is used when restoring from localStorage
+            // Apply entity-specific settings AFTER backend defaults
+            // This allows entity defaults to override the global backend defaults
             if (activeEntityId) {
                 applyEntitySettings(activeEntityId);
             }
@@ -75,21 +94,6 @@
             if (activeEntityId) {
                 debug('Loading conversations...');
                 await loadConversations();
-            }
-
-            // Load config and presets (critical for UI)
-            debug('Loading config...');
-            const [configData, presetsData] = await Promise.all([
-                api.getChatConfig(),
-                api.getPresets()
-            ]);
-            debug('Config loaded');
-
-            if (presetsData) {
-                presets.set(presetsData);
-            }
-            if (configData.available_models) {
-                availableModels.set(configData.available_models);
             }
 
             debug('Initialization complete');
@@ -168,24 +172,62 @@
         }
     }
 
-    // Apply entity-specific settings (model, system prompt)
+    // Apply entity-specific settings (model, temperature, maxTokens, voice, system prompt)
     function applyEntitySettings(entityId) {
         const entity = getEntity(entityId);
         if (!entity) return;
 
-        // Apply entity's default model if specified
-        if (entity.default_model) {
-            settings.update(s => ({ ...s, model: entity.default_model }));
-            debug(`Applied entity model: ${entity.default_model}`);
+        // Get user's session preferences for this entity and backend defaults
+        const prefs = entitySessionPreferences.getForEntity(entityId);
+        const backendDefaults = getBackendDefaults();
+
+        // Model: user preference > entity default from .env > backend default
+        if (prefs.model) {
+            updateSettingQuietly('model', prefs.model);
+            debug(`Applied user model preference: ${prefs.model}`);
+        } else if (entity.default_model) {
+            updateSettingQuietly('model', entity.default_model);
+            debug(`Applied entity default model: ${entity.default_model}`);
+        } else if (backendDefaults.model) {
+            updateSettingQuietly('model', backendDefaults.model);
+            debug(`Applied backend default model: ${backendDefaults.model}`);
         }
 
-        // Restore entity-specific system prompt if stored
+        // Temperature: user preference > backend default
+        if (prefs.temperature !== null && prefs.temperature !== undefined) {
+            updateSettingQuietly('temperature', prefs.temperature);
+            debug(`Applied user temperature preference: ${prefs.temperature}`);
+        } else if (backendDefaults.temperature !== null) {
+            updateSettingQuietly('temperature', backendDefaults.temperature);
+            debug(`Applied backend default temperature: ${backendDefaults.temperature}`);
+        }
+
+        // Max tokens: user preference > backend default
+        if (prefs.maxTokens !== null && prefs.maxTokens !== undefined) {
+            updateSettingQuietly('maxTokens', prefs.maxTokens);
+            debug(`Applied user maxTokens preference: ${prefs.maxTokens}`);
+        } else if (backendDefaults.maxTokens !== null) {
+            updateSettingQuietly('maxTokens', backendDefaults.maxTokens);
+            debug(`Applied backend default maxTokens: ${backendDefaults.maxTokens}`);
+        }
+
+        // Voice: user preference > no default (keep null/empty)
+        if (prefs.voiceId !== null && prefs.voiceId !== undefined) {
+            selectedVoiceId.set(prefs.voiceId);
+            debug(`Applied user voice preference: ${prefs.voiceId}`);
+        } else {
+            // Reset to default (no specific voice selected)
+            selectedVoiceId.set(null);
+            debug(`Reset voice to default`);
+        }
+
+        // Restore entity-specific system prompt if stored (persisted to localStorage)
         const storedPrompt = entitySystemPrompts.getForEntity(entityId);
         if (storedPrompt !== undefined && storedPrompt !== '') {
-            settings.update(s => ({ ...s, systemPrompt: storedPrompt }));
+            updateSettingQuietly('systemPrompt', storedPrompt);
         } else {
             // Clear system prompt when switching to entity without stored prompt
-            settings.update(s => ({ ...s, systemPrompt: '' }));
+            updateSettingQuietly('systemPrompt', '');
         }
     }
 

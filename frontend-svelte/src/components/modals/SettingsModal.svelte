@@ -4,7 +4,7 @@
     import { settings, presets, loadPresets, applyPreset, updateSettings } from '../../lib/stores/settings.js';
     import { theme } from '../../lib/stores/app.js';
     import { availableModels } from '../../lib/stores/app.js';
-    import { selectedEntityId, entities, selectedEntity, entitySystemPrompts } from '../../lib/stores/entities.js';
+    import { selectedEntityId, entities, selectedEntity, entitySystemPrompts, entitySessionPreferences } from '../../lib/stores/entities.js';
     import { ttsEnabled, sttEnabled, voices, selectedVoiceId, loadVoices, ttsProvider, styletts2Params, updateStyleTTS2Params } from '../../lib/stores/voice.js';
     import { githubRepos, githubRateLimits } from '../../lib/stores/app.js';
     import * as api from '../../lib/api.js';
@@ -67,6 +67,13 @@
         }
     }
 
+    // Helper to save per-entity preference (session-only)
+    function saveEntityPreference(key, value) {
+        if ($selectedEntityId && $selectedEntityId !== 'multi-entity') {
+            entitySessionPreferences.setPreference($selectedEntityId, key, value);
+        }
+    }
+
     function handleModelChange() {
         console.log('[SettingsModal] handleModelChange called:', {
             localModel,
@@ -76,15 +83,20 @@
         });
         if (localModel !== $settings.model) {
             updateSettings({ model: localModel });
+            saveEntityPreference('model', localModel);
         }
     }
 
     function handleTemperatureChange(event) {
-        updateSettings({ temperature: parseFloat(event.target.value) });
+        const value = parseFloat(event.target.value);
+        updateSettings({ temperature: value });
+        saveEntityPreference('temperature', value);
     }
 
     function handleMaxTokensChange(event) {
-        updateSettings({ maxTokens: parseInt(event.target.value) });
+        const value = parseInt(event.target.value);
+        updateSettings({ maxTokens: value });
+        saveEntityPreference('maxTokens', value);
     }
 
     function handleSystemPromptChange(event) {
@@ -103,7 +115,9 @@
     }
 
     function handleVoiceChange(event) {
-        selectedVoiceId.set(event.target.value);
+        const value = event.target.value;
+        selectedVoiceId.set(value);
+        saveEntityPreference('voiceId', value);
     }
 
     function handleStyleTTS2ParamChange(param, value) {
