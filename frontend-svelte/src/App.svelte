@@ -14,6 +14,7 @@
 
     import { theme, isLoading, activeModal, showToast, availableModels, githubRepos, githubRateLimits } from './lib/stores/app.js';
     import { entities, selectedEntityId, isMultiEntityMode, resetMultiEntityState, currentConversationEntities, getEntity, entitySessionPreferences } from './lib/stores/entities.js';
+import { get } from 'svelte/store';
     import { conversations, currentConversationId, currentConversation, resetConversationState, getNextRequestId, isValidRequestId } from './lib/stores/conversations.js';
     import { messages, resetMessagesState } from './lib/stores/messages.js';
     import { resetMemoriesState } from './lib/stores/memories.js';
@@ -86,8 +87,10 @@
 
             // Apply entity-specific settings AFTER backend defaults
             // This allows entity defaults to override the global backend defaults
+            // Pass entityList directly to avoid timing issues with derived stores
             if (activeEntityId) {
-                applyEntitySettings(activeEntityId);
+                debug(`Applying entity settings for: ${activeEntityId}`);
+                applyEntitySettings(activeEntityId, entityList);
             }
 
             // Load conversations for selected entity
@@ -173,13 +176,37 @@
     }
 
     // Apply entity-specific settings (model, temperature, maxTokens, voice, system prompt)
-    function applyEntitySettings(entityId) {
-        const entity = getEntity(entityId);
-        if (!entity) return;
+    // entityList is optional - if provided, will look up entity from it directly
+    // (useful during initialization when derived stores may not have updated yet)
+    function applyEntitySettings(entityId, entityList = null) {
+        // Look up entity - prefer direct lookup from entityList if provided,
+        // otherwise use the derived store via getEntity()
+        let entity = null;
+        if (entityList) {
+            entity = entityList.find(e => e.index_name === entityId);
+            debug(`Looking up entity ${entityId} from provided list: ${entity ? 'found' : 'not found'}`);
+        }
+        if (!entity) {
+            // Fallback to getting from store (get() ensures we have latest value)
+            const currentEntities = get(entities);
+            entity = currentEntities.find(e => e.index_name === entityId);
+            debug(`Looking up entity ${entityId} from store: ${entity ? 'found' : 'not found'}`);
+        }
+
+        if (!entity) {
+            debug(`Entity ${entityId} not found, cannot apply settings`);
+            return;
+        }
+
+        debug(`Applying settings for entity: ${entity.label} (${entityId})`);
+        debug(`Entity default_model: ${entity.default_model || 'not set'}`);
 
         // Get user's session preferences for this entity and backend defaults
         const prefs = entitySessionPreferences.getForEntity(entityId);
         const backendDefaults = getBackendDefaults();
+
+        debug(`User session prefs for entity: ${JSON.stringify(prefs)}`);
+        debug(`Backend defaults: ${JSON.stringify(backendDefaults)}`);
 
         // Model: user preference > entity default from .env > backend default
         if (prefs.model) {
@@ -191,6 +218,8 @@
         } else if (backendDefaults.model) {
             updateSettingQuietly('model', backendDefaults.model);
             debug(`Applied backend default model: ${backendDefaults.model}`);
+        } else {
+            debug(`WARNING: No model source available!`);
         }
 
         // Temperature: user preference > backend default
@@ -220,6 +249,9 @@
             selectedVoiceId.set(null);
             debug(`Reset voice to default`);
         }
+
+        // Log the final model that was set
+        debug(`Final model after applying settings: ${get(settings).model}`);
 
         // Note: Entity-specific system prompts are stored separately in entitySystemPrompts
         // and should NOT overwrite the global settings.systemPrompt. The entity prompt is

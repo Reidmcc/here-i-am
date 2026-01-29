@@ -29,14 +29,25 @@ let storedBackendDefaults = {
 // This is NOT persisted - resets on page refresh, which is when .env should be re-applied
 const userModifiedThisSession = new Set();
 
+// Fields that should NOT be persisted to localStorage
+// Model is excluded because it should always come from entity config or session preferences
+const NON_PERSISTENT_FIELDS = ['model'];
+
 // Create persistent settings store
+// Note: 'model' is intentionally NOT persisted to localStorage.
+// Model selection is managed per-entity via entitySessionPreferences (session-only)
+// and defaults to entity.default_model from .env on each page load.
 function createSettingsStore() {
     let stored = defaultSettings;
     if (typeof localStorage !== 'undefined') {
         try {
             const saved = localStorage.getItem('chatSettings');
             if (saved) {
-                stored = { ...defaultSettings, ...JSON.parse(saved) };
+                const parsed = JSON.parse(saved);
+                // Exclude non-persistent fields when loading
+                const filtered = { ...parsed };
+                NON_PERSISTENT_FIELDS.forEach(field => delete filtered[field]);
+                stored = { ...defaultSettings, ...filtered };
             }
         } catch (e) {
             stored = defaultSettings;
@@ -45,11 +56,18 @@ function createSettingsStore() {
 
     const { subscribe, set, update } = writable(stored);
 
+    // Helper to filter out non-persistent fields before saving
+    function filterForStorage(value) {
+        const filtered = { ...value };
+        NON_PERSISTENT_FIELDS.forEach(field => delete filtered[field]);
+        return filtered;
+    }
+
     return {
         subscribe,
         set: (value) => {
             if (typeof localStorage !== 'undefined') {
-                localStorage.setItem('chatSettings', JSON.stringify(value));
+                localStorage.setItem('chatSettings', JSON.stringify(filterForStorage(value)));
             }
             set(value);
         },
@@ -57,7 +75,7 @@ function createSettingsStore() {
             update(current => {
                 const newValue = fn(current);
                 if (typeof localStorage !== 'undefined') {
-                    localStorage.setItem('chatSettings', JSON.stringify(newValue));
+                    localStorage.setItem('chatSettings', JSON.stringify(filterForStorage(newValue)));
                 }
                 return newValue;
             });
