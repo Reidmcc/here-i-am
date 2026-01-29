@@ -4,7 +4,7 @@
  */
 
 // Import modules
-import { state, resetMemoryState, loadEntitySystemPromptsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName } from './modules/state.js';
+import { state, resetMemoryState, loadEntitySystemPromptsFromStorage, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName } from './modules/state.js';
 import { showToast, showLoading, setToastContainer, escapeHtml, renderMarkdown, truncateText, stripMarkdown } from './modules/utils.js';
 import { loadTheme, getCurrentTheme, setTheme } from './modules/theme.js';
 import { setElements as setModalElements, showModal, hideModal, closeActiveModal, isModalOpen, closeAllDropdowns } from './modules/modals.js';
@@ -569,6 +569,7 @@ class App {
 
         // Load saved state from localStorage
         loadEntitySystemPromptsFromStorage();
+        loadEntityModelsFromStorage();
         loadSelectedVoiceFromStorage();
         const savedResearcherName = loadResearcherName();
         if (savedResearcherName) {
@@ -659,8 +660,32 @@ class App {
             if (entity) {
                 const provider = entity.llm_provider || 'anthropic';
                 updateModelSelectorForProvider(provider);
+
+                // Restore saved model for this entity, or use default
+                const savedModel = state.entityModels[state.selectedEntityId];
+                if (savedModel) {
+                    // Verify saved model is valid for this provider
+                    const isValidModel = state.availableModels.some(
+                        m => m.id === savedModel && m.provider === provider
+                    );
+                    if (isValidModel) {
+                        state.settings.model = savedModel;
+                    } else if (entity.default_model) {
+                        state.settings.model = entity.default_model;
+                    }
+                } else if (entity.default_model) {
+                    state.settings.model = entity.default_model;
+                }
+
+                // Update the dropdown to reflect the selected model
+                if (this.elements.modelSelect) {
+                    this.elements.modelSelect.value = state.settings.model;
+                }
             }
         }
+
+        // Update model indicator display
+        updateModelIndicator();
 
         // Entities loaded, load conversations for first entity
         if (entities.length > 0) {
@@ -684,6 +709,10 @@ class App {
         if (this.elements.conversationMeta) {
             this.elements.conversationMeta.textContent = '';
         }
+
+        // Update model indicator and temperature range for new entity
+        updateModelIndicator();
+        updateTemperatureRange();
 
         // Load conversations for new entity
         loadConversations();
