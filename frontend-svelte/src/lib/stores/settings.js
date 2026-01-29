@@ -157,33 +157,28 @@ export function updateSettings(updates) {
 /**
  * Apply backend config defaults to settings store.
  * This should be called once during app initialization after loading /api/chat/config.
- * Only applies defaults if not already customized by user (stored in localStorage).
+ * Backend .env values always take precedence as the source of truth.
  *
  * @param {Object} configData - Response from /api/chat/config endpoint
  */
 export function applyBackendDefaults(configData) {
     if (!configData || backendDefaultsApplied) return;
 
-    // Check if user has customized settings (via localStorage)
-    const hasStoredSettings = typeof localStorage !== 'undefined' && localStorage.getItem('chatSettings');
+    // Always apply backend defaults - .env is the source of truth
+    const updates = {};
 
-    if (!hasStoredSettings) {
-        // No stored settings - apply backend defaults
-        const updates = {};
+    if (configData.default_model) {
+        updates.model = configData.default_model;
+    }
+    if (configData.default_temperature !== undefined) {
+        updates.temperature = configData.default_temperature;
+    }
+    if (configData.default_max_tokens !== undefined) {
+        updates.maxTokens = configData.default_max_tokens;
+    }
 
-        if (configData.default_model) {
-            updates.model = configData.default_model;
-        }
-        if (configData.default_temperature !== undefined) {
-            updates.temperature = configData.default_temperature;
-        }
-        if (configData.default_max_tokens !== undefined) {
-            updates.maxTokens = configData.default_max_tokens;
-        }
-
-        if (Object.keys(updates).length > 0) {
-            settings.update(s => ({ ...s, ...updates }));
-        }
+    if (Object.keys(updates).length > 0) {
+        settings.update(s => ({ ...s, ...updates }));
     }
 
     backendDefaultsApplied = true;
