@@ -16,6 +16,10 @@
     let localSystemPrompt = '';
     let entityPrompt = '';
     let loadingRateLimits = false;
+    let localModel = $settings.model;
+
+    // Sync local model from store when store changes externally
+    $: localModel = $settings.model;
 
     $: currentEntity = $selectedEntity;
 
@@ -62,8 +66,16 @@
         }
     }
 
-    function handleModelChange(event) {
-        updateSettings({ model: event.target.value });
+    function handleModelChange() {
+        console.log('[SettingsModal] handleModelChange called:', {
+            localModel,
+            storeModel: $settings.model,
+            availableModelsCount: $availableModels.length,
+            modelExists: $availableModels.some(m => m.id === localModel)
+        });
+        if (localModel !== $settings.model) {
+            updateSettings({ model: localModel });
+        }
     }
 
     function handleTemperatureChange(event) {
@@ -179,7 +191,7 @@
 
                     <div class="setting-row">
                         <label for="model-select">Model</label>
-                        <select id="model-select" value={$settings.model} on:change={handleModelChange}>
+                        <select id="model-select" bind:value={localModel} on:change={handleModelChange}>
                             {#each $availableModels as model}
                                 <option value={model.id}>{model.name}</option>
                             {/each}
