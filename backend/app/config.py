@@ -185,6 +185,33 @@ class GitHubRepoConfig:
 
 
 class Settings(BaseSettings):
+    # =========================================================================
+    # SERVER CONFIGURATION
+    # =========================================================================
+    # Server host: "127.0.0.1" for local only (default), "0.0.0.0" for all interfaces
+    server_host: str = "127.0.0.1"
+    # Server port
+    server_port: int = 8000
+
+    # =========================================================================
+    # AUTHENTICATION (Required for remote server deployment)
+    # =========================================================================
+    # Enable password-based authentication
+    # IMPORTANT: Set to True when deploying on a remote server!
+    auth_enabled: bool = False
+    # Password for authentication (required if auth_enabled=True)
+    # Use a strong, unique password
+    auth_password: str = ""
+    # Secret key for signing session tokens (auto-generated if not provided)
+    # For production, set a persistent secret to survive restarts
+    auth_session_secret: str = ""
+    # Session timeout in hours (default: 24 hours)
+    auth_session_timeout_hours: int = 24
+    # Allowed origins for CORS when auth is enabled (comma-separated)
+    # Leave empty to allow the server's own origin only
+    # Example: "https://myserver.com,https://localhost:8000"
+    auth_allowed_origins: str = ""
+
     # API Keys
     anthropic_api_key: str = ""
     openai_api_key: str = ""
@@ -580,6 +607,25 @@ class Settings(BaseSettings):
             return json.loads(self.codebase_navigator_default_excludes)
         except json.JSONDecodeError:
             return ["node_modules/", "venv/", ".venv/", "__pycache__/", ".git/"]
+
+    def get_auth_allowed_origins(self) -> List[str]:
+        """Get list of allowed origins for CORS when auth is enabled."""
+        if not self.auth_allowed_origins:
+            return []
+        return [o.strip() for o in self.auth_allowed_origins.split(",") if o.strip()]
+
+    def validate_auth_config(self) -> None:
+        """Validate authentication configuration. Raises ValueError if invalid."""
+        if self.auth_enabled:
+            if not self.auth_password:
+                raise ValueError(
+                    "AUTH_PASSWORD must be set when AUTH_ENABLED=true. "
+                    "Set a strong password in your .env file."
+                )
+            if len(self.auth_password) < 8:
+                raise ValueError(
+                    "AUTH_PASSWORD must be at least 8 characters long."
+                )
 
 
 settings = Settings()

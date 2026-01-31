@@ -326,6 +326,12 @@ class App {
 
             // Toast container
             toastContainer: document.getElementById('toast-container'),
+
+            // Login overlay elements
+            loginOverlay: document.getElementById('login-overlay'),
+            loginPassword: document.getElementById('login-password'),
+            loginBtn: document.getElementById('login-btn'),
+            loginError: document.getElementById('login-error'),
         };
     }
 
@@ -555,17 +561,133 @@ class App {
                 closeAllDropdowns();
             }
         });
+
+        // Login form handlers
+        this.elements.loginBtn?.addEventListener('click', () => this.handleLogin());
+        this.elements.loginPassword?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                this.handleLogin();
+            }
+        });
     }
 
     /**
      * Initialize the application
      */
     async initialize() {
-        // Load theme
+        // Load theme first (even before auth check, for consistent appearance)
         loadTheme();
         if (this.elements.themeSelect) {
             this.elements.themeSelect.value = getCurrentTheme();
         }
+
+        // Check authentication status before initializing the app
+        const authStatus = await this.checkAuthentication();
+        if (!authStatus.authenticated) {
+            // Show login screen and wait for authentication
+            this.showLoginScreen();
+            return;
+        }
+
+        // Continue with normal initialization
+        await this.initializeApp();
+    }
+
+    /**
+     * Check authentication status with the server
+     */
+    async checkAuthentication() {
+        try {
+            const status = await api.checkAuthStatus();
+            return status;
+        } catch (error) {
+            console.error('Failed to check auth status:', error);
+            // If we can't check auth status, assume auth is not required
+            return { auth_enabled: false, authenticated: true };
+        }
+    }
+
+    /**
+     * Show the login screen
+     */
+    showLoginScreen() {
+        if (this.elements.loginOverlay) {
+            this.elements.loginOverlay.style.display = 'flex';
+        }
+    }
+
+    /**
+     * Hide the login screen
+     */
+    hideLoginScreen() {
+        if (this.elements.loginOverlay) {
+            this.elements.loginOverlay.style.display = 'none';
+        }
+    }
+
+    /**
+     * Handle login form submission
+     */
+    async handleLogin() {
+        const password = this.elements.loginPassword?.value || '';
+
+        if (!password) {
+            this.showLoginError('Please enter a password');
+            return;
+        }
+
+        // Show loading state
+        if (this.elements.loginBtn) {
+            this.elements.loginBtn.classList.add('loading');
+            this.elements.loginBtn.disabled = true;
+        }
+
+        try {
+            await api.login(password);
+
+            // Login successful - hide login screen and initialize app
+            this.hideLoginScreen();
+            this.hideLoginError();
+            await this.initializeApp();
+        } catch (error) {
+            this.showLoginError(error.message || 'Login failed');
+        } finally {
+            // Remove loading state
+            if (this.elements.loginBtn) {
+                this.elements.loginBtn.classList.remove('loading');
+                this.elements.loginBtn.disabled = false;
+            }
+        }
+    }
+
+    /**
+     * Show login error message
+     */
+    showLoginError(message) {
+        if (this.elements.loginError) {
+            this.elements.loginError.textContent = message;
+            this.elements.loginError.style.display = 'block';
+        }
+    }
+
+    /**
+     * Hide login error message
+     */
+    hideLoginError() {
+        if (this.elements.loginError) {
+            this.elements.loginError.style.display = 'none';
+        }
+    }
+
+    /**
+     * Initialize the main application (after authentication)
+     */
+    async initializeApp() {
+        // Set up API client to handle 401 responses
+        api.onAuthRequired = () => {
+            this.showLoginScreen();
+        };
 
         // Load saved state from localStorage
         loadEntitySystemPromptsFromStorage();
