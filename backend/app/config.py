@@ -263,6 +263,38 @@ class Settings(BaseSettings):
     # This setting determines which mode the frontend starts in
     dictation_mode: str = "auto"
 
+    # =========================================================================
+    # LOCAL GPU TTS/STT SETTINGS
+    # =========================================================================
+    # These settings enable "direct local" mode where the frontend (browser)
+    # connects directly to TTS/STT servers running on the user's local machine.
+    # This is useful when the main application is hosted remotely but you want
+    # to use your local GPU for TTS/STT processing.
+    #
+    # When enabled:
+    # - Frontend bypasses the remote backend for TTS/STT operations
+    # - Frontend connects directly to localhost (user's machine) for TTS/STT
+    # - Voice management (listing, cloning) still works through the local servers
+    # - The backend's XTTS/StyleTTS2/Whisper settings are ignored for audio processing
+    #
+    # Note: The local TTS/STT servers must have CORS enabled (they do by default)
+
+    # Enable direct local TTS mode
+    # When True, frontend connects directly to local TTS server at local_tts_url
+    local_tts_enabled: bool = False
+    # URL of the local TTS server (XTTS or StyleTTS2 on user's machine)
+    # This is the URL the frontend will call directly from the browser
+    local_tts_url: str = "http://localhost:8021"
+    # Local TTS provider: "styletts2" or "xtts"
+    local_tts_provider: str = "styletts2"
+
+    # Enable direct local STT mode
+    # When True, frontend connects directly to local STT server at local_stt_url
+    local_stt_enabled: bool = False
+    # URL of the local Whisper server (on user's machine)
+    # This is the URL the frontend will call directly from the browser
+    local_stt_url: str = "http://localhost:8030"
+
     # Tool Use settings
     # Enable tool use (web search, content fetching) for AI entities
     tools_enabled: bool = True

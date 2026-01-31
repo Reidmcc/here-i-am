@@ -332,12 +332,19 @@ class TTSService:
 
     async def get_status(self) -> Dict[str, Any]:
         """
-        Get comprehensive TTS status including provider info.
+        Get comprehensive TTS status including provider info and local mode settings.
 
         Returns:
-            Dict with provider, configuration status, and available voices
+            Dict with provider, configuration status, available voices, and local mode config
         """
         provider = self.get_provider()
+
+        # Always include local mode settings so frontend knows if it can use direct local TTS
+        local_mode = {
+            "local_tts_enabled": settings.local_tts_enabled,
+            "local_tts_url": settings.local_tts_url,
+            "local_tts_provider": settings.local_tts_provider,
+        }
 
         if provider == "none":
             return {
@@ -346,6 +353,7 @@ class TTSService:
                 "voices": [],
                 "default_voice_id": None,
                 "model_id": None,
+                **local_mode,
             }
 
         voices = await self.get_voices_async()
@@ -356,6 +364,7 @@ class TTSService:
             "provider": provider,
             "voices": voices,
             "default_voice_id": default_voice_id,
+            **local_mode,
         }
 
         if provider == "elevenlabs":

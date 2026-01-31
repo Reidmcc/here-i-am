@@ -479,6 +479,45 @@ async def cache_stats():
     }
 
 
+@app.get("/voices")
+async def list_voices():
+    """
+    List all available voices from the voices.json file.
+
+    This endpoint allows direct voice listing from the frontend without
+    going through the main application backend.
+    """
+    voices_dir = os.environ.get("STYLETTS2_VOICES_DIR", "./styletts2_voices")
+    voices_file = Path(voices_dir) / "voices.json"
+
+    voices = []
+    if voices_file.exists():
+        try:
+            with open(voices_file, "r") as f:
+                voices_data = json.load(f)
+                for voice in voices_data:
+                    # Include essential voice info for frontend display
+                    voices.append({
+                        "voice_id": voice.get("voice_id"),
+                        "label": voice.get("label"),
+                        "description": voice.get("description", ""),
+                        "provider": "styletts2",
+                        # Include synthesis parameters
+                        "alpha": voice.get("alpha", 0.3),
+                        "beta": voice.get("beta", 0.7),
+                        "diffusion_steps": voice.get("diffusion_steps", 10),
+                        "embedding_scale": voice.get("embedding_scale", 1.0),
+                    })
+        except Exception as e:
+            logger.warning(f"Failed to load voices.json: {e}")
+
+    return {
+        "voices": voices,
+        "provider": "styletts2",
+        "voices_dir": voices_dir,
+    }
+
+
 @app.post("/cache/preload")
 async def preload_cache(
     speaker_paths: str = Form(..., description="Comma-separated list of speaker file paths"),
@@ -1290,6 +1329,108 @@ async def tts_stream(
         embedding_scale=embedding_scale,
         speed=speed,
     )
+
+
+def _get_voice_by_id(voice_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Look up a voice by ID from voices.json.
+
+    Returns the voice dict if found, None otherwise.
+    """
+    voices_dir = os.environ.get("STYLETTS2_VOICES_DIR", "./styletts2_voices")
+    voices_file = Path(voices_dir) / "voices.json"
+
+    if not voices_file.exists():
+        return None
+
+    try:
+        with open(voices_file, "r") as f:
+            voices_data = json.load(f)
+            for voice in voices_data:
+                if voice.get("voice_id") == voice_id:
+                    return voice
+    except Exception as e:
+        logger.warning(f"Failed to load voices.json: {e}")
+
+    return None
+
+
+@app.post("/tts_with_voice")
+async def tts_with_voice(
+    text: str = Form(..., description="Text to synthesize"),
+    voice_id: str = Form(..., description="Voice ID from voices.json"),
+    alpha: str = Form(None, description="Timbre parameter (0-1), uses voice default if not provided"),
+    beta: str = Form(None, description="Prosody parameter (0-1), uses voice default if not provided"),
+    diffusion_steps: str = Form(None, description="Diffusion steps (5-20), uses voice default if not provided"),
+    embedding_scale: str = Form(None, description="Embedding scale, uses voice default if not provided"),
+    speed: str = Form(None, description="Speech speed (0.5-2.0), uses voice default if not provided"),
+):
+    """
+    Convert text to speech using a voice ID from voices.json.
+
+    This endpoint is designed for direct local mode where the frontend
+    specifies a voice_id and the server looks up the speaker file.
+    """
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+
+    # Look up the voice
+    voice = _get_voice_by_id(voice_id)
+    if not voice:
+        raise HTTPException(status_code=404, detail=f"Voice not found: {voice_id}")
+
+    sample_path = voice.get("sample_path")
+    if not sample_path or not os.path.exists(sample_path):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Voice sample file not found for voice: {voice_id}"
+        )
+
+    # Use provided parameters or fall back to voice defaults
+    try:
+        alpha_val = float(alpha) if alpha is not None else voice.get("alpha", 0.3)
+        beta_val = float(beta) if beta is not None else voice.get("beta", 0.7)
+        diffusion_steps_val = int(diffusion_steps) if diffusion_steps is not None else voice.get("diffusion_steps", 10)
+        embedding_scale_val = float(embedding_scale) if embedding_scale is not None else voice.get("embedding_scale", 1.0)
+        speed_val = float(speed) if speed is not None else voice.get("speed", 1.0)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}")
+
+    # Validate parameters
+    if not 0 <= alpha_val <= 1:
+        raise HTTPException(status_code=400, detail="Alpha must be between 0 and 1")
+    if not 0 <= beta_val <= 1:
+        raise HTTPException(status_code=400, detail="Beta must be between 0 and 1")
+    if not 1 <= diffusion_steps_val <= 50:
+        raise HTTPException(status_code=400, detail="Diffusion steps must be between 1 and 50")
+    if not 0.5 <= speed_val <= 2.0:
+        raise HTTPException(status_code=400, detail="Speed must be between 0.5 and 2.0")
+
+    try:
+        logger.info(f"Generating speech with voice '{voice_id}' for {len(text)} chars, speed={speed_val}")
+        audio_bytes = synthesize_with_cached_embeddings(
+            text=text,
+            speaker_wav_path=sample_path,
+            alpha=alpha_val,
+            beta=beta_val,
+            diffusion_steps=diffusion_steps_val,
+            embedding_scale=embedding_scale_val,
+            speed=speed_val,
+        )
+
+        logger.info(f"Generated {len(audio_bytes)} bytes of audio")
+
+        return Response(
+            content=audio_bytes,
+            media_type="audio/wav",
+            headers={"Content-Disposition": "inline"},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"TTS generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
 
 
 def create_app() -> FastAPI:

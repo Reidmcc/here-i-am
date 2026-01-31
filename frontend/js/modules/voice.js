@@ -3,7 +3,16 @@
  * Handles TTS (text-to-speech) and STT (speech-to-text) functionality
  */
 
-import { state, loadSelectedVoiceFromStorage, saveSelectedVoiceToStorage, clearAudioCache } from './state.js';
+import {
+    state,
+    loadSelectedVoiceFromStorage,
+    saveSelectedVoiceToStorage,
+    clearAudioCache,
+    loadLocalTtsSettingsFromStorage,
+    saveLocalTtsSettingsToStorage,
+    loadLocalSttSettingsFromStorage,
+    saveLocalSttSettingsToStorage
+} from './state.js';
 import { showToast, escapeHtml, stripMarkdown } from './utils.js';
 import { showModal, hideModal } from './modals.js';
 
@@ -27,12 +36,55 @@ export function setElements(els) {
 
 /**
  * Check TTS status and update state
+ * Handles both proxied TTS (through backend) and direct local TTS modes
  */
 export async function checkTTSStatus() {
     try {
         const status = await api.getTTSStatus();
 
-        if (status.configured) {
+        // Check if local TTS direct mode is enabled by the server
+        if (status.local_tts_enabled) {
+            // Load any user-configured URL overrides from localStorage
+            loadLocalTtsSettingsFromStorage();
+
+            // Use server-provided URL if no localStorage override
+            if (!localStorage.getItem('local_tts_settings')) {
+                state.localTtsUrl = status.local_tts_url;
+                state.localTtsProvider = status.local_tts_provider;
+            }
+
+            state.localTtsEnabled = true;
+
+            // Check health of the local TTS server directly
+            const health = await api.checkLocalTtsHealth(state.localTtsUrl);
+            state.localTtsServerHealthy = health.healthy;
+
+            if (health.healthy) {
+                // Get voices directly from the local server
+                try {
+                    const voicesData = await api.getLocalTtsVoices(state.localTtsUrl);
+                    state.ttsVoices = voicesData.voices || [];
+                    state.ttsProvider = state.localTtsProvider;
+                    state.ttsEnabled = true;
+
+                    // Load selected voice from storage
+                    loadSelectedVoiceFromStorage();
+                    if (!state.selectedVoiceId && state.ttsVoices.length > 0) {
+                        state.selectedVoiceId = state.ttsVoices[0].voice_id;
+                    }
+
+                    console.log(`Local TTS (${state.localTtsProvider}) enabled with ${state.ttsVoices.length} voice(s)`);
+                } catch (e) {
+                    console.warn('Failed to get voices from local TTS server:', e);
+                    state.ttsEnabled = false;
+                }
+            } else {
+                console.warn('Local TTS server not healthy:', health.error);
+                state.ttsEnabled = false;
+            }
+        } else if (status.configured) {
+            // Standard proxied TTS mode (through backend)
+            state.localTtsEnabled = false;
             state.ttsEnabled = true;
             state.ttsProvider = status.provider;
             state.ttsVoices = status.voices || [];
@@ -54,12 +106,14 @@ export async function checkTTSStatus() {
             }
         } else {
             state.ttsEnabled = false;
+            state.localTtsEnabled = false;
         }
 
         updateTTSUI();
     } catch (error) {
         console.warn('TTS not available:', error);
         state.ttsEnabled = false;
+        state.localTtsEnabled = false;
     }
 }
 
@@ -74,8 +128,12 @@ export function updateTTSUI() {
             elements.ttsProviderGroup.style.display = 'block';
         }
         if (elements.ttsProviderName) {
+            // Determine provider name and mode
+            let providerName = '';
+            let modeLabel = state.localTtsEnabled ? 'direct local' : 'local';
+
             if (state.ttsProvider === 'styletts2') {
-                elements.ttsProviderName.textContent = 'StyleTTS 2 (local)';
+                providerName = `StyleTTS 2 (${modeLabel})`;
                 if (state.localTtsServerHealthy) {
                     elements.ttsProviderStatus.textContent = 'Connected';
                     elements.ttsProviderStatus.className = 'tts-status connected';
@@ -84,7 +142,7 @@ export function updateTTSUI() {
                     elements.ttsProviderStatus.className = 'tts-status error';
                 }
             } else if (state.ttsProvider === 'xtts') {
-                elements.ttsProviderName.textContent = 'XTTS v2 (local)';
+                providerName = `XTTS v2 (${modeLabel})`;
                 if (state.localTtsServerHealthy) {
                     elements.ttsProviderStatus.textContent = 'Connected';
                     elements.ttsProviderStatus.className = 'tts-status connected';
@@ -93,14 +151,27 @@ export function updateTTSUI() {
                     elements.ttsProviderStatus.className = 'tts-status error';
                 }
             } else {
-                elements.ttsProviderName.textContent = 'ElevenLabs';
+                providerName = 'ElevenLabs';
                 elements.ttsProviderStatus.textContent = 'Connected';
                 elements.ttsProviderStatus.className = 'tts-status connected';
             }
+
+            elements.ttsProviderName.textContent = providerName;
+
+            // Show local TTS URL if in direct local mode
+            if (state.localTtsEnabled && elements.localTtsUrlDisplay) {
+                elements.localTtsUrlDisplay.textContent = state.localTtsUrl;
+                if (elements.localTtsUrlGroup) {
+                    elements.localTtsUrlGroup.style.display = 'block';
+                }
+            } else if (elements.localTtsUrlGroup) {
+                elements.localTtsUrlGroup.style.display = 'none';
+            }
         }
 
-        // Show voice cloning option for XTTS/StyleTTS2
-        if (state.ttsProvider === 'xtts' || state.ttsProvider === 'styletts2') {
+        // Show voice cloning option for XTTS/StyleTTS2 (only in proxied mode)
+        // In direct local mode, voice cloning should be done on the local machine
+        if ((state.ttsProvider === 'xtts' || state.ttsProvider === 'styletts2') && !state.localTtsEnabled) {
             if (elements.voiceCloneGroup) {
                 elements.voiceCloneGroup.style.display = 'block';
             }
@@ -123,6 +194,9 @@ export function updateTTSUI() {
     } else {
         if (elements.ttsProviderGroup) {
             elements.ttsProviderGroup.style.display = 'none';
+        }
+        if (elements.localTtsUrlGroup) {
+            elements.localTtsUrlGroup.style.display = 'none';
         }
     }
 
@@ -207,6 +281,7 @@ function updateVoiceList() {
 
 /**
  * Speak a message using TTS
+ * Handles both proxied TTS (through backend) and direct local TTS modes
  * @param {string} content - Message content
  * @param {HTMLElement} btn - Speak button element
  * @param {string} messageId - Optional message ID for caching
@@ -238,11 +313,23 @@ export async function speakMessage(content, btn, messageId = null) {
         // Strip markdown for cleaner speech
         const textContent = stripMarkdown(content);
 
-        // Get StyleTTS 2 parameters if using StyleTTS 2 provider
-        const styletts2Params = state.ttsProvider === 'styletts2' ? getStyleTTS2Params() : null;
+        let audioBlob;
 
-        // Get audio from API with selected voice and parameters
-        const audioBlob = await api.textToSpeech(textContent, state.selectedVoiceId, styletts2Params);
+        if (state.localTtsEnabled) {
+            // Direct local TTS mode - call local server directly
+            const params = state.ttsProvider === 'styletts2' ? getStyleTTS2Params() : {};
+            audioBlob = await api.localTextToSpeech(
+                state.localTtsUrl,
+                textContent,
+                state.selectedVoiceId,
+                params
+            );
+        } else {
+            // Proxied TTS mode - call through backend
+            const styletts2Params = state.ttsProvider === 'styletts2' ? getStyleTTS2Params() : null;
+            audioBlob = await api.textToSpeech(textContent, state.selectedVoiceId, styletts2Params);
+        }
+
         const audioUrl = URL.createObjectURL(audioBlob);
 
         // Cache the audio
@@ -609,12 +696,49 @@ export async function saveVoiceEdit() {
 
 /**
  * Check STT status
+ * Handles both proxied STT (through backend) and direct local STT modes
  */
 export async function checkSTTStatus() {
     try {
         const status = await api.getSTTStatus();
 
-        if (status.enabled) {
+        // Check if local STT direct mode is enabled by the server
+        if (status.local_stt_enabled) {
+            // Load any user-configured URL overrides from localStorage
+            loadLocalSttSettingsFromStorage();
+
+            // Use server-provided URL if no localStorage override
+            if (!localStorage.getItem('local_stt_settings')) {
+                state.localSttUrl = status.local_stt_url;
+            }
+
+            state.localSttEnabled = true;
+
+            // Check health of the local STT server directly
+            const health = await api.checkLocalSttHealth(state.localSttUrl);
+            state.localSttServerHealthy = health.healthy;
+
+            if (health.healthy) {
+                state.dictationMode = 'whisper';  // Use whisper mode for local
+                initWhisperDictation();
+                console.log(`Local STT (Whisper) enabled at ${state.localSttUrl}`);
+
+                // Show voice button
+                if (elements.voiceBtn) {
+                    elements.voiceBtn.style.display = 'flex';
+                }
+            } else {
+                console.warn('Local STT server not healthy:', health.error);
+                // Fall back to browser dictation if available
+                state.dictationMode = 'browser';
+                initBrowserDictation();
+                if (elements.voiceBtn) {
+                    elements.voiceBtn.style.display = 'flex';
+                }
+            }
+        } else if (status.enabled) {
+            // Standard proxied STT mode (through backend)
+            state.localSttEnabled = false;
             state.dictationMode = status.effective_mode;
 
             if (status.effective_mode === 'whisper') {
@@ -629,6 +753,7 @@ export async function checkSTTStatus() {
             }
         } else {
             state.dictationMode = 'none';
+            state.localSttEnabled = false;
             if (elements.voiceBtn) {
                 elements.voiceBtn.style.display = 'none';
             }
@@ -636,6 +761,7 @@ export async function checkSTTStatus() {
     } catch (error) {
         console.warn('STT not available:', error);
         state.dictationMode = 'none';
+        state.localSttEnabled = false;
     }
 }
 
@@ -781,6 +907,7 @@ function stopWhisperRecording() {
 
 /**
  * Process Whisper recording
+ * Handles both proxied STT (through backend) and direct local STT modes
  */
 async function processWhisperRecording() {
     if (state.audioChunks.length === 0) {
@@ -798,7 +925,15 @@ async function processWhisperRecording() {
     }
 
     try {
-        const result = await api.transcribeAudio(audioBlob);
+        let result;
+
+        if (state.localSttEnabled) {
+            // Direct local STT mode - call local server directly
+            result = await api.localTranscribeAudio(state.localSttUrl, audioBlob);
+        } else {
+            // Proxied STT mode - call through backend
+            result = await api.transcribeAudio(audioBlob);
+        }
 
         if (result.text && elements.messageInput) {
             elements.messageInput.value += result.text;

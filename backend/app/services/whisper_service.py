@@ -124,8 +124,14 @@ class WhisperService:
             raise
 
     async def get_status(self) -> Dict[str, Any]:
-        """Get Whisper server status information including dictation mode preference."""
+        """Get Whisper server status information including dictation mode preference and local mode settings."""
         dictation_mode = self.dictation_mode
+
+        # Always include local mode settings so frontend knows if it can use direct local STT
+        local_mode = {
+            "local_stt_enabled": settings.local_stt_enabled,
+            "local_stt_url": settings.local_stt_url,
+        }
 
         if not self.enabled:
             effective_mode = "browser" if dictation_mode != "whisper" else "none"
@@ -136,6 +142,7 @@ class WhisperService:
                 "server_healthy": False,
                 "dictation_mode": dictation_mode,
                 "effective_mode": effective_mode,
+                **local_mode,
             }
 
         # Retry once on connection failure (handles brief server unavailability)
@@ -169,6 +176,7 @@ class WhisperService:
                             "cuda_available": data.get("cuda_available", False),
                             "dictation_mode": dictation_mode,
                             "effective_mode": effective_mode,
+                            **local_mode,
                         }
                     else:
                         last_error = f"HTTP {response.status_code}"
@@ -200,6 +208,7 @@ class WhisperService:
             "server_healthy": False,
             "dictation_mode": dictation_mode,
             "effective_mode": effective_mode,
+            **local_mode,
         }
 
 

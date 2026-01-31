@@ -58,10 +58,19 @@ export const state = {
     ttsProvider: null,
     ttsVoices: [],
     selectedVoiceId: null,
-    localTtsServerHealthy: false,
     audioCache: new Map(),
     currentAudio: null,
     currentSpeakingBtn: null,
+
+    // Local TTS/STT direct mode (for remote main app + local GPU servers)
+    // When enabled, frontend connects directly to local servers instead of through backend
+    localTtsEnabled: false,
+    localTtsUrl: 'http://localhost:8021',  // Default StyleTTS2 port
+    localTtsProvider: 'styletts2',
+    localSttEnabled: false,
+    localSttUrl: 'http://localhost:8030',  // Default Whisper port
+    localTtsServerHealthy: false,  // Health of the direct local TTS server
+    localSttServerHealthy: false,  // Health of the direct local STT server
 
     // STT state
     dictationMode: 'none',
@@ -243,4 +252,68 @@ export function saveResearcherName(name) {
         state.settings.researcherName = name;
     }
     localStorage.setItem('researcher_name', state.settings.researcherName || '');
+}
+
+/**
+ * Load local TTS/STT settings from localStorage
+ * These settings allow users to override the server-configured URLs
+ * for direct local server connections
+ */
+export function loadLocalTtsSettingsFromStorage() {
+    try {
+        const saved = localStorage.getItem('local_tts_settings');
+        if (saved) {
+            const settings = JSON.parse(saved);
+            // Only load URL and provider overrides - enabled flag comes from server
+            if (settings.localTtsUrl) state.localTtsUrl = settings.localTtsUrl;
+            if (settings.localTtsProvider) state.localTtsProvider = settings.localTtsProvider;
+        }
+    } catch (e) {
+        console.warn('Failed to load local TTS settings:', e);
+    }
+}
+
+/**
+ * Save local TTS settings to localStorage
+ */
+export function saveLocalTtsSettingsToStorage() {
+    try {
+        const settings = {
+            localTtsUrl: state.localTtsUrl,
+            localTtsProvider: state.localTtsProvider,
+        };
+        localStorage.setItem('local_tts_settings', JSON.stringify(settings));
+    } catch (e) {
+        console.warn('Failed to save local TTS settings:', e);
+    }
+}
+
+/**
+ * Load local STT settings from localStorage
+ */
+export function loadLocalSttSettingsFromStorage() {
+    try {
+        const saved = localStorage.getItem('local_stt_settings');
+        if (saved) {
+            const settings = JSON.parse(saved);
+            // Only load URL override - enabled flag comes from server
+            if (settings.localSttUrl) state.localSttUrl = settings.localSttUrl;
+        }
+    } catch (e) {
+        console.warn('Failed to load local STT settings:', e);
+    }
+}
+
+/**
+ * Save local STT settings to localStorage
+ */
+export function saveLocalSttSettingsToStorage() {
+    try {
+        const settings = {
+            localSttUrl: state.localSttUrl,
+        };
+        localStorage.setItem('local_stt_settings', JSON.stringify(settings));
+    } catch (e) {
+        console.warn('Failed to save local STT settings:', e);
+    }
 }
