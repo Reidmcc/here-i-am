@@ -145,6 +145,40 @@ def _fetch_with_playwright_sync(url: str) -> Tuple[Optional[str], Optional[str]]
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
+    # Resource types to block for faster loading (we only need HTML/JS for text extraction)
+    BLOCKED_RESOURCE_TYPES = {"image", "font", "stylesheet", "media", "imageset"}
+
+    # Common tracking/analytics domains to block
+    BLOCKED_DOMAINS = {
+        "google-analytics.com", "googletagmanager.com", "facebook.net",
+        "doubleclick.net", "analytics.", "tracking.", "ads.", "adservice.",
+        "hotjar.com", "mixpanel.com", "segment.io", "amplitude.com",
+    }
+
+    def should_block_request(route):
+        """Check if a request should be blocked for performance."""
+        request = route.request
+        resource_type = request.resource_type
+
+        # Block non-essential resource types
+        if resource_type in BLOCKED_RESOURCE_TYPES:
+            return True
+
+        # Block known tracking/analytics domains
+        url_lower = request.url.lower()
+        for domain in BLOCKED_DOMAINS:
+            if domain in url_lower:
+                return True
+
+        return False
+
+    def handle_route(route):
+        """Route handler that blocks unnecessary requests."""
+        if should_block_request(route):
+            route.abort()
+        else:
+            route.continue_()
+
     try:
         logger.debug(f"Playwright: Starting browser for {url}")
 
@@ -159,7 +193,10 @@ def _fetch_with_playwright_sync(url: str) -> Tuple[Optional[str], Optional[str]]
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 )
                 page = context.new_page()
-                logger.debug(f"Playwright: Page created, navigating to {url}")
+
+                # Block unnecessary resources for faster loading
+                page.route("**/*", handle_route)
+                logger.debug(f"Playwright: Page created with resource blocking, navigating to {url}")
 
                 # Try to navigate with networkidle first (best for SPAs)
                 # But use a shorter timeout since networkidle can hang on some pages
