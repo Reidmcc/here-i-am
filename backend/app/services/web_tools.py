@@ -7,6 +7,7 @@ can use during conversations to gather current information.
 Includes JavaScript rendering support via Playwright for single-page applications.
 """
 
+import asyncio
 import httpx
 import json
 import logging
@@ -35,8 +36,9 @@ logger = logging.getLogger(__name__)
 BRAVE_SEARCH_API_URL = "https://api.search.brave.com/res/v1/web/search"
 SEARCH_TIMEOUT = 10.0  # seconds
 FETCH_TIMEOUT = 15.0  # seconds
-PLAYWRIGHT_TIMEOUT = 30000  # milliseconds (30 seconds for JS-heavy pages)
-NETWORK_IDLE_TIMEOUT = 500  # milliseconds to wait for network idle
+PLAYWRIGHT_TIMEOUT = 20000  # milliseconds (20 seconds for navigation)
+PLAYWRIGHT_HARD_TIMEOUT = 45.0  # seconds - absolute maximum for entire Playwright operation
+NETWORK_IDLE_TIMEOUT = 500  # milliseconds to wait for network idle after navigation
 DEFAULT_NUM_RESULTS = 5
 DEFAULT_MAX_LENGTH = 50000
 
@@ -124,7 +126,12 @@ async def _fetch_with_playwright(url: str) -> Tuple[Optional[str], Optional[str]
     Fetch a URL using Playwright with JavaScript rendering.
 
     Launches a headless Chromium browser, navigates to the URL,
-    waits for network idle, and returns the rendered HTML.
+    waits for the page to load, and returns the rendered HTML.
+
+    Uses a multi-layer timeout strategy:
+    1. Hard timeout wrapper (PLAYWRIGHT_HARD_TIMEOUT) to prevent indefinite hangs
+    2. Navigation timeout (PLAYWRIGHT_TIMEOUT) for page.goto()
+    3. Graceful wait strategy: tries networkidle, falls back to domcontentloaded
 
     Args:
         url: The URL to fetch
@@ -137,48 +144,101 @@ async def _fetch_with_playwright(url: str) -> Tuple[Optional[str], Optional[str]
     if not PLAYWRIGHT_AVAILABLE:
         return None, "Playwright is not installed. Install with: pip install playwright && playwright install chromium"
 
-    try:
-        async with async_playwright() as p:
-            # Launch headless Chromium
-            browser = await p.chromium.launch(headless=True)
+    async def _do_fetch() -> Tuple[Optional[str], Optional[str]]:
+        """Inner function that performs the actual fetch, wrapped by hard timeout."""
+        browser = None
+        try:
+            logger.debug(f"Playwright: Starting browser for {url}")
+            p = await async_playwright().start()
+
             try:
+                # Launch headless Chromium
+                browser = await p.chromium.launch(headless=True)
+                logger.debug(f"Playwright: Browser launched successfully")
+
                 # Create a new context with a reasonable viewport
                 context = await browser.new_context(
                     viewport={"width": 1280, "height": 720},
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 )
                 page = await context.new_page()
+                logger.debug(f"Playwright: Page created, navigating to {url}")
 
-                # Navigate to the URL and wait for network to be idle
-                # This ensures JavaScript has finished loading and rendering
-                await page.goto(
-                    url,
-                    timeout=PLAYWRIGHT_TIMEOUT,
-                    wait_until="networkidle",  # Wait until no network requests for 500ms
-                )
+                # Try to navigate with networkidle first (best for SPAs)
+                # But use a shorter timeout since networkidle can hang on some pages
+                try:
+                    await page.goto(
+                        url,
+                        timeout=PLAYWRIGHT_TIMEOUT,
+                        wait_until="networkidle",
+                    )
+                    logger.debug(f"Playwright: Navigation completed (networkidle)")
+                except Exception as nav_error:
+                    # If networkidle times out, try again with just domcontentloaded
+                    # This is faster but may miss some dynamic content
+                    logger.warning(f"Playwright: networkidle failed ({type(nav_error).__name__}), retrying with domcontentloaded")
+                    await page.goto(
+                        url,
+                        timeout=PLAYWRIGHT_TIMEOUT,
+                        wait_until="domcontentloaded",
+                    )
+                    # Give JavaScript a bit more time to render after DOM is ready
+                    await page.wait_for_timeout(2000)
+                    logger.debug(f"Playwright: Navigation completed (domcontentloaded + wait)")
 
                 # Additional small wait to ensure any final rendering is complete
                 await page.wait_for_timeout(NETWORK_IDLE_TIMEOUT)
 
                 # Get the rendered HTML
                 html_content = await page.content()
+                content_length = len(html_content) if html_content else 0
+                logger.debug(f"Playwright: Got content, {content_length} chars")
 
                 await context.close()
+                await browser.close()
+                await p.stop()
+
                 return html_content, None
 
             finally:
-                await browser.close()
+                # Ensure browser is closed even on error
+                if browser:
+                    try:
+                        await browser.close()
+                    except Exception:
+                        pass
+                try:
+                    await p.stop()
+                except Exception:
+                    pass
 
-    except Exception as e:
-        error_msg = str(e)
-        # Provide more helpful error messages
-        if "Executable doesn't exist" in error_msg or "browserType.launch" in error_msg:
-            return None, "Playwright browsers not installed. Run: playwright install chromium"
-        elif "Timeout" in error_msg:
-            return None, f"Page load timed out after {PLAYWRIGHT_TIMEOUT // 1000} seconds"
-        else:
-            logger.exception(f"Playwright error fetching {url}")
-            return None, f"JavaScript rendering failed: {error_msg}"
+        except Exception as e:
+            # Get detailed error information
+            error_type = type(e).__name__
+            error_msg = str(e) if str(e) else repr(e)
+
+            logger.error(f"Playwright error ({error_type}) fetching {url}: {error_msg}")
+
+            # Provide more helpful error messages based on error type/content
+            if "Executable doesn't exist" in error_msg or "browserType.launch" in error_msg:
+                return None, "Playwright browsers not installed. Run: playwright install chromium"
+            elif "Timeout" in error_msg or "Timeout" in error_type:
+                return None, f"Page load timed out after {PLAYWRIGHT_TIMEOUT // 1000} seconds"
+            elif not error_msg or error_msg == "None":
+                return None, f"JavaScript rendering failed: {error_type} (no details available)"
+            else:
+                return None, f"JavaScript rendering failed ({error_type}): {error_msg}"
+
+    # Wrap the entire operation in a hard timeout to prevent indefinite hangs
+    # This catches cases where networkidle never completes (e.g., WebSocket connections)
+    try:
+        return await asyncio.wait_for(
+            _do_fetch(),
+            timeout=PLAYWRIGHT_HARD_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"Playwright: Hard timeout ({PLAYWRIGHT_HARD_TIMEOUT}s) exceeded for {url}")
+        return None, f"Page rendering timed out after {PLAYWRIGHT_HARD_TIMEOUT} seconds (page may have continuous network activity)"
 
 
 async def web_search(query: str, num_results: int = DEFAULT_NUM_RESULTS) -> str:
