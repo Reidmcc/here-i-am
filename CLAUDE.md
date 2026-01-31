@@ -226,7 +226,7 @@ playwright install chromium
 - Tool schemas are defined in Anthropic format and automatically converted for OpenAI
 - Tool execution is async with proper error handling
 - web_search uses 10-second timeout; web_fetch uses 15-second timeout (httpx)
-- Playwright uses multi-layer timeout: 20s navigation + 45s hard timeout to prevent hangs
+- Playwright uses multi-layer timeout: 60s navigation + 90s hard timeout to prevent hangs
 - Playwright tries networkidle first, falls back to domcontentloaded + wait if that times out
 
 ### GitHub Repository Integration
@@ -2041,7 +2041,7 @@ Some state persists across page refreshes:
     - `web_search` requires `BRAVE_SEARCH_API_KEY` to function
     - `web_fetch` works independently (uses httpx to fetch URLs)
     - Both tools have timeouts (10s for search, 15s for fetch)
-    - Playwright uses multi-layer timeout: 20s navigation + 45s hard timeout to prevent hangs
+    - Playwright uses multi-layer timeout: 60s navigation + 90s hard timeout to prevent hangs
     - Playwright tries networkidle first, falls back to domcontentloaded if that times out
     - web_fetch includes smart HTML content extraction (removes nav, footer, scripts)
     - **JavaScript rendering**: web_fetch automatically detects SPAs and uses Playwright if needed
@@ -2388,10 +2388,11 @@ web_search_max_results = 20           # Brave API limit
 web_search_timeout = 10               # Seconds
 web_fetch_max_length = 50000          # Characters (50KB)
 web_fetch_timeout = 15                # Seconds (httpx)
-playwright_timeout = 20000            # Milliseconds (20s for navigation)
-playwright_hard_timeout = 45.0        # Seconds - absolute max for entire operation
+playwright_timeout = 60000            # Milliseconds (60s for navigation)
+playwright_hard_timeout = 90.0        # Seconds - absolute max for entire operation
 network_idle_timeout = 500            # Milliseconds (wait after navigation)
 min_content_length = 100              # Chars - below this may trigger JS rendering
+# Resource blocking: images, fonts, CSS, media, and tracking domains are blocked
 
 # XTTS defaults (config.py)
 xtts_enabled = False              # Must be explicitly enabled
