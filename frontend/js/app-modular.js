@@ -221,6 +221,10 @@ class App {
             ttsProviderName: document.getElementById('tts-provider-name'),
             ttsProviderStatus: document.getElementById('tts-provider-status'),
 
+            // Local TTS/STT URL display (for direct local mode)
+            localTtsUrlGroup: document.getElementById('local-tts-url-group'),
+            localTtsUrlDisplay: document.getElementById('local-tts-url-display'),
+
             // Voice cloning group
             voiceCloneGroup: document.getElementById('voice-clone-group'),
 

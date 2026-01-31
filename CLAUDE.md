@@ -595,6 +595,63 @@ The server will:
 - GPU strongly recommended for `large-v3` model
 - Windows users: CUDA DLL paths are auto-configured
 
+### Local GPU TTS/STT (Remote App + Local Servers)
+
+The application supports a **"direct local" mode** where the frontend connects directly to TTS/STT servers running on the user's local machine, even when the main application is hosted remotely.
+
+**Use Cases:**
+- You host the main app on a cloud server without GPU
+- You want to use your local machine's GPU for TTS/STT processing
+- You want lower latency for audio (audio stays on your machine)
+
+**How It Works:**
+
+1. **Traditional Mode**: Frontend → Remote Backend → Local TTS/STT servers (doesn't work when backend is remote)
+2. **Direct Local Mode**: Frontend → Local TTS/STT servers directly (bypasses backend for audio)
+
+When enabled:
+- Frontend connects directly to localhost for TTS/STT requests
+- Voice management uses voices from the local server's `voices.json`
+- The backend's XTTS/StyleTTS2/Whisper settings are ignored for audio processing
+- Audio never leaves the user's machine
+
+**Configuration (on the remote server's .env):**
+```bash
+# Enable direct local TTS mode
+LOCAL_TTS_ENABLED=true
+LOCAL_TTS_URL=http://localhost:8021
+LOCAL_TTS_PROVIDER=styletts2   # "styletts2" (port 8021) or "xtts" (port 8020)
+
+# Enable direct local STT mode
+LOCAL_STT_ENABLED=true
+LOCAL_STT_URL=http://localhost:8030
+```
+
+**Running Local Servers:**
+
+On the user's local machine (with GPU):
+```bash
+# Terminal 1: Run StyleTTS 2 (or XTTS)
+cd backend
+./start-styletts2.sh   # or start-xtts.sh
+
+# Terminal 2: Run Whisper (for STT)
+cd backend
+./start-whisper.sh
+```
+
+**Technical Notes:**
+- Local servers have CORS enabled by default (required for browser-direct calls)
+- Local TTS servers expose `/voices` endpoint for voice listing
+- Local TTS servers expose `/tts_with_voice` endpoint for synthesis with voice ID lookup
+- Health checks are performed directly from the browser to local servers
+- Settings UI shows the local server URL when direct mode is active
+
+**Security Considerations:**
+- Local servers only listen on localhost by default
+- Audio data never passes through the remote server
+- Voice files remain on the local machine
+
 ### Conversation Archiving
 
 Conversations can be **archived** to hide them from the main list while preserving their data.
@@ -1110,6 +1167,15 @@ ELEVENLABS_MODEL_ID=eleven_multilingual_v2  # TTS model
 # WHISPER_API_URL=http://localhost:8030 # Whisper server URL
 # WHISPER_MODEL=large-v3                # Model: large-v3, distil-large-v3, medium, small, base, tiny
 # DICTATION_MODE=auto                   # "whisper", "browser", or "auto"
+
+# Local GPU TTS/STT (remote app + local servers)
+# When enabled, frontend connects directly to local TTS/STT servers, bypassing the backend.
+# Use this when the main app is hosted remotely but you want to use your local GPU for audio.
+# LOCAL_TTS_ENABLED=true                # Enable direct local TTS mode
+# LOCAL_TTS_URL=http://localhost:8021   # URL of local TTS server (XTTS or StyleTTS2)
+# LOCAL_TTS_PROVIDER=styletts2          # "styletts2" (port 8021) or "xtts" (port 8020)
+# LOCAL_STT_ENABLED=true                # Enable direct local STT mode
+# LOCAL_STT_URL=http://localhost:8030   # URL of local Whisper server
 
 # Memory System Enhancement
 # USE_MEMORY_IN_CONTEXT=false           # Insert memories directly into conversation context (experimental)
@@ -2303,6 +2369,15 @@ Some state persists across page refreshes:
     - No REST API endpoints - only available via tool system during conversations
     - API credentials never exposed to AI entities
 
+30. **Local GPU TTS/STT (Direct Local Mode)**
+    - Enable with `LOCAL_TTS_ENABLED=true` and/or `LOCAL_STT_ENABLED=true`
+    - Frontend connects directly to local TTS/STT servers, bypassing the backend
+    - Useful when main app is hosted remotely but you want to use local GPU for audio
+    - Local servers must be running on the user's machine (localhost)
+    - CORS is enabled by default on local servers (required for browser-direct calls)
+    - Local TTS servers expose `/voices` and `/tts_with_voice` endpoints for frontend use
+    - Audio never passes through the remote server (stays on user's machine)
+
 ### Common Pitfalls
 
 **When modifying memory retrieval:**
@@ -2638,6 +2713,13 @@ whisper_enabled = False           # Must be explicitly enabled
 whisper_api_url = "http://localhost:8030"
 whisper_model = "large-v3"        # Options: large-v3, distil-large-v3, medium, small, base, tiny
 dictation_mode = "auto"           # "whisper", "browser", or "auto"
+
+# Local GPU TTS/STT defaults (config.py)
+local_tts_enabled = False         # Enable direct local TTS mode (frontend → local server)
+local_tts_url = "http://localhost:8021"
+local_tts_provider = "styletts2"  # "styletts2" (port 8021) or "xtts" (port 8020)
+local_stt_enabled = False         # Enable direct local STT mode (frontend → local server)
+local_stt_url = "http://localhost:8030"
 
 # Memory Context (experimental)
 use_memory_in_context = False     # Insert memories directly into conversation context

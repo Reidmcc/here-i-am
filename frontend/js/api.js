@@ -680,6 +680,153 @@ class ApiClient {
         return this.request('/github/rate-limit');
     }
 
+    // =========================================================================
+    // Direct Local TTS/STT Server Methods
+    // These methods connect directly to local TTS/STT servers running on the
+    // user's machine, bypassing the remote backend. Used when the main app
+    // is hosted remotely but TTS/STT runs locally on the user's GPU.
+    // =========================================================================
+
+    /**
+     * Check health of a local TTS server (direct connection)
+     * @param {string} url - Base URL of the local TTS server
+     * @returns {Promise<Object>} Health status
+     */
+    async checkLocalTtsHealth(url) {
+        try {
+            const response = await fetch(`${url}/health`, {
+                method: 'GET',
+                mode: 'cors',
+            });
+            if (!response.ok) {
+                return { healthy: false, error: `HTTP ${response.status}` };
+            }
+            const data = await response.json();
+            return { healthy: data.model_loaded || false, ...data };
+        } catch (error) {
+            return { healthy: false, error: error.message };
+        }
+    }
+
+    /**
+     * Get voices from a local TTS server (direct connection)
+     * @param {string} url - Base URL of the local TTS server
+     * @returns {Promise<Object>} Voices list
+     */
+    async getLocalTtsVoices(url) {
+        const response = await fetch(`${url}/voices`, {
+            method: 'GET',
+            mode: 'cors',
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to get voices: HTTP ${response.status}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Generate TTS audio from a local server (direct connection)
+     * @param {string} url - Base URL of the local TTS server
+     * @param {string} text - Text to synthesize
+     * @param {string} voiceId - Voice ID to use
+     * @param {Object} params - Additional parameters (alpha, beta, etc. for StyleTTS2)
+     * @returns {Promise<Blob>} Audio blob
+     */
+    async localTextToSpeech(url, text, voiceId, params = {}) {
+        const formData = new FormData();
+        formData.append('text', text);
+        formData.append('voice_id', voiceId);
+
+        // Add optional parameters
+        if (params.alpha !== undefined) formData.append('alpha', params.alpha);
+        if (params.beta !== undefined) formData.append('beta', params.beta);
+        if (params.diffusion_steps !== undefined) formData.append('diffusion_steps', params.diffusion_steps);
+        if (params.embedding_scale !== undefined) formData.append('embedding_scale', params.embedding_scale);
+        if (params.speed !== undefined) formData.append('speed', params.speed);
+        if (params.language !== undefined) formData.append('language', params.language);
+
+        const response = await fetch(`${url}/tts_with_voice`, {
+            method: 'POST',
+            mode: 'cors',
+            body: formData,
+        });
+
+        if (!response.ok) {
+            let errorMessage = `HTTP ${response.status}`;
+            try {
+                const errorData = await response.json();
+                errorMessage = errorData.detail || errorMessage;
+            } catch (e) {
+                // Ignore JSON parse errors
+            }
+            throw new Error(errorMessage);
+        }
+
+        return response.blob();
+    }
+
+    /**
+     * Check health of a local Whisper STT server (direct connection)
+     * @param {string} url - Base URL of the local Whisper server
+     * @returns {Promise<Object>} Health status
+     */
+    async checkLocalSttHealth(url) {
+        try {
+            const response = await fetch(`${url}/health`, {
+                method: 'GET',
+                mode: 'cors',
+            });
+            if (!response.ok) {
+                return { healthy: false, error: `HTTP ${response.status}` };
+            }
+            const data = await response.json();
+            return { healthy: data.model_loaded || false, ...data };
+        } catch (error) {
+            return { healthy: false, error: error.message };
+        }
+    }
+
+    /**
+     * Transcribe audio using a local Whisper server (direct connection)
+     * @param {string} url - Base URL of the local Whisper server
+     * @param {Blob} audioBlob - Audio blob to transcribe
+     * @param {string} language - Optional language code
+     * @returns {Promise<Object>} Transcription result
+     */
+    async localTranscribeAudio(url, audioBlob, language = null) {
+        const formData = new FormData();
+
+        // Determine filename based on MIME type
+        const ext = audioBlob.type.includes('webm') ? 'webm' : 'wav';
+        formData.append('audio_file', audioBlob, `recording.${ext}`);
+
+        if (language) {
+            formData.append('language', language);
+        }
+
+        // Add VAD filter for better accuracy
+        formData.append('vad_filter', 'true');
+
+        const response = await fetch(`${url}/transcribe`, {
+            method: 'POST',
+            mode: 'cors',
+            body: formData,
+        });
+
+        if (!response.ok) {
+            let errorMessage = `HTTP ${response.status}`;
+            try {
+                const errorData = await response.json();
+                errorMessage = errorData.detail || errorMessage;
+            } catch (e) {
+                // Ignore JSON parse errors
+            }
+            throw new Error(errorMessage);
+        }
+
+        return response.json();
+    }
+
     async regenerateStream(data, callbacks = {}) {
         const url = `${API_BASE}/chat/regenerate`;
 
