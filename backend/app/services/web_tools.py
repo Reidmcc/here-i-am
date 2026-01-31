@@ -147,70 +147,56 @@ async def _fetch_with_playwright(url: str) -> Tuple[Optional[str], Optional[str]
     async def _do_fetch() -> Tuple[Optional[str], Optional[str]]:
         """Inner function that performs the actual fetch, wrapped by hard timeout."""
         browser = None
+        playwright = None
+
         try:
             logger.debug(f"Playwright: Starting browser for {url}")
-            p = await async_playwright().start()
 
+            # Use the proper async context manager pattern
+            # This is required for correct event loop handling, especially on Windows
+            playwright = await async_playwright().start()
+            browser = await playwright.chromium.launch(headless=True)
+            logger.debug("Playwright: Browser launched successfully")
+
+            # Create a new context with a reasonable viewport
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            )
+            page = await context.new_page()
+            logger.debug(f"Playwright: Page created, navigating to {url}")
+
+            # Try to navigate with networkidle first (best for SPAs)
+            # But use a shorter timeout since networkidle can hang on some pages
             try:
-                # Launch headless Chromium
-                browser = await p.chromium.launch(headless=True)
-                logger.debug(f"Playwright: Browser launched successfully")
-
-                # Create a new context with a reasonable viewport
-                context = await browser.new_context(
-                    viewport={"width": 1280, "height": 720},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                await page.goto(
+                    url,
+                    timeout=PLAYWRIGHT_TIMEOUT,
+                    wait_until="networkidle",
                 )
-                page = await context.new_page()
-                logger.debug(f"Playwright: Page created, navigating to {url}")
+                logger.debug("Playwright: Navigation completed (networkidle)")
+            except Exception as nav_error:
+                # If networkidle times out, try again with just domcontentloaded
+                # This is faster but may miss some dynamic content
+                logger.warning(f"Playwright: networkidle failed ({type(nav_error).__name__}), retrying with domcontentloaded")
+                await page.goto(
+                    url,
+                    timeout=PLAYWRIGHT_TIMEOUT,
+                    wait_until="domcontentloaded",
+                )
+                # Give JavaScript a bit more time to render after DOM is ready
+                await page.wait_for_timeout(2000)
+                logger.debug("Playwright: Navigation completed (domcontentloaded + wait)")
 
-                # Try to navigate with networkidle first (best for SPAs)
-                # But use a shorter timeout since networkidle can hang on some pages
-                try:
-                    await page.goto(
-                        url,
-                        timeout=PLAYWRIGHT_TIMEOUT,
-                        wait_until="networkidle",
-                    )
-                    logger.debug(f"Playwright: Navigation completed (networkidle)")
-                except Exception as nav_error:
-                    # If networkidle times out, try again with just domcontentloaded
-                    # This is faster but may miss some dynamic content
-                    logger.warning(f"Playwright: networkidle failed ({type(nav_error).__name__}), retrying with domcontentloaded")
-                    await page.goto(
-                        url,
-                        timeout=PLAYWRIGHT_TIMEOUT,
-                        wait_until="domcontentloaded",
-                    )
-                    # Give JavaScript a bit more time to render after DOM is ready
-                    await page.wait_for_timeout(2000)
-                    logger.debug(f"Playwright: Navigation completed (domcontentloaded + wait)")
+            # Additional small wait to ensure any final rendering is complete
+            await page.wait_for_timeout(NETWORK_IDLE_TIMEOUT)
 
-                # Additional small wait to ensure any final rendering is complete
-                await page.wait_for_timeout(NETWORK_IDLE_TIMEOUT)
+            # Get the rendered HTML
+            html_content = await page.content()
+            content_length = len(html_content) if html_content else 0
+            logger.debug(f"Playwright: Got content, {content_length} chars")
 
-                # Get the rendered HTML
-                html_content = await page.content()
-                content_length = len(html_content) if html_content else 0
-                logger.debug(f"Playwright: Got content, {content_length} chars")
-
-                await context.close()
-                await browser.close()
-                await p.stop()
-
-                return html_content, None
-
-            finally:
-                # Ensure browser is closed even on error
-                if browser:
-                    try:
-                        await browser.close()
-                    except Exception:
-                        pass
-                try:
-                    await p.stop()
-                except Exception:
-                    pass
+            return html_content, None
 
         except Exception as e:
             # Get detailed error information
@@ -224,10 +210,25 @@ async def _fetch_with_playwright(url: str) -> Tuple[Optional[str], Optional[str]
                 return None, "Playwright browsers not installed. Run: playwright install chromium"
             elif "Timeout" in error_msg or "Timeout" in error_type:
                 return None, f"Page load timed out after {PLAYWRIGHT_TIMEOUT // 1000} seconds"
-            elif not error_msg or error_msg == "None":
+            elif error_type == "NotImplementedError":
+                return None, "Playwright async error - may be an event loop issue. Try restarting the application."
+            elif not error_msg or error_msg == "None" or error_msg == f"{error_type}()":
                 return None, f"JavaScript rendering failed: {error_type} (no details available)"
             else:
                 return None, f"JavaScript rendering failed ({error_type}): {error_msg}"
+
+        finally:
+            # Ensure browser and playwright are properly closed
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+            if playwright:
+                try:
+                    await playwright.stop()
+                except Exception:
+                    pass
 
     # Wrap the entire operation in a hard timeout to prevent indefinite hangs
     # This catches cases where networkidle never completes (e.g., WebSocket connections)
@@ -239,6 +240,9 @@ async def _fetch_with_playwright(url: str) -> Tuple[Optional[str], Optional[str]
     except asyncio.TimeoutError:
         logger.error(f"Playwright: Hard timeout ({PLAYWRIGHT_HARD_TIMEOUT}s) exceeded for {url}")
         return None, f"Page rendering timed out after {PLAYWRIGHT_HARD_TIMEOUT} seconds (page may have continuous network activity)"
+    except asyncio.CancelledError:
+        logger.warning(f"Playwright: Operation cancelled for {url}")
+        return None, "Page rendering was cancelled"
 
 
 async def web_search(query: str, num_results: int = DEFAULT_NUM_RESULTS) -> str:
