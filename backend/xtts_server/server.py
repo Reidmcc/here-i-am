@@ -288,6 +288,45 @@ async def cache_stats():
     }
 
 
+@app.get("/voices")
+async def list_voices():
+    """
+    List all available voices from the voices.json file.
+
+    This endpoint allows direct voice listing from the frontend without
+    going through the main application backend.
+    """
+    voices_dir = os.environ.get("XTTS_VOICES_DIR", "./xtts_voices")
+    voices_file = Path(voices_dir) / "voices.json"
+
+    voices = []
+    if voices_file.exists():
+        try:
+            with open(voices_file, "r") as f:
+                voices_data = json.load(f)
+                for voice in voices_data:
+                    # Include essential voice info for frontend display
+                    voices.append({
+                        "voice_id": voice.get("voice_id"),
+                        "label": voice.get("label"),
+                        "description": voice.get("description", ""),
+                        "provider": "xtts",
+                        # Include synthesis parameters
+                        "temperature": voice.get("temperature", 0.75),
+                        "length_penalty": voice.get("length_penalty", 1.0),
+                        "repetition_penalty": voice.get("repetition_penalty", 5.0),
+                        "speed": voice.get("speed", 1.0),
+                    })
+        except Exception as e:
+            logger.warning(f"Failed to load voices.json: {e}")
+
+    return {
+        "voices": voices,
+        "provider": "xtts",
+        "voices_dir": voices_dir,
+    }
+
+
 @app.post("/cache/preload")
 async def preload_cache(
     speaker_paths: str = Form(..., description="Comma-separated list of speaker file paths"),
@@ -732,6 +771,94 @@ async def tts_stream(
     # For now, just return the full audio
     # True streaming would require chunked synthesis
     return await tts_to_audio(text=text, language=language, speaker_wav=speaker_wav)
+
+
+def _get_voice_by_id(voice_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Look up a voice by ID from voices.json.
+
+    Returns the voice dict if found, None otherwise.
+    """
+    voices_dir = os.environ.get("XTTS_VOICES_DIR", "./xtts_voices")
+    voices_file = Path(voices_dir) / "voices.json"
+
+    if not voices_file.exists():
+        return None
+
+    try:
+        with open(voices_file, "r") as f:
+            voices_data = json.load(f)
+            for voice in voices_data:
+                if voice.get("voice_id") == voice_id:
+                    return voice
+    except Exception as e:
+        logger.warning(f"Failed to load voices.json: {e}")
+
+    return None
+
+
+@app.post("/tts_with_voice")
+async def tts_with_voice(
+    text: str = Form(..., description="Text to synthesize"),
+    voice_id: str = Form(..., description="Voice ID from voices.json"),
+    language: str = Form("en", description="Language code"),
+):
+    """
+    Convert text to speech using a voice ID from voices.json.
+
+    This endpoint is designed for direct local mode where the frontend
+    specifies a voice_id and the server looks up the speaker file.
+    """
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+
+    # Validate language
+    valid_languages = [
+        "en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru",
+        "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"
+    ]
+    if language not in valid_languages:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid language. Supported: {', '.join(valid_languages)}"
+        )
+
+    # Look up the voice
+    voice = _get_voice_by_id(voice_id)
+    if not voice:
+        raise HTTPException(status_code=404, detail=f"Voice not found: {voice_id}")
+
+    sample_path = voice.get("sample_path")
+    if not sample_path or not os.path.exists(sample_path):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Voice sample file not found for voice: {voice_id}"
+        )
+
+    try:
+        logger.info(f"Generating speech with voice '{voice_id}' for {len(text)} chars, language={language}")
+        import time
+        start_time = time.time()
+        audio_bytes = synthesize_with_cached_latents(
+            text=text,
+            speaker_wav_path=sample_path,
+            language=language,
+        )
+        elapsed = time.time() - start_time
+
+        logger.info(f"Generated {len(audio_bytes)} bytes of audio in {elapsed:.2f} seconds")
+
+        return Response(
+            content=audio_bytes,
+            media_type="audio/wav",
+            headers={"Content-Disposition": "inline"},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"TTS generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
 
 
 def create_app() -> FastAPI:
