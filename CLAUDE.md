@@ -170,13 +170,29 @@ The application supports **agentic tool use** for Anthropic (Claude) and OpenAI 
 
 **Available Tools:**
 - **web_search** - Search the web using Brave Search API (returns up to 20 results)
-- **web_fetch** - Fetch and extract content from URLs (smart HTML parsing, 50KB limit)
+- **web_fetch** - Fetch and extract content from URLs (smart HTML parsing, 50KB limit, JavaScript rendering support)
 
 **How Tool Use Works:**
 
 1. **Agentic Loop**: When the AI responds with a tool request, the system executes the tool and feeds results back in a loop (max 10 iterations)
 2. **Streaming**: Tool execution is streamed in real-time with visual indicators in the UI
 3. **Provider Support**: Tool use is available for **Anthropic (Claude) and OpenAI (GPT)** models - Google models do not currently support tool use in this application
+
+**JavaScript Rendering (web_fetch):**
+
+The `web_fetch` tool automatically detects and handles JavaScript-rendered pages (SPAs):
+
+1. **Hybrid Approach**: First attempts a fast fetch using httpx
+2. **Detection**: Analyzes response for SPA indicators (empty containers, loading text, minimal content)
+3. **Fallback**: Uses Playwright headless browser for JavaScript rendering when needed
+4. **Graceful Degradation**: Falls back to static content if Playwright is unavailable
+
+**SPA Detection Heuristics:**
+- Minimal text content (< 100 chars) with multiple script tags
+- Empty SPA container divs (id="root", "app", "__next", "__nuxt", "___gatsby")
+- Loading indicators ("Loading...", "JavaScript is required", etc.)
+- Noscript warnings with minimal content
+- Framework hydration attributes (data-reactroot, ng-app, v-cloak)
 
 **Configuration:**
 ```bash
@@ -190,16 +206,28 @@ BRAVE_SEARCH_API_KEY=your_brave_api_key
 TOOL_USE_MAX_ITERATIONS=10
 ```
 
+**Playwright Setup (Optional, for JavaScript rendering):**
+```bash
+# Install Playwright
+pip install playwright>=1.40.0
+
+# Install Chromium browser (~200MB download)
+playwright install chromium
+```
+
 **UI Indicators:**
 - Tool use is displayed with a 🔧 icon and collapsible input/output details
 - Status indicators show loading (animated), success (✓), or error (✗)
 - Tool results are truncated to 2000 chars in UI (full content sent to AI)
+- JavaScript-rendered pages show "[JavaScript rendered]" in the output
 
 **Technical Notes:**
 - Tools are registered at module load time via `register_web_tools()`
 - Tool schemas are defined in Anthropic format and automatically converted for OpenAI
 - Tool execution is async with proper error handling
-- web_search uses 10-second timeout; web_fetch uses 15-second timeout
+- web_search uses 10-second timeout; web_fetch uses 15-second timeout (httpx)
+- Playwright uses multi-layer timeout: 60s navigation + 90s hard timeout to prevent hangs
+- Playwright tries networkidle first, falls back to domcontentloaded + wait if that times out
 
 ### GitHub Repository Integration
 
@@ -2009,11 +2037,16 @@ Some state persists across page refreshes:
     - Tool schemas are defined in Anthropic format, auto-converted for OpenAI
     - Tool results are not persisted to database (visible in conversation but not stored separately)
 
-17. **Web Tools Require External API**
+17. **Web Tools and JavaScript Rendering**
     - `web_search` requires `BRAVE_SEARCH_API_KEY` to function
     - `web_fetch` works independently (uses httpx to fetch URLs)
     - Both tools have timeouts (10s for search, 15s for fetch)
+    - Playwright uses multi-layer timeout: 60s navigation + 90s hard timeout to prevent hangs
+    - Playwright tries networkidle first, falls back to domcontentloaded if that times out
     - web_fetch includes smart HTML content extraction (removes nav, footer, scripts)
+    - **JavaScript rendering**: web_fetch automatically detects SPAs and uses Playwright if needed
+    - Playwright is optional; if not installed, falls back to static HTML with a note
+    - Install Playwright with: `pip install playwright && playwright install chromium`
 
 18. **GitHub Integration is Optional**
     - Set `GITHUB_TOOLS_ENABLED=true` and configure `GITHUB_REPOS` to enable
@@ -2354,7 +2387,12 @@ brave_search_api_key = ""             # Required for web_search tool
 web_search_max_results = 20           # Brave API limit
 web_search_timeout = 10               # Seconds
 web_fetch_max_length = 50000          # Characters (50KB)
-web_fetch_timeout = 15                # Seconds
+web_fetch_timeout = 15                # Seconds (httpx)
+playwright_timeout = 60000            # Milliseconds (60s for navigation)
+playwright_hard_timeout = 90.0        # Seconds - absolute max for entire operation
+network_idle_timeout = 500            # Milliseconds (wait after navigation)
+min_content_length = 100              # Chars - below this may trigger JS rendering
+# Resource blocking: images, fonts, CSS, media, and tracking domains are blocked
 
 # XTTS defaults (config.py)
 xtts_enabled = False              # Must be explicitly enabled
