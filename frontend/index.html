@@ -670,6 +670,27 @@
         <button id="cancel-responder-btn" class="secondary-btn small" style="margin-top: 8px;">Cancel</button>
     </div>
 
+    <!-- Login Modal (shown when authentication is required) -->
+    <div class="login-overlay" id="login-overlay" style="display: none;">
+        <div class="login-container">
+            <div class="login-header">
+                <h1>Here I Am</h1>
+                <p>Experiential Interpretability Research</p>
+            </div>
+            <div class="login-form">
+                <div class="form-group">
+                    <label for="login-password">Password</label>
+                    <input type="password" id="login-password" placeholder="Enter password" autocomplete="current-password">
+                </div>
+                <div id="login-error" class="login-error" style="display: none;"></div>
+                <button id="login-btn" class="primary-btn login-btn">Login</button>
+            </div>
+            <div class="login-footer">
+                <small>Authentication is required to access this application.</small>
+            </div>
+        </div>
+    </div>
+
     <!-- Loading Overlay -->
     <div class="loading-overlay" id="loading-overlay">
         <div class="loading-spinner"></div>

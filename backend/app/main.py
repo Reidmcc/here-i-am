@@ -2,15 +2,22 @@ from contextlib import asynccontextmanager
 import logging
 import sys
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from pathlib import Path
 
 from app.database import init_db
 from app.routes import conversations_router, chat_router, memories_router, entities_router, messages_router, tts_router, github_router, stt_router
 from app.config import settings
 from app.services.memory_service import memory_service
+from app.auth import (
+    AuthMiddleware,
+    login_handler,
+    logout_handler,
+    auth_status_handler,
+)
 
 
 def setup_logging():
@@ -93,10 +100,48 @@ def run_pinecone_connection_test():
     print("=" * 60 + "\n")
 
 
+def print_server_info():
+    """Print server configuration information on startup."""
+    print("\n" + "=" * 60)
+    print("SERVER CONFIGURATION")
+    print("=" * 60)
+    print(f"Host: {settings.server_host}")
+    print(f"Port: {settings.server_port}")
+
+    if settings.server_host == "0.0.0.0":
+        print(f"Access URL: http://<your-ip>:{settings.server_port}")
+        print("  (Server listening on all network interfaces)")
+    else:
+        print(f"Access URL: http://{settings.server_host}:{settings.server_port}")
+
+    print(f"\nAuthentication: {'ENABLED' if settings.auth_enabled else 'DISABLED'}")
+    if settings.auth_enabled:
+        print(f"Session Timeout: {settings.auth_session_timeout_hours} hours")
+        if settings.auth_session_secret:
+            print("Session Secret: Configured (persistent sessions)")
+        else:
+            print("Session Secret: Auto-generated (sessions lost on restart)")
+    else:
+        if settings.server_host == "0.0.0.0":
+            print("  WARNING: Server is accessible remotely without authentication!")
+            print("  Set AUTH_ENABLED=true and AUTH_PASSWORD for security.")
+
+    print("=" * 60 + "\n")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+
+    # Validate auth configuration if enabled
+    try:
+        settings.validate_auth_config()
+    except ValueError as e:
+        logging.error(f"Authentication configuration error: {e}")
+        raise SystemExit(1)
+
     await init_db()
+    print_server_info()
     run_pinecone_connection_test()
     yield
     # Shutdown
@@ -110,10 +155,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Configure CORS based on auth settings
+def get_cors_origins():
+    """Get allowed origins for CORS configuration."""
+    if settings.auth_enabled:
+        # When auth is enabled, restrict origins
+        configured_origins = settings.get_auth_allowed_origins()
+        if configured_origins:
+            return configured_origins
+        # Default to same-origin only when auth is enabled
+        # The browser will use the request origin for same-origin requests
+        return ["*"]  # Still allow all but with credentials
+    # When auth is disabled (local development), allow all origins
+    return ["*"]
+
+
 # CORS middleware for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -122,7 +182,6 @@ app.add_middleware(
 
 # Middleware to disable caching for static files (development)
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
 
 class NoCacheMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -136,6 +195,11 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
         return response
 
 app.add_middleware(NoCacheMiddleware)
+
+# Authentication middleware (must be added after CORS to ensure proper handling)
+# Note: Middleware is executed in reverse order of registration
+# So this runs BEFORE NoCacheMiddleware
+app.add_middleware(AuthMiddleware)
 
 
 # API routes
@@ -154,6 +218,47 @@ if frontend_path.exists():
     app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
 
 
+# =========================================================================
+# Authentication Routes
+# =========================================================================
+
+@app.post("/api/auth/login")
+async def login(request: Request):
+    """
+    Login with password to create a session.
+
+    Request body: {"password": "your_password"}
+    Response: {"success": true, "session_info": {...}}
+
+    Sets a session_token cookie on success.
+    """
+    return await login_handler(request)
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request):
+    """
+    Logout and invalidate the current session.
+
+    Clears the session_token cookie.
+    """
+    return await logout_handler(request)
+
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    """
+    Check authentication status.
+
+    Returns whether auth is enabled and if the current session is valid.
+    """
+    return await auth_status_handler(request)
+
+
+# =========================================================================
+# Health and Config Routes
+# =========================================================================
+
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint."""
@@ -162,6 +267,7 @@ async def health_check():
         "version": "0.1.0",
         "debug": settings.debug,
         "memory_system": "configured" if settings.pinecone_api_key else "not configured",
+        "auth_enabled": settings.auth_enabled,
     }
 
 

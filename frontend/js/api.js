@@ -4,6 +4,11 @@
 const API_BASE = '/api';
 
 class ApiClient {
+    constructor() {
+        // Callback for handling 401 responses (set by app-modular.js)
+        this.onAuthRequired = null;
+    }
+
     async request(endpoint, options = {}) {
         const url = `${API_BASE}${endpoint}`;
         const defaultHeaders = {
@@ -16,6 +21,8 @@ class ApiClient {
                 ...defaultHeaders,
                 ...options.headers,
             },
+            // Include credentials (cookies) with requests
+            credentials: 'same-origin',
         };
 
         if (config.body && typeof config.body === 'object') {
@@ -25,6 +32,16 @@ class ApiClient {
         const response = await fetch(url, config);
 
         if (!response.ok) {
+            // Handle 401 Unauthorized specially
+            if (response.status === 401) {
+                const error = await response.json().catch(() => ({ detail: 'Authentication required' }));
+                // Trigger auth callback if set (shows login screen)
+                if (this.onAuthRequired) {
+                    this.onAuthRequired();
+                }
+                throw new Error(error.detail || 'Authentication required');
+            }
+
             const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
             throw new Error(error.detail || `HTTP ${response.status}`);
         }
@@ -32,7 +49,60 @@ class ApiClient {
         return response.json();
     }
 
+    // =========================================================================
+    // Authentication
+    // =========================================================================
+
+    /**
+     * Check if authentication is enabled and if we're currently authenticated.
+     * This endpoint is always accessible.
+     */
+    async checkAuthStatus() {
+        const response = await fetch(`${API_BASE}/auth/status`, {
+            credentials: 'same-origin',
+        });
+        return response.json();
+    }
+
+    /**
+     * Login with password.
+     * @param {string} password - The password to authenticate with
+     * @returns {Promise<{success: boolean, message: string, session_info?: object}>}
+     */
+    async login(password) {
+        const response = await fetch(`${API_BASE}/auth/login`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ password }),
+            credentials: 'same-origin',
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.detail || 'Login failed');
+        }
+
+        return data;
+    }
+
+    /**
+     * Logout and invalidate the current session.
+     */
+    async logout() {
+        const response = await fetch(`${API_BASE}/auth/logout`, {
+            method: 'POST',
+            credentials: 'same-origin',
+        });
+        return response.json();
+    }
+
+    // =========================================================================
     // Health check
+    // =========================================================================
+
     async healthCheck() {
         return this.request('/health');
     }

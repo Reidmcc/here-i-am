@@ -1129,6 +1129,47 @@ PINECONE_INDEXES='[
 
 **Important:** Database URL must use the `HERE_I_AM_DATABASE_URL` variable name (aliased from `DATABASE_URL` for compatibility).
 
+### Running on a Remote Server
+
+The application can be deployed on a remote server with password-based authentication. This is essential for security when the server is accessible over a network.
+
+**Required Environment Variables:**
+```bash
+# Enable remote access (bind to all interfaces)
+SERVER_HOST=0.0.0.0
+SERVER_PORT=8000
+
+# Enable authentication (REQUIRED for remote deployment!)
+AUTH_ENABLED=true
+AUTH_PASSWORD=your_secure_password_here
+
+# Optional: Session timeout in hours (default: 24)
+AUTH_SESSION_TIMEOUT_HOURS=24
+
+# Optional: Persistent session secret (sessions survive server restarts)
+# Generate with: python -c "import secrets; print(secrets.token_hex(32))"
+AUTH_SESSION_SECRET=your_random_secret_key_here
+```
+
+**Security Considerations:**
+- **Always enable authentication** when `SERVER_HOST=0.0.0.0`
+- Use a strong password (minimum 8 characters)
+- Set `AUTH_SESSION_SECRET` for persistent sessions across restarts
+- Consider using HTTPS via a reverse proxy (nginx, Caddy) for encrypted connections
+- The server will refuse to start if `AUTH_ENABLED=true` but `AUTH_PASSWORD` is not set
+
+**How Authentication Works:**
+1. User visits the application and sees a login screen
+2. After entering the correct password, a session cookie is set
+3. Sessions expire after `AUTH_SESSION_TIMEOUT_HOURS` (default: 24 hours)
+4. All API requests require a valid session cookie
+5. If a session expires mid-use, the login screen reappears
+
+**API Authentication Endpoints:**
+- `POST /api/auth/login` - Login with password
+- `POST /api/auth/logout` - Logout and invalidate session
+- `GET /api/auth/status` - Check authentication status
+
 ### Running in Production
 
 **PostgreSQL Setup:**
@@ -1136,10 +1177,69 @@ PINECONE_INDEXES='[
 HERE_I_AM_DATABASE_URL=postgresql+asyncpg://user:password@localhost/here_i_am
 ```
 
-**Server Deployment:**
+**Production Configuration:**
 ```bash
-# In production, use proper ASGI server configuration
+# Disable debug mode
+DEBUG=false
+
+# Use PostgreSQL
+HERE_I_AM_DATABASE_URL=postgresql+asyncpg://user:password@localhost/here_i_am
+
+# Remote server settings
+SERVER_HOST=0.0.0.0
+SERVER_PORT=8000
+AUTH_ENABLED=true
+AUTH_PASSWORD=your_secure_password
+AUTH_SESSION_SECRET=your_persistent_secret
+
+# Optional: Restrict CORS origins
+AUTH_ALLOWED_ORIGINS=https://yourdomain.com
+```
+
+**Server Deployment with Launcher Script:**
+```bash
+# Using the launcher script (recommended - auto-activates venv)
+./start.sh           # Linux/macOS
+start.bat            # Windows
+```
+
+**Server Deployment with Manual Activation:**
+```bash
+source venv/bin/activate  # Windows: venv\Scripts\activate
+python run.py
+```
+
+**Server Deployment with Uvicorn (Multiple Workers):**
+```bash
+# For high-traffic production use
+source venv/bin/activate
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+**HTTPS with Reverse Proxy (Recommended):**
+For secure remote access, use a reverse proxy like nginx or Caddy:
+
+```nginx
+# nginx example
+server {
+    listen 443 ssl;
+    server_name yourdomain.com;
+
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # SSE streaming support
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+}
 ```
 
 ### Running XTTS Server (Optional Local TTS)
@@ -2278,6 +2378,15 @@ Some state persists across page refreshes:
 - StyleTTS 2 server: `backend/start-styletts2.sh` / `backend/start-styletts2.bat`
 - Whisper server: `backend/start-whisper.sh` / `backend/start-whisper.bat`
 
+**Authentication:**
+- Auth middleware/handlers: `backend/app/auth.py`
+- Auth routes: `backend/app/main.py` (login, logout, status endpoints)
+- Auth config: `backend/app/config.py` (server_host, auth_enabled, etc.)
+- Frontend login UI: `frontend/index.html` (login-overlay section)
+- Frontend login CSS: `frontend/css/styles.css` (login-overlay styles)
+- Frontend auth handling: `frontend/js/app-modular.js` (checkAuthentication, handleLogin)
+- API auth methods: `frontend/js/api.js` (login, logout, checkAuthStatus)
+
 **Memory System Logic:**
 - Memory service: `backend/app/services/memory_service.py`
 - Memory tools: `backend/app/services/memory_tools.py`
@@ -2412,6 +2521,17 @@ Some state persists across page refreshes:
 ### Key Constants
 
 ```python
+# Server settings (config.py)
+server_host = "127.0.0.1"    # Default: localhost only
+server_port = 8000           # Default port
+
+# Authentication settings (config.py)
+auth_enabled = False              # Must be enabled for remote deployment
+auth_password = ""                # Required when auth_enabled=True (min 8 chars)
+auth_session_timeout_hours = 24   # Session expiration
+auth_session_secret = ""          # For persistent sessions across restarts
+auth_allowed_origins = ""         # Comma-separated CORS origins (optional)
+
 # Default models
 DEFAULT_MODEL = "claude-sonnet-4-5-20250929"  # Anthropic default
 DEFAULT_OPENAI_MODEL = "gpt-5.1"  # OpenAI default
