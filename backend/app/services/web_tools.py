@@ -137,6 +137,14 @@ def _fetch_with_playwright_sync(url: str) -> Tuple[Optional[str], Optional[str]]
         On success: (html_content, None)
         On failure: (None, error_message)
     """
+    import sys
+
+    # On Windows, Playwright needs ProactorEventLoop for subprocess support.
+    # When running in a thread (via asyncio.to_thread), we need to explicitly
+    # set this policy before Playwright creates its internal event loop.
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
     try:
         logger.debug(f"Playwright: Starting browser for {url}")
 
