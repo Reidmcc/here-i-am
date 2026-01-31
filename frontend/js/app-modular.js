@@ -778,9 +778,71 @@ class App {
      * @param {string|null} latestAssistantId - ID of latest assistant message
      */
     renderMessages(messages, latestAssistantId) {
+        // Build a map of tool_use_id -> tool_name for correlating tool results
+        const toolIdToName = {};
         messages.forEach(msg => {
-            if (msg.role === 'tool_use' || msg.role === 'tool_result') {
-                // Skip tool messages for now (rendered inline with assistant)
+            if (msg.role === 'tool_use') {
+                try {
+                    const contentBlocks = typeof msg.content === 'string'
+                        ? JSON.parse(msg.content)
+                        : msg.content;
+                    if (Array.isArray(contentBlocks)) {
+                        contentBlocks.forEach(block => {
+                            if (block.type === 'tool_use' && block.id && block.name) {
+                                toolIdToName[block.id] = block.name;
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.warn('Failed to parse tool_use content:', e);
+                }
+            }
+        });
+
+        messages.forEach(msg => {
+            if (msg.role === 'tool_use') {
+                // Render tool use messages
+                try {
+                    const contentBlocks = typeof msg.content === 'string'
+                        ? JSON.parse(msg.content)
+                        : msg.content;
+                    if (Array.isArray(contentBlocks)) {
+                        contentBlocks.forEach(block => {
+                            if (block.type === 'tool_use') {
+                                addToolMessage('start', block.name, {
+                                    tool_id: block.id,
+                                    input: block.input || {},
+                                });
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.warn('Failed to render tool_use message:', e);
+                }
+                return;
+            }
+
+            if (msg.role === 'tool_result') {
+                // Render tool result messages
+                try {
+                    const contentBlocks = typeof msg.content === 'string'
+                        ? JSON.parse(msg.content)
+                        : msg.content;
+                    if (Array.isArray(contentBlocks)) {
+                        contentBlocks.forEach(block => {
+                            if (block.type === 'tool_result') {
+                                const toolName = toolIdToName[block.tool_use_id] || 'unknown';
+                                addToolMessage('result', toolName, {
+                                    tool_id: block.tool_use_id,
+                                    content: block.content || '',
+                                    is_error: block.is_error || false,
+                                });
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.warn('Failed to render tool_result message:', e);
+                }
                 return;
             }
 
