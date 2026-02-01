@@ -27,7 +27,7 @@ def _create_auth_hook(token: str):
     including redirected requests. This is more reliable than httpx.Auth
     for APIs that redirect and are sensitive to auth header presence.
     """
-    def add_auth_header(request: httpx.Request):
+    async def add_auth_header(request: httpx.Request):
         request.headers["Authorization"] = f"Bearer {token}"
     return add_auth_header
 
