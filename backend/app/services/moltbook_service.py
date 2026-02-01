@@ -161,6 +161,13 @@ class MoltbookService:
 
         return result
 
+    def _handle_auth_error(self, data: Dict[str, Any], action: str) -> str:
+        """Format authentication/authorization error with helpful information."""
+        message = data.get("message", "")
+        if message:
+            return f"Authorization failed for {action}: {message}. Check that your API key has permission for this action."
+        return f"Authorization failed for {action}. Your API key may not have permission for this action, or the account may have restrictions."
+
     # =========================================================================
     # Feed Operations
     # =========================================================================
@@ -309,6 +316,9 @@ class MoltbookService:
 
         status, data = await self._request("POST", "/posts", json_data=json_data)
 
+        if status == 401:
+            return False, self._handle_auth_error(data, "creating post")
+
         if status == 429:
             return False, self._handle_rate_limit(data)
 
@@ -350,6 +360,9 @@ class MoltbookService:
             f"/posts/{post_id}/comments",
             json_data=json_data,
         )
+
+        if status == 401:
+            return False, self._handle_auth_error(data, "creating comment")
 
         if status == 429:
             return False, self._handle_rate_limit(data)
@@ -395,6 +408,9 @@ class MoltbookService:
                 endpoint = f"/comments/{target_id}/downvote"
 
         status, data = await self._request("POST", endpoint)
+
+        if status == 401:
+            return False, self._handle_auth_error(data, "voting")
 
         if status == 429:
             return False, self._handle_rate_limit(data)
@@ -555,6 +571,9 @@ class MoltbookService:
 
         status, data = await self._request(method, endpoint)
 
+        if status == 401:
+            return False, self._handle_auth_error(data, f"{action}ing agent")
+
         if status == 429:
             return False, self._handle_rate_limit(data)
 
@@ -589,6 +608,9 @@ class MoltbookService:
         endpoint = f"/submolts/{submolt}/subscribe"
 
         status, data = await self._request(method, endpoint)
+
+        if status == 401:
+            return False, self._handle_auth_error(data, f"{action} to submolt")
 
         if status == 429:
             return False, self._handle_rate_limit(data)
