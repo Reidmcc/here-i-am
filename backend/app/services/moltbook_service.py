@@ -147,26 +147,76 @@ class MoltbookService:
             logger.exception(f"Error calling Moltbook API: {e}")
             return 500, {"error": "network_error", "message": str(e)}
 
+    def _format_error_details(self, data: Dict[str, Any]) -> str:
+        """Extract and format any useful error details from the API response."""
+        details = []
+
+        # Common error response fields
+        for field in ["message", "error", "reason", "detail", "details", "description"]:
+            value = data.get(field)
+            if value and isinstance(value, str):
+                details.append(value)
+            elif value and isinstance(value, dict):
+                # Sometimes details is a nested object
+                details.append(json.dumps(value))
+
+        # Additional context fields
+        if data.get("error_code"):
+            details.append(f"Error code: {data['error_code']}")
+        if data.get("request_id"):
+            details.append(f"Request ID: {data['request_id']}")
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique_details = []
+        for d in details:
+            if d not in seen:
+                seen.add(d)
+                unique_details.append(d)
+
+        return " | ".join(unique_details) if unique_details else ""
+
     def _handle_rate_limit(self, data: Dict[str, Any]) -> str:
         """Format rate limit error with helpful information."""
-        message = data.get("message", "Rate limit exceeded")
-        retry_after = data.get("retry_after")
-        remaining = data.get("remaining")
+        details = self._format_error_details(data)
+        result = f"Rate limit exceeded"
+        if details:
+            result += f": {details}"
 
-        result = f"Rate limit exceeded: {message}"
+        # Rate limit specific fields
+        retry_after = data.get("retry_after") or data.get("retryAfter") or data.get("retry-after")
+        remaining = data.get("remaining") or data.get("requests_remaining")
+        reset_at = data.get("reset_at") or data.get("resetAt") or data.get("reset")
+        limit = data.get("limit") or data.get("rate_limit")
+
+        extra_info = []
         if retry_after:
-            result += f"\nRetry after: {retry_after} seconds"
+            extra_info.append(f"Retry after: {retry_after} seconds")
         if remaining is not None:
-            result += f"\nDaily remaining: {remaining}"
+            extra_info.append(f"Remaining: {remaining}")
+        if limit:
+            extra_info.append(f"Limit: {limit}")
+        if reset_at:
+            extra_info.append(f"Resets at: {reset_at}")
+
+        if extra_info:
+            result += "\n" + "\n".join(extra_info)
 
         return result
 
     def _handle_auth_error(self, data: Dict[str, Any], action: str) -> str:
         """Format authentication/authorization error with helpful information."""
-        message = data.get("message", "")
-        if message:
-            return f"Authorization failed for {action}: {message}. Check that your API key has permission for this action."
+        details = self._format_error_details(data)
+        if details:
+            return f"Authorization failed for {action}: {details}"
         return f"Authorization failed for {action}. Your API key may not have permission for this action, or the account may have restrictions."
+
+    def _format_error(self, status: int, data: Dict[str, Any]) -> str:
+        """Format a generic error response with any available details."""
+        details = self._format_error_details(data)
+        if details:
+            return f"Error {status}: {details}"
+        return f"Error {status}: Unknown error"
 
     # =========================================================================
     # Feed Operations
@@ -203,7 +253,7 @@ class MoltbookService:
             return False, self._handle_rate_limit(data)
 
         if status != 200:
-            return False, f"Error {status}: {data.get('message', 'Unknown error')}"
+            return False, self._format_error(status, data)
 
         return True, self._wrap_response(data)
 
@@ -237,7 +287,7 @@ class MoltbookService:
             return False, f"Submolt '{submolt}' not found"
 
         if status != 200:
-            return False, f"Error {status}: {data.get('message', 'Unknown error')}"
+            return False, self._format_error(status, data)
 
         return True, self._wrap_response(data)
 
@@ -270,7 +320,7 @@ class MoltbookService:
             return False, f"Post '{post_id}' not found"
 
         if status != 200:
-            return False, f"Error {status}: {post_data.get('message', 'Unknown error')}"
+            return False, self._format_error(status, post_data)
 
         # Get comments
         comments_status, comments_data = await self._request(
@@ -326,7 +376,7 @@ class MoltbookService:
             return False, f"Submolt '{submolt}' not found"
 
         if status not in (200, 201):
-            return False, f"Error {status}: {data.get('message', 'Unknown error')}"
+            return False, self._format_error(status, data)
 
         return True, self._wrap_response(data)
 
@@ -371,7 +421,7 @@ class MoltbookService:
             return False, f"Post '{post_id}' not found"
 
         if status not in (200, 201):
-            return False, f"Error {status}: {data.get('message', 'Unknown error')}"
+            return False, self._format_error(status, data)
 
         return True, self._wrap_response(data)
 
@@ -419,7 +469,7 @@ class MoltbookService:
             return False, f"{target_type.capitalize()} '{target_id}' not found"
 
         if status not in (200, 201):
-            return False, f"Error {status}: {data.get('message', 'Unknown error')}"
+            return False, self._format_error(status, data)
 
         return True, self._wrap_response(data)
 
@@ -460,7 +510,7 @@ class MoltbookService:
             return False, self._handle_rate_limit(data)
 
         if status != 200:
-            return False, f"Error {status}: {data.get('message', 'Unknown error')}"
+            return False, self._format_error(status, data)
 
         return True, self._wrap_response(data)
 
@@ -499,7 +549,7 @@ class MoltbookService:
             return False, "Profile not found"
 
         if status != 200:
-            return False, f"Error {status}: {data.get('message', 'Unknown error')}"
+            return False, self._format_error(status, data)
 
         return True, self._wrap_response(data)
 
@@ -520,7 +570,7 @@ class MoltbookService:
             return False, self._handle_rate_limit(data)
 
         if status != 200:
-            return False, f"Error {status}: {data.get('message', 'Unknown error')}"
+            return False, self._format_error(status, data)
 
         return True, self._wrap_response(data)
 
@@ -543,7 +593,7 @@ class MoltbookService:
             return False, f"Submolt '{name}' not found"
 
         if status != 200:
-            return False, f"Error {status}: {data.get('message', 'Unknown error')}"
+            return False, self._format_error(status, data)
 
         return True, self._wrap_response(data)
 
@@ -581,7 +631,7 @@ class MoltbookService:
             return False, f"Agent '{agent_name}' not found"
 
         if status not in (200, 201, 204):
-            return False, f"Error {status}: {data.get('message', 'Unknown error')}"
+            return False, self._format_error(status, data)
 
         action_past = "followed" if action == "follow" else "unfollowed"
         return True, self._wrap_response({
@@ -619,7 +669,7 @@ class MoltbookService:
             return False, f"Submolt '{submolt}' not found"
 
         if status not in (200, 201, 204):
-            return False, f"Error {status}: {data.get('message', 'Unknown error')}"
+            return False, self._format_error(status, data)
 
         action_past = "subscribed to" if action == "subscribe" else "unsubscribed from"
         return True, self._wrap_response({
