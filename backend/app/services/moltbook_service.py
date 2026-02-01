@@ -100,12 +100,16 @@ class MoltbookService:
 
         return url
 
-    def _get_headers(self) -> Dict[str, str]:
-        """Get headers for Moltbook API requests (excluding auth, handled separately)."""
-        return {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
+    def _get_headers(self, has_body: bool = True) -> Dict[str, str]:
+        """Get headers for Moltbook API requests (excluding auth, handled separately).
+
+        Args:
+            has_body: Whether the request has a JSON body. If False, Content-Type is omitted.
+        """
+        headers = {"Accept": "application/json"}
+        if has_body:
+            headers["Content-Type"] = "application/json"
+        return headers
 
     def _get_auth(self) -> BearerAuth:
         """Get auth handler for Moltbook API requests."""
@@ -168,8 +172,17 @@ class MoltbookService:
             Tuple of (status_code, response_data)
         """
         url = f"{self._validated_api_url}{endpoint}"
-        headers = self._get_headers()
+        has_body = json_data is not None
+        headers = self._get_headers(has_body=has_body)
         auth = self._get_auth()
+
+        # Debug logging for troubleshooting auth issues
+        logger.debug(
+            f"Moltbook request: {method} {url} | "
+            f"has_body={has_body} | "
+            f"has_api_key={bool(settings.moltbook_api_key)} | "
+            f"key_prefix={settings.moltbook_api_key[:8] + '...' if settings.moltbook_api_key else 'none'}"
+        )
 
         try:
             async with httpx.AsyncClient(
@@ -185,11 +198,31 @@ class MoltbookService:
                     json=json_data,
                 )
 
+                # Log response details for debugging
+                redirect_info = ""
+                if response.history:
+                    redirect_chain = " -> ".join(
+                        f"{r.status_code}:{r.url}" for r in response.history
+                    )
+                    redirect_info = f" | redirects=[{redirect_chain}]"
+                logger.debug(
+                    f"Moltbook response: {response.status_code} | "
+                    f"final_url={response.url}{redirect_info}"
+                )
+
                 # Parse response
                 try:
                     data = response.json()
                 except Exception:
                     data = {"raw": response.text}
+
+                # Add redirect info to data for auth errors (helps debugging)
+                if response.status_code == 401 and response.history:
+                    data["_debug_redirects"] = [
+                        {"status": r.status_code, "url": str(r.url)}
+                        for r in response.history
+                    ]
+                    data["_debug_final_url"] = str(response.url)
 
                 return response.status_code, data
 
@@ -218,6 +251,14 @@ class MoltbookService:
             details.append(f"Error code: {data['error_code']}")
         if data.get("request_id"):
             details.append(f"Request ID: {data['request_id']}")
+
+        # Debug redirect info (for auth troubleshooting)
+        if data.get("_debug_redirects"):
+            redirects = data["_debug_redirects"]
+            redirect_info = " -> ".join(f"{r['status']}:{r['url']}" for r in redirects)
+            details.append(f"Redirects: {redirect_info}")
+        if data.get("_debug_final_url"):
+            details.append(f"Final URL: {data['_debug_final_url']}")
 
         # Deduplicate while preserving order
         seen = set()
