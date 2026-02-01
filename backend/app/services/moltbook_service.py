@@ -63,10 +63,42 @@ class MoltbookService:
     - HTTP client with Bearer token authentication
     - Security wrapper for responses
     - Rate limit error handling
+
+    IMPORTANT: The API URL must use www.moltbook.com (not moltbook.com).
+    Using the non-www domain will cause redirects that strip the Authorization header.
     """
 
     def __init__(self):
+        self._validated_api_url = self._validate_api_url(settings.moltbook_api_url)
         logger.info("MoltbookService initialized")
+
+    def _validate_api_url(self, url: str) -> str:
+        """
+        Validate and correct the Moltbook API URL.
+
+        The Moltbook API requires using www.moltbook.com - the non-www domain
+        redirects and strips the Authorization header during the redirect.
+
+        Args:
+            url: The configured API URL
+
+        Returns:
+            The validated/corrected URL
+        """
+        if not url:
+            return "https://www.moltbook.com/api/v1"
+
+        # Check if URL uses non-www moltbook.com
+        if "://moltbook.com" in url and "://www.moltbook.com" not in url:
+            corrected_url = url.replace("://moltbook.com", "://www.moltbook.com")
+            logger.warning(
+                f"Moltbook API URL corrected: '{url}' -> '{corrected_url}'. "
+                "The non-www domain strips Authorization headers on redirect. "
+                "Please update MOLTBOOK_API_URL in your .env to use www.moltbook.com"
+            )
+            return corrected_url
+
+        return url
 
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for Moltbook API requests (excluding auth, handled separately)."""
@@ -135,7 +167,7 @@ class MoltbookService:
         Returns:
             Tuple of (status_code, response_data)
         """
-        url = f"{settings.moltbook_api_url}{endpoint}"
+        url = f"{self._validated_api_url}{endpoint}"
         headers = self._get_headers()
         auth = self._get_auth()
 
