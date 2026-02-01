@@ -335,7 +335,8 @@ def register_moltbook_tools(tool_service: ToolService) -> None:
     """Register all Moltbook tools with the tool service."""
 
     # Only register if Moltbook is enabled
-    enabled = settings.moltbook_enabled and bool(settings.moltbook_api_key)
+    # API key check happens at runtime in executors for better error messages
+    enabled = settings.moltbook_enabled
 
     # moltbook_get_feed
     tool_service.register_tool(
@@ -648,5 +649,5 @@ def register_moltbook_tools(tool_service: ToolService) -> None:
         enabled=enabled,
     )
 
-    status = "enabled" if enabled else "disabled (MOLTBOOK_ENABLED=false or no API key)"
+    status = "enabled" if enabled else "disabled (MOLTBOOK_ENABLED=false)"
     logger.info(f"Registered 12 Moltbook tools ({status})")
