@@ -10,13 +10,29 @@ This service provides:
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 import httpx
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class BearerAuth(httpx.Auth):
+    """
+    Bearer token authentication for httpx.
+
+    Using httpx's auth mechanism ensures the token is properly
+    sent on redirects, unlike manually setting the Authorization header.
+    """
+
+    def __init__(self, token: str):
+        self.token = token
+
+    def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response, None]:
+        request.headers["Authorization"] = f"Bearer {self.token}"
+        yield request
 
 # Constants
 MOLTBOOK_TIMEOUT = 30.0  # seconds
@@ -53,12 +69,15 @@ class MoltbookService:
         logger.info("MoltbookService initialized")
 
     def _get_headers(self) -> Dict[str, str]:
-        """Get headers for Moltbook API requests."""
+        """Get headers for Moltbook API requests (excluding auth, handled separately)."""
         return {
-            "Authorization": f"Bearer {settings.moltbook_api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+
+    def _get_auth(self) -> BearerAuth:
+        """Get auth handler for Moltbook API requests."""
+        return BearerAuth(settings.moltbook_api_key)
 
     def _truncate_content(self, content: str) -> str:
         """Truncate content if it exceeds the maximum allowed size."""
@@ -118,11 +137,13 @@ class MoltbookService:
         """
         url = f"{settings.moltbook_api_url}{endpoint}"
         headers = self._get_headers()
+        auth = self._get_auth()
 
         try:
             async with httpx.AsyncClient(
                 timeout=MOLTBOOK_TIMEOUT,
                 follow_redirects=True,  # Follow 307/308 redirects
+                auth=auth,  # Use auth handler to ensure token survives redirects
             ) as client:
                 response = await client.request(
                     method=method,
