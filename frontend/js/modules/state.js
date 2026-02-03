@@ -100,6 +100,12 @@ export const state = {
 
     // Config
     availableModels: [],
+
+    // Subagent state
+    subagentsEnabled: false,
+    subagentMaxConcurrent: 5,
+    agentTypes: [],
+    conversationAgents: [],
 };
 
 /**

@@ -686,6 +686,48 @@ class ApiClient {
             }
         }
     }
+
+    // Subagent Management
+    async getSubagentsStatus() {
+        return this.request('/subagents/status');
+    }
+
+    async listAgentTypes() {
+        return this.request('/subagents/types');
+    }
+
+    async getAgentType(typeName) {
+        return this.request(`/subagents/types/${typeName}`);
+    }
+
+    async listConversationAgents(conversationId, includeCompleted = true) {
+        return this.request(`/subagents/conversation/${conversationId}?include_completed=${includeCompleted}`);
+    }
+
+    async listActiveAgents(conversationId) {
+        return this.request(`/subagents/conversation/${conversationId}/active`);
+    }
+
+    async getAgent(agentId) {
+        return this.request(`/subagents/${agentId}`);
+    }
+
+    async stopAgent(agentId) {
+        return this.request(`/subagents/${agentId}/stop`, {
+            method: 'POST',
+        });
+    }
+
+    async sendAgentInstruction(agentId, instruction) {
+        return this.request(`/subagents/${agentId}/instruction`, {
+            method: 'POST',
+            body: { instruction },
+        });
+    }
+
+    async validateSubagentDirectory(directory) {
+        return this.request(`/subagents/validate/directory?directory=${encodeURIComponent(directory)}`);
+    }
 }
 
 // Export singleton instance as global (needed for ES6 modules)

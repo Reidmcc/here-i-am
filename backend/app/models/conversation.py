@@ -54,3 +54,9 @@ class Conversation(Base):
         back_populates="conversation",
         cascade="all, delete-orphan"
     )
+    # Subagents spawned during this conversation
+    subagents: Mapped[List["SubAgent"]] = relationship(
+        "SubAgent",
+        back_populates="conversation",
+        cascade="all, delete-orphan"
+    )

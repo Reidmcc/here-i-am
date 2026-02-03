@@ -19,6 +19,8 @@ from app.services.codebase_navigator_service import CodebaseNavigatorService, co
 from app.services.codebase_navigator_tools import register_codebase_navigator_tools
 from app.services.moltbook_service import MoltbookService, moltbook_service
 from app.services.moltbook_tools import register_moltbook_tools
+from app.services.subagent_service import SubAgentService, subagent_service, AgentMessage
+from app.services.subagent_tools import register_subagent_tools, set_subagent_tool_context
 
 # Register tools at module load time
 register_web_tools(tool_service)
@@ -27,6 +29,7 @@ register_notes_tools(tool_service)
 register_memory_tools(tool_service)
 register_codebase_navigator_tools(tool_service)
 register_moltbook_tools(tool_service)
+register_subagent_tools(tool_service)
 
 __all__ = [
     # Classes
@@ -49,6 +52,8 @@ __all__ = [
     "AttachmentService",
     "CodebaseNavigatorService",
     "MoltbookService",
+    "SubAgentService",
+    "AgentMessage",
     # Singleton instances
     "anthropic_service",
     "openai_service",
@@ -65,6 +70,7 @@ __all__ = [
     "attachment_service",
     "codebase_navigator_service",
     "moltbook_service",
+    "subagent_service",
     # Tool registration functions
     "register_web_tools",
     "register_github_tools",
@@ -72,7 +78,9 @@ __all__ = [
     "register_memory_tools",
     "register_codebase_navigator_tools",
     "register_moltbook_tools",
+    "register_subagent_tools",
     # Context helpers
     "set_current_entity_label",
     "set_memory_tool_context",
+    "set_subagent_tool_context",
 ]

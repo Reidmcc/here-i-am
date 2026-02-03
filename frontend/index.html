@@ -32,6 +32,17 @@
                 <!-- Conversations will be loaded here -->
             </div>
 
+            <!-- Agents Panel (collapsible) -->
+            <div class="agents-panel collapsed" id="agents-tab" style="display: none;">
+                <div class="agents-header" id="agents-toggle">
+                    <span>Subagents (<span id="agents-count">0</span>)</span>
+                    <span class="toggle-icon">▼</span>
+                </div>
+                <div class="agents-content" id="agents-list">
+                    <!-- Agents will appear here -->
+                </div>
+            </div>
+
             <div class="sidebar-footer">
                 <button id="settings-btn" class="settings-btn">Settings</button>
                 <button id="memories-btn" class="memories-btn">Memories</button>
@@ -668,6 +679,28 @@
             <!-- Entity buttons will be populated dynamically -->
         </div>
         <button id="cancel-responder-btn" class="secondary-btn small" style="margin-top: 8px;">Cancel</button>
+    </div>
+
+    <!-- Agent Details Modal -->
+    <div class="modal" id="agent-details-modal">
+        <div class="modal-content wide">
+            <div class="modal-header">
+                <h3>Agent Details</h3>
+                <button class="close-btn" id="close-agent-details">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="agent-details-content">
+                    <!-- Agent details will be loaded here -->
+                </div>
+                <div class="agent-instruction-form" id="agent-instruction-form" style="display: none;">
+                    <div class="form-group">
+                        <label for="agent-instruction-input">Send Follow-up Instruction</label>
+                        <textarea id="agent-instruction-input" placeholder="Enter instruction for the agent..." rows="3"></textarea>
+                    </div>
+                    <button id="send-agent-instruction-btn" class="primary-btn">Send Instruction</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Loading Overlay -->

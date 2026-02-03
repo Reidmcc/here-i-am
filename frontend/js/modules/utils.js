@@ -199,3 +199,40 @@ export function showLoading(overlay, show) {
         overlay.classList.remove('active');
     }
 }
+
+/**
+ * Format a timestamp for display
+ * @param {string} timestamp - ISO timestamp string
+ * @returns {string} - Formatted timestamp
+ */
+export function formatTimestamp(timestamp) {
+    if (!timestamp) return '';
+    try {
+        const date = new Date(timestamp);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / (1000 * 60));
+        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+        // Less than an hour ago
+        if (diffMins < 60) {
+            return diffMins <= 1 ? 'just now' : `${diffMins} minutes ago`;
+        }
+
+        // Less than a day ago
+        if (diffHours < 24) {
+            return `${diffHours} hour${diffHours === 1 ? '' : 's'} ago`;
+        }
+
+        // Less than a week ago
+        if (diffDays < 7) {
+            return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
+        }
+
+        // Otherwise, show the date
+        return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch (e) {
+        return timestamp;
+    }
+}

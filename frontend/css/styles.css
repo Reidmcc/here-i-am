@@ -2890,3 +2890,416 @@ h4.md-header {
     color: var(--text-muted);
     font-style: italic;
 }
+
+/* ==========================================
+   Subagents Panel Styles
+   ========================================== */
+
+/* Agents Panel in Sidebar */
+.agents-panel {
+    background-color: var(--bg-tertiary);
+    border-top: 1px solid var(--border-color);
+    max-height: 300px;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+}
+
+.agents-panel.collapsed {
+    max-height: 40px;
+}
+
+.agents-header {
+    padding: 10px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.agents-header:hover {
+    background-color: var(--hover-overlay);
+}
+
+.agents-panel.collapsed .toggle-icon {
+    transform: rotate(-90deg);
+}
+
+.agents-content {
+    padding: 0 12px 12px;
+    overflow-y: auto;
+    max-height: 250px;
+}
+
+/* Agent Item */
+.agent-item {
+    padding: 10px 12px;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.agent-item:hover {
+    background-color: var(--hover-overlay);
+    border-color: var(--border-color);
+}
+
+.agent-item:last-child {
+    margin-bottom: 0;
+}
+
+.agent-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.agent-item-type {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.agent-item-status {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+}
+
+.agent-item-status.running {
+    background-color: rgba(76, 175, 124, 0.2);
+    color: var(--success);
+}
+
+.agent-item-status.waiting {
+    background-color: rgba(229, 165, 76, 0.2);
+    color: var(--warning);
+}
+
+.agent-item-status.completed {
+    background-color: rgba(92, 138, 255, 0.2);
+    color: var(--accent);
+}
+
+.agent-item-status.stopped {
+    background-color: rgba(176, 176, 176, 0.2);
+    color: var(--text-muted);
+}
+
+.agent-item-status.error {
+    background-color: rgba(229, 92, 92, 0.2);
+    color: var(--danger);
+}
+
+.agent-item-instruction {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.agent-item-meta {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+.agent-item-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.agent-item-actions button {
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.agent-stop-btn {
+    background-color: var(--danger);
+    color: white;
+    border: none;
+}
+
+.agent-stop-btn:hover {
+    background-color: var(--danger-hover);
+}
+
+.agent-details-btn {
+    background-color: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+}
+
+.agent-details-btn:hover {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+/* Agent Details Modal */
+.agent-details-section {
+    margin-bottom: 16px;
+}
+
+.agent-details-section h4 {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.agent-details-value {
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    background-color: var(--bg-tertiary);
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+}
+
+.agent-details-value.monospace {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.agent-details-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 16px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.agent-details-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.agent-details-title h4 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.agent-details-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.agent-follow-ups {
+    margin-top: 12px;
+}
+
+.agent-follow-up-item {
+    padding: 8px 12px;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    font-size: 0.85rem;
+}
+
+.agent-follow-up-item .timestamp {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.agent-result {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.agent-error {
+    background-color: rgba(229, 92, 92, 0.1);
+    border-color: rgba(229, 92, 92, 0.3);
+    color: var(--danger);
+}
+
+.agent-instruction-form {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-color);
+}
+
+.agent-instruction-form textarea {
+    width: 100%;
+    padding: 10px 12px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 0.9rem;
+    resize: vertical;
+}
+
+.agent-instruction-form textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+.agent-instruction-form button {
+    margin-top: 10px;
+}
+
+/* Empty state for agents panel */
+.agents-empty {
+    padding: 16px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+/* Agent type badge in details */
+.agent-type-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    background-color: var(--accent-subtle);
+    color: var(--accent);
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+
+/* Agent Details Modal Styles */
+.agent-detail-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.agent-detail-row:last-child {
+    border-bottom: none;
+}
+
+.agent-detail-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.agent-detail-value {
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    word-break: break-all;
+    text-align: right;
+    max-width: 60%;
+}
+
+.agent-detail-section {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-color);
+}
+
+.agent-detail-section-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-weight: 500;
+    margin-bottom: 8px;
+}
+
+.agent-detail-section-content {
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    background-color: var(--bg-tertiary);
+    padding: 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.agent-result-full {
+    background-color: rgba(76, 175, 124, 0.1);
+    border-color: rgba(76, 175, 124, 0.3);
+}
+
+.agent-error-full {
+    background-color: rgba(229, 92, 92, 0.1);
+    border-color: rgba(229, 92, 92, 0.3);
+    color: var(--danger);
+}
+
+.agent-followup {
+    padding: 8px;
+    background-color: var(--bg-secondary);
+    border-radius: 4px;
+    margin-bottom: 6px;
+}
+
+.agent-followup:last-child {
+    margin-bottom: 0;
+}
+
+.agent-followup-time {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.agent-followup-text {
+    font-size: 0.85rem;
+    color: var(--text-primary);
+}
+
+.agent-status-running,
+.agent-status-pending {
+    color: var(--warning);
+}
+
+.agent-status-waiting {
+    color: var(--accent);
+}
+
+.agent-status-completed {
+    color: var(--success);
+}
+
+.agent-status-failed,
+.agent-status-stopped {
+    color: var(--danger);
+}
+
+/* Empty state hint styling */
+.agents-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+.agents-hint code {
+    background-color: var(--bg-secondary);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+}

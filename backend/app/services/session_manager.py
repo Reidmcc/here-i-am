@@ -23,6 +23,7 @@ from app.services import memory_service, llm_service
 from app.services.tool_service import tool_service, ToolResult
 from app.services.notes_tools import set_current_entity_label
 from app.services.memory_tools import set_memory_tool_context
+from app.services.subagent_tools import set_subagent_tool_context
 from app.config import settings
 
 # Import from split modules
@@ -751,6 +752,10 @@ class SessionManager:
             set_memory_tool_context(session.entity_id, session.conversation_id)
             logger.debug(f"[MEMORY] Set memory tool context: entity_id={session.entity_id}, conversation_id={session.conversation_id[:8]}...")
 
+        # Set context for subagent tools
+        set_subagent_tool_context(session.conversation_id, session.entity_id or "")
+        logger.debug(f"[SUBAGENT] Set subagent tool context: conversation_id={session.conversation_id[:8]}...")
+
         # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
         # Validate both that Pinecone is configured AND the entity_id is valid
         if memory_service.is_configured(entity_id=session.entity_id):
@@ -1051,6 +1056,27 @@ class SessionManager:
         # Lazy initialization - only built when tool use is detected
         base_messages_no_memories = None
 
+        # Step 5b: Fetch active subagents and prepare context if any exist
+        # This makes the AI aware of running agents and their status
+        subagent_context = ""
+        if settings.subagents_enabled:
+            try:
+                from app.services.subagent_service import subagent_service
+                active_agents = await subagent_service.get_active_agents(db, session.conversation_id)
+                if active_agents:
+                    subagent_context = subagent_service.get_agents_context_summary(active_agents)
+                    logger.info(f"[SUBAGENT] Injecting context for {len(active_agents)} active agents")
+            except Exception as e:
+                logger.warning(f"[SUBAGENT] Failed to fetch agent status: {e}")
+
+        # Build effective system prompt including agent status if available
+        effective_system_prompt = session.system_prompt
+        if subagent_context:
+            if effective_system_prompt:
+                effective_system_prompt = f"{effective_system_prompt}\n\n{subagent_context}"
+            else:
+                effective_system_prompt = subagent_context
+
         # Step 6: Stream LLM response with caching enabled
         # This includes a tool use loop if tools are provided
         full_content = ""
@@ -1114,7 +1140,7 @@ class SessionManager:
             async for event in llm_service.send_message_stream(
                 messages=working_messages,
                 model=session.model,
-                system_prompt=session.system_prompt,
+                system_prompt=effective_system_prompt,
                 temperature=session.temperature,
                 max_tokens=session.max_tokens,
                 enable_caching=True,

@@ -137,6 +137,15 @@ import {
     cancelImport,
     resetImportModal
 } from './modules/import-export.js';
+import {
+    setElements as setAgentElements,
+    setCallbacks as setAgentCallbacks,
+    initAgents,
+    loadConversationAgents,
+    cleanupAgents,
+    stopAgent,
+    showAgentDetails
+} from './modules/agents.js';
 
 // Reference to global API client
 const api = window.api;
@@ -324,6 +333,17 @@ class App {
             importProgressBar: document.getElementById('import-progress-bar'),
             importProgressText: document.getElementById('import-progress-text'),
 
+            // Agent elements
+            agentsTab: document.getElementById('agents-tab'),
+            agentsToggle: document.getElementById('agents-toggle'),
+            agentsCount: document.getElementById('agents-count'),
+            agentsList: document.getElementById('agents-list'),
+            agentDetailsModal: document.getElementById('agent-details-modal'),
+            agentDetailsContent: document.getElementById('agent-details-content'),
+            agentInstructionInput: document.getElementById('agent-instruction-input'),
+            sendAgentInstructionBtn: document.getElementById('send-agent-instruction-btn'),
+            agentInstructionForm: document.getElementById('agent-instruction-form'),
+
             // Toast container
             toastContainer: document.getElementById('toast-container'),
         };
@@ -407,6 +427,12 @@ class App {
         setImportExportElements(this.elements);
         setImportExportCallbacks({
             loadConversations: () => loadConversations(),
+        });
+
+        // Initialize agents module
+        setAgentElements(this.elements);
+        setAgentCallbacks({
+            onAgentStopped: (agentId) => this.onAgentStopped(agentId),
         });
     }
 
@@ -541,6 +567,14 @@ class App {
         this.elements.deleteVoiceBtn?.addEventListener('click', () => deleteVoice());
         document.getElementById('edit-voice-btn')?.addEventListener('click', () => showVoiceEditModal());
 
+        // Agent details modal
+        document.getElementById('close-agent-details')?.addEventListener('click', () => hideModal('agentDetailsModal'));
+
+        // Agents panel toggle
+        this.elements.agentsToggle?.addEventListener('click', () => {
+            this.elements.agentsTab?.classList.toggle('collapsed');
+        });
+
         // Global keyboard shortcuts
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
@@ -590,6 +624,9 @@ class App {
 
         // Load GitHub repos info
         await this.loadGitHubReposInfo();
+
+        // Initialize agents system
+        await initAgents();
     }
 
     /**
@@ -702,6 +739,9 @@ class App {
         clearMessages();
         resetMemoryState();
 
+        // Cleanup agents from previous conversation
+        cleanupAgents();
+
         // Update UI
         if (this.elements.conversationTitle) {
             this.elements.conversationTitle.textContent = 'Select a conversation';
@@ -755,6 +795,11 @@ class App {
     onConversationLoaded(conversation, messages) {
         // Handle input change to update button states
         this.handleInputChange();
+
+        // Load agents for this conversation
+        if (state.subagentsEnabled && conversation.id) {
+            loadConversationAgents(conversation.id);
+        }
     }
 
     /**
@@ -831,6 +876,16 @@ class App {
     }
 
     /**
+     * Handle agent stopped callback
+     */
+    onAgentStopped(agentId) {
+        // Refresh agent list to update status
+        if (state.currentConversationId) {
+            loadConversationAgents(state.currentConversationId);
+        }
+    }
+
+    /**
      * Load GitHub repos info for settings
      */
     async loadGitHubReposInfo() {
@@ -867,6 +922,8 @@ window.app = {
     selectResponder: (entityId) => selectResponder(entityId),
     showVoiceEditModal: (voiceId) => showVoiceEditModal(voiceId),
     deleteVoice: (voiceId) => deleteVoice(voiceId),
+    showAgentDetails: (agentId) => showAgentDetails(agentId),
+    stopAgent: (agentId) => stopAgent(agentId),
 };
 
 // Initialize app when DOM is ready

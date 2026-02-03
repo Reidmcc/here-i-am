@@ -131,6 +131,68 @@ class EntityConfig:
         }
 
 
+class AgentTypeConfig:
+    """Configuration for a subagent type that the main AI can spawn."""
+    def __init__(
+        self,
+        name: str,
+        label: str,
+        description: str,
+        allowed_tools: Optional[List[str]] = None,
+        blocked_commands: Optional[List[str]] = None,
+        working_directory: Optional[str] = None,
+        model: str = "sonnet",
+        max_turns: int = 50,
+        system_prompt: Optional[str] = None,
+    ):
+        self.name = name  # Unique identifier (snake_case)
+        self.label = label  # Display name
+        self.description = description  # Description for the main AI
+        # Tools the agent can use (default: read-only tools)
+        self.allowed_tools = allowed_tools or ["Read", "Glob", "Grep"]
+        # Command patterns to block (regex patterns)
+        self.blocked_commands = blocked_commands or [
+            r"curl\s",
+            r"wget\s",
+            r"rm\s+-rf",
+            r"rm\s+-r",
+            r"sudo\s",
+            r"chmod\s",
+            r"chown\s",
+            r"dd\s",
+            r"mkfs",
+            r">\s*/dev/",
+            r":\(\)\s*{\s*:\|:\s*&\s*}",  # Fork bomb
+        ]
+        # Working directory (will be validated for safety)
+        if working_directory:
+            # Normalize path separators for cross-platform compatibility
+            normalized = working_directory.replace("\\", "/")
+            self.working_directory = str(Path(normalized))
+        else:
+            self.working_directory = None
+        self.model = model  # "sonnet", "opus", "haiku", or "inherit"
+        self.max_turns = max_turns
+        self.system_prompt = system_prompt
+
+    def to_dict(self):
+        return {
+            "name": self.name,
+            "label": self.label,
+            "description": self.description,
+            "allowed_tools": self.allowed_tools,
+            "blocked_commands": self.blocked_commands,
+            "working_directory": self.working_directory,
+            "model": self.model,
+            "max_turns": self.max_turns,
+            "system_prompt": self.system_prompt,
+        }
+
+    def has_tool(self, tool: str) -> bool:
+        """Check if this agent type has access to a specific tool."""
+        return tool in self.allowed_tools
+
+
 class GitHubRepoConfig:
     """Configuration for a GitHub repository integration."""
     def __init__(
@@ -267,6 +329,22 @@ class Settings(BaseSettings):
     moltbook_api_key: str = ""
     # Moltbook API base URL (must use www subdomain to preserve auth headers)
     moltbook_api_url: str = "https://www.moltbook.com/api/v1"
+
+    # Subagent settings
+    # Enable subagent tools for AI entities to spawn autonomous agents
+    subagents_enabled: bool = False
+    # Subagent types configuration (JSON array)
+    # Each type: {"name": "...", "label": "...", "description": "...",
+    #             "allowed_tools": ["Read", "Glob", "Grep"], "blocked_commands": ["curl", "wget"],
+    #             "working_directory": "/path/to/dir", "model": "sonnet", "max_turns": 50}
+    subagent_types: str = ""
+    # Directories that are blocked for subagent working directories (JSON array)
+    # These patterns are checked against the start of the working directory path
+    subagent_blocked_directories: str = '["/", "/etc", "/usr", "/bin", "/sbin", "/var", "/tmp", "/root", "/home", "/System", "/Library", "/Applications", "C:\\\\Windows", "C:\\\\Program Files"]'
+    # Maximum concurrent agents per conversation
+    subagent_max_concurrent: int = 5
+    # Default timeout for agent operations in seconds
+    subagent_default_timeout: int = 300
 
     # Codebase Navigator settings
     # Enable codebase navigation tools for AI entities
@@ -588,6 +666,85 @@ class Settings(BaseSettings):
             return json.loads(self.codebase_navigator_default_excludes)
         except json.JSONDecodeError:
             return ["node_modules/", "venv/", ".venv/", "__pycache__/", ".git/"]
+
+    def get_subagent_types(self) -> List[AgentTypeConfig]:
+        """
+        Parse and return the list of configured subagent types.
+
+        Requires SUBAGENT_TYPES to be set as a JSON array.
+        Returns empty list if not configured.
+        Raises ValueError if SUBAGENT_TYPES contains invalid JSON.
+        """
+        if not self.subagent_types:
+            return []
+
+        try:
+            types_data = json.loads(self.subagent_types)
+            return [
+                AgentTypeConfig(
+                    name=t.get("name", "default"),
+                    label=t.get("label", t.get("name", "Default")),
+                    description=t.get("description", ""),
+                    allowed_tools=t.get("allowed_tools"),
+                    blocked_commands=t.get("blocked_commands"),
+                    working_directory=t.get("working_directory"),
+                    model=t.get("model", "sonnet"),
+                    max_turns=t.get("max_turns", 50),
+                    system_prompt=t.get("system_prompt"),
+                )
+                for t in types_data
+                if t.get("name")
+            ]
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Invalid JSON in SUBAGENT_TYPES environment variable: {e}"
+            )
+
+    def get_subagent_type_by_name(self, name: str) -> Optional[AgentTypeConfig]:
+        """Get a subagent type configuration by its name."""
+        types = self.get_subagent_types()
+        for agent_type in types:
+            if agent_type.name == name:
+                return agent_type
+        return None
+
+    def get_subagent_blocked_directories(self) -> List[str]:
+        """Get list of blocked directories for subagent working directories."""
+        try:
+            return json.loads(self.subagent_blocked_directories)
+        except json.JSONDecodeError:
+            return ["/", "/etc", "/usr", "/bin", "/sbin", "/var", "/tmp", "/root", "/home"]
+
+    def is_subagent_directory_allowed(self, directory: str) -> bool:
+        """
+        Check if a directory is allowed for subagent operations.
+
+        Returns False if the directory matches any blocked pattern or is
+        outside allowed paths. The check ensures subagents can't access
+        sensitive system directories or the application's own directory.
+        """
+        if not directory:
+            return False
+
+        # Normalize the directory path
+        normalized = str(Path(directory.replace("\\", "/")).resolve())
+
+        # Check against blocked directories
+        blocked = self.get_subagent_blocked_directories()
+        for blocked_dir in blocked:
+            blocked_normalized = str(Path(blocked_dir.replace("\\", "/")).resolve())
+            # Block if the directory is the blocked dir or a parent of it
+            if normalized == blocked_normalized or normalized.startswith(blocked_normalized + "/"):
+                # Special case: allow subdirectories if they're not the root blocked dir
+                if normalized == blocked_normalized:
+                    return False
+
+        # Also check if it's trying to access the application directory
+        app_dir = str(Path(__file__).parent.parent.resolve())
+        if normalized.startswith(app_dir):
+            return False
+
+        return True
 
 
 settings = Settings()
