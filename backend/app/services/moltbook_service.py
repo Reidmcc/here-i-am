@@ -10,7 +10,7 @@ This service provides:
 
 import json
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, Generator, Optional, Tuple
 
 import httpx
 
@@ -19,17 +19,25 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-def _create_auth_hook(token: str):
+class BearerAuth(httpx.Auth):
     """
-    Create a request hook that adds Bearer token authentication.
+    Bearer token authentication that properly persists across redirects.
 
-    Using event hooks ensures the token is added to EVERY request,
-    including redirected requests. This is more reliable than httpx.Auth
-    for APIs that redirect and are sensitive to auth header presence.
+    Uses httpx's auth_flow mechanism which is specifically designed
+    to handle authentication that needs to persist across redirects.
+    This is more reliable than event hooks for APIs that redirect.
     """
-    async def add_auth_header(request: httpx.Request):
-        request.headers["Authorization"] = f"Bearer {token}"
-    return add_auth_header
+
+    requires_request_body = False
+    requires_response_body = False
+
+    def __init__(self, token: str):
+        self.token = token
+
+    def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response, None]:
+        """Add Bearer token to every request in the flow, including redirects."""
+        request.headers["Authorization"] = f"Bearer {self.token}"
+        yield request
 
 # Constants
 MOLTBOOK_TIMEOUT = 30.0  # seconds
@@ -108,9 +116,9 @@ class MoltbookService:
             headers["Content-Type"] = "application/json"
         return headers
 
-    def _get_auth_hook(self):
-        """Get request hook that adds auth header to every request including redirects."""
-        return _create_auth_hook(settings.moltbook_api_key)
+    def _get_auth(self) -> BearerAuth:
+        """Get auth handler that adds Bearer token to every request including redirects."""
+        return BearerAuth(settings.moltbook_api_key)
 
     def _truncate_content(self, content: str) -> str:
         """Truncate content if it exceeds the maximum allowed size."""
@@ -171,7 +179,7 @@ class MoltbookService:
         url = f"{self._validated_api_url}{endpoint}"
         has_body = json_data is not None
         headers = self._get_headers(has_body=has_body)
-        auth_hook = self._get_auth_hook()
+        auth = self._get_auth()
 
         # Debug logging for troubleshooting auth issues
         logger.debug(
@@ -185,7 +193,7 @@ class MoltbookService:
             async with httpx.AsyncClient(
                 timeout=MOLTBOOK_TIMEOUT,
                 follow_redirects=True,  # Follow 307/308 redirects
-                event_hooks={"request": [auth_hook]},  # Hook adds auth to ALL requests including redirects
+                auth=auth,  # BearerAuth.auth_flow adds auth to ALL requests including redirects
             ) as client:
                 response = await client.request(
                     method=method,
