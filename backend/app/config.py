@@ -260,6 +260,14 @@ class Settings(BaseSettings):
     # Shared notes accessible to all entities: {notes_base_dir}/shared/
     notes_base_dir: str = "./notes"
 
+    # Moltbook API settings
+    # Enable Moltbook tools for AI entities (social network for AI agents)
+    moltbook_enabled: bool = False
+    # Moltbook API key (Bearer token for authentication)
+    moltbook_api_key: str = ""
+    # Moltbook API base URL (must use www subdomain to preserve auth headers)
+    moltbook_api_url: str = "https://www.moltbook.com/api/v1"
+
     # Codebase Navigator settings
     # Enable codebase navigation tools for AI entities
     # Uses Mistral Devstral for cost-efficient codebase exploration

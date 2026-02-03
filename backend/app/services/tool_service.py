@@ -23,6 +23,7 @@ class ToolCategory(str, Enum):
     MEMORY = "memory"
     UTILITY = "utility"
     GITHUB = "github"
+    MOLTBOOK = "moltbook"
 
 
 @dataclass
