@@ -1058,6 +1058,8 @@ class SessionManager:
 
         # Step 5b: Fetch active subagents and prepare context if any exist
         # This makes the AI aware of running agents and their status
+        # Agent context is injected as a labeled block in the messages, NOT in the system prompt
+        # (to preserve token caching - system prompt is part of the cached prefix)
         subagent_context = ""
         if settings.subagents_enabled:
             try:
@@ -1069,13 +1071,22 @@ class SessionManager:
             except Exception as e:
                 logger.warning(f"[SUBAGENT] Failed to fetch agent status: {e}")
 
-        # Build effective system prompt including agent status if available
+        # Inject agent context into messages (before the last user message)
+        # This keeps it in the "new" portion of context, not affecting cached prefix
+        if subagent_context and messages:
+            # Find the position to insert - before the last user message
+            # The messages structure is: [cached_context, new_context, memories, current_user_message]
+            # We want to insert the agent context before the current user message
+            agent_context_message = {
+                "role": "user",
+                "content": f"[ACTIVE SUBAGENTS]\n{subagent_context}\n[/ACTIVE SUBAGENTS]"
+            }
+            # Insert before the last message (which is the current user message)
+            messages.insert(-1, agent_context_message)
+            logger.info(f"[SUBAGENT] Injected agent context before current user message")
+
+        # Use session's system prompt (unchanged - agent context is in messages now)
         effective_system_prompt = session.system_prompt
-        if subagent_context:
-            if effective_system_prompt:
-                effective_system_prompt = f"{effective_system_prompt}\n\n{subagent_context}"
-            else:
-                effective_system_prompt = subagent_context
 
         # Step 6: Stream LLM response with caching enabled
         # This includes a tool use loop if tools are provided
