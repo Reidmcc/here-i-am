@@ -315,7 +315,7 @@ async def auth_status_handler(request: Request) -> Response:
         })
 
     token = get_token_from_request(request)
-    is_valid = token and validate_session(token)
+    is_valid = bool(token and validate_session(token))
 
     response_data = {
         "auth_enabled": True,
