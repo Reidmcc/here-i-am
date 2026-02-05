@@ -365,6 +365,7 @@ class Settings(BaseSettings):
     # the provider APIs, so new models should work automatically when released.
     #
     # ANTHROPIC MODELS:
+    #   - claude-opus-4-6
     #   - claude-sonnet-4-5-20250929
     #   - claude-opus-4-5-20251101
     #   - claude-sonnet-4-20250514
