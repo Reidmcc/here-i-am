@@ -54,10 +54,10 @@ def calculate_significance(
     """
     Calculate dynamic significance based on retrieval patterns.
 
-    significance = times_retrieved * recency_factor * half_life_modifier
+    significance = (1 + 0.1 * times_retrieved) * recency_factor * half_life_modifier
 
     Where:
-    - times_retrieved: How many times this memory has been retrieved
+    - times_retrieved: How many times this memory has been retrieved (weighted at 10%)
     - recency_factor: Boost based on how recently retrieved (decays over time)
     - half_life_modifier: Decay based on memory age (halves every N days)
     """
@@ -75,8 +75,9 @@ def calculate_significance(
         days_since_retrieval = max((now - last_retrieved_at).days, 1)
         recency_factor = 1.0 + min(1.0 / days_since_retrieval, settings.recency_boost_strength)
 
-    # Calculate significance
-    significance = times_retrieved * recency_factor * half_life_modifier
+    # Calculate significance (0.1 weight on times_retrieved to prevent retrieval
+    # count from dominating; +1 base so never-retrieved memories aren't zeroed out)
+    significance = (1 + 0.1 * times_retrieved) * recency_factor * half_life_modifier
 
     # Apply floor
     return max(significance, settings.significance_floor)
