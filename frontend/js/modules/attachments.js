@@ -132,13 +132,19 @@ export async function processFiles(files) {
             // For PDF and DOCX, the server will extract text
             // For other text files, read directly
             if (ext === '.pdf' || ext === '.docx') {
-                // Store file for server-side processing
-                state.pendingAttachments.files.push({
-                    name: file.name,
-                    type: file.type || `application/${ext.slice(1)}`,
-                    file: file, // Keep original file for upload
-                    content: null, // Will be extracted server-side
-                });
+                // Read as base64 for server-side text extraction
+                try {
+                    const base64 = await readFileAsBase64(file);
+                    state.pendingAttachments.files.push({
+                        name: file.name,
+                        type: file.type || `application/${ext.slice(1)}`,
+                        content: base64,
+                        contentType: 'base64',
+                    });
+                } catch (error) {
+                    console.error('Failed to read file:', error);
+                    showToast(`Failed to read ${file.name}`, 'error');
+                }
             } else {
                 try {
                     const content = await readFileAsText(file);
@@ -286,9 +292,10 @@ export function getAttachmentsForRequest() {
     // Text files
     for (const file of state.pendingAttachments.files) {
         attachments.files.push({
-            name: file.name,
-            type: file.type,
+            filename: file.name,
             content: file.content,
+            content_type: file.contentType || 'text',
+            media_type: file.type,
         });
     }
 
