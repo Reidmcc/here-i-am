@@ -26,10 +26,21 @@ class ApiClient {
 
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(error.detail || `HTTP ${response.status}`);
+            throw new Error(this._formatErrorDetail(error.detail, response.status));
         }
 
         return response.json();
+    }
+
+    /**
+     * Format error detail from API response.
+     * Handles Pydantic validation errors (array of objects) and plain strings.
+     */
+    _formatErrorDetail(detail, status) {
+        if (Array.isArray(detail)) {
+            return detail.map(e => e.msg || JSON.stringify(e)).join('; ');
+        }
+        return detail || `HTTP ${status}`;
     }
 
     // Health check
@@ -151,7 +162,7 @@ class ApiClient {
 
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(error.detail || `HTTP ${response.status}`);
+            throw new Error(this._formatErrorDetail(error.detail, response.status));
         }
 
         const reader = response.body.getReader();
@@ -265,7 +276,7 @@ class ApiClient {
 
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(error.detail || `HTTP ${response.status}`);
+            throw new Error(this._formatErrorDetail(error.detail, response.status));
         }
 
         const reader = response.body.getReader();
@@ -512,7 +523,7 @@ class ApiClient {
 
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(error.detail || `HTTP ${response.status}`);
+            throw new Error(this._formatErrorDetail(error.detail, response.status));
         }
 
         return response.blob();
@@ -542,7 +553,7 @@ class ApiClient {
 
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(error.detail || `HTTP ${response.status}`);
+            throw new Error(this._formatErrorDetail(error.detail, response.status));
         }
 
         return response.json();
@@ -595,7 +606,7 @@ class ApiClient {
 
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(error.detail || `HTTP ${response.status}`);
+            throw new Error(this._formatErrorDetail(error.detail, response.status));
         }
 
         return response.json();
@@ -623,7 +634,7 @@ class ApiClient {
 
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(error.detail || `HTTP ${response.status}`);
+            throw new Error(this._formatErrorDetail(error.detail, response.status));
         }
 
         const reader = response.body.getReader();
