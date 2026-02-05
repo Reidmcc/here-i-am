@@ -423,17 +423,18 @@ class SessionManager:
             user_candidates = []
             assistant_candidates = []
 
-            if session.use_memory_in_context:
-                exclude_ids = session.memory_tracker.get_in_context_memory_ids(len(session.conversation_context))
-            else:
-                exclude_ids = session.in_context_ids
+            # Note: we intentionally do NOT pass in-context memory IDs as exclude_ids
+            # to search_memories. If we did, the search would backfill excluded slots
+            # with lower-ranked candidates. Instead, we let the search return the most
+            # relevant results (which may include in-context memories), select the top-k,
+            # and then skip in-context memories at the session.add_memory level without
+            # replacing them with lower-ranked candidates.
 
             if user_query:
                 user_candidates = await memory_service.search_memories(
                     query=user_query,
                     top_k=fetch_k_per_query,
                     exclude_conversation_id=session.conversation_id,
-                    exclude_ids=exclude_ids,
                     entity_id=session.entity_id,
                 )
                 logger.info(f"[MEMORY] User query retrieved {len(user_candidates)} candidates")
@@ -443,7 +444,6 @@ class SessionManager:
                     query=assistant_query,
                     top_k=fetch_k_per_query,
                     exclude_conversation_id=session.conversation_id,
-                    exclude_ids=exclude_ids,
                     entity_id=session.entity_id,
                 )
                 logger.info(f"[MEMORY] Assistant query retrieved {len(assistant_candidates)} candidates")
@@ -536,6 +536,9 @@ class SessionManager:
             logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)} (role_balance={'on' if settings.memory_role_balance_enabled else 'off'})")
 
             # Step 3: Process top candidates
+            # Memories already in context will be skipped without backfilling from
+            # lower-ranked candidates. This preserves the integrity of the top-k selection.
+            skipped_in_context = 0
             for item in top_candidates:
                 candidate = item["candidate"]
                 mem_data = item["mem_data"]
@@ -569,16 +572,19 @@ class SessionManager:
                             db,
                             entity_id=session.entity_id,
                         )
+                else:
+                    skipped_in_context += 1
+                    logger.info(f"[MEMORY]   [ALREADY IN CONTEXT] {memory.id[:8]}... combined={memory.combined_score:.3f} (skipping, not backfilling)")
 
             # Log memory retrieval summary
             if new_memories:
-                logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
+                logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals, {skipped_in_context} already in context)")
                 for mem in new_memories:
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
                     recency_str = f"{mem.days_since_retrieval:.1f}" if mem.days_since_retrieval >= 0 else "never"
                     logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str} source={mem.source}")
             else:
-                logger.info(f"[MEMORY] No new memories retrieved (total in context: {session.get_in_context_memory_count()})")
+                logger.info(f"[MEMORY] No new memories retrieved ({skipped_in_context} already in context, total in context: {session.get_in_context_memory_count()})")
 
             # Log candidates that were not selected after re-ranking (show next 5)
             unselected_candidates = enriched_candidates[top_k:top_k + 5]
@@ -776,17 +782,18 @@ class SessionManager:
             user_candidates = []
             assistant_candidates = []
 
-            if session.use_memory_in_context:
-                exclude_ids = session.memory_tracker.get_in_context_memory_ids(len(session.conversation_context))
-            else:
-                exclude_ids = session.in_context_ids
+            # Note: we intentionally do NOT pass in-context memory IDs as exclude_ids
+            # to search_memories. If we did, the search would backfill excluded slots
+            # with lower-ranked candidates. Instead, we let the search return the most
+            # relevant results (which may include in-context memories), select the top-k,
+            # and then skip in-context memories at the session level without replacing
+            # them with lower-ranked candidates.
 
             if user_query:
                 user_candidates = await memory_service.search_memories(
                     query=user_query,
                     top_k=fetch_k_per_query,
                     exclude_conversation_id=session.conversation_id,
-                    exclude_ids=exclude_ids,
                     entity_id=session.entity_id,
                 )
                 logger.info(f"[MEMORY] User query retrieved {len(user_candidates)} candidates")
@@ -796,7 +803,6 @@ class SessionManager:
                     query=assistant_query,
                     top_k=fetch_k_per_query,
                     exclude_conversation_id=session.conversation_id,
-                    exclude_ids=exclude_ids,
                     entity_id=session.entity_id,
                 )
                 logger.info(f"[MEMORY] Assistant query retrieved {len(assistant_candidates)} candidates")
@@ -887,6 +893,9 @@ class SessionManager:
             logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)} (role_balance={'on' if settings.memory_role_balance_enabled else 'off'})")
 
             # Step 3: Process top candidates
+            # Memories already in context will be skipped without backfilling from
+            # lower-ranked candidates. This preserves the integrity of the top-k selection.
+            skipped_in_context = 0
             for item in top_candidates:
                 candidate = item["candidate"]
                 mem_data = item["mem_data"]
@@ -923,16 +932,19 @@ class SessionManager:
                             db,
                             entity_id=session.entity_id,
                         )
+                else:
+                    skipped_in_context += 1
+                    logger.info(f"[MEMORY]   [ALREADY IN CONTEXT] {memory.id[:8]}... combined={memory.combined_score:.3f} (skipping, not backfilling)")
 
             # Log memory retrieval summary
             if new_memories:
-                logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals)")
+                logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals, {skipped_in_context} already in context)")
                 for mem in new_memories:
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
                     recency_str = f"{mem.days_since_retrieval:.1f}" if mem.days_since_retrieval >= 0 else "never"
                     logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str} source={mem.source}")
             else:
-                logger.info(f"[MEMORY] No new memories retrieved (total in context: {session.get_in_context_memory_count()})")
+                logger.info(f"[MEMORY] No new memories retrieved ({skipped_in_context} already in context, total in context: {session.get_in_context_memory_count()})")
 
             # Log candidates that were not selected after re-ranking (show next 5)
             unselected_candidates = enriched_candidates[top_k:top_k + 5]
