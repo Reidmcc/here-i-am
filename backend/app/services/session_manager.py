@@ -574,7 +574,8 @@ class SessionManager:
                         )
                 else:
                     skipped_in_context += 1
-                    logger.info(f"[MEMORY]   [ALREADY IN CONTEXT] {memory.id[:8]}... combined={memory.combined_score:.3f} (skipping, not backfilling)")
+                    recency_str = f"{memory.days_since_retrieval:.1f}" if memory.days_since_retrieval >= 0 else "never"
+                    logger.info(f"[MEMORY]   [ALREADY IN CONTEXT] combined={memory.combined_score:.3f} similarity={memory.score:.3f} significance={memory.significance:.3f} times_retrieved={memory.times_retrieved} age_days={memory.days_since_creation:.1f} recency_days={recency_str} source={memory.source}")
 
             # Log memory retrieval summary
             if new_memories:
@@ -934,7 +935,8 @@ class SessionManager:
                         )
                 else:
                     skipped_in_context += 1
-                    logger.info(f"[MEMORY]   [ALREADY IN CONTEXT] {memory.id[:8]}... combined={memory.combined_score:.3f} (skipping, not backfilling)")
+                    recency_str = f"{memory.days_since_retrieval:.1f}" if memory.days_since_retrieval >= 0 else "never"
+                    logger.info(f"[MEMORY]   [ALREADY IN CONTEXT] combined={memory.combined_score:.3f} similarity={memory.score:.3f} significance={memory.significance:.3f} times_retrieved={memory.times_retrieved} age_days={memory.days_since_creation:.1f} recency_days={recency_str} source={memory.source}")
 
             # Log memory retrieval summary
             if new_memories:
