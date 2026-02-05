@@ -93,11 +93,10 @@ def calculate_significance(
         else:
             recency_factor = 1.0 + settings.recency_boost_strength
 
-    # Use (1 + times_retrieved) instead of raw times_retrieved to avoid
-    # zeroing out the entire calculation for never-retrieved memories.
-    # This allows new memories to compete based on recency and age factors
-    # rather than being flattened to the significance floor.
-    significance = (1 + times_retrieved) * recency_factor * half_life_modifier
+    # Use (1 + 0.1 * times_retrieved) to keep retrieval count as a signal
+    # without letting it dominate. The +1 base ensures never-retrieved memories
+    # can still compete based on recency and age factors.
+    significance = (1 + 0.1 * times_retrieved) * recency_factor * half_life_modifier
     return significance
 
 
