@@ -138,8 +138,6 @@ export function handleEntityChange(entityId) {
         state.selectedEntityId = entityId;
         state.currentConversationEntities = [];
 
-        // Show the multi-entity selection modal
-        showMultiEntityModal();
         updateEntityDescription();
 
         // Clear current conversation when switching to multi-entity

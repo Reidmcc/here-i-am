@@ -78,8 +78,8 @@ export async function sendMessage(skipEntityModal = false) {
     // Capture attachments before clearing
     const attachments = getAttachmentsForRequest();
 
-    // In multi-entity mode without a conversation, show entity selection modal
-    if (!state.currentConversationId && state.isMultiEntityMode && !skipEntityModal) {
+    // In multi-entity mode without a conversation and no entities selected yet, show entity selection modal
+    if (!state.currentConversationId && state.isMultiEntityMode && !skipEntityModal && state.currentConversationEntities.length < 2) {
         state.pendingActionAfterEntitySelection = 'sendMessage';
         state.pendingMessageForEntitySelection = content;
         state.pendingAttachmentsForEntitySelection = attachments;
