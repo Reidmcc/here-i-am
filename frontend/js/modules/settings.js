@@ -234,17 +234,51 @@ export function updateModelIndicator() {
 
     // Look up friendly model name from available models
     const modelId = state.settings.model;
-    let displayName = 'Unknown';
+    const displayName = getModelDisplayName(modelId);
+    elements.modelIndicator.textContent = displayName;
+}
 
+/**
+ * Get the display name for a model ID
+ * @param {string} modelId - Model ID
+ * @returns {string} - Friendly display name
+ */
+function getModelDisplayName(modelId) {
     if (modelId && state.availableModels && state.availableModels.length > 0) {
         const model = state.availableModels.find(m => m.id === modelId);
-        displayName = model ? model.name : modelId;
-    } else if (modelId) {
-        // Fallback to model ID if available models not loaded yet
-        displayName = modelId;
+        if (model) return model.name;
+    }
+    return modelId || 'Unknown';
+}
+
+/**
+ * Resolve which model an entity is using.
+ * Priority: saved user preference > entity default > first provider model > global setting
+ * @param {Object} entity - Entity object with index_name, llm_provider, default_model
+ * @returns {string} - Model ID
+ */
+function resolveEntityModel(entity) {
+    const provider = entity.llm_provider || 'anthropic';
+
+    // 1. Saved per-entity preference
+    const savedModel = state.entityModels[entity.index_name];
+    if (savedModel) {
+        const isValid = state.availableModels &&
+            state.availableModels.some(m => m.id === savedModel && m.provider === provider);
+        if (isValid) return savedModel;
     }
 
-    elements.modelIndicator.textContent = displayName;
+    // 2. Entity's configured default
+    if (entity.default_model) return entity.default_model;
+
+    // 3. First available model for the provider
+    if (state.availableModels) {
+        const providerModels = state.availableModels.filter(m => m.provider === provider);
+        if (providerModels.length > 0) return providerModels[0].id;
+    }
+
+    // 4. Global fallback
+    return state.settings.model;
 }
 
 /**
