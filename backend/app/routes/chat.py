@@ -232,14 +232,16 @@ async def send_message(
         # Build entity_labels mapping from participating entities
         session.entity_labels = {eid: get_entity_label(eid) or eid for eid in multi_entity_ids}
         session.responding_entity_label = get_entity_label(responding_entity_id)
-        # Update model to use the responding entity's default model
+        # Update model and provider to use the responding entity's configuration
         entity = settings.get_entity_by_index(responding_entity_id)
-        if entity and entity.default_model:
-            session.model = entity.default_model
-        elif entity:
-            session.model = settings.get_default_model_for_provider(entity.llm_provider)
+        if entity:
+            if entity.default_model:
+                session.model = entity.default_model
+            else:
+                session.model = settings.get_default_model_for_provider(entity.llm_provider)
+            session.provider_hint = entity.llm_provider
 
-    # Apply any overrides
+    # Apply any overrides from the request
     if data.model:
         session.model = data.model
     if data.temperature is not None:
@@ -457,18 +459,17 @@ async def stream_message(data: ChatRequest):
                     # Build entity_labels mapping from participating entities
                     session.entity_labels = {eid: get_entity_label(eid) or eid for eid in multi_entity_ids}
                     session.responding_entity_label = get_entity_label(responding_entity_id)
-                    # Update model to use the responding entity's default model
+                    # Update model and provider to use the responding entity's configuration
                     entity = settings.get_entity_by_index(responding_entity_id)
-                    if entity and entity.default_model:
-                        session.model = entity.default_model
-                        print(f"[MULTI-ENTITY] Set entity={responding_entity_id}, model={entity.default_model} (from entity config)")
-                    elif entity:
-                        session.model = settings.get_default_model_for_provider(entity.llm_provider)
-                        print(f"[MULTI-ENTITY] Set entity={responding_entity_id}, model={session.model} (from provider default)")
+                    if entity:
+                        if entity.default_model:
+                            session.model = entity.default_model
+                        else:
+                            session.model = settings.get_default_model_for_provider(entity.llm_provider)
+                        session.provider_hint = entity.llm_provider
 
-                # Apply any overrides
+                # Apply any overrides from the request
                 if data.model:
-                    print(f"[MULTI-ENTITY] WARNING: Model override from request: {data.model}")
                     session.model = data.model
                 if data.temperature is not None:
                     session.temperature = data.temperature
@@ -849,12 +850,14 @@ async def regenerate_response(data: RegenerateRequest):
                     # Build entity_labels mapping from participating entities
                     session.entity_labels = {eid: get_entity_label(eid) or eid for eid in multi_entity_ids}
                     session.responding_entity_label = get_entity_label(responding_entity_id)
-                    # Update model to use the responding entity's default model
+                    # Update model and provider to use the responding entity's configuration
                     entity = settings.get_entity_by_index(responding_entity_id)
-                    if entity and entity.default_model:
-                        session.model = entity.default_model
-                    elif entity:
-                        session.model = settings.get_default_model_for_provider(entity.llm_provider)
+                    if entity:
+                        if entity.default_model:
+                            session.model = entity.default_model
+                        else:
+                            session.model = settings.get_default_model_for_provider(entity.llm_provider)
+                        session.provider_hint = entity.llm_provider
 
                 # Truncate session context to exclude the message being regenerated and everything after
                 truncate_index = None
@@ -893,8 +896,8 @@ async def regenerate_response(data: RegenerateRequest):
                     # Remove this message and everything after it
                     session.conversation_context = session.conversation_context[:truncate_index]
 
-                # Apply any overrides (but don't override model in multi-entity mode)
-                if data.model and not is_multi_entity:
+                # Apply any overrides
+                if data.model:
                     session.model = data.model
                 if data.temperature is not None:
                     session.temperature = data.temperature
