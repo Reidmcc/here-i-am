@@ -232,7 +232,11 @@ export async function createNewConversation(skipEntityModal = false) {
 
         // Store entities for multi-entity
         if (conversation.entities && conversation.entities.length > 0) {
-            state.currentConversationEntities = conversation.entities;
+            // Normalize API entities (entity_id -> index_name) for frontend consistency
+            state.currentConversationEntities = conversation.entities.map(e => ({
+                ...e,
+                index_name: e.index_name || e.entity_id,
+            }));
             state.isMultiEntityMode = true;
         }
 
@@ -290,7 +294,11 @@ export async function loadConversation(id) {
         // Update multi-entity state
         if (conversation.conversation_type === 'multi_entity' && conversation.entities) {
             state.isMultiEntityMode = true;
-            state.currentConversationEntities = conversation.entities;
+            // Normalize API entities (entity_id -> index_name) for frontend consistency
+            state.currentConversationEntities = conversation.entities.map(e => ({
+                ...e,
+                index_name: e.index_name || e.entity_id,
+            }));
         } else {
             // Don't override isMultiEntityMode if we're in multi-entity mode viewing a multi-entity conversation
             if (state.selectedEntityId !== 'multi-entity') {
