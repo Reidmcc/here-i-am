@@ -37,6 +37,42 @@ let callbacks = {
 // Stream abort controller
 let streamAbortController = null;
 
+/**
+ * Resolve the correct model for a given entity.
+ * Uses the same precedence as individual entity selection:
+ * 1. User's saved per-entity model preference (if valid for the provider)
+ * 2. Entity's default_model from config
+ * 3. First available model for the entity's provider
+ * 4. Current settings model as final fallback
+ * @param {string} entityId - Entity index_name
+ * @returns {string|null} - Model ID, or null if no entity found
+ */
+function resolveModelForEntity(entityId) {
+    const entity = state.entities.find(e => e.index_name === entityId);
+    if (!entity) return state.settings.model;
+
+    const provider = entity.llm_provider || 'anthropic';
+
+    // Check saved per-entity model preference
+    if (state.entityModels[entityId] !== undefined) {
+        const savedModel = state.entityModels[entityId];
+        const isValidModel = state.availableModels &&
+            state.availableModels.some(m => m.id === savedModel && m.provider === provider);
+        if (isValidModel) return savedModel;
+    }
+
+    // Use entity's default_model from config
+    if (entity.default_model) return entity.default_model;
+
+    // Fall back to first available model for the provider
+    if (state.availableModels) {
+        const providerModels = state.availableModels.filter(m => m.provider === provider);
+        if (providerModels.length > 0) return providerModels[0].id;
+    }
+
+    return state.settings.model;
+}
+
 // Import abort controller
 let importAbortController = null;
 
@@ -286,9 +322,15 @@ export async function sendMessageWithResponder() {
     }
 
     try {
+        // Resolve the correct model for the responding entity
+        const entityModel = state.isMultiEntityMode
+            ? resolveModelForEntity(responderId)
+            : state.settings.model;
+
         const request = {
             conversation_id: state.currentConversationId,
             message: messageToSend,
+            model: entityModel,
             temperature: state.settings.temperature,
             max_tokens: state.settings.maxTokens,
             system_prompt: state.settings.systemPrompt,
@@ -297,10 +339,6 @@ export async function sendMessageWithResponder() {
             user_display_name: state.settings.researcherName || null,
             attachments: attachments,
         };
-        // Only include model override if NOT in multi-entity mode
-        if (!state.isMultiEntityMode) {
-            request.model = state.settings.model;
-        }
 
         await api.sendMessageStream(
             request,
@@ -485,18 +523,20 @@ export async function performRegeneration(messageId, respondingEntityId = null) 
     const streamingMessage = createStreamingMessage('assistant', responderLabel);
 
     try {
+        // Resolve the correct model for the responding entity
+        const regenModel = (state.isMultiEntityMode && respondingEntityId)
+            ? resolveModelForEntity(respondingEntityId)
+            : state.settings.model;
+
         const requestData = {
             message_id: messageId,
+            model: regenModel,
             temperature: state.settings.temperature,
             max_tokens: state.settings.maxTokens,
             system_prompt: state.settings.systemPrompt,
             verbosity: state.settings.verbosity,
             user_display_name: state.settings.researcherName || null,
         };
-
-        if (!state.isMultiEntityMode) {
-            requestData.model = state.settings.model;
-        }
 
         if (respondingEntityId) {
             requestData.responding_entity_id = respondingEntityId;
