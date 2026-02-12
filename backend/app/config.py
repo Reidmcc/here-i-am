@@ -116,7 +116,7 @@ class EntityConfig:
         self.index_name = index_name
         self.label = label
         self.description = description
-        self.llm_provider = llm_provider  # "anthropic", "openai", or "google"
+        self.llm_provider = llm_provider  # "anthropic", "openai", "google", or "minimax"
         self.default_model = default_model  # If None, uses global default for provider
         self.host = host  # Pinecone index host URL (required for serverless indexes)
 
@@ -189,6 +189,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     google_api_key: str = ""
+    minimax_api_key: str = ""
     pinecone_api_key: str = ""
     elevenlabs_api_key: str = ""
 
@@ -354,6 +355,7 @@ class Settings(BaseSettings):
     default_model: str = "claude-sonnet-4-5-20250929"  # Default Anthropic model
     default_openai_model: str = "gpt-5.1"  # Default OpenAI model
     default_google_model: str = "gemini-2.5-flash"  # Default Google model
+    default_minimax_model: str = "MiniMax-M2.5"  # Default MiniMax model
     default_temperature: float = 1.0
     default_max_tokens: int = 64000
     default_verbosity: str = "medium"  # Default verbosity for GPT-5.1 models (low, medium, high)
@@ -446,6 +448,8 @@ class Settings(BaseSettings):
             return self.default_openai_model
         elif provider == "google":
             return self.default_google_model
+        elif provider == "minimax":
+            return self.default_minimax_model
         return self.default_model  # anthropic is the default
 
     def get_entity_by_index(self, index_name: str) -> Optional[EntityConfig]:
