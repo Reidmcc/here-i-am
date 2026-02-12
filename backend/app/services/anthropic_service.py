@@ -196,9 +196,10 @@ class AnthropicService:
         }
 
         # Add cache usage metrics if available (Anthropic returns these when caching is used)
-        if hasattr(response.usage, "cache_creation_input_tokens"):
+        # Guard against None values (some Anthropic-compatible APIs return None instead of omitting)
+        if hasattr(response.usage, "cache_creation_input_tokens") and response.usage.cache_creation_input_tokens:
             usage["cache_creation_input_tokens"] = response.usage.cache_creation_input_tokens
-        if hasattr(response.usage, "cache_read_input_tokens"):
+        if hasattr(response.usage, "cache_read_input_tokens") and response.usage.cache_read_input_tokens:
             usage["cache_read_input_tokens"] = response.usage.cache_read_input_tokens
 
         # Debug logging for cache results
@@ -294,9 +295,10 @@ class AnthropicService:
                         if hasattr(event.message, "usage"):
                             input_tokens = event.message.usage.input_tokens
                             # Capture cache metrics from message_start
-                            if hasattr(event.message.usage, "cache_creation_input_tokens"):
+                            # Guard against None values (some Anthropic-compatible APIs return None)
+                            if hasattr(event.message.usage, "cache_creation_input_tokens") and event.message.usage.cache_creation_input_tokens is not None:
                                 cache_creation_input_tokens = event.message.usage.cache_creation_input_tokens
-                            if hasattr(event.message.usage, "cache_read_input_tokens"):
+                            if hasattr(event.message.usage, "cache_read_input_tokens") and event.message.usage.cache_read_input_tokens is not None:
                                 cache_read_input_tokens = event.message.usage.cache_read_input_tokens
 
                     elif event.type == "content_block_start":
