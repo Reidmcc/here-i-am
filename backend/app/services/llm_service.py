@@ -64,6 +64,8 @@ MODEL_PROVIDER_MAP = {
     # MiniMax models (Anthropic-compatible API)
     "MiniMax-M1": ModelProvider.MINIMAX,
     "MiniMax-M1-40k": ModelProvider.MINIMAX,
+    "MiniMax-M2.5": ModelProvider.MINIMAX,
+    "MiniMax-M2.5-lightning": ModelProvider.MINIMAX,
 }
 
 
@@ -100,6 +102,8 @@ AVAILABLE_MODELS = {
         {"id": "gemini-2.0-flash-lite", "name": "Gemini 2.0 Flash Lite"},
     ],
     ModelProvider.MINIMAX: [
+        {"id": "MiniMax-M2.5", "name": "MiniMax M2.5"},
+        {"id": "MiniMax-M2.5-lightning", "name": "MiniMax M2.5 Lightning"},
         {"id": "MiniMax-M1", "name": "MiniMax M1"},
         {"id": "MiniMax-M1-40k", "name": "MiniMax M1 40k"},
     ],
