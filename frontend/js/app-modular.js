@@ -722,6 +722,13 @@ class App {
      * Handle multi-entity selection confirmed
      */
     onMultiEntityConfirmed() {
+        // Handle pending conversation creation after entity selection
+        if (state.pendingMultiEntityAction === 'createConversation') {
+            state.pendingMultiEntityAction = null;
+            createNewConversation(true);
+            return;
+        }
+
         // Handle pending action after entity selection
         if (state.pendingActionAfterEntitySelection === 'sendMessage') {
             const content = state.pendingMessageForEntitySelection;
