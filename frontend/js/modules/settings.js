@@ -226,18 +226,13 @@ export function syncTemperatureInputs() {
 export function updateModelIndicator() {
     if (!elements.modelIndicator) return;
 
-    // In multi-entity mode, show each entity's model
-    if (state.isMultiEntityMode && state.currentConversationEntities.length > 0) {
-        const parts = state.currentConversationEntities.map(entity => {
-            const modelId = resolveEntityModel(entity);
-            const displayName = getModelDisplayName(modelId);
-            return `${entity.label}: ${displayName}`;
-        });
-        elements.modelIndicator.textContent = parts.join(' · ');
+    // In multi-entity mode, show "Per-Entity" instead of a specific model
+    if (state.isMultiEntityMode) {
+        elements.modelIndicator.textContent = 'Per-Entity';
         return;
     }
 
-    // Single entity mode: show current model
+    // Look up friendly model name from available models
     const modelId = state.settings.model;
     const displayName = getModelDisplayName(modelId);
     elements.modelIndicator.textContent = displayName;

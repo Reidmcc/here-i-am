@@ -139,6 +139,7 @@ export function handleEntityChange(entityId) {
         state.currentConversationEntities = [];
 
         updateEntityDescription();
+        updateModelSelectorMultiEntityState();
 
         // Clear current conversation when switching to multi-entity
         state.currentConversationId = null;
@@ -161,6 +162,9 @@ export function handleEntityChange(entityId) {
     state.isMultiEntityMode = false;
     state.currentConversationEntities = [];
     state.selectedEntityId = entityId;
+
+    // Re-enable model selector (was disabled in multi-entity mode)
+    updateModelSelectorMultiEntityState();
 
     // Hide continue button
     if (elements.continueBtn) {
@@ -246,6 +250,28 @@ export function updateModelSelectorForProvider(provider) {
     } else if (models.length > 0) {
         state.settings.model = models[0].id;
         elements.modelSelect.value = models[0].id;
+    }
+}
+
+/**
+ * Update model selector enabled/disabled state based on multi-entity mode.
+ * In multi-entity mode, each entity uses its own configured model,
+ * so the global model selector should be disabled.
+ */
+export function updateModelSelectorMultiEntityState() {
+    if (!elements.modelSelect) return;
+
+    const multiEntityNote = document.getElementById('model-multi-entity-note');
+    const modelGroup = document.getElementById('model-group');
+
+    if (state.isMultiEntityMode) {
+        elements.modelSelect.disabled = true;
+        if (modelGroup) modelGroup.classList.add('disabled');
+        if (multiEntityNote) multiEntityNote.style.display = 'block';
+    } else {
+        elements.modelSelect.disabled = false;
+        if (modelGroup) modelGroup.classList.remove('disabled');
+        if (multiEntityNote) multiEntityNote.style.display = 'none';
     }
 }
 

@@ -242,7 +242,8 @@ async def send_message(
             session.provider_hint = entity.llm_provider
 
     # Apply any overrides from the request
-    if data.model:
+    # In multi-entity mode, model is determined by entity config - don't override
+    if data.model and not is_multi_entity:
         session.model = data.model
     if data.temperature is not None:
         session.temperature = data.temperature
@@ -469,7 +470,8 @@ async def stream_message(data: ChatRequest):
                         session.provider_hint = entity.llm_provider
 
                 # Apply any overrides from the request
-                if data.model:
+                # In multi-entity mode, model is determined by entity config - don't override
+                if data.model and not is_multi_entity:
                     session.model = data.model
                 if data.temperature is not None:
                     session.temperature = data.temperature
@@ -897,7 +899,8 @@ async def regenerate_response(data: RegenerateRequest):
                     session.conversation_context = session.conversation_context[:truncate_index]
 
                 # Apply any overrides
-                if data.model:
+                # In multi-entity mode, model is determined by entity config - don't override
+                if data.model and not is_multi_entity:
                     session.model = data.model
                 if data.temperature is not None:
                     session.temperature = data.temperature
