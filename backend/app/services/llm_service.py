@@ -21,6 +21,7 @@ class ModelProvider(str, Enum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     GOOGLE = "google"
+    MINIMAX = "minimax"
 
 
 # Model to provider mapping
@@ -60,6 +61,9 @@ MODEL_PROVIDER_MAP = {
     "gemini-2.5-flash": ModelProvider.GOOGLE,
     "gemini-2.0-flash": ModelProvider.GOOGLE,
     "gemini-2.0-flash-lite": ModelProvider.GOOGLE,
+    # MiniMax models (Anthropic-compatible API)
+    "MiniMax-M1": ModelProvider.MINIMAX,
+    "MiniMax-M1-40k": ModelProvider.MINIMAX,
 }
 
 
@@ -95,6 +99,10 @@ AVAILABLE_MODELS = {
         {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash"},
         {"id": "gemini-2.0-flash-lite", "name": "Gemini 2.0 Flash Lite"},
     ],
+    ModelProvider.MINIMAX: [
+        {"id": "MiniMax-M1", "name": "MiniMax M1"},
+        {"id": "MiniMax-M1-40k", "name": "MiniMax M1 40k"},
+    ],
 }
 
 
@@ -115,6 +123,8 @@ class LLMService:
             return openai_service.is_configured()
         elif provider == ModelProvider.GOOGLE:
             return google_service.is_configured()
+        elif provider == ModelProvider.MINIMAX:
+            return bool(settings.minimax_api_key)
         return False
 
     def get_available_providers(self) -> List[Dict[str, Any]]:
@@ -143,6 +153,14 @@ class LLMService:
                 "name": "Google",
                 "models": AVAILABLE_MODELS[ModelProvider.GOOGLE],
                 "default_model": settings.default_google_model,
+            })
+
+        if self.is_provider_configured(ModelProvider.MINIMAX):
+            providers.append({
+                "id": ModelProvider.MINIMAX.value,
+                "name": "MiniMax",
+                "models": AVAILABLE_MODELS[ModelProvider.MINIMAX],
+                "default_model": settings.default_minimax_model,
             })
 
         return providers
@@ -189,6 +207,7 @@ class LLMService:
         enable_caching: bool = True,
         verbosity: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        provider_hint: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Send a message to the appropriate LLM provider based on model.
@@ -202,6 +221,8 @@ class LLMService:
             enable_caching: Enable Anthropic prompt caching (default True, ignored for OpenAI)
             verbosity: Verbosity level for gpt-5.1 models (low, medium, high)
             tools: Optional list of tool definitions (Anthropic format, converted for OpenAI)
+            provider_hint: Optional provider string from entity config, used when model
+                isn't in MODEL_PROVIDER_MAP
 
         Returns:
             Dict with 'content', 'model', 'usage', 'stop_reason' keys.
@@ -215,15 +236,23 @@ class LLMService:
         provider = self.get_provider_for_model(model)
 
         if provider is None:
-            # Unknown model - try to infer from name pattern
-            if model.startswith("claude"):
-                provider = ModelProvider.ANTHROPIC
-            elif model.startswith("gpt") or model.startswith("o"):
-                provider = ModelProvider.OPENAI
-            elif model.startswith("gemini"):
-                provider = ModelProvider.GOOGLE
-            else:
-                raise ValueError(f"Unknown model: {model}")
+            # Unknown model - try provider hint first, then infer from name pattern
+            if provider_hint:
+                try:
+                    provider = ModelProvider(provider_hint)
+                except ValueError:
+                    pass
+            if provider is None:
+                if model.startswith("claude"):
+                    provider = ModelProvider.ANTHROPIC
+                elif model.startswith("gpt") or model.startswith("o"):
+                    provider = ModelProvider.OPENAI
+                elif model.startswith("gemini"):
+                    provider = ModelProvider.GOOGLE
+                elif model.startswith("MiniMax") or model.startswith("minimax"):
+                    provider = ModelProvider.MINIMAX
+                else:
+                    raise ValueError(f"Unknown model: {model}")
 
         if not self.is_provider_configured(provider):
             raise ValueError(f"Provider {provider.value} is not configured (missing API key)")
@@ -237,6 +266,19 @@ class LLMService:
                 max_tokens=max_tokens,
                 enable_caching=enable_caching,
                 tools=tools,
+            )
+        elif provider == ModelProvider.MINIMAX:
+            # MiniMax uses Anthropic-compatible API, route through anthropic_service
+            # with the minimax client; disable caching (not supported by MiniMax)
+            return await anthropic_service.send_message(
+                messages=messages,
+                system_prompt=system_prompt,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                enable_caching=False,
+                tools=tools,
+                provider="minimax",
             )
         elif provider == ModelProvider.OPENAI:
             return await openai_service.send_message(
@@ -270,6 +312,7 @@ class LLMService:
         enable_caching: bool = True,
         verbosity: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        provider_hint: Optional[str] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Send a message to the appropriate LLM provider with streaming response.
@@ -288,15 +331,24 @@ class LLMService:
         provider = self.get_provider_for_model(model)
 
         if provider is None:
-            if model.startswith("claude"):
-                provider = ModelProvider.ANTHROPIC
-            elif model.startswith("gpt") or model.startswith("o"):
-                provider = ModelProvider.OPENAI
-            elif model.startswith("gemini"):
-                provider = ModelProvider.GOOGLE
-            else:
-                yield {"type": "error", "error": f"Unknown model: {model}"}
-                return
+            # Unknown model - try provider hint first, then infer from name pattern
+            if provider_hint:
+                try:
+                    provider = ModelProvider(provider_hint)
+                except ValueError:
+                    pass
+            if provider is None:
+                if model.startswith("claude"):
+                    provider = ModelProvider.ANTHROPIC
+                elif model.startswith("gpt") or model.startswith("o"):
+                    provider = ModelProvider.OPENAI
+                elif model.startswith("gemini"):
+                    provider = ModelProvider.GOOGLE
+                elif model.startswith("MiniMax") or model.startswith("minimax"):
+                    provider = ModelProvider.MINIMAX
+                else:
+                    yield {"type": "error", "error": f"Unknown model: {model}"}
+                    return
 
         if not self.is_provider_configured(provider):
             yield {"type": "error", "error": f"Provider {provider.value} is not configured (missing API key)"}
@@ -311,6 +363,20 @@ class LLMService:
                 max_tokens=max_tokens,
                 enable_caching=enable_caching,
                 tools=tools,
+            ):
+                yield event
+        elif provider == ModelProvider.MINIMAX:
+            # MiniMax uses Anthropic-compatible API, route through anthropic_service
+            # with the minimax client; disable caching (not supported by MiniMax)
+            async for event in anthropic_service.send_message_stream(
+                messages=messages,
+                system_prompt=system_prompt,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                enable_caching=False,
+                tools=tools,
+                provider="minimax",
             ):
                 yield event
         elif provider == ModelProvider.OPENAI:
@@ -356,6 +422,8 @@ class LLMService:
         user_display_name: Optional[str] = None,
         # Attachments (images and files) - ephemeral, not stored
         attachments: Optional[Dict[str, Any]] = None,
+        # Provider hint for routing
+        provider_hint: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build the message list for API call with memory injection.
@@ -398,7 +466,14 @@ class LLMService:
             List of message dicts formatted for the LLM API
         """
         # Determine if we should use caching based on provider
-        provider = self.get_provider_for_model(model) if model else ModelProvider.ANTHROPIC
+        provider = self.get_provider_for_model(model) if model else None
+        if provider is None and provider_hint:
+            try:
+                provider = ModelProvider(provider_hint)
+            except ValueError:
+                provider = ModelProvider.ANTHROPIC
+        elif provider is None:
+            provider = ModelProvider.ANTHROPIC
         use_caching = enable_caching and provider == ModelProvider.ANTHROPIC
 
         return anthropic_service.build_messages_with_memories(

@@ -74,12 +74,14 @@ class SessionManager:
         # Ensure conversation_id is a string for consistent comparison in memory filtering
         conversation_id = str(conversation_id)
 
-        # Determine default model based on entity configuration
+        # Determine default model and provider based on entity configuration
+        provider_hint = None
         if model is None and entity_id:
             entity = settings.get_entity_by_index(entity_id)
             if entity:
                 # Use entity's default model, or fall back to provider default
                 model = entity.default_model or settings.get_default_model_for_provider(entity.llm_provider)
+                provider_hint = entity.llm_provider
         model = model or settings.default_model
 
         session = ConversationSession(
@@ -91,6 +93,7 @@ class SessionManager:
             entity_id=entity_id,
             conversation_start_date=conversation_start_date,
             use_memory_in_context=settings.use_memory_in_context,
+            provider_hint=provider_hint,
         )
         self._sessions[conversation_id] = session
         return session
@@ -164,10 +167,16 @@ class SessionManager:
         model = conversation.llm_model_used
 
         # For multi-entity conversations with a responding entity, use that entity's model
+        provider_hint = None
         if responding_entity_id:
             entity = settings.get_entity_by_index(responding_entity_id)
             if entity:
                 model = entity.default_model or settings.get_default_model_for_provider(entity.llm_provider)
+                provider_hint = entity.llm_provider
+        elif entity_id:
+            entity = settings.get_entity_by_index(entity_id)
+            if entity:
+                provider_hint = entity.llm_provider
 
         # Determine system prompt: use entity-specific prompt if available, else fallback
         system_prompt = conversation.system_prompt_used
@@ -195,6 +204,7 @@ class SessionManager:
         session.is_multi_entity = is_multi_entity
         session.entity_labels = entity_labels
         session.responding_entity_label = responding_entity_label
+        session.provider_hint = provider_hint
 
         # Load message history
         result = await db.execute(
@@ -652,6 +662,7 @@ class SessionManager:
             entity_labels=session.entity_labels,
             responding_entity_label=session.responding_entity_label,
             user_display_name=session.user_display_name,
+            provider_hint=session.provider_hint,
         )
 
         # Step 7: Call LLM API (routes to appropriate provider based on model)
@@ -663,6 +674,7 @@ class SessionManager:
             max_tokens=session.max_tokens,
             enable_caching=True,
             verbosity=session.verbosity,
+            provider_hint=session.provider_hint,
         )
 
         # Step 8: Update conversation context and cache state
@@ -1058,6 +1070,7 @@ class SessionManager:
             responding_entity_label=session.responding_entity_label,
             user_display_name=session.user_display_name,
             attachments=attachments,  # Include attachments for multimodal support
+            provider_hint=session.provider_hint,
         )
 
         # Build messages WITHOUT memories for subsequent tool iterations (memory optimization)
@@ -1108,6 +1121,7 @@ class SessionManager:
                         entity_labels=session.entity_labels,
                         responding_entity_label=session.responding_entity_label,
                         user_display_name=session.user_display_name,
+                        provider_hint=session.provider_hint,
                     )
 
                 # Rebuild from base (no memories) + accumulated tool exchanges
@@ -1134,6 +1148,7 @@ class SessionManager:
                 enable_caching=True,
                 verbosity=session.verbosity,
                 tools=tool_schemas,
+                provider_hint=session.provider_hint,
             ):
                 if event["type"] == "token":
                     content = event["content"]

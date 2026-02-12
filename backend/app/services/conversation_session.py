@@ -73,6 +73,7 @@ class ConversationSession:
     entity_id: Optional[str] = None  # Pinecone index name for this conversation's entity
     conversation_start_date: Optional[datetime] = None  # When the conversation was created
     verbosity: Optional[str] = None  # Verbosity level for gpt-5.1 models (low, medium, high)
+    provider_hint: Optional[str] = None  # LLM provider from entity config (e.g., "minimax")
 
     # Multi-entity conversation support
     is_multi_entity: bool = False  # True if this is a multi-entity conversation

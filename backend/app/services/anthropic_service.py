@@ -49,8 +49,25 @@ class AnthropicService:
             api_key=settings.anthropic_api_key,
             default_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"}
         )
+        self._minimax_client = None
         self._encoder = None
         self._cache_service = None
+
+    @property
+    def minimax_client(self):
+        """Lazy-initialize MiniMax client (Anthropic-compatible API)."""
+        if self._minimax_client is None and settings.minimax_api_key:
+            self._minimax_client = AsyncAnthropic(
+                api_key=settings.minimax_api_key,
+                base_url="https://api.minimax.io/anthropic",
+            )
+        return self._minimax_client
+
+    def _get_client(self, provider: Optional[str] = None) -> AsyncAnthropic:
+        """Get the appropriate Anthropic-compatible client for the given provider."""
+        if provider == "minimax" and self.minimax_client:
+            return self.minimax_client
+        return self.client
 
     @property
     def encoder(self):
@@ -93,9 +110,10 @@ class AnthropicService:
         max_tokens: Optional[int] = None,
         enable_caching: bool = True,
         tools: Optional[List[Dict[str, Any]]] = None,
+        provider: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Send a message to Claude API with optional prompt caching and tool use.
+        Send a message to an Anthropic-compatible API with optional prompt caching and tool use.
 
         Args:
             messages: List of message dicts with 'role' and 'content'
@@ -105,6 +123,7 @@ class AnthropicService:
             max_tokens: Max tokens in response (defaults to config default)
             enable_caching: Whether to enable Anthropic prompt caching (default True)
             tools: Optional list of tool definitions in Anthropic format
+            provider: Optional provider hint ("anthropic" or "minimax") to select client
 
         Returns:
             Dict with:
@@ -116,6 +135,7 @@ class AnthropicService:
         model = model or settings.default_model
         temperature = temperature if temperature is not None else settings.default_temperature
         max_tokens = max_tokens or settings.default_max_tokens
+        client = self._get_client(provider)
 
         # Build API call parameters
         api_params = {
@@ -144,7 +164,7 @@ class AnthropicService:
             api_params["tools"] = tools
             logger.info(f"[TOOLS] Sending request with {len(tools)} tools")
 
-        response = await self.client.messages.create(**api_params)
+        response = await client.messages.create(**api_params)
 
         # Parse response content blocks
         content = ""
@@ -206,9 +226,10 @@ class AnthropicService:
         max_tokens: Optional[int] = None,
         enable_caching: bool = True,
         tools: Optional[List[Dict[str, Any]]] = None,
+        provider: Optional[str] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
-        Send a message to Claude API with streaming response and optional prompt caching.
+        Send a message to an Anthropic-compatible API with streaming response and optional prompt caching.
 
         Yields events with type and data:
         - {"type": "start", "model": str}
@@ -225,6 +246,7 @@ class AnthropicService:
         model = model or settings.default_model
         temperature = temperature if temperature is not None else settings.default_temperature
         max_tokens = max_tokens or settings.default_max_tokens
+        client = self._get_client(provider)
 
         api_params = {
             "model": model,
@@ -266,7 +288,7 @@ class AnthropicService:
             cache_read_input_tokens = 0
             stop_reason = None
 
-            async with self.client.messages.stream(**api_params) as stream:
+            async with client.messages.stream(**api_params) as stream:
                 async for event in stream:
                     if event.type == "message_start":
                         if hasattr(event.message, "usage"):
