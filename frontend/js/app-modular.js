@@ -722,6 +722,9 @@ class App {
      * Handle multi-entity selection confirmed
      */
     onMultiEntityConfirmed() {
+        // Update model indicator to show per-entity models
+        updateModelIndicator();
+
         // Handle pending conversation creation after entity selection
         if (state.pendingMultiEntityAction === 'createConversation') {
             state.pendingMultiEntityAction = null;
@@ -762,6 +765,8 @@ class App {
     onConversationLoaded(conversation, messages) {
         // Handle input change to update button states
         this.handleInputChange();
+        // Update model indicator (may have switched to/from multi-entity)
+        updateModelIndicator();
     }
 
     /**
