@@ -22,7 +22,8 @@ import {
     hideEntityResponderSelector,
     selectResponder,
     cancelResponderSelection,
-    updateModelSelectorForProvider
+    updateModelSelectorForProvider,
+    updateModelSelectorMultiEntityState
 } from './modules/entities.js';
 import {
     setElements as setConversationElements,
@@ -610,6 +611,7 @@ class App {
     openSettings() {
         initializeSettingsUI();
         updateTemperatureRange();
+        updateModelSelectorMultiEntityState();
         showModal('settingsModal');
     }
 
@@ -760,6 +762,8 @@ class App {
      * Handle conversation loaded callback
      */
     onConversationLoaded(conversation, messages) {
+        // Update model indicator (may change between single/multi-entity)
+        updateModelIndicator();
         // Handle input change to update button states
         this.handleInputChange();
     }

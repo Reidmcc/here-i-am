@@ -6,7 +6,7 @@
 import { state, resetMemoryState, saveEntitySystemPromptsToStorage } from './state.js';
 import { showToast, escapeHtml } from './utils.js';
 import { showModal, hideModal, closeAllDropdowns } from './modals.js';
-import { getEntityLabel } from './entities.js';
+import { getEntityLabel, updateModelSelectorMultiEntityState } from './entities.js';
 
 // Reference to global API client
 const api = window.api;
@@ -310,6 +310,9 @@ export async function loadConversation(id) {
                 state.currentConversationEntities = [];
             }
         }
+
+        // Update model selector state (disabled in multi-entity mode)
+        updateModelSelectorMultiEntityState();
 
         // Clear and render messages
         if (callbacks.clearMessages) {

@@ -226,6 +226,12 @@ export function syncTemperatureInputs() {
 export function updateModelIndicator() {
     if (!elements.modelIndicator) return;
 
+    // In multi-entity mode, show "Per-Entity" instead of a specific model
+    if (state.isMultiEntityMode) {
+        elements.modelIndicator.textContent = 'Per-Entity';
+        return;
+    }
+
     // Look up friendly model name from available models
     const modelId = state.settings.model;
     let displayName = 'Unknown';
