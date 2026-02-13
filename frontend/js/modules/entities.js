@@ -396,6 +396,16 @@ export function confirmMultiEntitySelection(action = 'default') {
         return entity || { index_name: id, label: id };
     });
 
+    // Check pending action flags BEFORE onMultiEntityConfirmed clears them.
+    // If a conversation creation or message send is pending, those operations
+    // handle their own conversation list updates. Calling loadConversations()
+    // concurrently would race with createNewConversation() — the list endpoint
+    // deletes empty (0-message) conversations, which can destroy the newly
+    // created conversation before any messages are sent.
+    const willCreateOrSend =
+        state.pendingMultiEntityAction === 'createConversation' ||
+        state.pendingActionAfterEntitySelection === 'sendMessage';
+
     hideModal('multiEntityModal');
     updateEntityDescription();
 
@@ -404,8 +414,9 @@ export function confirmMultiEntitySelection(action = 'default') {
         callbacks.onMultiEntityConfirmed();
     }
 
-    // Load conversations filtered for multi-entity
-    if (callbacks.loadConversations) {
+    // Only refresh conversation list if we're NOT about to create a conversation
+    // or send a message (those operations update the list themselves).
+    if (!willCreateOrSend && callbacks.loadConversations) {
         callbacks.loadConversations();
     }
 

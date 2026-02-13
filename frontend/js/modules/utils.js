@@ -15,6 +15,29 @@ export function escapeHtml(text) {
 }
 
 /**
+ * Escape a string for safe use inside a single-quoted JavaScript string
+ * literal within a double-quoted HTML attribute (e.g. onclick="fn('...')").
+ *
+ * Handles: backslashes, single quotes, double quotes (HTML entity),
+ * newlines, carriage returns, and HTML-significant characters.
+ *
+ * @param {string} text - Text to escape
+ * @returns {string} - Escaped text safe for inline onclick handlers
+ */
+export function escapeForInlineHandler(text) {
+    if (!text) return '';
+    return text
+        .replace(/\\/g, '\\\\')    // backslashes first
+        .replace(/'/g, "\\'")      // single quotes (JS string delimiter)
+        .replace(/"/g, '&quot;')   // double quotes (HTML attribute delimiter)
+        .replace(/\n/g, '\\n')     // newlines
+        .replace(/\r/g, '\\r')     // carriage returns
+        .replace(/</g, '&lt;')     // HTML safety
+        .replace(/>/g, '&gt;')     // HTML safety
+        .replace(/&(?!quot;|lt;|gt;|amp;)/g, '&amp;'); // ampersands (avoid double-escaping)
+}
+
+/**
  * Truncate text to a maximum length
  * @param {string} text - Text to truncate
  * @param {number} maxLength - Maximum length
