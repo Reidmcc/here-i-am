@@ -81,11 +81,14 @@ class TestLLMService:
         service = LLMService()
 
         with patch("app.services.llm_service.settings") as mock_settings, \
-             patch("app.services.llm_service.openai_service") as mock_openai:
+             patch("app.services.llm_service.openai_service") as mock_openai, \
+             patch("app.services.llm_service.google_service") as mock_google:
             mock_settings.anthropic_api_key = "test-key"
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_openai_model = "gpt-4o"
+            mock_settings.minimax_api_key = ""  # Explicitly disable MiniMax
             mock_openai.is_configured.return_value = True
+            mock_google.is_configured.return_value = False
 
             providers = service.get_available_providers()
 
@@ -103,10 +106,13 @@ class TestLLMService:
         service = LLMService()
 
         with patch("app.services.llm_service.settings") as mock_settings, \
-             patch("app.services.llm_service.openai_service") as mock_openai:
+             patch("app.services.llm_service.openai_service") as mock_openai, \
+             patch("app.services.llm_service.google_service") as mock_google:
             mock_settings.anthropic_api_key = "test-key"
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.minimax_api_key = ""  # Explicitly disable MiniMax
             mock_openai.is_configured.return_value = False
+            mock_google.is_configured.return_value = False
 
             providers = service.get_available_providers()
 

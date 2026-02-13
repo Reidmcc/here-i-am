@@ -97,25 +97,27 @@ describe('Attachments Module', () => {
             expect(mockCallbacks.onAttachmentsChanged).toHaveBeenCalled();
         });
 
-        it('should handle PDF files for server-side processing', async () => {
+        it('should handle PDF files as base64 for server-side processing', async () => {
             const pdfFile = new File(['pdf content'], 'document.pdf', { type: 'application/pdf' });
 
             await processFiles([pdfFile]);
 
             expect(state.pendingAttachments.files.length).toBe(1);
             expect(state.pendingAttachments.files[0].name).toBe('document.pdf');
-            expect(state.pendingAttachments.files[0].file).toBe(pdfFile);
-            expect(state.pendingAttachments.files[0].content).toBe(null);
+            expect(state.pendingAttachments.files[0].type).toBe('application/pdf');
+            expect(state.pendingAttachments.files[0].contentType).toBe('base64');
+            expect(typeof state.pendingAttachments.files[0].content).toBe('string');
         });
 
-        it('should handle DOCX files for server-side processing', async () => {
+        it('should handle DOCX files as base64 for server-side processing', async () => {
             const docxFile = new File(['docx content'], 'document.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 
             await processFiles([docxFile]);
 
             expect(state.pendingAttachments.files.length).toBe(1);
             expect(state.pendingAttachments.files[0].name).toBe('document.docx');
-            expect(state.pendingAttachments.files[0].content).toBe(null);
+            expect(state.pendingAttachments.files[0].contentType).toBe('base64');
+            expect(typeof state.pendingAttachments.files[0].content).toBe('string');
         });
 
         it('should reject unsupported file types', async () => {
@@ -395,15 +397,17 @@ describe('Attachments Module', () => {
                 name: 'document.txt',
                 type: 'text/plain',
                 content: 'file content',
+                contentType: 'text',
             });
 
             const result = getAttachmentsForRequest();
 
             expect(result.files.length).toBe(1);
             expect(result.files[0]).toEqual({
-                name: 'document.txt',
-                type: 'text/plain',
+                filename: 'document.txt',
+                media_type: 'text/plain',
                 content: 'file content',
+                content_type: 'text',
             });
         });
 
