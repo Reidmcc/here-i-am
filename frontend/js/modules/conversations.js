@@ -141,8 +141,8 @@ export function renderConversationList() {
                     </svg>
                 </button>
                 <div class="conversation-dropdown" data-id="${conv.id}">
-                    <button onclick="app.showRenameModalForConversation('${conv.id}', '${escapeHtml(conv.title || '').replace(/'/g, "\\'")}')">Rename</button>
-                    <button onclick="app.showArchiveModalForConversation('${conv.id}', '${escapeHtml(conv.title || '').replace(/'/g, "\\'")}')">Archive</button>
+                    <button class="conversation-dropdown-item" onclick="app.showRenameModalForConversation('${conv.id}', '${escapeHtml(conv.title || '').replace(/'/g, "\\'")}')">Rename</button>
+                    <button class="conversation-dropdown-item" onclick="app.showArchiveModalForConversation('${conv.id}', '${escapeHtml(conv.title || '').replace(/'/g, "\\'")}')">Archive</button>
                 </div>
             </div>
         `;
