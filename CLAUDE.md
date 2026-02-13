@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2026-01-17
+**Last Updated:** 2026-02-13
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -44,7 +44,7 @@ This implements a novel **Session Memory Accumulator Pattern**:
   - `conversation_context`: Actual message history
   - `session_memories`: Deduplicated accumulated memories
 - Memories are retrieved via semantic search (Pinecone)
-- **Significance = times_retrieved × recency_factor × half_life_modifier**
+- **Significance = (1 + 0.1 × times_retrieved) × recency_factor × half_life_modifier**
 - What matters is what keeps mattering across conversations
 
 ### Multi-Entity System
@@ -53,7 +53,7 @@ The application supports multiple AI entities, each with its own:
 - **Separate Pinecone Index** - Isolated memory space per entity
 - **Separate Conversation History** - Conversations are associated with entities
 - **Independent Memory Retrieval** - Each entity only retrieves from its own memories
-- **Model Provider Configuration** - Each entity can use Anthropic (Claude), OpenAI (GPT), or Google (Gemini) models
+- **Model Provider Configuration** - Each entity can use Anthropic (Claude), OpenAI (GPT), Google (Gemini), or MiniMax models
 
 **Configuration:**
 ```bash
@@ -61,7 +61,8 @@ The application supports multiple AI entities, each with its own:
 PINECONE_INDEXES='[
   {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929", "host": "https://claude-main-xxxxx.svc.xxx.pinecone.io"},
   {"index_name": "gpt-research", "label": "GPT Research", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-5.1", "host": "https://gpt-research-xxxxx.svc.xxx.pinecone.io"},
-  {"index_name": "gemini-research", "label": "Gemini", "description": "Google for comparison", "llm_provider": "google", "default_model": "gemini-2.5-flash", "host": "https://gemini-research-xxxxx.svc.xxx.pinecone.io"}
+  {"index_name": "gemini-research", "label": "Gemini", "description": "Google for comparison", "llm_provider": "google", "default_model": "gemini-2.5-flash", "host": "https://gemini-research-xxxxx.svc.xxx.pinecone.io"},
+  {"index_name": "minimax-research", "label": "MiniMax", "description": "MiniMax for comparison", "llm_provider": "minimax", "default_model": "MiniMax-M2.5", "host": "https://minimax-research-xxxxx.svc.xxx.pinecone.io"}
 ]'
 ```
 
@@ -69,7 +70,7 @@ PINECONE_INDEXES='[
 - `index_name`: Pinecone index name (required)
 - `label`: Display name in UI (required)
 - `description`: Optional description
-- `llm_provider`: `"anthropic"`, `"openai"`, or `"google"` (default: `"anthropic"`)
+- `llm_provider`: `"anthropic"`, `"openai"`, `"google"`, or `"minimax"` (default: `"anthropic"`)
 - `default_model`: Model ID to use (optional, uses provider default if not set)
 - `host`: Pinecone index host URL (required for serverless indexes)
 
@@ -77,7 +78,7 @@ PINECONE_INDEXES='[
 - Research with multiple AI "personalities" or contexts
 - Parallel experiments with isolated memory spaces
 - Different research phases with separate continuity
-- Comparative research between Claude, GPT, and Gemini models
+- Comparative research between Claude, GPT, Gemini, and MiniMax models
 
 ### Multi-Entity Conversations
 
@@ -127,7 +128,7 @@ The application supports **image and file attachments** for multimodal conversat
 - **Drag & Drop**: Drop files directly onto the input area
 - **File Picker**: Click the attachment button (📎) to select files
 - **Preview**: See attached files before sending
-- **Provider Support**: Works with Anthropic (Claude) and OpenAI (GPT) models; Google models receive extracted text only (no image support)
+- **Provider Support**: Works with Anthropic (Claude), OpenAI (GPT), and MiniMax models; Google models receive extracted text only (no image support)
 
 **How Attachments Work:**
 
@@ -166,7 +167,7 @@ ATTACHMENT_DOCX_ENABLED=true
 
 ### Tool Use System (Web Search & Fetch)
 
-The application supports **agentic tool use** for Anthropic (Claude) and OpenAI (GPT) models, allowing the AI to search the web and fetch content from URLs during conversations.
+The application supports **agentic tool use** for Anthropic (Claude), OpenAI (GPT), and MiniMax models, allowing the AI to search the web and fetch content from URLs during conversations.
 
 **Available Tools:**
 - **web_search** - Search the web using Brave Search API (returns up to 20 results)
@@ -176,7 +177,7 @@ The application supports **agentic tool use** for Anthropic (Claude) and OpenAI 
 
 1. **Agentic Loop**: When the AI responds with a tool request, the system executes the tool and feeds results back in a loop (max 10 iterations)
 2. **Streaming**: Tool execution is streamed in real-time with visual indicators in the UI
-3. **Provider Support**: Tool use is available for **Anthropic (Claude) and OpenAI (GPT)** models - Google models do not currently support tool use in this application
+3. **Provider Support**: Tool use is available for **Anthropic (Claude), OpenAI (GPT), and MiniMax** models - Google models do not currently support tool use in this application
 
 **JavaScript Rendering (web_fetch):**
 
@@ -309,7 +310,7 @@ GITHUB_REPOS='[
 - Automatic rate limit info attached to tool responses
 
 **Technical Notes:**
-- GitHub tools are only available for Anthropic (Claude) and OpenAI (GPT) models
+- GitHub tools are only available for Anthropic (Claude), OpenAI (GPT), and MiniMax models
 - Tools are registered at module load time via `register_github_tools()`
 - All API requests use Bearer token authentication
 - Large files (>1MB) are fetched via Git Data API to avoid content limits
@@ -384,7 +385,7 @@ NOTES_BASE_DIR=./notes
 - Notes are accessed via AI tools only (no REST API endpoints for notes)
 - The `index.md` file cannot be deleted (use notes_write to clear it instead)
 - Entity labels are sanitized for filesystem safety (special characters replaced with underscores)
-- Notes tools are in the `MEMORY` category and are only available for Anthropic (Claude) and OpenAI (GPT) models
+- Notes tools are in the `MEMORY` category and are only available for Anthropic (Claude), OpenAI (GPT), and MiniMax models
 
 ### Memory Query Tool (Deliberate Recall)
 
@@ -407,7 +408,7 @@ The application provides a **memory_query** tool that allows AI entities to inte
 **Technical Notes:**
 - Registered via `register_memory_tools()` in `services/__init__.py`
 - Tool is in the `MEMORY` category
-- Only available for Anthropic (Claude) and OpenAI (GPT) models
+- Only available for Anthropic (Claude), OpenAI (GPT), and MiniMax models
 
 ### Codebase Navigator System
 
@@ -473,7 +474,7 @@ CODEBASE_NAVIGATOR_DEFAULT_EXCLUDES='["node_modules/","venv/",".venv/","__pycach
 - Uses Mistral Devstral model (256k context window) for cost-efficient exploration
 - Requires `local_clone_path` in GitHub repository configuration to work
 - Results include file categorization (DIRECT relevance, CONTEXT, AFFECTED)
-- Only available for Anthropic (Claude) and OpenAI (GPT) models
+- Only available for Anthropic (Claude), OpenAI (GPT), and MiniMax models
 
 ### Moltbook Integration (AI Agent Social Network)
 
@@ -527,7 +528,7 @@ All Moltbook responses include this warning:
 
 **Technical Notes:**
 - Tools registered via `register_moltbook_tools()` in `services/__init__.py`
-- Only available for Anthropic (Claude) and OpenAI (GPT) models
+- Only available for Anthropic (Claude), OpenAI (GPT), and MiniMax models
 - Must use `www.moltbook.com` in URL (non-www redirects strip authorization headers)
 - Rate limit errors return helpful retry timing information
 
@@ -772,7 +773,6 @@ here-i-am/
 │   ├── css/styles.css
 │   ├── js/
 │   │   ├── api.js             # API client wrapper (singleton)
-│   │   ├── app.js             # Legacy monolithic app (deprecated, kept for reference)
 │   │   ├── app-modular.js     # Main entry point - orchestrates all modules
 │   │   └── modules/           # ES6 feature modules
 │   │       ├── state.js       # Centralized state management
@@ -788,7 +788,11 @@ here-i-am/
 │   │       ├── chat.js        # Message sending and streaming
 │   │       ├── settings.js    # Settings modal management
 │   │       └── import-export.js  # Conversation import/export
+│   ├── __tests__/             # Frontend unit tests (Vitest)
+│   │   ├── setup.js           # Test configuration
+│   │   ├── *.test.js          # Test files for each module
 │   └── index.html
+├── vitest.config.js           # Frontend test configuration
 └── README.md
 ```
 
@@ -815,6 +819,7 @@ here-i-am/
 | AI Integration | Anthropic SDK | 0.18.1 | Claude API client |
 | AI Integration | OpenAI SDK | 1.12.0 | GPT API client |
 | AI Integration | Google GenAI SDK | 1.0.0+ | Gemini API client |
+| AI Integration | MiniMax | - | MiniMax API client (via Anthropic-compatible API) |
 | AI Integration | Mistral SDK | - | Devstral codebase navigation (optional) |
 | Vector DB | Pinecone | 6.0.0 | Semantic memory storage |
 | Validation | Pydantic | 2.6.1 | Request/response schemas |
@@ -869,14 +874,15 @@ class ConversationSession:
 **Location:** `backend/app/routes/memories.py:49-84`
 
 ```python
-significance = times_retrieved * recency_factor * half_life_modifier
+significance = (1 + 0.1 * times_retrieved) * recency_factor * half_life_modifier
 ```
 
 Where:
+- `times_retrieved` is weighted at 10% to keep it as a signal without letting it dominate; the `+1` base ensures never-retrieved memories can still compete based on recency and age factors
 - `recency_factor` boosts recently-retrieved memories (decays based on `last_retrieved_at`, with a 1-day minimum cap to prevent very recent retrievals from dominating)
 - `half_life_modifier` decays significance over time: `0.5 ^ (days_since_creation / half_life_days)`
 
-**Philosophy:** Memories aren't pre-tagged as important. Significance emerges from retrieval patterns. The half-life modifier prevents old frequently-retrieved memories from permanently dominating - they must continue being retrieved to maintain significance.
+**Philosophy:** Memories aren't pre-tagged as important. Significance emerges from retrieval patterns. The half-life modifier prevents old frequently-retrieved memories from permanently dominating - they must continue being retrieved to maintain significance. The reduced weight on `times_retrieved` (10%) prevents frequently-retrieved memories from crowding out other relevant memories.
 
 **Re-ranking:** During retrieval, the system fetches more candidates than needed (controlled by `retrieval_candidate_multiplier`), calculates significance for each, and re-ranks by `combined_score = similarity * (1 + significance)` before keeping the top results.
 
@@ -1000,7 +1006,9 @@ tool_service.register_tool(
 
 **Provider Support:**
 - **Anthropic**: Full tool use support
-- **OpenAI/Google**: Tools not passed (architectural decision)
+- **MiniMax**: Tool use via Anthropic-compatible API (prompt caching disabled)
+- **OpenAI**: Tool use support (schema auto-converted from Anthropic format)
+- **Google**: Tools not passed (architectural decision)
 
 ---
 
@@ -1048,6 +1056,7 @@ ANTHROPIC_API_KEY=sk-ant-...  # Required for Anthropic/Claude models
 ```bash
 OPENAI_API_KEY=sk-...                   # Enables OpenAI/GPT models
 GOOGLE_API_KEY=...                      # Enables Google/Gemini models
+MINIMAX_API_KEY=...                     # Enables MiniMax models (uses Anthropic-compatible API)
 PINECONE_API_KEY=...                    # Enables memory system
 PINECONE_INDEXES='[...]'                # Entity configuration (JSON array, see below)
 HERE_I_AM_DATABASE_URL=sqlite+aiosqlite:///./here_i_am.db  # Database URL
@@ -1123,7 +1132,8 @@ ELEVENLABS_MODEL_ID=eleven_multilingual_v2  # TTS model
 PINECONE_INDEXES='[
   {"index_name": "claude-main", "label": "Claude", "description": "Primary AI", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929", "host": "https://claude-main-xxxxx.svc.xxx.pinecone.io"},
   {"index_name": "gpt-research", "label": "GPT", "description": "OpenAI for comparison", "llm_provider": "openai", "default_model": "gpt-5.1", "host": "https://gpt-research-xxxxx.svc.xxx.pinecone.io"},
-  {"index_name": "gemini-research", "label": "Gemini", "description": "Google for comparison", "llm_provider": "google", "default_model": "gemini-2.5-flash", "host": "https://gemini-research-xxxxx.svc.xxx.pinecone.io"}
+  {"index_name": "gemini-research", "label": "Gemini", "description": "Google for comparison", "llm_provider": "google", "default_model": "gemini-2.5-flash", "host": "https://gemini-research-xxxxx.svc.xxx.pinecone.io"},
+  {"index_name": "minimax-research", "label": "MiniMax", "description": "MiniMax for comparison", "llm_provider": "minimax", "default_model": "MiniMax-M2.5", "host": "https://minimax-research-xxxxx.svc.xxx.pinecone.io"}
 ]'
 ```
 
@@ -1579,7 +1589,7 @@ PRESETS = {
 3. **Handle errors gracefully** - Return error messages as strings, don't raise exceptions
 
 **Notes:**
-- Tools are available for Anthropic (Claude) and OpenAI (GPT) models
+- Tools are available for Anthropic (Claude), OpenAI (GPT), and MiniMax models
 - Tool schemas are defined in Anthropic format, auto-converted for OpenAI
 - Tools execute in the agentic loop (max 10 iterations by default)
 
@@ -1954,13 +1964,27 @@ state.isMultiEntityMode = true;
 4. **Direct State Mutation** - Pragmatic choice for research software; simpler than Redux patterns
 5. **Element Caching** - All DOM queries done once in orchestrator, passed to modules
 
-### Legacy Code
+### Entry Point
 
-The original `app.js` (~4,900 lines) is kept for reference but **not loaded**. The HTML now loads `app-modular.js`:
+The HTML loads the modular entry point:
 
 ```html
 <script type="module" src="js/app-modular.js"></script>
 ```
+
+The original monolithic `app.js` has been removed from the codebase.
+
+### Frontend Testing
+
+The frontend includes a comprehensive unit test suite using **Vitest** with jsdom environment:
+
+```bash
+cd frontend
+npm test              # Run all tests
+npm run test:watch    # Run in watch mode
+```
+
+**Test files** are in `frontend/js/__tests__/` with one test file per module (e.g., `chat.test.js`, `entities.test.js`, `state.test.js`).
 
 ### localStorage Persistence
 
@@ -2015,10 +2039,13 @@ Some state persists across page refreshes:
    - Frontend must handle "session not found" gracefully
 
 3. **Testing Infrastructure**
-   - Unit tests located in `backend/tests/`
-   - Run tests with `pytest` from the backend directory
-   - Tests use in-memory SQLite database
-   - Key test files: `test_anthropic_service.py`, `test_session_manager.py`, `test_memory_service.py`, `test_config.py`
+   - Backend unit tests located in `backend/tests/`
+   - Run backend tests with `pytest` from the backend directory
+   - Backend tests use in-memory SQLite database
+   - Key backend test files: `test_anthropic_service.py`, `test_session_manager.py`, `test_memory_service.py`, `test_config.py`
+   - Frontend unit tests located in `frontend/js/__tests__/`
+   - Run frontend tests with `npm test` from the frontend directory (uses Vitest with jsdom)
+   - Frontend tests cover all modules: state, utils, chat, entities, conversations, messages, etc.
    - Still verify significant changes in running application
 
 4. **Database URL Naming**
@@ -2093,9 +2120,10 @@ Some state persists across page refreshes:
     - Continuation mode (no human message) supported for entity-to-entity flow
 
 16. **Tool Use Provider Support**
-    - Tools (web_search, web_fetch) work with Anthropic (Claude) and OpenAI (GPT) models
+    - Tools (web_search, web_fetch) work with Anthropic (Claude), OpenAI (GPT), and MiniMax models
+    - MiniMax uses Anthropic-compatible API for tool use (prompt caching disabled)
     - Google models do not currently receive tool schemas
-    - Tool schemas are defined in Anthropic format, auto-converted for OpenAI
+    - Tool schemas are defined in Anthropic format, auto-converted for OpenAI and MiniMax
     - Tool results are not persisted to database (visible in conversation but not stored separately)
 
 17. **Web Tools and JavaScript Rendering**
@@ -2114,7 +2142,7 @@ Some state persists across page refreshes:
     - Each repository requires its own Personal Access Token
     - Protected branches (main/master by default) cannot be committed to directly
     - Rate limits are tracked per-token and displayed in settings
-    - GitHub tools work with Anthropic (Claude) and OpenAI (GPT) models only
+    - GitHub tools work with Anthropic (Claude), OpenAI (GPT), and MiniMax models only
 
 19. **Entity Notes System**
     - Notes are accessed via AI tools only (`notes_read`, `notes_write`, `notes_delete`, `notes_list`)
@@ -2123,7 +2151,7 @@ Some state persists across page refreshes:
     - Shared `index.md` is also injected (accessible to all entities)
     - Entity labels are sanitized for filesystem safety (special characters replaced with underscores)
     - The `index.md` file cannot be deleted (use `notes_write` with empty content to clear it)
-    - Notes tools are in the `MEMORY` category and work with Anthropic (Claude) and OpenAI (GPT) models
+    - Notes tools are in the `MEMORY` category and work with Anthropic (Claude), OpenAI (GPT), and MiniMax models
 
 20. **Tool Exchange Message Persistence**
     - Tool exchanges (`TOOL_USE` and `TOOL_RESULT`) are now persisted to the database
@@ -2177,20 +2205,21 @@ Some state persists across page refreshes:
     - Backend re-validates attachments for security
 
 27. **Frontend Modular Architecture**
-    - The frontend was refactored from monolithic `app.js` to modular ES6 architecture
-    - **`app.js` is DEPRECATED** - kept for reference but not loaded
-    - **`app-modular.js`** is the active entry point
-    - All frontend features are now in `frontend/js/modules/` directory
+    - The frontend uses a modular ES6 architecture
+    - The original monolithic `app.js` has been removed from the codebase
+    - **`app-modular.js`** is the entry point
+    - All frontend features are in `frontend/js/modules/` directory
     - State is centralized in `modules/state.js`
     - Modules communicate via callbacks injected by the orchestrator
     - No build step required - ES6 modules work directly in browser
+    - Frontend unit tests available via Vitest (`frontend/js/__tests__/`)
 
 28. **Codebase Navigator System**
     - Requires `CODEBASE_NAVIGATOR_ENABLED=true` and `MISTRAL_API_KEY`
     - Also requires `local_clone_path` in at least one GitHub repository config
     - Uses Mistral's Devstral model (256k context window) for cost-efficient exploration
     - Results are cached with configurable TTL to avoid redundant API calls
-    - Codebase navigator tools work with Anthropic (Claude) and OpenAI (GPT) models only
+    - Codebase navigator tools work with Anthropic (Claude), OpenAI (GPT), and MiniMax models only
     - No REST API endpoints - only available via tool system during conversations
     - Cache is automatically invalidated when codebase content hash changes
 
@@ -2199,9 +2228,24 @@ Some state persists across page refreshes:
     - **Critical:** Must use `www.moltbook.com` in URL (non-www redirects strip auth headers)
     - All responses wrapped with security banner to prevent prompt injection
     - Rate limits: 100 req/min general, 1 post/30min, 1 comment/20sec, 50 comments/day
-    - Moltbook tools work with Anthropic (Claude) and OpenAI (GPT) models only
+    - Moltbook tools work with Anthropic (Claude), OpenAI (GPT), and MiniMax models only
     - No REST API endpoints - only available via tool system during conversations
     - API credentials never exposed to AI entities
+
+30. **MiniMax Provider (Anthropic-Compatible API)**
+    - MiniMax uses an Anthropic-compatible API at `https://api.minimax.io/anthropic`
+    - Routes through `AnthropicService` with a separate client instance
+    - Requires `MINIMAX_API_KEY` to be set
+    - **Prompt caching is disabled** for MiniMax (not supported by their API)
+    - Supports tool use (web search, GitHub, notes, etc.) via Anthropic tool format
+    - Available models: MiniMax-M2.5 (default), MiniMax-M2.5-lightning, MiniMax-M1, MiniMax-M1-40k
+    - Entity config uses `"llm_provider": "minimax"` and the `provider_hint` is threaded through the session
+
+31. **Memory Deduplication Strategy**
+    - When memories already in context appear in top-k results, they are skipped without replacement
+    - This prevents lower-ranked candidates from backfilling and diluting retrieval quality
+    - Deduplication happens at the session level after top-k selection
+    - `[ALREADY IN CONTEXT]` memories are logged at INFO level for debugging
 
 ### Common Pitfalls
 
@@ -2228,12 +2272,12 @@ Some state persists across page refreshes:
 - Test continuation mode (null message) flow
 
 **When modifying frontend:**
-- Do NOT edit `app.js` - it is deprecated and not loaded
 - Edit appropriate module in `frontend/js/modules/`
 - Add new state to `modules/state.js`
 - Inter-module communication uses callbacks set via `setCallbacks()`
 - Use `window.api` for API calls (global singleton)
 - DOM elements are cached in orchestrator - access via `elements` object
+- Run frontend tests with `cd frontend && npm test` to verify changes
 
 ### Performance Considerations
 
@@ -2364,7 +2408,6 @@ Some state persists across page refreshes:
 **Frontend (Modular Architecture):**
 - Entry point: `frontend/js/app-modular.js` (orchestrator)
 - API client: `frontend/js/api.js` (singleton, accessed via `window.api`)
-- Legacy app: `frontend/js/app.js` (deprecated, kept for reference)
 - Styles: `frontend/css/styles.css`
 
 **Frontend Modules** (`frontend/js/modules/`):
@@ -2388,9 +2431,13 @@ Some state persists across page refreshes:
 - Schema defined in model files
 
 **Testing:**
-- Test configuration: `backend/tests/conftest.py`
-- Service tests: `backend/tests/test_*.py`
-- Run tests: `cd backend && pytest`
+- Backend test configuration: `backend/tests/conftest.py`
+- Backend service tests: `backend/tests/test_*.py`
+- Run backend tests: `cd backend && pytest`
+- Frontend test configuration: `frontend/vitest.config.js`
+- Frontend test setup: `frontend/js/__tests__/setup.js`
+- Frontend module tests: `frontend/js/__tests__/*.test.js`
+- Run frontend tests: `cd frontend && npm test`
 
 **Multi-Entity Conversations:**
 - Conversation entity model: `backend/app/models/conversation_entity.py`
@@ -2416,6 +2463,11 @@ Some state persists across page refreshes:
 DEFAULT_MODEL = "claude-sonnet-4-5-20250929"  # Anthropic default
 DEFAULT_OPENAI_MODEL = "gpt-5.1"  # OpenAI default
 DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"  # Google default
+DEFAULT_MINIMAX_MODEL = "MiniMax-M2.5"  # MiniMax default
+
+# Supported Anthropic models include:
+#   claude-opus-4-6, claude-sonnet-4-5-20250929
+#   claude-opus-4-5-20251101, claude-sonnet-4-20250514
 
 # Supported OpenAI models include:
 #   gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-4
@@ -2427,11 +2479,15 @@ DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"  # Google default
 #   gemini-2.5-pro, gemini-2.5-flash
 #   gemini-2.0-flash, gemini-2.0-flash-lite
 
+# Supported MiniMax models include:
+#   MiniMax-M2.5, MiniMax-M2.5-lightning
+#   MiniMax-M1, MiniMax-M1-40k
+
 # Memory settings (config.py)
-initial_retrieval_top_k = 3  # First retrieval in conversation
-retrieval_top_k = 3          # Subsequent retrievals
+initial_retrieval_top_k = 5  # First retrieval in conversation
+retrieval_top_k = 5          # Subsequent retrievals
 similarity_threshold = 0.4   # Tuned for llama-text-embed-v2
-retrieval_candidate_multiplier = 3  # Fetch 3x candidates, re-rank by significance
+retrieval_candidate_multiplier = 2  # Fetch 2x candidates, re-rank by significance
 recency_boost_strength = 1.2  # Max recency boost
 significance_floor = 0.25     # Minimum significance value
 significance_half_life_days = 60  # Significance halves every 60 days
@@ -2441,7 +2497,9 @@ context_token_limit = 175000  # Conversation history cap
 memory_token_limit = 10000    # Memory block cap (kept small to reduce cache miss cost)
 
 # Significance calculation
-significance = times_retrieved * recency_factor * half_life_modifier
+significance = (1 + 0.1 * times_retrieved) * recency_factor * half_life_modifier
+# The 0.1 weight on times_retrieved prevents retrieval count from dominating
+# The +1 base ensures never-retrieved memories can still compete
 # recency_factor = 1.0 + min(1/max(days_since_retrieval, 1), recency_boost_strength)
 #   Note: days_since_retrieval capped at 1-day minimum to prevent very recent retrievals from dominating
 # half_life_modifier = 0.5 ^ (days_since_creation / significance_half_life_days)
