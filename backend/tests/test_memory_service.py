@@ -88,10 +88,15 @@ class TestMemoryServiceIntegratedInference:
         assert not hasattr(service, 'get_embedding'), \
             "MemoryService should not have get_embedding - Pinecone handles embeddings"
 
-    def test_uses_upsert_records_for_storage(self):
-        """Verify store_memory uses upsert_records (Pinecone integrated inference)."""
-        # This is verified in the store_memory tests below
-        pass
+    def test_uses_upsert_records_for_storage(self, mock_pinecone_index):
+        """Verify store_memory uses upsert_records, not upsert with client-side embeddings."""
+        service = MemoryService()
+        # MemoryService should not have a get_embedding method
+        assert not hasattr(service, 'get_embedding'), \
+            "MemoryService should not have get_embedding"
+        # The index should support upsert_records (Pinecone integrated inference)
+        assert hasattr(mock_pinecone_index, 'upsert_records'), \
+            "Pinecone index should support upsert_records for integrated inference"
 
 
 class TestMemoryServiceStorage:

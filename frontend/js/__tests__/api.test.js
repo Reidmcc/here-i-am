@@ -1,140 +1,40 @@
 /**
  * Tests for api.js - API client singleton
  *
+ * Tests the ACTUAL ApiClient implementation by importing the real module.
+ * Only the fetch boundary is mocked - everything else tests real code.
+ *
  * Tests cover:
  * - request(): Base request method, error handling, body serialization
  * - _formatErrorDetail(): Error detail formatting (arrays, strings)
  * - Endpoint methods: Correct URL, method, and body construction
  * - _handleStreamEvent(): SSE event dispatching
  * - _handleImportStreamEvent(): Import SSE event dispatching
+ * - sendMessageStream(): Full SSE streaming pipeline
+ * - regenerateStream(): Regeneration SSE streaming
+ * - importExternalConversationsStream(): Import SSE streaming
+ * - textToSpeech(): Direct fetch with blob response
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// We need to create a fresh ApiClient for testing since the module uses a singleton
-// We'll test by re-implementing the class methods or testing via the global window.api
+// Import the ACTUAL api.js module - this sets window.api to a real ApiClient instance
+import '../api.js';
 
 describe('ApiClient', () => {
-    let ApiClient;
     let api;
 
     beforeEach(() => {
-        // Create a fresh ApiClient instance for each test
-        // We simulate the class since it's not exported as a module
-        ApiClient = class {
-            async request(endpoint, options = {}) {
-                const url = `/api${endpoint}`;
-                const defaultHeaders = {
-                    'Content-Type': 'application/json',
-                };
+        // Use the real ApiClient instance set by the module
+        api = window.api;
 
-                const config = {
-                    ...options,
-                    headers: {
-                        ...defaultHeaders,
-                        ...options.headers,
-                    },
-                };
-
-                if (config.body && typeof config.body === 'object') {
-                    config.body = JSON.stringify(config.body);
-                }
-
-                const response = await fetch(url, config);
-
-                if (!response.ok) {
-                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-                    throw new Error(this._formatErrorDetail(error.detail, response.status));
-                }
-
-                return response.json();
-            }
-
-            _formatErrorDetail(detail, status) {
-                if (Array.isArray(detail)) {
-                    return detail.map(e => e.msg || JSON.stringify(e)).join('; ');
-                }
-                return detail || `HTTP ${status}`;
-            }
-
-            _handleStreamEvent(eventType, data, callbacks) {
-                switch (eventType) {
-                    case 'memories':
-                        if (callbacks.onMemories) callbacks.onMemories(data);
-                        break;
-                    case 'start':
-                        if (callbacks.onStart) callbacks.onStart(data);
-                        break;
-                    case 'token':
-                        if (callbacks.onToken) callbacks.onToken(data);
-                        break;
-                    case 'tool_start':
-                        if (callbacks.onToolStart) callbacks.onToolStart(data);
-                        break;
-                    case 'tool_result':
-                        if (callbacks.onToolResult) callbacks.onToolResult(data);
-                        break;
-                    case 'done':
-                        if (callbacks.onDone) callbacks.onDone(data);
-                        break;
-                    case 'stored':
-                        if (callbacks.onStored) callbacks.onStored(data);
-                        break;
-                    case 'error':
-                        if (callbacks.onError) callbacks.onError(data);
-                        break;
-                }
-            }
-
-            _handleImportStreamEvent(eventType, data, callbacks) {
-                switch (eventType) {
-                    case 'start':
-                        if (callbacks.onStart) callbacks.onStart(data);
-                        break;
-                    case 'progress':
-                        if (callbacks.onProgress) callbacks.onProgress(data);
-                        break;
-                    case 'done':
-                        if (callbacks.onDone) callbacks.onDone(data);
-                        break;
-                    case 'cancelled':
-                        if (callbacks.onCancelled) callbacks.onCancelled(data);
-                        break;
-                    case 'error':
-                        if (callbacks.onError) callbacks.onError(data);
-                        break;
-                }
-            }
-
-            async listEntities() { return this.request('/entities/'); }
-            async getEntity(id) { return this.request(`/entities/${id}`); }
-            async getEntityStatus(id) { return this.request(`/entities/${id}/status`); }
-            async listConversations(limit = 50, offset = 0, entityId = null) {
-                let url = `/conversations/?limit=${limit}&offset=${offset}`;
-                if (entityId) url += `&entity_id=${entityId}`;
-                return this.request(url);
-            }
-            async createConversation(data = {}) {
-                return this.request('/conversations/', { method: 'POST', body: data });
-            }
-            async deleteConversation(id) {
-                return this.request(`/conversations/${id}`, { method: 'DELETE' });
-            }
-            async archiveConversation(id) {
-                return this.request(`/conversations/${id}/archive`, { method: 'POST' });
-            }
-            async searchMemories(query, topK = 10, includeContent = true, entityId = null) {
-                return this.request('/memories/search', {
-                    method: 'POST',
-                    body: { query, top_k: topK, include_content: includeContent, entity_id: entityId },
-                });
-            }
-        };
-
-        api = new ApiClient();
-
-        // Reset fetch mock
+        // Mock fetch at the boundary - this is the only mock needed
         global.fetch = vi.fn();
+
+        // Suppress console output from the real implementation
+        vi.spyOn(console, 'log').mockImplementation(() => {});
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+        vi.spyOn(console, 'error').mockImplementation(() => {});
     });
 
     // ============================================================
@@ -340,6 +240,11 @@ describe('ApiClient', () => {
                 api._handleStreamEvent('unknown_event', {}, callbacks);
             }).not.toThrow();
         });
+
+        it('should warn on unknown event type', () => {
+            api._handleStreamEvent('unknown_event', {}, {});
+            expect(console.warn).toHaveBeenCalledWith('Unknown SSE event type:', 'unknown_event');
+        });
     });
 
     // ============================================================
@@ -381,6 +286,11 @@ describe('ApiClient', () => {
             expect(() => {
                 api._handleImportStreamEvent('progress', {}, {});
             }).not.toThrow();
+        });
+
+        it('should warn on unknown import event type', () => {
+            api._handleImportStreamEvent('unknown_event', {}, {});
+            expect(console.warn).toHaveBeenCalledWith('Unknown import SSE event type:', 'unknown_event');
         });
     });
 
@@ -466,6 +376,373 @@ describe('ApiClient', () => {
                     }),
                 }),
             );
+        });
+
+        it('healthCheck should call /health', async () => {
+            await api.healthCheck();
+            expect(global.fetch).toHaveBeenCalledWith('/api/health', expect.any(Object));
+        });
+
+        it('getConversation should call /conversations/{id}', async () => {
+            await api.getConversation('conv-123');
+            expect(global.fetch).toHaveBeenCalledWith('/api/conversations/conv-123', expect.any(Object));
+        });
+
+        it('getConversationMessages should call /conversations/{id}/messages', async () => {
+            await api.getConversationMessages('conv-123');
+            expect(global.fetch).toHaveBeenCalledWith('/api/conversations/conv-123/messages', expect.any(Object));
+        });
+
+        it('updateConversation should PATCH with body', async () => {
+            await api.updateConversation('conv-123', { title: 'New Title' });
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/conversations/conv-123',
+                expect.objectContaining({
+                    method: 'PATCH',
+                    body: '{"title":"New Title"}',
+                }),
+            );
+        });
+
+        it('unarchiveConversation should POST', async () => {
+            await api.unarchiveConversation('conv-1');
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/conversations/conv-1/unarchive',
+                expect.objectContaining({ method: 'POST' }),
+            );
+        });
+
+        it('listArchivedConversations should include query params', async () => {
+            await api.listArchivedConversations(10, 5, 'entity-1');
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/conversations/archived?limit=10&offset=5&entity_id=entity-1',
+                expect.any(Object),
+            );
+        });
+
+        it('exportConversation should call /conversations/{id}/export', async () => {
+            await api.exportConversation('conv-123');
+            expect(global.fetch).toHaveBeenCalledWith('/api/conversations/conv-123/export', expect.any(Object));
+        });
+
+        it('sendMessage should POST to /chat/send', async () => {
+            await api.sendMessage({ message: 'hello' });
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/chat/send',
+                expect.objectContaining({
+                    method: 'POST',
+                    body: '{"message":"hello"}',
+                }),
+            );
+        });
+
+        it('quickChat should POST to /chat/quick', async () => {
+            await api.quickChat({ message: 'hi' });
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/chat/quick',
+                expect.objectContaining({
+                    method: 'POST',
+                    body: '{"message":"hi"}',
+                }),
+            );
+        });
+
+        it('getSessionInfo should call /chat/session/{id}', async () => {
+            await api.getSessionInfo('conv-123');
+            expect(global.fetch).toHaveBeenCalledWith('/api/chat/session/conv-123', expect.any(Object));
+        });
+
+        it('closeSession should DELETE /chat/session/{id}', async () => {
+            await api.closeSession('conv-123');
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/chat/session/conv-123',
+                expect.objectContaining({ method: 'DELETE' }),
+            );
+        });
+
+        it('getChatConfig should call /chat/config', async () => {
+            await api.getChatConfig();
+            expect(global.fetch).toHaveBeenCalledWith('/api/chat/config', expect.any(Object));
+        });
+
+        it('getMemoryStats should call /memories/stats with entity_id', async () => {
+            await api.getMemoryStats('entity-1');
+            expect(global.fetch).toHaveBeenCalledWith('/api/memories/stats?entity_id=entity-1', expect.any(Object));
+        });
+
+        it('getMemoryStats should call /memories/stats without entity_id when null', async () => {
+            await api.getMemoryStats(null);
+            expect(global.fetch).toHaveBeenCalledWith('/api/memories/stats', expect.any(Object));
+        });
+
+        it('deleteMemory should DELETE /memories/{id}', async () => {
+            await api.deleteMemory('mem-123');
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/memories/mem-123',
+                expect.objectContaining({ method: 'DELETE' }),
+            );
+        });
+
+        it('updateMessage should PUT /messages/{id}', async () => {
+            await api.updateMessage('msg-123', 'new content');
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/messages/msg-123',
+                expect.objectContaining({
+                    method: 'PUT',
+                    body: '{"content":"new content"}',
+                }),
+            );
+        });
+
+        it('deleteMessage should DELETE /messages/{id}', async () => {
+            await api.deleteMessage('msg-123');
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/messages/msg-123',
+                expect.objectContaining({ method: 'DELETE' }),
+            );
+        });
+
+        it('getTTSStatus should call /tts/status', async () => {
+            await api.getTTSStatus();
+            expect(global.fetch).toHaveBeenCalledWith('/api/tts/status', expect.any(Object));
+        });
+
+        it('listTTSVoices should call /tts/voices', async () => {
+            await api.listTTSVoices();
+            expect(global.fetch).toHaveBeenCalledWith('/api/tts/voices', expect.any(Object));
+        });
+
+        it('getSTTStatus should call /stt/status', async () => {
+            await api.getSTTStatus();
+            expect(global.fetch).toHaveBeenCalledWith('/api/stt/status', expect.any(Object));
+        });
+
+        it('listGitHubRepos should call /github/repos', async () => {
+            await api.listGitHubRepos();
+            expect(global.fetch).toHaveBeenCalledWith('/api/github/repos', expect.any(Object));
+        });
+
+        it('getGitHubRateLimits should call /github/rate-limit', async () => {
+            await api.getGitHubRateLimits();
+            expect(global.fetch).toHaveBeenCalledWith('/api/github/rate-limit', expect.any(Object));
+        });
+
+        it('getPresets should call /config/presets', async () => {
+            await api.getPresets();
+            expect(global.fetch).toHaveBeenCalledWith('/api/config/presets', expect.any(Object));
+        });
+
+        it('getMemoryHealth should call /memories/status/health', async () => {
+            await api.getMemoryHealth();
+            expect(global.fetch).toHaveBeenCalledWith('/api/memories/status/health', expect.any(Object));
+        });
+
+        it('listOrphanedRecords should include entity_id when provided', async () => {
+            await api.listOrphanedRecords('entity-1');
+            expect(global.fetch).toHaveBeenCalledWith('/api/memories/orphans?entity_id=entity-1', expect.any(Object));
+        });
+
+        it('listOrphanedRecords should omit entity_id when null', async () => {
+            await api.listOrphanedRecords(null);
+            expect(global.fetch).toHaveBeenCalledWith('/api/memories/orphans', expect.any(Object));
+        });
+
+        it('cleanupOrphanedRecords should POST with correct body', async () => {
+            await api.cleanupOrphanedRecords('entity-1', false);
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/memories/orphans/cleanup',
+                expect.objectContaining({
+                    method: 'POST',
+                    body: JSON.stringify({ entity_id: 'entity-1', dry_run: false }),
+                }),
+            );
+        });
+    });
+
+    // ============================================================
+    // Tests for textToSpeech (uses fetch directly, not request())
+    // ============================================================
+
+    describe('textToSpeech', () => {
+        it('should POST to /api/tts/speak with text', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                blob: () => Promise.resolve(new Blob(['audio'])),
+            });
+
+            await api.textToSpeech('Hello world');
+
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/tts/speak',
+                expect.objectContaining({
+                    method: 'POST',
+                    body: JSON.stringify({ text: 'Hello world' }),
+                }),
+            );
+        });
+
+        it('should include voice_id when provided', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                blob: () => Promise.resolve(new Blob()),
+            });
+
+            await api.textToSpeech('Hello', 'voice-1');
+
+            const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+            expect(body.voice_id).toBe('voice-1');
+        });
+
+        it('should include StyleTTS2 params when provided', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                blob: () => Promise.resolve(new Blob()),
+            });
+
+            await api.textToSpeech('Hello', null, { alpha: 0.5, beta: 0.8 });
+
+            const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+            expect(body.alpha).toBe(0.5);
+            expect(body.beta).toBe(0.8);
+        });
+
+        it('should throw on non-ok response', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: false,
+                status: 429,
+                json: () => Promise.resolve({ detail: 'Rate limited' }),
+            });
+
+            await expect(api.textToSpeech('Hello')).rejects.toThrow('Rate limited');
+        });
+    });
+
+    // ============================================================
+    // Tests for streaming methods
+    // ============================================================
+
+    describe('sendMessageStream', () => {
+        it('should POST to /api/chat/stream and process SSE events', async () => {
+            const encoder = new TextEncoder();
+            const sseData = 'event: token\ndata: {"content":"Hello"}\n\nevent: done\ndata: {"usage":{}}\n\n';
+
+            const stream = new ReadableStream({
+                start(controller) {
+                    controller.enqueue(encoder.encode(sseData));
+                    controller.close();
+                },
+            });
+
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                body: stream,
+            });
+
+            const callbacks = {
+                onToken: vi.fn(),
+                onDone: vi.fn(),
+            };
+
+            await api.sendMessageStream({ message: 'test' }, callbacks);
+
+            expect(callbacks.onToken).toHaveBeenCalledWith({ content: 'Hello' });
+            expect(callbacks.onDone).toHaveBeenCalledWith({ usage: {} });
+        });
+
+        it('should throw on non-ok response', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: false,
+                status: 500,
+                json: () => Promise.resolve({ detail: 'Server error' }),
+            });
+
+            await expect(api.sendMessageStream({ message: 'test' })).rejects.toThrow('Server error');
+        });
+
+        it('should call onAborted on AbortError', async () => {
+            const stream = new ReadableStream({
+                pull() {
+                    const err = new Error('Aborted');
+                    err.name = 'AbortError';
+                    throw err;
+                },
+            });
+
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                body: stream,
+            });
+
+            const callbacks = { onAborted: vi.fn() };
+            await api.sendMessageStream({ message: 'test' }, callbacks);
+
+            expect(callbacks.onAborted).toHaveBeenCalledWith({ status: 'aborted' });
+        });
+    });
+
+    describe('regenerateStream', () => {
+        it('should POST to /api/chat/regenerate and process SSE events', async () => {
+            const encoder = new TextEncoder();
+            const sseData = 'event: start\ndata: {"model":"claude"}\n\nevent: token\ndata: {"content":"Hi"}\n\nevent: done\ndata: {"usage":{}}\n\n';
+
+            const stream = new ReadableStream({
+                start(controller) {
+                    controller.enqueue(encoder.encode(sseData));
+                    controller.close();
+                },
+            });
+
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                body: stream,
+            });
+
+            const callbacks = {
+                onStart: vi.fn(),
+                onToken: vi.fn(),
+                onDone: vi.fn(),
+            };
+
+            await api.regenerateStream({ message_id: 'msg-1' }, callbacks);
+
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/chat/regenerate',
+                expect.objectContaining({ method: 'POST' }),
+            );
+            expect(callbacks.onStart).toHaveBeenCalledWith({ model: 'claude' });
+            expect(callbacks.onToken).toHaveBeenCalledWith({ content: 'Hi' });
+            expect(callbacks.onDone).toHaveBeenCalledWith({ usage: {} });
+        });
+    });
+
+    describe('importExternalConversationsStream', () => {
+        it('should POST and process import SSE events', async () => {
+            const encoder = new TextEncoder();
+            const sseData = 'event: start\ndata: {"total":5}\n\nevent: progress\ndata: {"current":1}\n\nevent: done\ndata: {"imported":5}\n\n';
+
+            const stream = new ReadableStream({
+                start(controller) {
+                    controller.enqueue(encoder.encode(sseData));
+                    controller.close();
+                },
+            });
+
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: true,
+                body: stream,
+            });
+
+            const callbacks = {
+                onStart: vi.fn(),
+                onProgress: vi.fn(),
+                onDone: vi.fn(),
+            };
+
+            await api.importExternalConversationsStream({ data: 'test' }, callbacks);
+
+            expect(callbacks.onStart).toHaveBeenCalledWith({ total: 5 });
+            expect(callbacks.onProgress).toHaveBeenCalledWith({ current: 1 });
+            expect(callbacks.onDone).toHaveBeenCalledWith({ imported: 5 });
         });
     });
 });
