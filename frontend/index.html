@@ -134,7 +134,7 @@
                     <small class="form-help">This name will be used in conversation context and memory labels instead of "user"</small>
                 </div>
 
-                <div class="form-group">
+                <div class="form-group" id="model-group">
                     <label for="model-select">Model</label>
                     <select id="model-select">
                         <option value="claude-opus-4-6">Claude Opus 4.6</option>
@@ -144,6 +144,7 @@
                         <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
                         <option value="claude-opus-4-20250514">Claude Opus 4</option>
                     </select>
+                    <small id="model-multi-entity-note" class="form-help" style="display: none;">Each entity uses its own configured model in multi-entity mode</small>
                 </div>
 
                 <div class="form-group">

@@ -22,7 +22,8 @@ import {
     hideEntityResponderSelector,
     selectResponder,
     cancelResponderSelection,
-    updateModelSelectorForProvider
+    updateModelSelectorForProvider,
+    updateModelSelectorMultiEntityState
 } from './modules/entities.js';
 import {
     setElements as setConversationElements,
@@ -610,6 +611,7 @@ class App {
     openSettings() {
         initializeSettingsUI();
         updateTemperatureRange();
+        updateModelSelectorMultiEntityState();
         showModal('settingsModal');
     }
 
@@ -722,6 +724,16 @@ class App {
      * Handle multi-entity selection confirmed
      */
     onMultiEntityConfirmed() {
+        // Update model indicator to show per-entity models
+        updateModelIndicator();
+
+        // Handle pending conversation creation after entity selection
+        if (state.pendingMultiEntityAction === 'createConversation') {
+            state.pendingMultiEntityAction = null;
+            createNewConversation(true);
+            return;
+        }
+
         // Handle pending action after entity selection
         if (state.pendingActionAfterEntitySelection === 'sendMessage') {
             const content = state.pendingMessageForEntitySelection;
@@ -753,8 +765,12 @@ class App {
      * Handle conversation loaded callback
      */
     onConversationLoaded(conversation, messages) {
+        // Update model indicator (may change between single/multi-entity)
+        updateModelIndicator();
         // Handle input change to update button states
         this.handleInputChange();
+        // Update model indicator (may have switched to/from multi-entity)
+        updateModelIndicator();
     }
 
     /**

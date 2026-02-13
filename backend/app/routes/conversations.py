@@ -114,6 +114,15 @@ async def get_conversation_entities(conversation_id: str, db: AsyncSession) -> L
         info = get_entity_info(ce.entity_id)
         if info:
             entities_info.append(info)
+        else:
+            # Fallback for entities no longer in settings config
+            entities_info.append(EntityInfo(
+                entity_id=ce.entity_id,
+                label=ce.entity_id,
+                description=None,
+                llm_provider="anthropic",
+                default_model=None,
+            ))
     return entities_info
 
 
@@ -415,6 +424,11 @@ async def list_archived_conversations(
                 preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
                 break
 
+        # Get entity info for multi-entity conversations
+        entities_info = None
+        if conv.conversation_type == ConversationType.MULTI_ENTITY:
+            entities_info = await get_conversation_entities(conv.id, db)
+
         response.append(ConversationResponse(
             id=conv.id,
             created_at=conv.created_at,
@@ -427,9 +441,10 @@ async def list_archived_conversations(
             notes=conv.notes,
             entity_id=conv.entity_id,
             is_archived=conv.is_archived,
-            entity_missing=not check_entity_exists(conv.entity_id),
+            entity_missing=not check_entity_exists(conv.entity_id) if conv.entity_id != "multi-entity" else False,
             message_count=message_count,
             preview=preview,
+            entities=entities_info,
             entity_system_prompts=conv.entity_system_prompts,
         ))
 
@@ -556,6 +571,11 @@ async def update_conversation(
     )
     message_count = len(msg_result.scalars().all())
 
+    # Get entity info for multi-entity conversations
+    entities_info = None
+    if conversation.conversation_type == ConversationType.MULTI_ENTITY:
+        entities_info = await get_conversation_entities(conversation.id, db)
+
     return ConversationResponse(
         id=conversation.id,
         created_at=conversation.created_at,
@@ -568,8 +588,9 @@ async def update_conversation(
         notes=conversation.notes,
         entity_id=conversation.entity_id,
         is_archived=conversation.is_archived,
-        entity_missing=not check_entity_exists(conversation.entity_id),
+        entity_missing=not check_entity_exists(conversation.entity_id) if conversation.entity_id != "multi-entity" else False,
         message_count=message_count,
+        entities=entities_info,
         entity_system_prompts=conversation.entity_system_prompts,
     )
 

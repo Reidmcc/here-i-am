@@ -78,8 +78,8 @@ export async function sendMessage(skipEntityModal = false) {
     // Capture attachments before clearing
     const attachments = getAttachmentsForRequest();
 
-    // In multi-entity mode without a conversation, show entity selection modal
-    if (!state.currentConversationId && state.isMultiEntityMode && !skipEntityModal) {
+    // In multi-entity mode without a conversation and no entities selected yet, show entity selection modal
+    if (!state.currentConversationId && state.isMultiEntityMode && !skipEntityModal && state.currentConversationEntities.length < 2) {
         state.pendingActionAfterEntitySelection = 'sendMessage';
         state.pendingMessageForEntitySelection = content;
         state.pendingAttachmentsForEntitySelection = attachments;
@@ -286,9 +286,11 @@ export async function sendMessageWithResponder() {
     }
 
     try {
+        // In multi-entity mode, don't send model - backend uses each entity's configured model
         const request = {
             conversation_id: state.currentConversationId,
             message: messageToSend,
+            model: state.isMultiEntityMode ? null : state.settings.model,
             temperature: state.settings.temperature,
             max_tokens: state.settings.maxTokens,
             system_prompt: state.settings.systemPrompt,
@@ -297,10 +299,6 @@ export async function sendMessageWithResponder() {
             user_display_name: state.settings.researcherName || null,
             attachments: attachments,
         };
-        // Only include model override if NOT in multi-entity mode
-        if (!state.isMultiEntityMode) {
-            request.model = state.settings.model;
-        }
 
         await api.sendMessageStream(
             request,
@@ -485,18 +483,16 @@ export async function performRegeneration(messageId, respondingEntityId = null) 
     const streamingMessage = createStreamingMessage('assistant', responderLabel);
 
     try {
+        // In multi-entity mode, don't send model - backend uses each entity's configured model
         const requestData = {
             message_id: messageId,
+            model: (state.isMultiEntityMode && respondingEntityId) ? null : state.settings.model,
             temperature: state.settings.temperature,
             max_tokens: state.settings.maxTokens,
             system_prompt: state.settings.systemPrompt,
             verbosity: state.settings.verbosity,
             user_display_name: state.settings.researcherName || null,
         };
-
-        if (!state.isMultiEntityMode) {
-            requestData.model = state.settings.model;
-        }
 
         if (respondingEntityId) {
             requestData.responding_entity_id = respondingEntityId;

@@ -4,9 +4,9 @@
  */
 
 import { state, resetMemoryState, saveEntitySystemPromptsToStorage } from './state.js';
-import { showToast, escapeHtml } from './utils.js';
+import { showToast, escapeHtml, escapeForInlineHandler } from './utils.js';
 import { showModal, hideModal, closeAllDropdowns } from './modals.js';
-import { getEntityLabel } from './entities.js';
+import { getEntityLabel, updateModelSelectorMultiEntityState } from './entities.js';
 
 // Reference to global API client
 const api = window.api;
@@ -141,8 +141,8 @@ export function renderConversationList() {
                     </svg>
                 </button>
                 <div class="conversation-dropdown" data-id="${conv.id}">
-                    <button onclick="app.showRenameModalForConversation('${conv.id}', '${escapeHtml(conv.title || '').replace(/'/g, "\\'")}')">Rename</button>
-                    <button onclick="app.showArchiveModalForConversation('${conv.id}', '${escapeHtml(conv.title || '').replace(/'/g, "\\'")}')">Archive</button>
+                    <button class="conversation-dropdown-item" onclick="app.showRenameModalForConversation('${conv.id}', '${escapeForInlineHandler(conv.title || '')}')">Rename</button>
+                    <button class="conversation-dropdown-item" onclick="app.showArchiveModalForConversation('${conv.id}', '${escapeForInlineHandler(conv.title || '')}')">Archive</button>
                 </div>
             </div>
         `;
@@ -232,7 +232,11 @@ export async function createNewConversation(skipEntityModal = false) {
 
         // Store entities for multi-entity
         if (conversation.entities && conversation.entities.length > 0) {
-            state.currentConversationEntities = conversation.entities;
+            // Normalize API entities (entity_id -> index_name) for frontend consistency
+            state.currentConversationEntities = conversation.entities.map(e => ({
+                ...e,
+                index_name: e.index_name || e.entity_id,
+            }));
             state.isMultiEntityMode = true;
         }
 
@@ -290,7 +294,11 @@ export async function loadConversation(id) {
         // Update multi-entity state
         if (conversation.conversation_type === 'multi_entity' && conversation.entities) {
             state.isMultiEntityMode = true;
-            state.currentConversationEntities = conversation.entities;
+            // Normalize API entities (entity_id -> index_name) for frontend consistency
+            state.currentConversationEntities = conversation.entities.map(e => ({
+                ...e,
+                index_name: e.index_name || e.entity_id,
+            }));
         } else {
             // Don't override isMultiEntityMode if we're in multi-entity mode viewing a multi-entity conversation
             if (state.selectedEntityId !== 'multi-entity') {
@@ -302,6 +310,9 @@ export async function loadConversation(id) {
                 state.currentConversationEntities = [];
             }
         }
+
+        // Update model selector state (disabled in multi-entity mode)
+        updateModelSelectorMultiEntityState();
 
         // Clear and render messages
         if (callbacks.clearMessages) {
@@ -536,7 +547,7 @@ export async function loadArchivedConversations() {
                 </div>
                 <div class="archived-item-actions">
                     <button class="unarchive-btn" onclick="app.unarchiveConversation('${conv.id}')">Restore</button>
-                    <button class="delete-btn" onclick="app.showDeleteModal('${conv.id}', '${escapeHtml(conv.title || 'Untitled').replace(/'/g, "\\'")}')">Delete</button>
+                    <button class="delete-btn" onclick="app.showDeleteModal('${conv.id}', '${escapeForInlineHandler(conv.title || 'Untitled')}')">Delete</button>
                 </div>
             </div>
         `).join('');
