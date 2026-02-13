@@ -4,7 +4,7 @@
  */
 
 import { state, resetMemoryState, saveEntitySystemPromptsToStorage } from './state.js';
-import { showToast, escapeHtml } from './utils.js';
+import { showToast, escapeHtml, escapeForInlineHandler } from './utils.js';
 import { showModal, hideModal, closeAllDropdowns } from './modals.js';
 import { getEntityLabel, updateModelSelectorMultiEntityState } from './entities.js';
 
@@ -141,8 +141,8 @@ export function renderConversationList() {
                     </svg>
                 </button>
                 <div class="conversation-dropdown" data-id="${conv.id}">
-                    <button class="conversation-dropdown-item" onclick="app.showRenameModalForConversation('${conv.id}', '${escapeHtml(conv.title || '').replace(/'/g, "\\'")}')">Rename</button>
-                    <button class="conversation-dropdown-item" onclick="app.showArchiveModalForConversation('${conv.id}', '${escapeHtml(conv.title || '').replace(/'/g, "\\'")}')">Archive</button>
+                    <button class="conversation-dropdown-item" onclick="app.showRenameModalForConversation('${conv.id}', '${escapeForInlineHandler(conv.title || '')}')">Rename</button>
+                    <button class="conversation-dropdown-item" onclick="app.showArchiveModalForConversation('${conv.id}', '${escapeForInlineHandler(conv.title || '')}')">Archive</button>
                 </div>
             </div>
         `;
@@ -547,7 +547,7 @@ export async function loadArchivedConversations() {
                 </div>
                 <div class="archived-item-actions">
                     <button class="unarchive-btn" onclick="app.unarchiveConversation('${conv.id}')">Restore</button>
-                    <button class="delete-btn" onclick="app.showDeleteModal('${conv.id}', '${escapeHtml(conv.title || 'Untitled').replace(/'/g, "\\'")}')">Delete</button>
+                    <button class="delete-btn" onclick="app.showDeleteModal('${conv.id}', '${escapeForInlineHandler(conv.title || 'Untitled')}')">Delete</button>
                 </div>
             </div>
         `).join('');
