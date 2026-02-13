@@ -84,7 +84,7 @@ class TestSettings:
         assert settings.default_openai_model == "gpt-5.1"
         assert settings.default_temperature == 1.0
         assert settings.default_max_tokens == 64000
-        assert settings.retrieval_top_k == 3  # Updated to match current default
+        assert settings.retrieval_top_k == 5  # Updated to match current default
         assert settings.similarity_threshold == 0.4  # Updated: tuned for llama-text-embed-v2
 
     def test_settings_custom_values(self, test_settings):

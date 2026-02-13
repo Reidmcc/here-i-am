@@ -711,11 +711,13 @@ class TestSessionManager:
 
             await manager.process_message(session, "Second", db_session)
 
-            # Search should have been called with exclude_ids
+            # Search is called WITHOUT exclude_ids (deduplication now happens
+            # at session.add_memory level, not at the search level)
             call_kwargs = mock_memory.search_memories.call_args.kwargs
-            assert "mem-1" in call_kwargs["exclude_ids"]
+            assert "exclude_ids" not in call_kwargs or call_kwargs.get("exclude_ids") is None
 
             # Update count should NOT be called again for same memory
+            # (session.add_memory returns added=False for duplicates)
             mock_memory.update_retrieval_count.assert_not_called()
 
     @pytest.mark.asyncio
