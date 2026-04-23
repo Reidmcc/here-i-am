@@ -2466,7 +2466,7 @@ DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"  # Google default
 DEFAULT_MINIMAX_MODEL = "MiniMax-M2.5"  # MiniMax default
 
 # Supported Anthropic models include:
-#   claude-opus-4-6, claude-sonnet-4-5-20250929
+#   claude-opus-4-7, claude-opus-4-6, claude-sonnet-4-5-20250929
 #   claude-opus-4-5-20251101, claude-sonnet-4-20250514
 
 # Supported OpenAI models include:
