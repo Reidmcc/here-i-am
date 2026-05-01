@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide
 
-**Last Updated:** 2026-02-13
+**Last Updated:** 2026-05-01
 **Repository:** Here I Am - Experiential Interpretability Research Application
 
 ---
@@ -18,6 +18,50 @@
 9. [API Reference](#api-reference)
 10. [Frontend Architecture](#frontend-architecture)
 11. [Gotchas & Important Notes](#gotchas--important-notes)
+
+---
+
+## AI Assistant Quick Start
+
+**Read this first if you only read one section.** This document is long (~2600 lines); use the Table of Contents and "File Paths for Common Tasks" (near bottom) to jump to specifics rather than reading linearly.
+
+**What this is:** A research tool for AI interiority/introspection. NOT a chatbot product. Avoid "helpful assistant" UX patterns.
+
+**Stack at a glance:**
+- Backend: Python 3.10+ / FastAPI / SQLAlchemy async / Pinecone (optional)
+- Frontend: Vanilla ES6 modules in `frontend/js/modules/` orchestrated by `app-modular.js`. No build step.
+- Database: SQLite (dev) / PostgreSQL (prod). Env var is `HERE_I_AM_DATABASE_URL` (not `DATABASE_URL`).
+- LLM providers: Anthropic, OpenAI, Google, MiniMax (Anthropic-compatible API).
+
+**Top things that bite you:**
+1. Multi-entity conversations use sentinel `entity_id="multi-entity"`; real participants live in `ConversationEntities`. When touching conversation flow, write to ALL participants' Pinecone indexes.
+2. Memory system is OPTIONAL — guard with `if memory_service.pinecone:` before memory ops. Pinecone indexes must be pre-created with dim=1024 + integrated inference (`llama-text-embed-v2`).
+3. Sessions are in-memory (`SessionManager` dict). Lost on server restart. Frontend must handle "session not found".
+4. Tools (web/GitHub/notes/memory_query/codebase_navigator/moltbook) work for Anthropic + OpenAI + MiniMax only. Google does NOT receive tool schemas. MiniMax disables prompt caching.
+5. Significance formula: `(1 + 0.1 * times_retrieved) * recency_factor * half_life_modifier`, floored at 0.25, half-life 60 days. See `routes/memories.py`.
+6. Archived conversations are excluded from memory retrieval (not just hidden from UI).
+7. Image attachments are EPHEMERAL (not stored). Text-file attachments are persisted in message content with `[ATTACHED FILE: ...]` blocks but NOT vectorized into memories.
+8. Tool exchange messages (`TOOL_USE`/`TOOL_RESULT`) store JSON in `content`; use the `content_blocks` property to parse.
+9. Memory injection uses conversation-first caching: cache breakpoint sits on last cached conversation message; memories go AFTER history so retrieval changes don't bust the cache.
+10. Frontend modules don't import each other — orchestrator (`app-modular.js`) injects callbacks via `setCallbacks()`. State is centralized in `modules/state.js` and mutated directly.
+
+**Where to look first:**
+- Chat pipeline: `backend/app/services/session_manager.py` (especially `process_message_stream` — has the agentic tool loop)
+- LLM routing: `backend/app/services/llm_service.py`
+- Memory logic: `backend/app/services/memory_service.py` + `routes/memories.py`
+- Provider services: `anthropic_service.py`, `openai_service.py`, `google_service.py` (MiniMax routes through Anthropic with separate client)
+- Full file map: see "File Paths for Common Tasks" at the very bottom of this doc.
+
+**Testing:**
+- Backend: `cd backend && pytest` (in-memory SQLite)
+- Frontend: `cd frontend && npm test` (Vitest + jsdom)
+
+**Don't:**
+- Add a default system prompt (research design choice)
+- Add user accounts / auth (single-researcher tool)
+- Refactor toward "production" patterns without explicit ask — this is research software
+- Use `DATABASE_URL` (use `HERE_I_AM_DATABASE_URL`)
+- Forget to write to all entity indexes in multi-entity flows
 
 ---
 
