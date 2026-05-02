@@ -76,33 +76,45 @@ async def _memory_query(query: str, num_results: int = 5) -> str:
     num_results = max(1, min(10, num_results))
     
     try:
-        # Search memories by pure semantic similarity (no significance reranking).
-        # Exclude current conversation—its content is already in context.
+        # Fetch more candidates than requested so archived-conversation filtering
+        # below does not silently shrink the result set.
         candidates = await memory_service.search_memories(
             query=query,
-            top_k=num_results,
+            top_k=num_results * 2,
             exclude_conversation_id=conversation_id,  # Exclude current conversation
             exclude_ids=None,  # Include all memories
             entity_id=entity_id,
             use_cache=True,
         )
-        
+
         if not candidates:
             return f"No memories found matching: \"{query}\""
-        
+
         # Get full content and update retrieval stats
         # We need our own DB session since tools don't receive one
         async with async_session_maker() as db:
+            # Exclude memories from archived conversations. Unarchiving a
+            # conversation removes its IDs from this set, so its memories
+            # become retrievable again automatically.
+            archived_ids = await memory_service.get_archived_conversation_ids(
+                db, entity_id=entity_id
+            )
+
             memories = []
             now = datetime.utcnow()
-            
+
             for candidate in candidates:
+                if len(memories) >= num_results:
+                    break
                 try:
+                    if candidate.get("conversation_id") in archived_ids:
+                        continue
+
                     # Get full memory content from SQL
                     mem_data = await memory_service.get_full_memory_content(
                         candidate["id"], db
                     )
-                    
+
                     if not mem_data:
                         logger.warning(f"Memory {candidate['id']} not found in SQL (orphaned)")
                         continue
