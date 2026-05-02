@@ -220,6 +220,18 @@ class SessionManager:
         other_count = len(messages) - human_count - assistant_count
         logger.info(f"[SESSION] Loading {len(messages)} messages from DB ({human_count} human, {assistant_count} assistant, {other_count} other)")
 
+        # Fetch archived source-conversation IDs so we can drop memories whose
+        # source conversation has been archived since they were first retrieved.
+        # Without this, ConversationMemoryLink would re-inject those memories
+        # into context on every session reload, bypassing the live archive
+        # filter. Unarchiving the source conversation removes its ID from this
+        # set, so its memories become retrievable again on the next reload.
+        archived_source_ids: Set[str] = set()
+        if memory_service.is_configured(entity_id=entity_id):
+            archived_source_ids = await memory_service.get_archived_conversation_ids(
+                db, entity_id=entity_id
+            )
+
         # For memory-in-context mode, we need to interleave messages with memories
         # based on retrieval timestamps. Get memories with timestamps first.
         memories_with_timestamps = []
@@ -231,13 +243,17 @@ class SessionManager:
         # Build a mapping of message_id -> memory data for quick lookup
         memory_data_by_id: Dict[str, Optional[Dict]] = {}
         retrieved_ids = set()
+        skipped_archived = 0
 
         if memories_with_timestamps:
             for mem_info in memories_with_timestamps:
                 mem_id = mem_info["message_id"]
-                retrieved_ids.add(mem_id)
                 mem_data = await memory_service.get_full_memory_content(mem_id, db)
                 if mem_data:
+                    if mem_data["conversation_id"] in archived_source_ids:
+                        skipped_archived += 1
+                        continue
+                    retrieved_ids.add(mem_id)
                     str_id = mem_data["id"]
                     memory_data_by_id[str_id] = {
                         "data": mem_data,
@@ -263,15 +279,18 @@ class SessionManager:
             memory_queue = list(sorted_memory_entries)  # List of (mem_id, {data, retrieved_at})
         else:
             # Non-memory-in-context mode: just load retrieved IDs for deduplication
-            retrieved_ids = await memory_service.get_retrieved_ids_for_conversation(
+            all_retrieved_ids = await memory_service.get_retrieved_ids_for_conversation(
                 conversation_id, db, entity_id=entity_id if is_multi_entity else None
             )
-            session.retrieved_ids = retrieved_ids
 
             # Load full memory content for already-retrieved memories
-            for mem_id in retrieved_ids:
+            for mem_id in all_retrieved_ids:
                 mem_data = await memory_service.get_full_memory_content(mem_id, db)
                 if mem_data:
+                    if mem_data["conversation_id"] in archived_source_ids:
+                        skipped_archived += 1
+                        continue
+                    retrieved_ids.add(mem_id)
                     str_id = mem_data["id"]
                     session.session_memories[str_id] = MemoryEntry(
                         id=str_id,
@@ -282,7 +301,13 @@ class SessionManager:
                         times_retrieved=mem_data["times_retrieved"],
                     )
                     session.in_context_ids.add(str_id)
+            session.retrieved_ids = retrieved_ids
             memory_queue = []
+
+        if skipped_archived:
+            logger.info(
+                f"[MEMORY] Skipped {skipped_archived} memories from archived source conversations during session load"
+            )
 
         # Build conversation context, interleaving memories at their original positions
         memory_insert_count = 0
