@@ -100,6 +100,7 @@ export const state = {
 
     // Config
     availableModels: [],
+    providers: [],  // Provider info incl. per-provider default_model (from /chat/config)
 };
 
 /**

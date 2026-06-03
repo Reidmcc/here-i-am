@@ -600,6 +600,21 @@ class App {
         try {
             const config = await api.getChatConfig();
             state.availableModels = config.available_models || [];
+            state.providers = config.providers || [];
+
+            // Apply backend-configured defaults. These are the backend's domain
+            // (config.py), so we honor them rather than relying on hardcoded
+            // frontend values. Runs before loadEntities(), so per-entity model
+            // selection can still override the model afterwards.
+            if (config.default_model) {
+                state.settings.model = config.default_model;
+            }
+            if (config.default_temperature !== undefined && config.default_temperature !== null) {
+                state.settings.temperature = config.default_temperature;
+            }
+            if (config.default_max_tokens) {
+                state.settings.maxTokens = config.default_max_tokens;
+            }
         } catch (error) {
             console.error('Failed to load chat config:', error);
         }
@@ -795,21 +810,61 @@ class App {
      */
     renderMessages(messages, latestAssistantId) {
         messages.forEach(msg => {
-            if (msg.role === 'tool_use' || msg.role === 'tool_result') {
-                // Skip tool messages for now (rendered inline with assistant)
+            // Render persisted tool exchanges (stored as JSON content blocks) so
+            // tool-call history survives a conversation reload.
+            if (msg.role === 'tool_use') {
+                try {
+                    const contentBlocks = JSON.parse(msg.content);
+                    for (const block of contentBlocks) {
+                        if (block.type === 'tool_use') {
+                            addToolMessage('start', block.name, {
+                                tool_id: block.id,
+                                input: block.input,
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.error('Failed to parse tool_use content:', e);
+                }
+                return;
+            }
+
+            if (msg.role === 'tool_result') {
+                try {
+                    const contentBlocks = JSON.parse(msg.content);
+                    for (const block of contentBlocks) {
+                        if (block.type === 'tool_result') {
+                            addToolMessage('result', '', {
+                                tool_id: block.tool_use_id,
+                                content: block.content,
+                                is_error: block.is_error || false,
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.error('Failed to parse tool_result content:', e);
+                }
                 return;
             }
 
             const options = {
                 messageId: msg.id,
                 speakerEntityId: msg.speaker_entity_id,
+                // Preserve the original message time instead of defaulting to now.
+                timestamp: msg.created_at,
+                showTimestamp: true,
             };
 
-            // For multi-entity, add speaker label
-            if (msg.speaker_entity_id && state.isMultiEntityMode) {
-                const entity = state.currentConversationEntities.find(e => e.index_name === msg.speaker_entity_id);
-                if (entity) {
-                    options.speakerLabel = entity.label;
+            // For multi-entity, add the speaker label. Prefer the backend-supplied
+            // label (authoritative); fall back to the in-memory entity list.
+            if (msg.speaker_entity_id) {
+                if (msg.speaker_label) {
+                    options.speakerLabel = msg.speaker_label;
+                } else {
+                    const entity = state.currentConversationEntities.find(e => e.index_name === msg.speaker_entity_id);
+                    if (entity) {
+                        options.speakerLabel = entity.label;
+                    }
                 }
             }
 

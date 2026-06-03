@@ -11,6 +11,7 @@ import {
     loadEntities,
     handleEntityChange,
     getEntityLabel,
+    updateModelSelectorForProvider,
 } from '../modules/entities.js';
 
 describe('Entities Module', () => {
@@ -161,6 +162,47 @@ describe('Entities Module', () => {
             state.isMultiEntityMode = true;
 
             expect(state.isMultiEntityMode).toBe(true);
+        });
+    });
+
+    describe('updateModelSelectorForProvider', () => {
+        beforeEach(() => {
+            mockElements.modelSelect = document.createElement('select');
+            setElements(mockElements);
+            state.availableModels = [
+                { id: 'claude-opus-4-8', name: 'Opus', provider: 'anthropic' },
+                { id: 'claude-sonnet-4-5-20250929', name: 'Sonnet', provider: 'anthropic' },
+            ];
+            state.providers = [
+                { id: 'anthropic', name: 'Anthropic', default_model: 'claude-sonnet-4-5-20250929' },
+            ];
+        });
+
+        it('falls back to the provider default model, not the first list item', () => {
+            state.settings.model = 'gpt-5.1'; // invalid for anthropic -> must fall back
+
+            updateModelSelectorForProvider('anthropic');
+
+            // Sonnet is the configured default even though Opus is first in the list.
+            expect(state.settings.model).toBe('claude-sonnet-4-5-20250929');
+            expect(mockElements.modelSelect.value).toBe('claude-sonnet-4-5-20250929');
+        });
+
+        it('keeps the current model when it is valid for the provider', () => {
+            state.settings.model = 'claude-opus-4-8';
+
+            updateModelSelectorForProvider('anthropic');
+
+            expect(state.settings.model).toBe('claude-opus-4-8');
+        });
+
+        it('falls back to first model when provider has no configured default', () => {
+            state.providers = [{ id: 'anthropic', name: 'Anthropic' }];
+            state.settings.model = 'gpt-5.1';
+
+            updateModelSelectorForProvider('anthropic');
+
+            expect(state.settings.model).toBe('claude-opus-4-8');
         });
     });
 });

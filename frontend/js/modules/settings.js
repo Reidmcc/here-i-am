@@ -156,8 +156,15 @@ export function updateTemperatureControlState() {
  * @returns {boolean}
  */
 export function modelSupportsVerbosity(modelId) {
-    // GPT-5.x models support the verbosity parameter
-    return modelId && modelId.startsWith('gpt-5');
+    if (!modelId) return false;
+    // Prefer the backend's per-model flag (it owns which models accept
+    // verbosity). Fall back to a prefix heuristic only if the model isn't in
+    // the available-models list yet.
+    const model = state.availableModels.find(m => m.id === modelId);
+    if (model && model.verbosity_supported !== undefined) {
+        return model.verbosity_supported === true;
+    }
+    return modelId.startsWith('gpt-5');
 }
 
 /**

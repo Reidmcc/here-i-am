@@ -248,8 +248,15 @@ export function updateModelSelectorForProvider(provider) {
     if (currentModelValid) {
         elements.modelSelect.value = state.settings.model;
     } else if (models.length > 0) {
-        state.settings.model = models[0].id;
-        elements.modelSelect.value = models[0].id;
+        // Prefer the backend's configured default for this provider (it owns
+        // that choice) rather than blindly taking the first model in the list,
+        // which would silently switch the entity to a different/pricier model.
+        const providerInfo = state.providers.find(p => p.id === provider);
+        const fallbackModel = (providerInfo && models.some(m => m.id === providerInfo.default_model))
+            ? providerInfo.default_model
+            : models[0].id;
+        state.settings.model = fallbackModel;
+        elements.modelSelect.value = fallbackModel;
     }
 }
 

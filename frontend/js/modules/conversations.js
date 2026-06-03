@@ -222,7 +222,7 @@ export async function createNewConversation(skipEntityModal = false) {
             conversationData = {
                 conversation_type: state.settings.conversationType,
                 system_prompt: systemPrompt,
-                llm_model: state.settings.model,
+                model: state.settings.model,
                 entity_id: state.selectedEntityId,
             };
         }
@@ -285,11 +285,19 @@ export async function loadConversation(id) {
         state.currentConversationId = id;
         resetMemoryState();
 
-        // Get conversation details and messages
-        const [conversation, messages] = await Promise.all([
+        // Get conversation details, messages, and the session's in-context
+        // memories. Session info is best-effort: a missing/unbuilt session
+        // should not block loading the conversation.
+        const [conversation, messages, sessionInfo] = await Promise.all([
             api.getConversation(id),
-            api.getConversationMessages(id)
+            api.getConversationMessages(id),
+            api.getSessionInfo(id).catch(() => null),
         ]);
+
+        // Repopulate the "memories retrieved in this session" panel so it
+        // reflects the loaded conversation instead of staying empty until the
+        // next message is sent.
+        state.retrievedMemories = sessionInfo?.memories || [];
 
         // Update multi-entity state
         if (conversation.conversation_type === 'multi_entity' && conversation.entities) {

@@ -263,6 +263,17 @@ describe('Settings Module', () => {
             expect(modelSupportsVerbosity(null)).toBeFalsy();
             expect(modelSupportsVerbosity(undefined)).toBeFalsy();
         });
+
+        it('should honor the backend verbosity_supported flag over the prefix heuristic', () => {
+            state.availableModels = [
+                { id: 'gpt-5.1', name: 'GPT-5.1', verbosity_supported: true },
+                { id: 'gpt-5-mini', name: 'GPT-5 Mini', verbosity_supported: false },
+            ];
+            // gpt-5-mini matches the "gpt-5" prefix but the backend does not
+            // accept verbosity for it — the flag must win.
+            expect(modelSupportsVerbosity('gpt-5-mini')).toBe(false);
+            expect(modelSupportsVerbosity('gpt-5.1')).toBe(true);
+        });
     });
 
     describe('modelSupportsTemperature', () => {
