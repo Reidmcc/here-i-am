@@ -1146,6 +1146,11 @@ class SessionManager:
                         entity_labels=session.entity_labels,
                         responding_entity_label=session.responding_entity_label,
                         user_display_name=session.user_display_name,
+                        # Keep attachments on the current message so the file/image
+                        # content survives across tool-use iterations. Without this,
+                        # any tool call drops the attachment from the final answer's
+                        # context and the model responds as if nothing was attached.
+                        attachments=attachments,
                         provider_hint=session.provider_hint,
                     )
 
