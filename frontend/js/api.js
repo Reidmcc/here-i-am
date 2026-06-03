@@ -61,6 +61,15 @@ class ApiClient {
         return this.request(`/entities/${entityId}/status`);
     }
 
+    // Persist an entity's default system prompt (backend is the source of
+    // truth). Pass null/empty to clear it.
+    async updateEntitySystemPrompt(entityId, systemPrompt) {
+        return this.request(`/entities/${entityId}/system-prompt`, {
+            method: 'PUT',
+            body: { system_prompt: systemPrompt },
+        });
+    }
+
     // Conversations
     async listConversations(limit = 50, offset = 0, entityId = null) {
         let url = `/conversations/?limit=${limit}&offset=${offset}`;

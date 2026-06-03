@@ -3,7 +3,7 @@
  * Handles settings modal, configuration presets, and settings application
  */
 
-import { state, saveEntitySystemPromptsToStorage, saveEntityModelsToStorage, saveSelectedVoiceToStorage, clearAudioCache, saveResearcherName } from './state.js';
+import { state, saveEntityModelsToStorage, saveSelectedVoiceToStorage, clearAudioCache, saveResearcherName } from './state.js';
 import { showToast } from './utils.js';
 import { showModal, hideModal } from './modals.js';
 import { setTheme } from './theme.js';
@@ -40,7 +40,7 @@ export function setCallbacks(cbs) {
 /**
  * Apply settings from the settings modal
  */
-export function applySettings() {
+export async function applySettings() {
     state.settings.model = elements.modelSelect.value;
     state.settings.temperature = parseFloat(elements.temperatureInput.value);
     state.settings.maxTokens = parseInt(elements.maxTokensInput.value);
@@ -52,14 +52,26 @@ export function applySettings() {
     state.settings.researcherName = elements.researcherNameInput.value.trim() || '';
     saveResearcherName(state.settings.researcherName);
 
-    // Save system prompt and model per-entity (for single-entity mode)
+    // Persist the system prompt per-entity on the backend (the source of
+    // truth) so it survives across sessions and browsers. The model stays a
+    // client-side preference in localStorage.
     if (state.selectedEntityId && state.selectedEntityId !== 'multi-entity') {
-        state.entitySystemPrompts[state.selectedEntityId] = state.settings.systemPrompt;
         state.entityModels[state.selectedEntityId] = state.settings.model;
+
+        const entityId = state.selectedEntityId;
+        const newPrompt = state.settings.systemPrompt;
+        if (state.entitySystemPrompts[entityId] !== newPrompt) {
+            state.entitySystemPrompts[entityId] = newPrompt;
+            try {
+                await api.updateEntitySystemPrompt(entityId, newPrompt);
+            } catch (error) {
+                console.error('Failed to save entity system prompt:', error);
+                showToast('Failed to save system prompt', 'error');
+            }
+        }
     }
 
-    // Persist entity system prompts and models to localStorage
-    saveEntitySystemPromptsToStorage();
+    // Persist per-entity model selection to localStorage
     saveEntityModelsToStorage();
 
     // Apply theme

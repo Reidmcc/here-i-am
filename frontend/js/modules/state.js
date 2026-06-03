@@ -139,36 +139,14 @@ export function clearAudioCache() {
     state.audioCache.clear();
 }
 
-/**
- * Load entity system prompts from localStorage
- */
-export function loadEntitySystemPromptsFromStorage() {
-    try {
-        const saved = localStorage.getItem('entity_system_prompts');
-        if (saved) {
-            state.entitySystemPrompts = JSON.parse(saved);
-            // If we have a selected entity, apply its system prompt
-            if (state.selectedEntityId && state.selectedEntityId !== 'multi-entity') {
-                if (state.entitySystemPrompts[state.selectedEntityId] !== undefined) {
-                    state.settings.systemPrompt = state.entitySystemPrompts[state.selectedEntityId];
-                }
-            }
-        }
-    } catch (e) {
-        console.warn('Failed to load entity system prompts:', e);
-    }
-}
-
-/**
- * Save entity system prompts to localStorage
- */
-export function saveEntitySystemPromptsToStorage() {
-    try {
-        localStorage.setItem('entity_system_prompts', JSON.stringify(state.entitySystemPrompts));
-    } catch (e) {
-        console.warn('Failed to save entity system prompts:', e);
-    }
-}
+// NOTE: Per-entity system prompts are NOT stored client-side. The backend
+// (entity_settings table, /api/entities/{id}/system-prompt) is the source of
+// truth; the cache in state.entitySystemPrompts is populated from the entities
+// API response on load. See modules/entities.js and modules/settings.js.
+//
+// LEGACY_ENTITY_PROMPTS_KEY is only read once at startup to migrate any
+// prompts a previous version saved in localStorage up to the backend.
+export const LEGACY_ENTITY_PROMPTS_KEY = 'entity_system_prompts';
 
 /**
  * Load entity models from localStorage

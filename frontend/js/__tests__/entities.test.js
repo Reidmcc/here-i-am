@@ -106,6 +106,36 @@ describe('Entities Module', () => {
 
             expect(mockCallbacks.onEntityLoaded).toHaveBeenCalled();
         });
+
+        it('should populate entitySystemPrompts cache from the backend response', async () => {
+            window.api.listEntities = vi.fn(() => Promise.resolve({
+                entities: [
+                    { index_name: 'entity-1', label: 'Claude', system_prompt: 'Be Claude' },
+                    { index_name: 'entity-2', label: 'GPT', system_prompt: null },
+                ],
+                default_entity: 'entity-1',
+            }));
+
+            await loadEntities();
+
+            expect(state.entitySystemPrompts['entity-1']).toBe('Be Claude');
+            expect(state.entitySystemPrompts['entity-2']).toBeNull();
+        });
+
+        it('should apply the selected entity\'s persisted prompt to settings on load', async () => {
+            state.selectedEntityId = 'entity-1';
+            state.settings.systemPrompt = 'stale';
+            window.api.listEntities = vi.fn(() => Promise.resolve({
+                entities: [
+                    { index_name: 'entity-1', label: 'Claude', system_prompt: 'Be Claude' },
+                ],
+                default_entity: 'entity-1',
+            }));
+
+            await loadEntities();
+
+            expect(state.settings.systemPrompt).toBe('Be Claude');
+        });
     });
 
     describe('getEntityLabel', () => {

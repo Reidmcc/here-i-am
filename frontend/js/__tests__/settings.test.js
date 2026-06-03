@@ -199,6 +199,39 @@ describe('Settings Module', () => {
 
             expect(state.settings.systemPrompt).toBeNull();
         });
+
+        it('should persist the system prompt to the backend for the selected entity', async () => {
+            state.selectedEntityId = 'claude-test';
+            state.entitySystemPrompts = {};
+            window.api.updateEntitySystemPrompt = vi.fn(() => Promise.resolve({ system_prompt: 'New prompt' }));
+            mockElements.systemPromptInput.value = 'New prompt';
+
+            await applySettings();
+
+            expect(window.api.updateEntitySystemPrompt).toHaveBeenCalledWith('claude-test', 'New prompt');
+            expect(state.entitySystemPrompts['claude-test']).toBe('New prompt');
+        });
+
+        it('should not call the backend when the prompt is unchanged', async () => {
+            state.selectedEntityId = 'claude-test';
+            state.entitySystemPrompts = { 'claude-test': 'Same prompt' };
+            window.api.updateEntitySystemPrompt = vi.fn(() => Promise.resolve({}));
+            mockElements.systemPromptInput.value = 'Same prompt';
+
+            await applySettings();
+
+            expect(window.api.updateEntitySystemPrompt).not.toHaveBeenCalled();
+        });
+
+        it('should not persist a system prompt in multi-entity mode', async () => {
+            state.selectedEntityId = 'multi-entity';
+            window.api.updateEntitySystemPrompt = vi.fn(() => Promise.resolve({}));
+            mockElements.systemPromptInput.value = 'Whatever';
+
+            await applySettings();
+
+            expect(window.api.updateEntitySystemPrompt).not.toHaveBeenCalled();
+        });
     });
 
     describe('loadPreset', () => {

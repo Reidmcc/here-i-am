@@ -9,8 +9,6 @@ import {
     resetMemoryState,
     resetAttachments,
     clearAudioCache,
-    loadEntitySystemPromptsFromStorage,
-    saveEntitySystemPromptsToStorage,
     loadSelectedVoiceFromStorage,
     saveSelectedVoiceToStorage,
     loadResearcherName,
@@ -168,66 +166,10 @@ describe('State Module', () => {
         });
     });
 
-    describe('loadEntitySystemPromptsFromStorage', () => {
-        it('should load saved prompts from localStorage', () => {
-            const savedPrompts = { 'entity-1': 'prompt 1', 'entity-2': 'prompt 2' };
-            localStorage.setItem('entity_system_prompts', JSON.stringify(savedPrompts));
-
-            loadEntitySystemPromptsFromStorage();
-
-            expect(state.entitySystemPrompts).toEqual(savedPrompts);
-        });
-
-        it('should apply prompt for selected entity', () => {
-            const savedPrompts = { 'entity-1': 'entity 1 prompt' };
-            localStorage.setItem('entity_system_prompts', JSON.stringify(savedPrompts));
-            state.selectedEntityId = 'entity-1';
-
-            loadEntitySystemPromptsFromStorage();
-
-            expect(state.settings.systemPrompt).toBe('entity 1 prompt');
-        });
-
-        it('should not apply prompt for multi-entity mode', () => {
-            const savedPrompts = { 'multi-entity': 'multi prompt' };
-            localStorage.setItem('entity_system_prompts', JSON.stringify(savedPrompts));
-            state.selectedEntityId = 'multi-entity';
-            state.settings.systemPrompt = 'original';
-
-            loadEntitySystemPromptsFromStorage();
-
-            expect(state.settings.systemPrompt).toBe('original');
-        });
-
-        it('should handle missing localStorage gracefully', () => {
-            expect(() => loadEntitySystemPromptsFromStorage()).not.toThrow();
-        });
-
-        it('should handle invalid JSON gracefully', () => {
-            localStorage.setItem('entity_system_prompts', 'invalid json');
-            expect(() => loadEntitySystemPromptsFromStorage()).not.toThrow();
-        });
-    });
-
-    describe('saveEntitySystemPromptsToStorage', () => {
-        it('should save prompts to localStorage', () => {
-            state.entitySystemPrompts = { 'entity-1': 'prompt 1' };
-
-            saveEntitySystemPromptsToStorage();
-
-            expect(localStorage.setItem).toHaveBeenCalledWith(
-                'entity_system_prompts',
-                JSON.stringify({ 'entity-1': 'prompt 1' })
-            );
-        });
-
-        it('should handle empty prompts', () => {
-            state.entitySystemPrompts = {};
-
-            expect(() => saveEntitySystemPromptsToStorage()).not.toThrow();
-            expect(localStorage.setItem).toHaveBeenCalled();
-        });
-    });
+    // Per-entity system prompts are no longer persisted in localStorage. The
+    // backend (entity_settings table / /api/entities/{id}/system-prompt) is the
+    // source of truth, and state.entitySystemPrompts is populated from the
+    // entities API response. See entities.test.js / settings.test.js.
 
     describe('loadSelectedVoiceFromStorage', () => {
         it('should load saved voice ID from localStorage', () => {

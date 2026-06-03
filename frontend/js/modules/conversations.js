@@ -3,7 +3,7 @@
  * Handles conversation listing, creation, loading, and management
  */
 
-import { state, resetMemoryState, saveEntitySystemPromptsToStorage } from './state.js';
+import { state, resetMemoryState } from './state.js';
 import { showToast, escapeHtml, escapeForInlineHandler } from './utils.js';
 import { showModal, hideModal, closeAllDropdowns } from './modals.js';
 import { getEntityLabel, updateModelSelectorMultiEntityState } from './entities.js';

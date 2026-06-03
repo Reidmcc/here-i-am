@@ -3,7 +3,7 @@
  * Handles entity loading, selection, and multi-entity conversations
  */
 
-import { state, saveEntitySystemPromptsToStorage } from './state.js';
+import { state } from './state.js';
 import { showToast, escapeHtml } from './utils.js';
 import { showModal, hideModal, closeAllDropdowns } from './modals.js';
 
@@ -52,6 +52,14 @@ export async function loadEntities() {
         console.log('[Entities] Parsed entities:', entities);
         state.entities = entities;
 
+        // The backend is the source of truth for per-entity system prompts.
+        // Rebuild the in-memory cache from the response so prompts survive
+        // across sessions/browsers (no client-side persistence).
+        state.entitySystemPrompts = {};
+        entities.forEach(entity => {
+            state.entitySystemPrompts[entity.index_name] = entity.system_prompt ?? null;
+        });
+
         // Update entity selector
         console.log('[Entities] entitySelect element:', elements.entitySelect);
         if (elements.entitySelect) {
@@ -88,6 +96,13 @@ export async function loadEntities() {
         // Restore entity selection in the dropdown
         if (state.selectedEntityId && elements.entitySelect) {
             elements.entitySelect.value = state.selectedEntityId;
+        }
+
+        // Apply the selected entity's persisted system prompt to the active
+        // settings. Setting the dropdown's .value above does not fire a change
+        // event, so handleEntityChange won't run on initial load — do it here.
+        if (state.selectedEntityId && state.selectedEntityId !== 'multi-entity') {
+            state.settings.systemPrompt = state.entitySystemPrompts[state.selectedEntityId] ?? null;
         }
 
         updateEntityDescription();
