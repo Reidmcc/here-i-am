@@ -65,6 +65,44 @@ export function getStreamAbortController() {
 }
 
 /**
+ * Enter the "streaming" UI state: mark loading, show the Stop button, hide
+ * Send, and create a fresh abort controller so the stream can be cancelled.
+ * Used by every streaming entry point (send, multi-entity send, regenerate)
+ * so the Stop button works consistently in all of them.
+ * @returns {AbortController}
+ */
+function beginStreaming() {
+    state.isLoading = true;
+    streamAbortController = new AbortController();
+    if (elements.sendBtn) {
+        elements.sendBtn.disabled = true;
+        elements.sendBtn.style.display = 'none';
+    }
+    if (elements.stopBtn) {
+        elements.stopBtn.style.display = 'flex';
+    }
+    return streamAbortController;
+}
+
+/**
+ * Leave the "streaming" UI state: clear loading, hide Stop, restore Send, and
+ * drop the abort controller.
+ */
+function endStreaming() {
+    state.isLoading = false;
+    streamAbortController = null;
+    if (elements.stopBtn) {
+        elements.stopBtn.style.display = 'none';
+    }
+    if (elements.sendBtn) {
+        elements.sendBtn.style.display = 'flex';
+    }
+    if (callbacks.handleInputChange) {
+        callbacks.handleInputChange();
+    }
+}
+
+/**
  * Send a message (main entry point)
  * @param {boolean} skipEntityModal - Skip entity selection modal
  */
@@ -117,16 +155,10 @@ export async function sendMessage(skipEntityModal = false) {
     }
 
     // Standard single-entity flow
-    state.isLoading = true;
-    elements.sendBtn.disabled = true;
-    elements.sendBtn.style.display = 'none';
-    elements.stopBtn.style.display = 'flex';
+    beginStreaming();
     elements.messageInput.value = '';
     elements.messageInput.style.height = 'auto';
     clearAttachments();
-
-    // Create abort controller for stop functionality
-    streamAbortController = new AbortController();
 
     // Add user message
     const displayContent = buildDisplayContentWithAttachments(content, attachments);
@@ -234,13 +266,7 @@ export async function sendMessage(skipEntityModal = false) {
             console.error('Failed to send message:', error);
         }
     } finally {
-        state.isLoading = false;
-        streamAbortController = null;
-        elements.stopBtn.style.display = 'none';
-        elements.sendBtn.style.display = 'flex';
-        if (callbacks.handleInputChange) {
-            callbacks.handleInputChange();
-        }
+        endStreaming();
     }
 }
 
@@ -265,8 +291,7 @@ export async function sendMessageWithResponder() {
     state.pendingResponderId = null;
     state.pendingUserMessageEl = null;
 
-    state.isLoading = true;
-    elements.sendBtn.disabled = true;
+    const abortController = beginStreaming();
 
     // Get the responding entity's label
     const responderEntity = state.currentConversationEntities.find(e => e.index_name === responderId);
@@ -308,6 +333,13 @@ export async function sendMessageWithResponder() {
                 },
                 onStart: (data) => {
                     // Stream has started
+                },
+                onAborted: () => {
+                    streamingMessage.finalize({
+                        showTimestamp: true,
+                        speakerLabel: responderLabel,
+                        aborted: true,
+                    });
                 },
                 onToken: (data) => {
                     if (data.content) {
@@ -369,21 +401,22 @@ export async function sendMessageWithResponder() {
                     showToast('Failed to send message', 'error');
                     console.error('Streaming error:', data.error);
                 },
-            }
+            },
+            abortController.signal
         );
 
         scrollToBottom();
 
     } catch (error) {
+        if (error.name === 'AbortError') {
+            return;
+        }
         streamingMessage.element.remove();
         addMessage('assistant', `Error: ${error.message}`, { isError: true });
         showToast('Failed to send message', 'error');
         console.error('Failed to send message:', error);
     } finally {
-        state.isLoading = false;
-        if (callbacks.handleInputChange) {
-            callbacks.handleInputChange();
-        }
+        endStreaming();
     }
 }
 
@@ -393,14 +426,8 @@ export async function sendMessageWithResponder() {
 export function stopGeneration() {
     if (streamAbortController) {
         streamAbortController.abort();
-        streamAbortController = null;
     }
-    elements.stopBtn.style.display = 'none';
-    elements.sendBtn.style.display = 'flex';
-    state.isLoading = false;
-    if (callbacks.handleInputChange) {
-        callbacks.handleInputChange();
-    }
+    endStreaming();
 }
 
 /**
@@ -451,8 +478,7 @@ export async function regenerateMessageWithEntity() {
  * @param {string|null} respondingEntityId - Entity to generate response (multi-entity only)
  */
 export async function performRegeneration(messageId, respondingEntityId = null) {
-    state.isLoading = true;
-    elements.sendBtn.disabled = true;
+    const abortController = beginStreaming();
 
     // Find the assistant message element to replace
     const messageEl = elements.messages.querySelector(`[data-message-id="${messageId}"]`);
@@ -507,6 +533,9 @@ export async function performRegeneration(messageId, respondingEntityId = null) 
                 onStart: (data) => {
                     // Stream has started
                 },
+                onAborted: () => {
+                    streamingMessage.finalize({ showTimestamp: true, aborted: true });
+                },
                 onToken: (data) => {
                     if (data.content) {
                         streamingMessage.updateContent(data.content);
@@ -552,21 +581,22 @@ export async function performRegeneration(messageId, respondingEntityId = null) 
                     showToast('Failed to regenerate response', 'error');
                     console.error('Regeneration error:', data.error);
                 },
-            }
+            },
+            abortController.signal
         );
 
         scrollToBottom();
 
     } catch (error) {
+        if (error.name === 'AbortError') {
+            return;
+        }
         streamingMessage.element.remove();
         addMessage('assistant', `Error: ${error.message}`, { isError: true });
         showToast('Failed to regenerate response', 'error');
         console.error('Failed to regenerate:', error);
     } finally {
-        state.isLoading = false;
-        if (callbacks.handleInputChange) {
-            callbacks.handleInputChange();
-        }
+        endStreaming();
     }
 }
 

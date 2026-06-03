@@ -101,6 +101,8 @@ export const state = {
     // Config
     availableModels: [],
     providers: [],  // Provider info incl. per-provider default_model (from /chat/config)
+    presets: [],    // System-prompt presets (from /config/presets) — backend is the source of truth
+    attachmentConfig: null,  // Attachment limits/flags from /chat/config (null until loaded)
 };
 
 /**

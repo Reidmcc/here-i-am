@@ -118,6 +118,7 @@ import {
     setCallbacks as setSettingsCallbacks,
     applySettings,
     loadPreset,
+    loadPresets,
     modelSupportsTemperature,
     updateTemperatureControlState,
     updateVerbosityControlState,
@@ -580,6 +581,9 @@ class App {
         // Load chat config (available models)
         await this.loadChatConfig();
 
+        // Load system-prompt presets from the backend (source of truth)
+        await loadPresets();
+
         // Load entities and conversations
         await loadEntities();
 
@@ -601,6 +605,7 @@ class App {
             const config = await api.getChatConfig();
             state.availableModels = config.available_models || [];
             state.providers = config.providers || [];
+            state.attachmentConfig = config.attachments || null;
 
             // Apply backend-configured defaults. These are the backend's domain
             // (config.py), so we honor them rather than relying on hardcoded

@@ -9,6 +9,8 @@ import {
     setElements,
     setCallbacks,
     sendMessage,
+    sendMessageWithResponder,
+    performRegeneration,
     stopGeneration,
     getStreamAbortController,
 } from '../modules/chat.js';
@@ -232,6 +234,80 @@ describe('Chat Module', () => {
             await sendMessage();
 
             expect(mockElements.messageInput.value).toBe('');
+        });
+    });
+
+    describe('stop button across streaming paths', () => {
+        it('shows the stop button and wires an abort signal in multi-entity send', async () => {
+            state.isMultiEntityMode = true;
+            state.currentConversationEntities = [
+                { index_name: 'entity-1', label: 'Claude' },
+            ];
+            state.pendingResponderId = 'entity-1';
+            state.pendingMessageContent = 'Hello';
+            state.pendingMessageAttachments = null;
+
+            let stopBtnDisplay = '';
+            let receivedSignal = null;
+            window.api.sendMessageStream = vi.fn((data, handlers, signal) => {
+                stopBtnDisplay = mockElements.stopBtn.style.display;
+                receivedSignal = signal;
+                handlers.onDone({ usage: {} });
+                handlers.onStored({});
+                return Promise.resolve();
+            });
+
+            await sendMessageWithResponder();
+
+            expect(stopBtnDisplay).toBe('flex');
+            expect(receivedSignal).toBeInstanceOf(AbortSignal);
+            // Buttons reset afterwards.
+            expect(mockElements.stopBtn.style.display).toBe('none');
+            expect(mockElements.sendBtn.style.display).toBe('flex');
+            expect(state.isLoading).toBe(false);
+        });
+
+        it('shows the stop button and wires an abort signal in regenerate', async () => {
+            let stopBtnDisplay = '';
+            let receivedSignal = null;
+            window.api.regenerateStream = vi.fn((data, handlers, signal) => {
+                stopBtnDisplay = mockElements.stopBtn.style.display;
+                receivedSignal = signal;
+                handlers.onDone({ usage: {} });
+                handlers.onStored({ assistant_message_id: 'a1' });
+                return Promise.resolve();
+            });
+
+            await performRegeneration('msg-1');
+
+            expect(stopBtnDisplay).toBe('flex');
+            expect(receivedSignal).toBeInstanceOf(AbortSignal);
+            expect(mockElements.stopBtn.style.display).toBe('none');
+            expect(mockElements.sendBtn.style.display).toBe('flex');
+            expect(state.isLoading).toBe(false);
+        });
+
+        it('stopGeneration aborts the active multi-entity stream', async () => {
+            state.isMultiEntityMode = true;
+            state.currentConversationEntities = [
+                { index_name: 'entity-1', label: 'Claude' },
+            ];
+            state.pendingResponderId = 'entity-1';
+            state.pendingMessageContent = 'Hello';
+
+            let abortedSignal = null;
+            window.api.sendMessageStream = vi.fn((data, handlers, signal) => {
+                // Simulate an in-flight stream: stop before resolving.
+                stopGeneration();
+                abortedSignal = signal;
+                if (signal.aborted && handlers.onAborted) handlers.onAborted();
+                return Promise.resolve();
+            });
+
+            await sendMessageWithResponder();
+
+            expect(abortedSignal.aborted).toBe(true);
+            expect(getStreamAbortController()).toBeNull();
         });
     });
 

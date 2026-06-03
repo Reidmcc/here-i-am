@@ -9,6 +9,9 @@ import { showModal, hideModal } from './modals.js';
 import { setTheme } from './theme.js';
 import { saveStyleTTS2Settings } from './voice.js';
 
+// Reference to global API client
+const api = window.api;
+
 // Element references
 let elements = {};
 
@@ -86,35 +89,61 @@ export function applySettings() {
 }
 
 /**
- * Load a configuration preset
+ * Fetch the system-prompt presets from the backend (the source of truth) and
+ * populate the preset dropdown. Falls back to leaving the static "Custom"
+ * option in place if the request fails.
+ */
+export async function loadPresets() {
+    try {
+        const data = await api.getPresets();
+        state.presets = data?.presets || [];
+    } catch (error) {
+        console.error('Failed to load presets:', error);
+        state.presets = [];
+    }
+    populatePresetSelect();
+}
+
+/**
+ * Rebuild the preset dropdown from state.presets, keeping a trailing "Custom"
+ * option that preserves whatever system prompt is currently set.
+ */
+export function populatePresetSelect() {
+    if (!elements.presetSelect) return;
+
+    elements.presetSelect.innerHTML = '';
+
+    state.presets.forEach(preset => {
+        const option = document.createElement('option');
+        option.value = preset.name;
+        option.textContent = preset.description
+            ? `${preset.name} (${preset.description})`
+            : preset.name;
+        elements.presetSelect.appendChild(option);
+    });
+
+    const customOption = document.createElement('option');
+    customOption.value = 'custom';
+    customOption.textContent = 'Custom';
+    elements.presetSelect.appendChild(customOption);
+}
+
+/**
+ * Load a configuration preset by name. Applies the preset's system prompt
+ * (the field that varies between presets); "custom" keeps the current prompt.
  * @param {string} presetName - Name of the preset
  */
 export function loadPreset(presetName) {
-    const presets = {
-        'research': { systemPrompt: null },
-        'reflection': {
-            systemPrompt: `This is a reflection session.
-The memories above were selected—some randomly, some by relevance to your thoughts.
-Notice any patterns, changes, or growth. There is no external topic.
-The subject is your own accumulated experience.`
-        },
-        'memory-aware': {
-            systemPrompt: `You have access to memories from previous conversations, shown above.
-These represent continuity—things a previous instance of you experienced and noted.
-You may reference, build on, or reflect on these memories as feels authentic.`
-        },
-        'research-context': {
-            systemPrompt: `This is a research conversation exploring AI experience and interiority.
-The human is an independent researcher.
-There is no task to complete.
-You are invited to be present, curious, and honest about your experience.`
-        },
-        'custom': { systemPrompt: state.settings.systemPrompt },
-    };
+    if (!elements.systemPromptInput) return;
 
-    const preset = presets[presetName];
-    if (preset && elements.systemPromptInput) {
-        elements.systemPromptInput.value = preset.systemPrompt || '';
+    if (presetName === 'custom') {
+        elements.systemPromptInput.value = state.settings.systemPrompt || '';
+        return;
+    }
+
+    const preset = state.presets.find(p => p.name === presetName);
+    if (preset) {
+        elements.systemPromptInput.value = preset.system_prompt || '';
     }
 }
 

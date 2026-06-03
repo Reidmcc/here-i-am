@@ -83,13 +83,6 @@ export async function loadEntities() {
                 state.selectedEntityId = entities[0].index_name;
             }
 
-            // Apply entity's default system prompt if any
-            if (state.selectedEntityId) {
-                const defaultEntity = entities.find(e => e.index_name === state.selectedEntityId);
-                if (defaultEntity && defaultEntity.default_system_prompt) {
-                    state.settings.systemPrompt = defaultEntity.default_system_prompt;
-                }
-            }
         }
 
         // Restore entity selection in the dropdown
@@ -202,11 +195,10 @@ export function handleEntityChange(entityId) {
             elements.modelSelect.value = state.settings.model;
         }
 
-        // Restore entity-specific system prompt
+        // Restore entity-specific system prompt. There is no backend
+        // "default system prompt" concept, so absence means no prompt.
         if (state.entitySystemPrompts[entityId] !== undefined) {
             state.settings.systemPrompt = state.entitySystemPrompts[entityId];
-        } else if (entity.default_system_prompt) {
-            state.settings.systemPrompt = entity.default_system_prompt;
         } else {
             state.settings.systemPrompt = null;
         }
