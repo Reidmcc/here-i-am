@@ -884,6 +884,10 @@ async def regenerate_response(data: RegenerateRequest):
                         if msg.get("role") == "assistant":
                             # Check if content matches (may have speaker label prefix)
                             ctx_content = msg.get("content", "")
+                            # Tool-exchange messages store content as a list of blocks;
+                            # skip those since they can't match a plain-text assistant message.
+                            if not isinstance(ctx_content, str):
+                                continue
                             if assistant_content and (ctx_content == assistant_content or ctx_content.endswith(assistant_content)):
                                 truncate_index = i
                                 break
@@ -894,6 +898,10 @@ async def regenerate_response(data: RegenerateRequest):
                         # The context uses "user" role, but we stored "human" in DB
                         if msg.get("role") == "user":
                             ctx_content = msg.get("content", "")
+                            # Tool-exchange messages store content as a list of blocks;
+                            # skip those since they can't match a plain-text human message.
+                            if not isinstance(ctx_content, str):
+                                continue
                             # Check for exact match or labeled match (multi-entity format)
                             if ctx_content == user_message_content:
                                 truncate_index = i
