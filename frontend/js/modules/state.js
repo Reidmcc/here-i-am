@@ -41,7 +41,7 @@ export const state = {
     settings: {
         model: 'claude-sonnet-4-5-20250929',
         temperature: 1.0,
-        maxTokens: 4096,
+        maxTokens: 64000,
         systemPrompt: null,
         conversationType: 'normal',
         verbosity: 'medium',

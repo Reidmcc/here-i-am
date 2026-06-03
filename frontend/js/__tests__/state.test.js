@@ -45,7 +45,7 @@ describe('State Module', () => {
             expect(state.settings).toBeDefined();
             expect(state.settings.model).toBe('claude-sonnet-4-5-20250929');
             expect(state.settings.temperature).toBe(1.0);
-            expect(state.settings.maxTokens).toBe(4096);
+            expect(state.settings.maxTokens).toBe(64000);
             expect(state.settings.systemPrompt).toBe(null);
             expect(state.settings.conversationType).toBe('normal');
         });
