@@ -4,7 +4,7 @@
  */
 
 // Import modules
-import { state, resetMemoryState, loadEntitySystemPromptsFromStorage, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName } from './modules/state.js';
+import { state, resetMemoryState, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName, LEGACY_ENTITY_PROMPTS_KEY } from './modules/state.js';
 import { showToast, showLoading, setToastContainer, escapeHtml, renderMarkdown, truncateText, stripMarkdown } from './modules/utils.js';
 import { loadTheme, getCurrentTheme, setTheme } from './modules/theme.js';
 import { setElements as setModalElements, showModal, hideModal, closeActiveModal, isModalOpen, closeAllDropdowns } from './modules/modals.js';
@@ -569,8 +569,7 @@ class App {
             this.elements.themeSelect.value = getCurrentTheme();
         }
 
-        // Load saved state from localStorage
-        loadEntitySystemPromptsFromStorage();
+        // Load saved state from localStorage (system prompts are backend-owned)
         loadEntityModelsFromStorage();
         loadSelectedVoiceFromStorage();
         const savedResearcherName = loadResearcherName();
@@ -587,6 +586,10 @@ class App {
         // Load entities and conversations
         await loadEntities();
 
+        // One-time migration: lift any prompts a previous version stored in
+        // localStorage up to the backend (now the source of truth).
+        await this.migrateLegacyEntityPrompts();
+
         // Check TTS status
         await checkTTSStatus();
 
@@ -595,6 +598,51 @@ class App {
 
         // Load GitHub repos info
         await this.loadGitHubReposInfo();
+    }
+
+    /**
+     * One-time migration of per-entity system prompts from localStorage to the
+     * backend. Earlier versions persisted prompts client-side, which lost them
+     * across browsers/sessions. We push any locally-saved prompt the backend
+     * doesn't already have, then clear the localStorage key. Runs after
+     * loadEntities() so state.entitySystemPrompts reflects the backend.
+     */
+    async migrateLegacyEntityPrompts() {
+        let legacy;
+        try {
+            const raw = localStorage.getItem(LEGACY_ENTITY_PROMPTS_KEY);
+            if (!raw) return;
+            legacy = JSON.parse(raw);
+        } catch (e) {
+            localStorage.removeItem(LEGACY_ENTITY_PROMPTS_KEY);
+            return;
+        }
+        if (!legacy || typeof legacy !== 'object') {
+            localStorage.removeItem(LEGACY_ENTITY_PROMPTS_KEY);
+            return;
+        }
+
+        for (const [entityId, prompt] of Object.entries(legacy)) {
+            const isKnown = state.entities.some(e => e.index_name === entityId);
+            const backendHasPrompt = state.entitySystemPrompts[entityId] != null;
+            if (isKnown && !backendHasPrompt && prompt) {
+                try {
+                    await api.updateEntitySystemPrompt(entityId, prompt);
+                    state.entitySystemPrompts[entityId] = prompt;
+                } catch (e) {
+                    console.error('Failed to migrate entity system prompt:', e);
+                    // Leave the localStorage key intact to retry on next load.
+                    return;
+                }
+            }
+        }
+
+        localStorage.removeItem(LEGACY_ENTITY_PROMPTS_KEY);
+
+        // Re-apply the active entity's prompt in case it was just migrated.
+        if (state.selectedEntityId && state.selectedEntityId !== 'multi-entity') {
+            state.settings.systemPrompt = state.entitySystemPrompts[state.selectedEntityId] ?? null;
+        }
     }
 
     /**

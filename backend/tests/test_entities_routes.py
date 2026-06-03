@@ -5,12 +5,63 @@ Tests cover:
 - GET /api/entities/ - List all configured entities
 - GET /api/entities/{entity_id} - Get specific entity
 - GET /api/entities/{entity_id}/status - Get entity Pinecone status
+- PUT /api/entities/{entity_id}/system-prompt - Persist entity system prompt
 """
 
 import pytest
 from unittest.mock import patch, MagicMock, PropertyMock
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from httpx import AsyncClient, ASGITransport
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.pool import StaticPool
+
 from app.config import EntityConfig
+from app.database import Base, get_db
+from app.models import EntitySetting
+
+
+TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+
+@pytest.fixture
+async def entities_client():
+    """
+    Async test client for the entities router backed by an in-memory SQLite DB
+    with all tables created. The list/get endpoints read persisted system
+    prompts from the entity_settings table, so a real DB is required.
+
+    Yields (client, session_factory); the factory lets tests seed/inspect rows.
+    Everything runs in a single event loop, avoiding cross-loop async-engine
+    issues that a sync TestClient would otherwise hit with in-memory SQLite.
+    """
+    from app.routes.entities import router
+
+    engine = create_async_engine(
+        TEST_DATABASE_URL,
+        echo=False,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client, session_factory
+
+    await engine.dispose()
 
 
 # ============================================================
@@ -37,15 +88,9 @@ class TestListEntities:
     """Tests for listing all configured entities."""
 
     @patch("app.routes.entities.settings")
-    def test_list_entities_success(self, mock_settings):
+    async def test_list_entities_success(self, mock_settings, entities_client):
         """Should return list of configured entities."""
-        from fastapi.testclient import TestClient
-        from app.routes.entities import router
-        from fastapi import FastAPI
-
-        app = FastAPI()
-        app.include_router(router)
-        client = TestClient(app)
+        client, _ = entities_client
 
         entities = [
             _make_entity("claude-test", "Claude", "Primary", "anthropic"),
@@ -54,7 +99,7 @@ class TestListEntities:
         mock_settings.get_entities.return_value = entities
         mock_settings.get_default_entity.return_value = entities[0]
 
-        response = client.get("/api/entities/")
+        response = await client.get("/api/entities/")
         assert response.status_code == 200
         data = response.json()
 
@@ -64,20 +109,14 @@ class TestListEntities:
         assert data["entities"][1]["is_default"] is False
 
     @patch("app.routes.entities.settings")
-    def test_list_entities_empty(self, mock_settings):
+    async def test_list_entities_empty(self, mock_settings, entities_client):
         """Should return empty list when no entities configured."""
-        from fastapi.testclient import TestClient
-        from app.routes.entities import router
-        from fastapi import FastAPI
-
-        app = FastAPI()
-        app.include_router(router)
-        client = TestClient(app)
+        client, _ = entities_client
 
         mock_settings.get_entities.return_value = []
         mock_settings.get_default_entity.return_value = None
 
-        response = client.get("/api/entities/")
+        response = await client.get("/api/entities/")
         assert response.status_code == 200
         data = response.json()
 
@@ -85,15 +124,9 @@ class TestListEntities:
         assert data["default_entity"] is None
 
     @patch("app.routes.entities.settings")
-    def test_list_entities_with_llm_providers(self, mock_settings):
+    async def test_list_entities_with_llm_providers(self, mock_settings, entities_client):
         """Should include LLM provider information."""
-        from fastapi.testclient import TestClient
-        from app.routes.entities import router
-        from fastapi import FastAPI
-
-        app = FastAPI()
-        app.include_router(router)
-        client = TestClient(app)
+        client, _ = entities_client
 
         entities = [
             _make_entity("claude-test", "Claude", "Test", "anthropic", "claude-sonnet-4-5-20250929"),
@@ -102,13 +135,37 @@ class TestListEntities:
         mock_settings.get_entities.return_value = entities
         mock_settings.get_default_entity.return_value = entities[0]
 
-        response = client.get("/api/entities/")
+        response = await client.get("/api/entities/")
         data = response.json()
 
         assert data["entities"][0]["llm_provider"] == "anthropic"
         assert data["entities"][0]["default_model"] == "claude-sonnet-4-5-20250929"
         assert data["entities"][1]["llm_provider"] == "openai"
         assert data["entities"][1]["default_model"] == "gpt-4o"
+
+    @patch("app.routes.entities.settings")
+    async def test_list_entities_includes_persisted_system_prompt(self, mock_settings, entities_client):
+        """Should include each entity's persisted system prompt (None if unset)."""
+        client, session_factory = entities_client
+
+        entities = [
+            _make_entity("claude-test", "Claude", "Primary", "anthropic"),
+            _make_entity("gpt-test", "GPT", "OpenAI", "openai", "gpt-4o"),
+        ]
+        mock_settings.get_entities.return_value = entities
+        mock_settings.get_default_entity.return_value = entities[0]
+
+        # Seed a stored prompt for one entity only.
+        async with session_factory() as session:
+            session.add(EntitySetting(entity_id="claude-test", system_prompt="Be Claude"))
+            await session.commit()
+
+        response = await client.get("/api/entities/")
+        data = response.json()
+
+        prompts = {e["index_name"]: e["system_prompt"] for e in data["entities"]}
+        assert prompts["claude-test"] == "Be Claude"
+        assert prompts["gpt-test"] is None
 
 
 # ============================================================
@@ -119,63 +176,157 @@ class TestGetEntity:
     """Tests for getting a specific entity."""
 
     @patch("app.routes.entities.settings")
-    def test_get_entity_success(self, mock_settings):
+    async def test_get_entity_success(self, mock_settings, entities_client):
         """Should return entity details."""
-        from fastapi.testclient import TestClient
-        from app.routes.entities import router
-        from fastapi import FastAPI
-
-        app = FastAPI()
-        app.include_router(router)
-        client = TestClient(app)
+        client, _ = entities_client
 
         entity = _make_entity("claude-test", "Claude Test", "Primary", "anthropic")
         mock_settings.get_entity_by_index.return_value = entity
         mock_settings.get_default_entity.return_value = entity
 
-        response = client.get("/api/entities/claude-test")
+        response = await client.get("/api/entities/claude-test")
         assert response.status_code == 200
         data = response.json()
 
         assert data["index_name"] == "claude-test"
         assert data["label"] == "Claude Test"
         assert data["is_default"] is True
+        assert data["system_prompt"] is None
 
     @patch("app.routes.entities.settings")
-    def test_get_entity_not_found(self, mock_settings):
-        """Should return 404 for unknown entity."""
-        from fastapi.testclient import TestClient
-        from app.routes.entities import router
-        from fastapi import FastAPI
+    async def test_get_entity_returns_persisted_system_prompt(self, mock_settings, entities_client):
+        """Should return the stored system prompt for the entity."""
+        client, session_factory = entities_client
 
-        app = FastAPI()
-        app.include_router(router)
-        client = TestClient(app)
+        entity = _make_entity("claude-test", "Claude Test", "Primary", "anthropic")
+        mock_settings.get_entity_by_index.return_value = entity
+        mock_settings.get_default_entity.return_value = entity
+
+        async with session_factory() as session:
+            session.add(EntitySetting(entity_id="claude-test", system_prompt="Persisted prompt"))
+            await session.commit()
+
+        response = await client.get("/api/entities/claude-test")
+        data = response.json()
+        assert data["system_prompt"] == "Persisted prompt"
+
+    @patch("app.routes.entities.settings")
+    async def test_get_entity_not_found(self, mock_settings, entities_client):
+        """Should return 404 for unknown entity."""
+        client, _ = entities_client
 
         mock_settings.get_entity_by_index.return_value = None
 
-        response = client.get("/api/entities/nonexistent")
+        response = await client.get("/api/entities/nonexistent")
         assert response.status_code == 404
 
     @patch("app.routes.entities.settings")
-    def test_get_entity_not_default(self, mock_settings):
+    async def test_get_entity_not_default(self, mock_settings, entities_client):
         """Should show is_default=False for non-default entity."""
-        from fastapi.testclient import TestClient
-        from app.routes.entities import router
-        from fastapi import FastAPI
-
-        app = FastAPI()
-        app.include_router(router)
-        client = TestClient(app)
+        client, _ = entities_client
 
         entity = _make_entity("gpt-test", "GPT", "Secondary", "openai")
         default = _make_entity("claude-test", "Claude", "Primary", "anthropic")
         mock_settings.get_entity_by_index.return_value = entity
         mock_settings.get_default_entity.return_value = default
 
-        response = client.get("/api/entities/gpt-test")
+        response = await client.get("/api/entities/gpt-test")
         data = response.json()
         assert data["is_default"] is False
+
+
+# ============================================================
+# Tests for PUT /api/entities/{entity_id}/system-prompt
+# ============================================================
+
+class TestUpdateEntitySystemPrompt:
+    """Tests for persisting an entity's default system prompt."""
+
+    @patch("app.routes.entities.settings")
+    async def test_create_system_prompt(self, mock_settings, entities_client):
+        """Should persist a new system prompt for the entity."""
+        client, session_factory = entities_client
+        mock_settings.get_entity_by_index.return_value = _make_entity("claude-test")
+
+        response = await client.put(
+            "/api/entities/claude-test/system-prompt",
+            json={"system_prompt": "You are Claude."},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"entity_id": "claude-test", "system_prompt": "You are Claude."}
+
+        # Verify it was persisted.
+        async with session_factory() as session:
+            setting = await session.get(EntitySetting, "claude-test")
+            assert setting is not None
+            assert setting.system_prompt == "You are Claude."
+
+    @patch("app.routes.entities.settings")
+    async def test_update_existing_system_prompt(self, mock_settings, entities_client):
+        """Should overwrite an existing system prompt."""
+        client, session_factory = entities_client
+        mock_settings.get_entity_by_index.return_value = _make_entity("claude-test")
+
+        async with session_factory() as session:
+            session.add(EntitySetting(entity_id="claude-test", system_prompt="Old"))
+            await session.commit()
+
+        response = await client.put(
+            "/api/entities/claude-test/system-prompt",
+            json={"system_prompt": "New"},
+        )
+        assert response.status_code == 200
+        assert response.json()["system_prompt"] == "New"
+
+        async with session_factory() as session:
+            setting = await session.get(EntitySetting, "claude-test")
+            assert setting.system_prompt == "New"
+
+    @patch("app.routes.entities.settings")
+    async def test_clear_system_prompt_with_null(self, mock_settings, entities_client):
+        """Should clear the prompt when null is sent."""
+        client, session_factory = entities_client
+        mock_settings.get_entity_by_index.return_value = _make_entity("claude-test")
+
+        async with session_factory() as session:
+            session.add(EntitySetting(entity_id="claude-test", system_prompt="Existing"))
+            await session.commit()
+
+        response = await client.put(
+            "/api/entities/claude-test/system-prompt",
+            json={"system_prompt": None},
+        )
+        assert response.status_code == 200
+        assert response.json()["system_prompt"] is None
+
+        async with session_factory() as session:
+            setting = await session.get(EntitySetting, "claude-test")
+            assert setting.system_prompt is None
+
+    @patch("app.routes.entities.settings")
+    async def test_blank_string_normalized_to_null(self, mock_settings, entities_client):
+        """Should normalize a whitespace-only prompt to NULL."""
+        client, _ = entities_client
+        mock_settings.get_entity_by_index.return_value = _make_entity("claude-test")
+
+        response = await client.put(
+            "/api/entities/claude-test/system-prompt",
+            json={"system_prompt": "   "},
+        )
+        assert response.status_code == 200
+        assert response.json()["system_prompt"] is None
+
+    @patch("app.routes.entities.settings")
+    async def test_update_unknown_entity_returns_404(self, mock_settings, entities_client):
+        """Should 404 when the entity is not configured."""
+        client, _ = entities_client
+        mock_settings.get_entity_by_index.return_value = None
+
+        response = await client.put(
+            "/api/entities/nonexistent/system-prompt",
+            json={"system_prompt": "x"},
+        )
+        assert response.status_code == 404
 
 
 # ============================================================

@@ -165,6 +165,7 @@ global.window.api = {
     speak: vi.fn(() => Promise.resolve(new Blob())),
     transcribe: vi.fn(() => Promise.resolve({ text: '' })),
     getPresets: vi.fn(() => Promise.resolve({})),
+    updateEntitySystemPrompt: vi.fn(() => Promise.resolve({ system_prompt: null })),
     archiveConversation: vi.fn(() => Promise.resolve()),
     unarchiveConversation: vi.fn(() => Promise.resolve()),
     getArchivedConversations: vi.fn(() => Promise.resolve([])),
