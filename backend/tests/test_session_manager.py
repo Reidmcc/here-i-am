@@ -1894,6 +1894,105 @@ class TestAgenticToolLoopMemoryOptimization:
         assert sent_messages[1][2]["role"] == "user"
 
     @pytest.mark.asyncio
+    async def test_attachments_persist_across_tool_iterations(self, db_session, sample_conversation):
+        """Attachments must stay on the current message after a tool call.
+
+        Regression test: previously the base (no-memory) message set rebuilt for
+        subsequent tool-loop iterations was built without the attachments, so any
+        tool call dropped the attached file/image from the final answer's context
+        and the model responded as if nothing was attached.
+        """
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
+            mock_settings.tool_use_max_iterations = 10
+            mock_settings.use_memory_in_context = False
+
+            # Capture the kwargs of every build call so we can inspect attachments
+            build_calls = []
+
+            def build_messages(memories, **kwargs):
+                build_calls.append({"memories": memories, "kwargs": kwargs})
+                return [{"role": "user", "content": "msg"}]
+
+            mock_llm.build_messages_with_memories.side_effect = build_messages
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            call_count = [0]
+
+            async def mock_stream(messages, **kwargs):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {
+                        "type": "done",
+                        "content": "",
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {"input_tokens": 10, "output_tokens": 5},
+                        "stop_reason": "tool_use",
+                        "content_blocks": [
+                            {"type": "tool_use", "id": "tool-1", "name": "web_search", "input": {"query": "test"}}
+                        ],
+                        "tool_use": [{"id": "tool-1", "name": "web_search", "input": {"query": "test"}}],
+                    }
+                else:
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {"type": "token", "content": "Done"}
+                    yield {
+                        "type": "done",
+                        "content": "Done",
+                        "model": "claude-sonnet-4-5-20250929",
+                        "usage": {"input_tokens": 20, "output_tokens": 10},
+                        "stop_reason": "end_turn",
+                        "content_blocks": [{"type": "text", "text": "Done"}],
+                    }
+
+            mock_llm.send_message_stream = mock_stream
+
+            mock_tool_result = MagicMock()
+            mock_tool_result.tool_use_id = "tool-1"
+            mock_tool_result.content = "Search results"
+            mock_tool_result.is_error = False
+            mock_tool.execute_tool = AsyncMock(return_value=mock_tool_result)
+
+            attachments = {
+                "images": [],
+                "files": [{
+                    "filename": "notes.txt",
+                    "content": "the attached file body",
+                    "content_type": "text",
+                    "media_type": "text/plain",
+                }],
+            }
+
+            session = manager.create_session(sample_conversation.id)
+
+            events = []
+            async for event in manager.process_message_stream(
+                session,
+                "Summarize the attached file",
+                db_session,
+                tool_schemas=[{"name": "web_search"}],
+                attachments=attachments,
+            ):
+                events.append(event)
+
+        # Two build calls: iteration 1 (with attachments) and the lazily-built
+        # base message set for iteration 2 (also with attachments).
+        assert len(build_calls) == 2
+        for call in build_calls:
+            assert call["kwargs"].get("attachments") == attachments
+
+    @pytest.mark.asyncio
     async def test_tool_exchanges_accumulated_correctly(self, db_session, sample_conversation):
         """Test that tool exchanges are properly accumulated across iterations."""
         manager = SessionManager()

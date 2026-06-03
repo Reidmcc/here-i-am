@@ -633,18 +633,28 @@ class AnthropicService:
                 final_parts.append(shared_block)
                 logger.info(f"[NOTES] Injected shared index.md ({len(shared_notes)} chars)")
 
+        # Whether there's any human input this turn (text and/or an attachment).
+        # An attachment-only message (file/image with no text) still counts as
+        # human input, not a continuation.
+        from app.services.attachment_service import attachment_service, has_attachments
+        has_attachment_content = bool(attachments and has_attachments(attachments))
+
         # Handle current message or continuation prompt
-        if current_message:
-            if is_multi_entity:
-                final_parts.append(f"[Human]: {current_message}")
-            else:
-                final_parts.append(current_message)
+        if current_message or has_attachment_content:
+            if current_message:
+                if is_multi_entity:
+                    final_parts.append(f"[Human]: {current_message}")
+                else:
+                    final_parts.append(current_message)
+            # When there's no text but an attachment is present, the
+            # [CURRENT USER MESSAGE] marker plus the attachment content
+            # (appended below) stand in for the human's message.
             # Handle case where this is the very first message (no conversation history)
             if not cached_context and not new_context:
                 # Prepend conversation header and multi-entity header to the message block
                 final_parts.insert(0, "[CONVERSATION HISTORY]\n" + multi_entity_header)
         else:
-            # Continuation without new human message (multi-entity)
+            # Continuation without new human input (multi-entity)
             continuation_prompt = "[CONTINUATION]\nPlease continue the conversation by responding to what was said above."
             final_parts.append(continuation_prompt)
             if not cached_context and not new_context:
@@ -653,8 +663,7 @@ class AnthropicService:
         final_text = "\n\n".join(final_parts)
 
         # Handle attachments for multimodal messages
-        from app.services.attachment_service import attachment_service, has_attachments
-        if attachments and has_attachments(attachments):
+        if has_attachment_content:
             # Process attachments for the appropriate provider
             provider_str = provider.value if hasattr(provider, 'value') else str(provider) if provider else "anthropic"
             multimodal_content = attachment_service.process_attachments_for_provider(
