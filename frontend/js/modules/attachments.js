@@ -9,10 +9,42 @@ import { showToast, escapeHtml, readFileAsBase64, readFileAsText } from './utils
 // Element references
 let elements = {};
 
-// Constants
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
-const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-const ALLOWED_TEXT_EXTENSIONS = ['.txt', '.md', '.py', '.js', '.ts', '.json', '.yaml', '.yml', '.html', '.css', '.xml', '.csv', '.log', '.pdf', '.docx'];
+// Defaults mirror backend config.py defaults. At runtime these are overridden
+// by state.attachmentConfig (from /api/chat/config) so the backend stays the
+// single source of truth for limits and the allow-list.
+const DEFAULT_MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+const DEFAULT_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const DEFAULT_TEXT_EXTENSIONS = ['.txt', '.md', '.py', '.js', '.ts', '.json', '.yaml', '.yml', '.html', '.css', '.xml', '.csv', '.log'];
+
+/**
+ * Maximum allowed attachment size in bytes (backend-configured).
+ */
+function getMaxFileSize() {
+    return state.attachmentConfig?.max_size_bytes || DEFAULT_MAX_FILE_SIZE;
+}
+
+/**
+ * Allowed image MIME types (backend-configured).
+ */
+function getAllowedImageTypes() {
+    return state.attachmentConfig?.allowed_image_types || DEFAULT_IMAGE_TYPES;
+}
+
+/**
+ * Allowed text/document extensions. PDF and DOCX are only included when the
+ * backend has them enabled, so the UI won't accept files the server rejects.
+ */
+function getAllowedTextExtensions() {
+    const cfg = state.attachmentConfig;
+    if (!cfg) {
+        // Config not loaded yet — assume backend defaults (pdf/docx enabled).
+        return [...DEFAULT_TEXT_EXTENSIONS, '.pdf', '.docx'];
+    }
+    const exts = [...(cfg.allowed_text_extensions || DEFAULT_TEXT_EXTENSIONS)];
+    if (cfg.pdf_enabled) exts.push('.pdf');
+    if (cfg.docx_enabled) exts.push('.docx');
+    return exts;
+}
 
 // Callbacks
 let callbacks = {
@@ -102,13 +134,14 @@ function handleDrop(e) {
 export async function processFiles(files) {
     for (const file of files) {
         // Check file size
-        if (file.size > MAX_FILE_SIZE) {
-            showToast(`File ${file.name} is too large (max 5MB)`, 'error');
+        if (file.size > getMaxFileSize()) {
+            const maxMb = Math.round(getMaxFileSize() / (1024 * 1024));
+            showToast(`File ${file.name} is too large (max ${maxMb}MB)`, 'error');
             continue;
         }
 
         // Check if image
-        if (ALLOWED_IMAGE_TYPES.includes(file.type)) {
+        if (getAllowedImageTypes().includes(file.type)) {
             try {
                 const base64 = await readFileAsBase64(file);
                 const previewUrl = URL.createObjectURL(file);
@@ -128,7 +161,7 @@ export async function processFiles(files) {
 
         // Check if text/document file
         const ext = '.' + file.name.split('.').pop().toLowerCase();
-        if (ALLOWED_TEXT_EXTENSIONS.includes(ext)) {
+        if (getAllowedTextExtensions().includes(ext)) {
             // For PDF and DOCX, the server will extract text
             // For other text files, read directly
             if (ext === '.pdf' || ext === '.docx') {

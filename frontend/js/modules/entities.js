@@ -83,13 +83,6 @@ export async function loadEntities() {
                 state.selectedEntityId = entities[0].index_name;
             }
 
-            // Apply entity's default system prompt if any
-            if (state.selectedEntityId) {
-                const defaultEntity = entities.find(e => e.index_name === state.selectedEntityId);
-                if (defaultEntity && defaultEntity.default_system_prompt) {
-                    state.settings.systemPrompt = defaultEntity.default_system_prompt;
-                }
-            }
         }
 
         // Restore entity selection in the dropdown
@@ -202,11 +195,10 @@ export function handleEntityChange(entityId) {
             elements.modelSelect.value = state.settings.model;
         }
 
-        // Restore entity-specific system prompt
+        // Restore entity-specific system prompt. There is no backend
+        // "default system prompt" concept, so absence means no prompt.
         if (state.entitySystemPrompts[entityId] !== undefined) {
             state.settings.systemPrompt = state.entitySystemPrompts[entityId];
-        } else if (entity.default_system_prompt) {
-            state.settings.systemPrompt = entity.default_system_prompt;
         } else {
             state.settings.systemPrompt = null;
         }
@@ -248,8 +240,15 @@ export function updateModelSelectorForProvider(provider) {
     if (currentModelValid) {
         elements.modelSelect.value = state.settings.model;
     } else if (models.length > 0) {
-        state.settings.model = models[0].id;
-        elements.modelSelect.value = models[0].id;
+        // Prefer the backend's configured default for this provider (it owns
+        // that choice) rather than blindly taking the first model in the list,
+        // which would silently switch the entity to a different/pricier model.
+        const providerInfo = state.providers.find(p => p.id === provider);
+        const fallbackModel = (providerInfo && models.some(m => m.id === providerInfo.default_model))
+            ? providerInfo.default_model
+            : models[0].id;
+        state.settings.model = fallbackModel;
+        elements.modelSelect.value = fallbackModel;
     }
 }
 

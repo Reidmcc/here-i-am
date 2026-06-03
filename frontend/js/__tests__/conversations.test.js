@@ -176,6 +176,20 @@ describe('Conversations Module', () => {
                 expect.objectContaining({ entity_id: 'entity-1' })
             );
         });
+
+        it('should send the selected model under the "model" key the backend expects', async () => {
+            state.selectedEntityId = 'entity-1';
+            state.settings.model = 'gpt-5.1';
+            window.api.createConversation = vi.fn(() => Promise.resolve({ id: 'new-conv' }));
+
+            await createNewConversation();
+
+            const payload = window.api.createConversation.mock.calls[0][0];
+            expect(payload.model).toBe('gpt-5.1');
+            // The backend ConversationCreate has no "llm_model" field; sending it
+            // would be silently dropped.
+            expect(payload).not.toHaveProperty('llm_model');
+        });
     });
 
     describe('loadConversation', () => {
@@ -246,6 +260,31 @@ describe('Conversations Module', () => {
 
             expect(state.isMultiEntityMode).toBe(true);
             expect(state.currentConversationEntities).toEqual(entities);
+        });
+
+        it('should repopulate the in-context memories panel from session info', async () => {
+            const memories = [
+                { id: 'mem-1', role: 'human', content: 'remembered', times_retrieved: 2, score: 0.9 },
+            ];
+            window.api.getConversation = vi.fn(() => Promise.resolve({ id: 'conv-123' }));
+            window.api.getConversationMessages = vi.fn(() => Promise.resolve([]));
+            window.api.getSessionInfo = vi.fn(() => Promise.resolve({ memories }));
+
+            await loadConversation('conv-123');
+
+            expect(window.api.getSessionInfo).toHaveBeenCalledWith('conv-123');
+            expect(state.retrievedMemories).toEqual(memories);
+        });
+
+        it('should still load when session info is unavailable', async () => {
+            window.api.getConversation = vi.fn(() => Promise.resolve({ id: 'conv-123' }));
+            window.api.getConversationMessages = vi.fn(() => Promise.resolve([]));
+            window.api.getSessionInfo = vi.fn(() => Promise.reject(new Error('no session')));
+
+            await loadConversation('conv-123');
+
+            expect(state.currentConversationId).toBe('conv-123');
+            expect(state.retrievedMemories).toEqual([]);
         });
     });
 

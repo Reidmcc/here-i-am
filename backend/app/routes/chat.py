@@ -1206,4 +1206,14 @@ async def get_chat_config():
         "similarity_threshold": settings.similarity_threshold,
         "entities": [entity.to_dict() for entity in entities],
         "default_entity": default_entity.index_name,
+        # Attachment limits live in backend config; expose them so the frontend
+        # doesn't hardcode (and drift from) the allow-list and size cap.
+        "attachments": {
+            "enabled": settings.attachments_enabled,
+            "max_size_bytes": settings.attachment_max_size_bytes,
+            "allowed_image_types": settings.get_allowed_image_types(),
+            "allowed_text_extensions": settings.get_allowed_text_extensions(),
+            "pdf_enabled": settings.attachment_pdf_enabled,
+            "docx_enabled": settings.attachment_docx_enabled,
+        },
     }

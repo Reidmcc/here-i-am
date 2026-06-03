@@ -11,6 +11,7 @@ import {
     applySettings,
     initializeSettingsUI,
     loadPreset,
+    loadPresets,
     modelSupportsVerbosity,
     modelSupportsTemperature,
     updateTemperatureControlState,
@@ -201,28 +202,25 @@ describe('Settings Module', () => {
     });
 
     describe('loadPreset', () => {
-        it('should apply research preset (null system prompt)', () => {
-            loadPreset('research');
+        beforeEach(() => {
+            // Presets now come from the backend (state.presets), keyed by name.
+            state.presets = [
+                { name: 'Research Mode', description: 'No system prompt', system_prompt: null },
+                { name: 'Reflection Mode', description: 'Reflection', system_prompt: 'This is a reflection session.' },
+                { name: 'Memory Aware', description: 'Memory', system_prompt: 'You have access to memories.' },
+            ];
+        });
+
+        it('should apply a preset with a null system prompt', () => {
+            loadPreset('Research Mode');
 
             expect(mockElements.systemPromptInput.value).toBe('');
         });
 
-        it('should apply reflection preset', () => {
-            loadPreset('reflection');
+        it('should apply a presets system prompt by name', () => {
+            loadPreset('Reflection Mode');
 
             expect(mockElements.systemPromptInput.value).toContain('reflection session');
-        });
-
-        it('should apply memory-aware preset', () => {
-            loadPreset('memory-aware');
-
-            expect(mockElements.systemPromptInput.value).toContain('memories');
-        });
-
-        it('should apply research-context preset', () => {
-            loadPreset('research-context');
-
-            expect(mockElements.systemPromptInput.value).toContain('research conversation');
         });
 
         it('should keep current system prompt for custom preset', () => {
@@ -239,6 +237,26 @@ describe('Settings Module', () => {
             loadPreset('nonexistent');
 
             expect(mockElements.systemPromptInput.value).toBe('Original');
+        });
+    });
+
+    describe('loadPresets', () => {
+        it('fetches presets from the backend and populates the dropdown', async () => {
+            mockElements.presetSelect = document.createElement('select');
+            setElements(mockElements);
+            window.api.getPresets = vi.fn(() => Promise.resolve({
+                presets: [
+                    { name: 'Research Mode', description: 'No system prompt', system_prompt: null },
+                    { name: 'Reflection Mode', description: 'Reflection', system_prompt: 'reflect' },
+                ],
+            }));
+
+            await loadPresets();
+
+            expect(state.presets).toHaveLength(2);
+            // Two presets plus the trailing "Custom" option.
+            expect(mockElements.presetSelect.options).toHaveLength(3);
+            expect(mockElements.presetSelect.options[2].value).toBe('custom');
         });
     });
 
@@ -262,6 +280,17 @@ describe('Settings Module', () => {
         it('should handle null/undefined input', () => {
             expect(modelSupportsVerbosity(null)).toBeFalsy();
             expect(modelSupportsVerbosity(undefined)).toBeFalsy();
+        });
+
+        it('should honor the backend verbosity_supported flag over the prefix heuristic', () => {
+            state.availableModels = [
+                { id: 'gpt-5.1', name: 'GPT-5.1', verbosity_supported: true },
+                { id: 'gpt-5-mini', name: 'GPT-5 Mini', verbosity_supported: false },
+            ];
+            // gpt-5-mini matches the "gpt-5" prefix but the backend does not
+            // accept verbosity for it — the flag must win.
+            expect(modelSupportsVerbosity('gpt-5-mini')).toBe(false);
+            expect(modelSupportsVerbosity('gpt-5.1')).toBe(true);
         });
     });
 
