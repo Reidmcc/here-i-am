@@ -98,6 +98,43 @@ class SessionManager:
         self._sessions[conversation_id] = session
         return session
 
+    def _build_notes_context_message(
+        self, entity_label: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Build a single cached-history context message holding the entity's notes.
+
+        Combines the entity's index.md and any shared notes into one user-role
+        message wrapped in [ENTITY NOTES]/[SHARED NOTES] markers. Returns None when
+        there are no notes to inject. Marked with is_notes=True for identification.
+        """
+        from app.services.notes_service import notes_service
+
+        parts: List[str] = []
+
+        entity_notes = notes_service.get_index_content(entity_label)
+        if entity_notes:
+            parts.append(f"[ENTITY NOTES]\n{entity_notes}\n[/ENTITY NOTES]")
+            logger.info(
+                f"[NOTES] Injected index.md for entity '{entity_label}' into cached history ({len(entity_notes)} chars)"
+            )
+
+        shared_notes = notes_service.get_shared_index_content()
+        if shared_notes:
+            parts.append(f"[SHARED NOTES]\n{shared_notes}\n[/SHARED NOTES]")
+            logger.info(
+                f"[NOTES] Injected shared index.md into cached history ({len(shared_notes)} chars)"
+            )
+
+        if not parts:
+            return None
+
+        return {
+            "role": "user",
+            "content": "\n\n".join(parts),
+            "is_notes": True,
+        }
+
     async def load_session_from_db(
         self,
         conversation_id: str,
@@ -308,6 +345,19 @@ class SessionManager:
             logger.info(
                 f"[MEMORY] Skipped {skipped_archived} memories from archived source conversations during session load"
             )
+
+        # Inject the entity's notes (index.md + shared notes) ONCE at the front of the
+        # conversation context for single-entity conversations. This keeps the notes in
+        # the cached history block — paid for once, then read from cache — instead of
+        # being re-sent uncached in every turn's final message. Changes the AI makes to
+        # its notes mid-conversation flow through the notes tool exchanges already stored
+        # in history, like any other tool-call data, so they remain cacheable at their
+        # position. Multi-entity conversations keep notes in the per-turn message because
+        # the responding entity (and thus the relevant notes) changes turn to turn.
+        if settings.notes_enabled and responding_entity_label and not is_multi_entity:
+            notes_message = self._build_notes_context_message(responding_entity_label)
+            if notes_message:
+                session.conversation_context.append(notes_message)
 
         # Build conversation context, interleaving memories at their original positions
         memory_insert_count = 0

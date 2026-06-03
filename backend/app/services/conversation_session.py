@@ -451,13 +451,29 @@ class ConversationSession:
                 self.conversation_context.pop(0)
                 removed_count += 1
 
-        # If using memory-in-context and we removed messages, update memory tracking
-        if self.use_memory_in_context and removed_count > 0:
-            rolled_out = self.memory_tracker.handle_context_rollout(
-                num_messages_removed=removed_count,
-                conversation_context=self.conversation_context,
-            )
-            if rolled_out:
-                logger.info(f"[MEMORY] Context trimming rolled out {len(rolled_out)} memories")
+        if removed_count > 0:
+            # Keep the cache breakpoint aligned with the messages that remain.
+            # Front-trimming shifts every index down by removed_count, so the
+            # breakpoint must shift with it; if the breakpoint was inside the
+            # trimmed region it collapses to 0. Without this, cached_context
+            # would point at the wrong messages, the [CONVERSATION HISTORY]
+            # header would land on a different message, and every subsequent
+            # turn would be a full cache miss.
+            old_cache_len = self.last_cached_context_length
+            self.last_cached_context_length = max(0, old_cache_len - removed_count)
+            if self.last_cached_context_length != old_cache_len:
+                logger.info(
+                    f"[CACHE] Context trim removed {removed_count} msgs; "
+                    f"cache breakpoint {old_cache_len}->{self.last_cached_context_length}"
+                )
+
+            # If using memory-in-context, update memory tracking for rolled-out memories
+            if self.use_memory_in_context:
+                rolled_out = self.memory_tracker.handle_context_rollout(
+                    num_messages_removed=removed_count,
+                    conversation_context=self.conversation_context,
+                )
+                if rolled_out:
+                    logger.info(f"[MEMORY] Context trimming rolled out {len(rolled_out)} memories")
 
         return removed_count
