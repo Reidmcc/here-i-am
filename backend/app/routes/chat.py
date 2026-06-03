@@ -404,8 +404,13 @@ async def stream_message(data: ChatRequest):
                 responding_entity_id = data.responding_entity_id
                 multi_entity_ids = []
 
-                # Determine if this is a continuation (no human message)
-                is_continuation = not data.message
+                # Determine if this is a continuation (no human input at all).
+                # An attachment-only message (file/image with no text) is NOT a
+                # continuation - the attachment is the human's input.
+                has_attachment_input = bool(
+                    data.attachments and (data.attachments.files or data.attachments.images)
+                )
+                is_continuation = not data.message and not has_attachment_input
 
                 # Continuation requires multi-entity mode
                 if is_continuation and not is_multi_entity:
@@ -611,8 +616,11 @@ async def stream_message(data: ChatRequest):
                         # For multi-entity conversations, store to ALL participating entities
                         responding_label = get_entity_label(responding_entity_id)
                         for entity_id in multi_entity_ids:
-                            # For human messages: role is "human" for all entities (skip for continuation)
-                            if human_msg:
+                            # For human messages: role is "human" for all entities.
+                            # Skipped for continuations (no human_msg) and for
+                            # attachment-only messages (no text to vectorize -
+                            # file content is intentionally not stored in memory).
+                            if human_msg and data.message:
                                 await memory_service.store_memory(
                                     message_id=str(human_msg.id),
                                     conversation_id=str(data.conversation_id),
@@ -644,15 +652,19 @@ async def stream_message(data: ChatRequest):
                                     entity_id=entity_id,
                                 )
                     else:
-                        # Standard single-entity conversation (always has human message)
-                        await memory_service.store_memory(
-                            message_id=str(human_msg.id),
-                            conversation_id=str(data.conversation_id),
-                            role="human",
-                            content=data.message,
-                            created_at=human_msg.created_at,
-                            entity_id=session.entity_id,
-                        )
+                        # Standard single-entity conversation.
+                        # Skip the human memory for attachment-only messages: there
+                        # is no text to vectorize and file content is intentionally
+                        # not stored in memory (it is still persisted in the DB).
+                        if data.message:
+                            await memory_service.store_memory(
+                                message_id=str(human_msg.id),
+                                conversation_id=str(data.conversation_id),
+                                role="human",
+                                content=data.message,
+                                created_at=human_msg.created_at,
+                                entity_id=session.entity_id,
+                            )
                         await memory_service.store_memory(
                             message_id=str(assistant_msg.id),
                             conversation_id=str(data.conversation_id),

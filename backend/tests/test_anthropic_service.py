@@ -225,6 +225,59 @@ class TestAnthropicService:
         assert messages[2]["role"] == "user"
         assert "How are you?" in messages[2]["content"]
 
+    def test_build_messages_attachment_only_is_current_message(self, mock_encoder):
+        """An attachment-only message (no text) is a real message, not a continuation."""
+        service = AnthropicService()
+        service._encoder = mock_encoder
+
+        attachments = {
+            "images": [],
+            "files": [{
+                "filename": "notes.txt",
+                "content": "FILE_BODY_MARKER",
+                "content_type": "text",
+                "media_type": "text/plain",
+            }],
+        }
+
+        messages = service.build_messages_with_memories(
+            [], [], None, attachments=attachments
+        )
+
+        # Final user message carries the file content under the normal
+        # [CURRENT USER MESSAGE] framing, NOT a [CONTINUATION] prompt.
+        final = messages[-1]
+        assert final["role"] == "user"
+        blocks = final["content"]
+        assert isinstance(blocks, list)
+        text = "".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+        assert "FILE_BODY_MARKER" in text
+        assert "[CURRENT USER MESSAGE]" in text
+        assert "[CONTINUATION]" not in text
+
+    def test_build_messages_continuation_without_message_or_attachments(self, mock_encoder):
+        """With neither text nor attachments, fall back to the continuation prompt."""
+        service = AnthropicService()
+        service._encoder = mock_encoder
+
+        context = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello!"},
+        ]
+
+        messages = service.build_messages_with_memories(
+            [], context, None,
+            cached_context=context, new_context=[],
+            attachments={"images": [], "files": []},
+        )
+
+        joined = "".join(
+            m["content"] if isinstance(m["content"], str)
+            else "".join(b.get("text", "") for b in m["content"] if isinstance(b, dict))
+            for m in messages
+        )
+        assert "[CONTINUATION]" in joined
+
     def test_build_messages_with_memories(self, sample_memories, mock_encoder):
         """Test building messages with memories."""
         service = AnthropicService()
