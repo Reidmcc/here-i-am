@@ -106,6 +106,13 @@ class ConversationSession:
     # Cache tracking for conversation history (single breakpoint)
     last_cached_context_length: int = 0  # Frozen history length for cache stability
 
+    # Length (in messages) of the cached prefix sent on the previous API call.
+    # Used only for diagnostics: comparing it to the current cached prefix length
+    # lets us tell an expected cache write (boundary grew/shifted) from an
+    # unexpected miss (boundary stable but the prefix still failed to match).
+    # -1 means "no API call has been made yet this session".
+    last_api_cache_breakpoint: int = -1
+
     # ===== Legacy memory block methods (to be deprecated) =====
     
     def add_memory(self, memory: MemoryEntry) -> Tuple[bool, bool]:
