@@ -205,6 +205,7 @@ export async function showMemoriesModal() {
     showModal('memoriesModal');
     await loadMemoryStats();
     await loadMemoryList();
+    await loadMemoryOverrides();
 }
 
 /**
@@ -307,6 +308,67 @@ export async function searchMemories() {
     } catch (error) {
         showToast('Memory search not available', 'warning');
         console.error('Failed to search memories:', error);
+    }
+}
+
+// =========================================================================
+// Pinned & Released Memories (entity-set status overrides)
+// =========================================================================
+
+/**
+ * Load memories with an entity-set status (pinned or released)
+ */
+export async function loadMemoryOverrides() {
+    const listEl = document.getElementById('memory-overrides-list');
+    if (!listEl) return;
+
+    try {
+        const overrides = await api.listMemoryOverrides(state.selectedEntityId);
+
+        if (overrides.length === 0) {
+            listEl.innerHTML = '<div style="color: var(--text-muted);">No pinned or released memories</div>';
+            return;
+        }
+
+        listEl.innerHTML = overrides.map(mem => `
+            <div class="memory-list-item" data-memory-id="${mem.id}">
+                <div class="memory-list-item-header">
+                    <span class="memory-list-item-role">
+                        ${escapeHtml(mem.role)}
+                        <span class="memory-status-badge ${mem.memory_status}">${mem.memory_status}</span>
+                    </span>
+                    <span class="memory-list-item-stats">
+                        ${new Date(mem.created_at).toLocaleDateString()} &middot;
+                        Retrieved ${mem.times_retrieved}&times;
+                        <button class="secondary-btn small remove-status-btn" data-memory-id="${mem.id}">
+                            Remove ${mem.memory_status === 'pinned' ? 'pin' : 'release'}
+                        </button>
+                    </span>
+                </div>
+                <div class="memory-list-item-content">${escapeHtml(mem.content_preview)}</div>
+            </div>
+        `).join('');
+
+        listEl.querySelectorAll('.remove-status-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const memoryId = btn.dataset.memoryId;
+                if (!confirm('Remove this status? This overrides the entity\'s own choice about its memory.')) {
+                    return;
+                }
+                try {
+                    await api.setMemoryStatus(memoryId, null);
+                    showToast('Memory status cleared', 'success');
+                    await loadMemoryOverrides();
+                } catch (error) {
+                    showToast('Failed to clear memory status', 'error');
+                    console.error('Failed to clear memory status:', error);
+                }
+            });
+        });
+    } catch (error) {
+        listEl.innerHTML = '<div style="color: var(--text-muted);">Failed to load pinned/released memories</div>';
+        console.error('Failed to load memory overrides:', error);
     }
 }
 

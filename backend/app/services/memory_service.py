@@ -361,6 +361,7 @@ class MemoryService:
                 "created_at": message.created_at.isoformat(),
                 "times_retrieved": message.times_retrieved,
                 "last_retrieved_at": message.last_retrieved_at.isoformat() if message.last_retrieved_at else None,
+                "memory_status": message.memory_status,
             }
             # Cache the result
             if use_cache:
@@ -563,6 +564,40 @@ class MemoryService:
             archived_ids.update(row[0] for row in result.fetchall())
 
         return archived_ids
+
+    async def set_memory_status(
+        self,
+        message_id: str,
+        status: Optional[str],
+        db: AsyncSession,
+    ) -> bool:
+        """
+        Set or clear a memory's status ("pinned", "released", or None).
+
+        Pinned memories are exempt from age-based significance decay.
+        Released memories are excluded from retrieval (but kept in storage,
+        so the status can be reversed).
+
+        The status lives in SQL (source of truth); retrieval paths read it via
+        get_full_memory_content, so we invalidate that cache here.
+        """
+        if status not in (None, "pinned", "released"):
+            raise ValueError(f"Invalid memory status: {status}")
+
+        try:
+            await db.execute(
+                update(Message)
+                .where(Message.id == message_id)
+                .values(memory_status=status)
+            )
+            await db.commit()
+            self.cache.invalidate_memory_content(str(message_id))
+            logger.info(f"[MEMORY] Set memory_status={status} for {str(message_id)[:8]}...")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting memory status: {e}")
+            await db.rollback()
+            return False
 
     async def delete_memory(self, message_id: str, entity_id: Optional[str] = None) -> bool:
         """

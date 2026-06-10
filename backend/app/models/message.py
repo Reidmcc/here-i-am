@@ -15,6 +15,9 @@ class MessageRole(str, enum.Enum):
     # Tool exchange roles - content is JSON for these
     TOOL_USE = "tool_use"      # Assistant's tool call request
     TOOL_RESULT = "tool_result"  # Tool execution result
+    # Self-authored memory written by the entity via the memory_save tool.
+    # Not part of the conversational back-and-forth; vectorized like other memories.
+    REFLECTION = "reflection"
 
 
 class Message(Base):
@@ -30,6 +33,12 @@ class Message(Base):
     # Memory tracking
     times_retrieved: Mapped[int] = mapped_column(Integer, default=0)
     last_retrieved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Entity-controlled memory status:
+    #   NULL       - normal memory (default significance dynamics)
+    #   "pinned"   - exempt from age-based significance decay
+    #   "released" - excluded from memory retrieval (still stored, reversible)
+    memory_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     # For multi-entity conversations: tracks which entity spoke this message
     # NULL for single-entity conversations or human messages in multi-entity

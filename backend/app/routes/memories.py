@@ -24,6 +24,7 @@ class MemoryResponse(BaseModel):
     times_retrieved: int
     last_retrieved_at: Optional[datetime]
     significance: float
+    memory_status: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -49,7 +50,8 @@ class MemoryStats(BaseModel):
 def calculate_significance(
     times_retrieved: int,
     created_at: datetime,
-    last_retrieved_at: Optional[datetime]
+    last_retrieved_at: Optional[datetime],
+    memory_status: Optional[str] = None,
 ) -> float:
     """
     Calculate dynamic significance based on retrieval patterns.
@@ -59,14 +61,17 @@ def calculate_significance(
     Where:
     - times_retrieved: How many times this memory has been retrieved (weighted at 10%)
     - recency_factor: Boost based on how recently retrieved (decays over time)
-    - half_life_modifier: Decay based on memory age (halves every N days)
+    - half_life_modifier: Decay based on memory age (halves every N days);
+      pinned memories (memory_status == "pinned") are exempt from age decay
     """
     now = datetime.utcnow()
 
     # Half-life modifier - older memories decay in significance
     # Starts at 1.0 and halves every significance_half_life_days
-    days_since_creation = (now - created_at).days
-    half_life_modifier = 0.5 ** (days_since_creation / settings.significance_half_life_days)
+    half_life_modifier = 1.0
+    if memory_status != "pinned":
+        days_since_creation = (now - created_at).days
+        half_life_modifier = 0.5 ** (days_since_creation / settings.significance_half_life_days)
 
     # Recency factor - boosts recently retrieved memories
     # Cap at 1 day minimum to prevent very recent retrievals from dominating
@@ -118,7 +123,8 @@ async def list_memories(
         significance = calculate_significance(
             msg.times_retrieved,
             msg.created_at,
-            msg.last_retrieved_at
+            msg.last_retrieved_at,
+            msg.memory_status,
         )
         memories.append({
             "id": msg.id,
@@ -130,6 +136,7 @@ async def list_memories(
             "times_retrieved": msg.times_retrieved,
             "last_retrieved_at": msg.last_retrieved_at,
             "significance": significance,
+            "memory_status": msg.memory_status,
         })
 
     # Sort
@@ -385,6 +392,82 @@ async def cleanup_orphaned_records(
     return CleanupResponse(**result)
 
 
+class MemoryStatusUpdate(BaseModel):
+    # "pinned", "released", or null to clear the override
+    status: Optional[str] = None
+
+
+@router.get("/overrides", response_model=List[MemoryResponse])
+async def list_memory_overrides(
+    db: AsyncSession = Depends(get_db),
+    entity_id: Optional[str] = None,
+):
+    """
+    List memories with an entity-set status override (pinned or released).
+
+    Pinned memories are exempt from age-based significance decay.
+    Released memories are excluded from retrieval.
+
+    These are normally set by the entity itself (memory_mark/memory_release
+    tools); this endpoint gives the researcher visibility, and PUT
+    /{memory_id}/status allows changing them. Treat overriding the entity's
+    own choices as an emergency option.
+    """
+    query = select(Message).where(Message.memory_status.isnot(None))
+
+    if entity_id is not None:
+        query = query.join(Conversation, Message.conversation_id == Conversation.id)
+        query = query.where(Conversation.entity_id == entity_id)
+
+    result = await db.execute(query.order_by(Message.created_at.desc()))
+    messages = result.scalars().all()
+
+    return [
+        MemoryResponse(
+            id=msg.id,
+            conversation_id=msg.conversation_id,
+            role=msg.role.value,
+            content=msg.content,
+            content_preview=msg.content[:200] if len(msg.content) > 200 else msg.content,
+            created_at=msg.created_at,
+            times_retrieved=msg.times_retrieved,
+            last_retrieved_at=msg.last_retrieved_at,
+            significance=calculate_significance(
+                msg.times_retrieved, msg.created_at, msg.last_retrieved_at, msg.memory_status
+            ),
+            memory_status=msg.memory_status,
+        )
+        for msg in messages
+    ]
+
+
+@router.put("/{memory_id}/status")
+async def set_memory_status(
+    memory_id: str,
+    data: MemoryStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Set or clear a memory's status: "pinned", "released", or null (normal).
+
+    This can override the entity's own memory_mark/memory_release choices;
+    intended as an emergency/maintenance option.
+    """
+    if data.status not in (None, "pinned", "released"):
+        raise HTTPException(status_code=400, detail="status must be 'pinned', 'released', or null")
+
+    result = await db.execute(select(Message).where(Message.id == memory_id))
+    message = result.scalar_one_or_none()
+    if not message:
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+    success = await memory_service.set_memory_status(memory_id, data.status, db)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update memory status")
+
+    return {"id": memory_id, "memory_status": data.status}
+
+
 # NOTE: Parameterized routes must come AFTER static routes to avoid matching
 # e.g., /orphans being interpreted as /{memory_id}
 
@@ -405,7 +488,8 @@ async def get_memory(
     significance = calculate_significance(
         message.times_retrieved,
         message.created_at,
-        message.last_retrieved_at
+        message.last_retrieved_at,
+        message.memory_status,
     )
 
     return MemoryResponse(
@@ -418,6 +502,7 @@ async def get_memory(
         times_retrieved=message.times_retrieved,
         last_retrieved_at=message.last_retrieved_at,
         significance=significance,
+        memory_status=message.memory_status,
     )
 
 

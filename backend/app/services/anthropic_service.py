@@ -579,9 +579,14 @@ class AnthropicService:
                     role_display = user_label
                 elif mem_role == "assistant":
                     role_display = assistant_label
+                elif mem_role == "reflection":
+                    role_display = "a reflection you saved"
                 else:
                     role_display = mem_role if mem_role else "unknown"
-                memory_block_text += f"Memory from {role_display} (from {mem['created_at']}):\n"
+                # Short ID lets the entity reference this memory in memory_mark/memory_release
+                short_id = str(mem.get("id", ""))[:8]
+                id_part = f"{short_id} " if short_id else ""
+                memory_block_text += f"Memory {id_part}from {role_display} (from {mem['created_at']}):\n"
                 memory_block_text += f'"{mem["content"]}"\n\n'
             memory_block_text += "[/MEMORIES]"
 

@@ -41,7 +41,9 @@ backend/app/
     ├── web_tools.py               # web_search (Brave), web_fetch (httpx + Playwright fallback)
     ├── github_service.py / github_tools.py
     ├── notes_service.py / notes_tools.py
-    ├── memory_tools.py            # memory_query tool
+    ├── notes_vector_service.py    # Notes semantic indexing ("notes" namespace in entity indexes)
+    ├── memory_tools.py            # memory_query, memory_save, memory_mark, memory_release tools
+    ├── context_tools.py           # context_status tool (context-window awareness)
     ├── codebase_navigator*        # Mistral Devstral integration (optional)
     ├── moltbook_*                 # AI social network (optional)
     ├── attachment_service.py      # Image/text/PDF/DOCX handling
@@ -97,6 +99,11 @@ half_life_modifier = 0.5 ** (days_since_creation / 60)
 - **Session accumulator:** `ConversationSession.session_memories` + `retrieved_ids` deduplicate within a conversation. Already-in-context memories are dropped without backfill (no quality dilution).
 - **Role balance:** `memory_role_balance_enabled=True` forces at least one human + one assistant memory in retrieval.
 - **`memory_query` tool** returns pure semantic similarity (no significance re-ranking), excludes the current conversation, and updates `times_retrieved` so deliberate queries feed back into significance.
+- **Memory status (`Message.memory_status`):** `"pinned"` exempts a memory from half-life decay; `"released"` excludes it from all retrieval (reversible, not deleted). Set by the entity via `memory_mark`/`memory_release` (memory IDs appear in memory markers and `memory_query` output; 6+ char prefixes accepted). Researcher view/override: `GET /api/memories/overrides`, `PUT /api/memories/{id}/status` — overriding the entity's choice is an emergency option.
+- **Reflections (`MessageRole.REFLECTION`):** self-authored memories saved via `memory_save`. Stored as Message rows on the current conversation (skipped when rebuilding conversation context) and vectorized with `role="reflection"`.
+- **Notes vectorization:** notes are mirrored into the `"notes"` namespace of each entity's Pinecone index on write (shared notes go to *all* entities' indexes); `notes_search` queries it. Backfill/recovery: `POST /api/notes/reindex`.
+- **Closing turn:** `POST /api/chat/stream` with `closing_turn=true` and no message gives the entity an open final turn (framing stored as a human message, *not* vectorized). Frontend button in the chat header (single-entity only).
+- **Context awareness:** `context_status` tool reports approximate context fullness; when trimming occurs a `[CONTEXT NOTICE]` message is injected into context (not persisted to DB).
 
 ## Multi-entity rules
 

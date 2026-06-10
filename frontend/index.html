@@ -48,6 +48,7 @@
                     <span id="conversation-meta" class="conversation-meta"></span>
                 </div>
                 <div class="header-actions">
+                    <button id="closing-turn-btn" class="icon-btn" title="Offer the entity an open final turn before this conversation ends">Closing Turn</button>
                     <button id="export-btn" class="icon-btn" title="Export conversation">Export</button>
                     <button id="archive-btn" class="icon-btn" title="Archive conversation">Archive</button>
                 </div>
@@ -398,6 +399,23 @@
                 </div>
                 <div class="memory-list" id="memory-list">
                     <!-- Memories will load here -->
+                </div>
+
+                <!-- Pinned & Released Memories Section -->
+                <div class="memory-overrides">
+                    <details class="maintenance-section" id="memory-overrides-section">
+                        <summary>Pinned &amp; Released Memories</summary>
+                        <div class="maintenance-content">
+                            <p class="maintenance-description">
+                                Memories the entity has pinned (exempt from age decay) or released
+                                (excluded from retrieval). Removing a status here overrides the
+                                entity's choice&mdash;treat as an emergency option.
+                            </p>
+                            <div class="memory-overrides-list" id="memory-overrides-list">
+                                <!-- Overrides will load here -->
+                            </div>
+                        </div>
+                    </details>
                 </div>
 
                 <!-- Orphan Maintenance Section -->

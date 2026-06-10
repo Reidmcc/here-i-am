@@ -354,10 +354,11 @@ class TestAnthropicService:
         if isinstance(memory_content, list):
             memory_content = memory_content[0]["text"]
 
-        # Check formatting - memories now include role, times_retrieved was removed for cache stability
-        assert "Memory from assistant (from 2024-01-01):" in memory_content
+        # Check formatting - memories include short ID (for memory_mark/memory_release)
+        # and role; times_retrieved was removed for cache stability
+        assert "Memory mem-1 from assistant (from 2024-01-01):" in memory_content
         assert '"I remember you mentioned enjoying programming."' in memory_content
-        assert "Memory from user (from 2024-01-02):" in memory_content
+        assert "Memory mem-2 from user (from 2024-01-02):" in memory_content
 
     def test_build_messages_caching_structure(self, sample_memories):
         """Test that cache_control markers are added correctly on conversation history."""

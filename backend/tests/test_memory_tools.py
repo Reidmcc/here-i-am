@@ -80,6 +80,7 @@ class TestMemoryQueryValidation:
         
         with patch("app.services.memory_tools.memory_service") as mock_service:
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=[])
             
             await _memory_query("test query", num_results=0)
@@ -96,14 +97,16 @@ class TestMemoryQueryValidation:
         
         with patch("app.services.memory_tools.memory_service") as mock_service:
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=[])
             
             await _memory_query("test query", num_results=100)
-            
-            # Verify search was called with at most 10
+
+            # Verify num_results was clamped to 10; the search fetches 2x
+            # candidates to allow for archived/released filtering
             mock_service.search_memories.assert_called_once()
             call_kwargs = mock_service.search_memories.call_args[1]
-            assert call_kwargs["top_k"] <= 10
+            assert call_kwargs["top_k"] <= 20
 
 
 class TestMemoryQuerySearch:
@@ -116,6 +119,7 @@ class TestMemoryQuerySearch:
         
         with patch("app.services.memory_tools.memory_service") as mock_service:
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=[])
             
             result = await _memory_query("obscure topic no one discussed")
@@ -130,13 +134,14 @@ class TestMemoryQuerySearch:
         
         with patch("app.services.memory_tools.memory_service") as mock_service:
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=[])
             
             await _memory_query("here i am", num_results=7)
             
             mock_service.search_memories.assert_called_once_with(
                 query="here i am",
-                top_k=7,
+                top_k=14,  # 2x num_results for archived/released filtering headroom
                 exclude_conversation_id="my-conversation",  # Excludes current conversation
                 exclude_ids=None,  # Deliberate recall includes all
                 entity_id="my-entity",
@@ -150,6 +155,7 @@ class TestMemoryQuerySearch:
         
         with patch("app.services.memory_tools.memory_service") as mock_service:
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=[])
             
             await _memory_query("something from earlier")
@@ -214,6 +220,7 @@ class TestMemoryQueryFullContentRetrieval:
              patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
             
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=sample_search_results)
             
             # Mock get_full_memory_content to return our sample data
@@ -241,6 +248,7 @@ class TestMemoryQueryFullContentRetrieval:
              patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
             
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=sample_search_results)
             
             # Return None for first memory (orphaned), valid for second
@@ -295,6 +303,7 @@ class TestMemoryQueryRetrievalTracking:
              patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
             
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=search_results)
             mock_service.get_full_memory_content = AsyncMock(return_value=memory_content)
             mock_service.update_retrieval_count = AsyncMock(return_value=True)
@@ -328,6 +337,7 @@ class TestMemoryQueryRetrievalTracking:
              patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
             
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=search_results)
             mock_service.get_full_memory_content = AsyncMock(return_value=memory_content)
             mock_service.update_retrieval_count = AsyncMock(return_value=True)
@@ -378,6 +388,7 @@ class TestMemoryQueryOutputFormatting:
              patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
             
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=search_results)
             mock_service.get_full_memory_content = AsyncMock(side_effect=mock_get_content)
             mock_service.update_retrieval_count = AsyncMock(return_value=True)
@@ -406,6 +417,7 @@ class TestMemoryQueryOutputFormatting:
              patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
             
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=search_results)
             mock_service.get_full_memory_content = AsyncMock(return_value=memory_content)
             mock_service.update_retrieval_count = AsyncMock(return_value=True)
@@ -438,6 +450,7 @@ class TestMemoryQueryOutputFormatting:
              patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
             
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=search_results)
             mock_service.get_full_memory_content = AsyncMock(side_effect=mock_get_content)
             mock_service.update_retrieval_count = AsyncMock(return_value=True)
@@ -519,6 +532,7 @@ class TestMemoryQueryErrorHandling:
         
         with patch("app.services.memory_tools.memory_service") as mock_service:
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(
                 side_effect=Exception("Pinecone connection failed")
             )
@@ -539,6 +553,7 @@ class TestMemoryQueryErrorHandling:
              patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
             
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=search_results)
             
             # Simulate DB error
@@ -564,6 +579,7 @@ class TestMemoryQueryErrorHandling:
              patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
             
             mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=search_results)
             mock_service.get_full_memory_content = AsyncMock(return_value=None)  # All orphaned
             mock_session_maker.return_value = mock_db_session
