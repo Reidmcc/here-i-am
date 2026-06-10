@@ -18,10 +18,25 @@ class TestModelProviderMapping:
             "claude-haiku-4-5-20251001",
             "claude-sonnet-4-20250514",
             "claude-opus-4-20250514",
+            "claude-opus-4-8",
+            "claude-fable-5",
         ]
 
         for model in claude_models:
             assert MODEL_PROVIDER_MAP.get(model) == ModelProvider.ANTHROPIC
+
+    def test_minimax_models_map_to_minimax(self):
+        """Test that MiniMax models map to MiniMax provider."""
+        minimax_models = [
+            "MiniMax-M1",
+            "MiniMax-M1-40k",
+            "MiniMax-M2.5",
+            "MiniMax-M2.5-lightning",
+            "MiniMax-M3",
+        ]
+
+        for model in minimax_models:
+            assert MODEL_PROVIDER_MAP.get(model) == ModelProvider.MINIMAX
 
     def test_gpt_models_map_to_openai(self):
         """Test that GPT models map to OpenAI provider."""
