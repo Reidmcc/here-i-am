@@ -367,6 +367,7 @@ class Settings(BaseSettings):
     # the provider APIs, so new models should work automatically when released.
     #
     # ANTHROPIC MODELS:
+    #   - claude-fable-5
     #   - claude-opus-4-8
     #   - claude-opus-4-7
     #   - claude-opus-4-6
@@ -398,9 +399,16 @@ class Settings(BaseSettings):
     #   - gemini-2.0-flash
     #   - gemini-2.0-flash-lite
     #
-    # To use a model, set it as default_model, default_openai_model, or
-    # default_google_model above, or specify it in the entity configuration
-    # via PINECONE_INDEXES.
+    # MINIMAX MODELS (Anthropic-compatible API):
+    #   - MiniMax-M3
+    #   - MiniMax-M2.5
+    #   - MiniMax-M2.5-lightning
+    #   - MiniMax-M1
+    #   - MiniMax-M1-40k
+    #
+    # To use a model, set it as default_model, default_openai_model,
+    # default_google_model, or default_minimax_model above, or specify it in
+    # the entity configuration via PINECONE_INDEXES.
     # =========================================================================
 
     # Context window limits (in tokens)

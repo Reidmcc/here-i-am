@@ -36,6 +36,8 @@ MODEL_PROVIDER_MAP = {
     "claude-opus-4-7": ModelProvider.ANTHROPIC,
     # Anthropic Claude 4.8 models
     "claude-opus-4-8": ModelProvider.ANTHROPIC,
+    # Anthropic Claude Fable 5 models
+    "claude-fable-5": ModelProvider.ANTHROPIC,
     # Anthropic Claude 4 models
     "claude-sonnet-4-20250514": ModelProvider.ANTHROPIC,
     "claude-opus-4-20250514": ModelProvider.ANTHROPIC,
@@ -70,12 +72,14 @@ MODEL_PROVIDER_MAP = {
     "MiniMax-M1-40k": ModelProvider.MINIMAX,
     "MiniMax-M2.5": ModelProvider.MINIMAX,
     "MiniMax-M2.5-lightning": ModelProvider.MINIMAX,
+    "MiniMax-M3": ModelProvider.MINIMAX,
 }
 
 
 # Available models by provider
 AVAILABLE_MODELS = {
     ModelProvider.ANTHROPIC: [
+        {"id": "claude-fable-5", "name": "Claude Fable 5"},
         {"id": "claude-opus-4-8", "name": "Claude Opus 4.8"},
         {"id": "claude-opus-4-7", "name": "Claude Opus 4.7"},
         {"id": "claude-opus-4-6", "name": "Claude Opus 4.6"},
@@ -108,6 +112,7 @@ AVAILABLE_MODELS = {
         {"id": "gemini-2.0-flash-lite", "name": "Gemini 2.0 Flash Lite"},
     ],
     ModelProvider.MINIMAX: [
+        {"id": "MiniMax-M3", "name": "MiniMax M3"},
         {"id": "MiniMax-M2.5", "name": "MiniMax M2.5"},
         {"id": "MiniMax-M2.5-lightning", "name": "MiniMax M2.5 Lightning"},
         {"id": "MiniMax-M1", "name": "MiniMax M1"},
