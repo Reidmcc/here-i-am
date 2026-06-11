@@ -3,7 +3,7 @@
  * Handles entity loading, selection, and multi-entity conversations
  */
 
-import { state } from './state.js';
+import { state, getValidSavedEntityModel } from './state.js';
 import { showToast, escapeHtml } from './utils.js';
 import { showModal, hideModal, closeAllDropdowns } from './modals.js';
 
@@ -188,19 +188,13 @@ export function handleEntityChange(entityId) {
             updateModelSelectorForProvider(provider);
         }
 
-        // Restore entity-specific model (saved user preference takes priority)
-        if (state.entityModels[entityId] !== undefined) {
-            // Verify the saved model is valid for this provider
-            const savedModel = state.entityModels[entityId];
-            const isValidModel = state.availableModels.some(
-                m => m.id === savedModel && m.provider === provider
-            );
-            if (isValidModel) {
-                state.settings.model = savedModel;
-            } else if (entity.default_model) {
-                // Saved model invalid for this provider, use default
-                state.settings.model = entity.default_model;
-            }
+        // Restore entity-specific model. A saved UI selection takes priority,
+        // but only while it stays valid AND was saved against the entity's
+        // current .env default_model — a changed default drops the stale value
+        // so the new .env default wins (getValidSavedEntityModel handles this).
+        const savedModel = getValidSavedEntityModel(entity);
+        if (savedModel) {
+            state.settings.model = savedModel;
         } else if (entity.default_model) {
             state.settings.model = entity.default_model;
         }

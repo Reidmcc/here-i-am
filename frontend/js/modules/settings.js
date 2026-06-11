@@ -3,7 +3,7 @@
  * Handles settings modal, configuration presets, and settings application
  */
 
-import { state, saveEntityModelsToStorage, saveSelectedVoiceToStorage, clearAudioCache, saveResearcherName } from './state.js';
+import { state, saveEntityModelsToStorage, getValidSavedEntityModel, saveSelectedVoiceToStorage, clearAudioCache, saveResearcherName } from './state.js';
 import { showToast } from './utils.js';
 import { showModal, hideModal } from './modals.js';
 import { setTheme } from './theme.js';
@@ -57,6 +57,10 @@ export async function applySettings() {
     // client-side preference in localStorage.
     if (state.selectedEntityId && state.selectedEntityId !== 'multi-entity') {
         state.entityModels[state.selectedEntityId] = state.settings.model;
+        // Record the configured default_model this selection was made against,
+        // so a later change to the entity's .env default invalidates it.
+        const selectedEntity = state.entities.find(e => e.index_name === state.selectedEntityId);
+        state.entityModelDefaults[state.selectedEntityId] = selectedEntity?.default_model ?? null;
 
         const entityId = state.selectedEntityId;
         const newPrompt = state.settings.systemPrompt;
@@ -308,13 +312,9 @@ function getModelDisplayName(modelId) {
 function resolveEntityModel(entity) {
     const provider = entity.llm_provider || 'anthropic';
 
-    // 1. Saved per-entity preference
-    const savedModel = state.entityModels[entity.index_name];
-    if (savedModel) {
-        const isValid = state.availableModels &&
-            state.availableModels.some(m => m.id === savedModel && m.provider === provider);
-        if (isValid) return savedModel;
-    }
+    // 1. Saved per-entity preference (ignored if stale against a changed .env default)
+    const savedModel = getValidSavedEntityModel(entity);
+    if (savedModel) return savedModel;
 
     // 2. Entity's configured default
     if (entity.default_model) return entity.default_model;

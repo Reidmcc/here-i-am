@@ -17,6 +17,11 @@ export const state = {
     entities: [],
     entitySystemPrompts: {},
     entityModels: {},  // Per-entity model selection persistence
+    // Configured default_model that was in effect when each entityModels entry
+    // was saved. Used to detect when an entity's .env default_model has changed
+    // so a now-stale saved selection can be dropped (letting the new .env
+    // default take effect) instead of silently shadowing it.
+    entityModelDefaults: {},
 
     // Multi-entity state
     isMultiEntityMode: false,
@@ -157,6 +162,10 @@ export function loadEntityModelsFromStorage() {
         if (saved) {
             state.entityModels = JSON.parse(saved);
         }
+        const savedDefaults = localStorage.getItem('entity_model_defaults');
+        if (savedDefaults) {
+            state.entityModelDefaults = JSON.parse(savedDefaults);
+        }
     } catch (e) {
         console.warn('Failed to load entity models:', e);
     }
@@ -168,9 +177,56 @@ export function loadEntityModelsFromStorage() {
 export function saveEntityModelsToStorage() {
     try {
         localStorage.setItem('entity_models', JSON.stringify(state.entityModels));
+        localStorage.setItem('entity_model_defaults', JSON.stringify(state.entityModelDefaults));
     } catch (e) {
         console.warn('Failed to save entity models:', e);
     }
+}
+
+/**
+ * Resolve the persisted per-entity model selection for an entity, honoring the
+ * researcher's UI choice while keeping the .env config authoritative.
+ *
+ * The per-entity model the researcher picks in the UI is persisted to
+ * localStorage so it survives restarts. But that saved value must not
+ * permanently shadow the entity's configured `default_model`: when the
+ * researcher edits `default_model` in `.env` (PINECONE_INDEXES), the new
+ * default should take effect. We detect that by recording the configured
+ * default in effect when the selection was saved (entityModelDefaults). If the
+ * entity's current configured default differs, the saved selection is stale —
+ * we drop it (and its baseline) and return null so callers fall through to the
+ * new default.
+ *
+ * Entries saved before this baseline existed have no recorded default, so they
+ * are treated as stale on first load after upgrade — exactly the desired
+ * migration (the .env default wins, then the next deliberate pick re-saves a
+ * baseline).
+ *
+ * @param {Object} entity - Entity object (index_name, llm_provider, default_model)
+ * @returns {string|null} - A valid saved model id, or null if none/stale/invalid
+ */
+export function getValidSavedEntityModel(entity) {
+    if (!entity) return null;
+    const entityId = entity.index_name;
+    const savedModel = state.entityModels[entityId];
+    if (savedModel === undefined) return null;
+
+    // Drop a selection saved against a different (now-changed) .env default.
+    const currentDefault = entity.default_model ?? null;
+    const savedAgainstDefault = state.entityModelDefaults[entityId] ?? null;
+    if (savedAgainstDefault !== currentDefault) {
+        delete state.entityModels[entityId];
+        delete state.entityModelDefaults[entityId];
+        saveEntityModelsToStorage();
+        return null;
+    }
+
+    // Only honor the saved model if it is still valid for this provider.
+    const provider = entity.llm_provider || 'anthropic';
+    const isValid = state.availableModels?.some(
+        m => m.id === savedModel && m.provider === provider
+    );
+    return isValid ? savedModel : null;
 }
 
 /**

@@ -4,7 +4,7 @@
  */
 
 // Import modules
-import { state, resetMemoryState, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName, LEGACY_ENTITY_PROMPTS_KEY } from './modules/state.js';
+import { state, resetMemoryState, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName, getValidSavedEntityModel, LEGACY_ENTITY_PROMPTS_KEY } from './modules/state.js';
 import { showToast, showLoading, setToastContainer, escapeHtml, renderMarkdown, truncateText, stripMarkdown } from './modules/utils.js';
 import { loadTheme, getCurrentTheme, setTheme } from './modules/theme.js';
 import { setElements as setModalElements, showModal, hideModal, closeActiveModal, isModalOpen, closeAllDropdowns } from './modules/modals.js';
@@ -731,18 +731,13 @@ class App {
                 const provider = entity.llm_provider || 'anthropic';
                 updateModelSelectorForProvider(provider);
 
-                // Restore saved model for this entity, or use default
-                const savedModel = state.entityModels[state.selectedEntityId];
+                // Restore saved model for this entity, or use default. A saved
+                // UI selection is honored only while valid AND saved against the
+                // entity's current .env default_model; a changed default drops
+                // the stale value so the new .env default wins.
+                const savedModel = getValidSavedEntityModel(entity);
                 if (savedModel) {
-                    // Verify saved model is valid for this provider
-                    const isValidModel = state.availableModels.some(
-                        m => m.id === savedModel && m.provider === provider
-                    );
-                    if (isValidModel) {
-                        state.settings.model = savedModel;
-                    } else if (entity.default_model) {
-                        state.settings.model = entity.default_model;
-                    }
+                    state.settings.model = savedModel;
                 } else if (entity.default_model) {
                     state.settings.model = entity.default_model;
                 }
