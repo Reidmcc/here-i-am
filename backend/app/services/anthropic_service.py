@@ -617,8 +617,17 @@ class AnthropicService:
         date_block += "[/DATE CONTEXT]"
         final_parts.append(date_block)
 
-        # Entity notes (index.md) - inject if notes are enabled and entity has an index file
-        if settings.notes_enabled and responding_entity_label:
+        # Entity notes (index.md):
+        # For single-entity conversations the notes are injected ONCE at the front of
+        # the cached conversation history (see SessionManager session build), so they
+        # are paid for once and then read from cache instead of being re-sent uncached
+        # in every turn's final message.
+        #
+        # For multi-entity conversations the responding entity — and therefore the
+        # relevant notes — changes turn to turn, while the cached history is shared
+        # across all participants. Pinning one entity's notes into that shared cached
+        # block would be wrong, so multi-entity keeps notes in the per-turn message.
+        if settings.notes_enabled and responding_entity_label and is_multi_entity:
             # Get the entity's index.md content
             entity_notes = notes_service.get_index_content(responding_entity_label)
             if entity_notes:

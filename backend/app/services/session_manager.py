@@ -98,6 +98,101 @@ class SessionManager:
         self._sessions[conversation_id] = session
         return session
 
+    def _build_notes_context_message(
+        self, entity_label: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Build a single cached-history context message holding the entity's notes.
+
+        Combines the entity's index.md and any shared notes into one user-role
+        message wrapped in [ENTITY NOTES]/[SHARED NOTES] markers. Returns None when
+        there are no notes to inject. Marked with is_notes=True for identification.
+        """
+        from app.services.notes_service import notes_service
+
+        parts: List[str] = []
+
+        entity_notes = notes_service.get_index_content(entity_label)
+        if entity_notes:
+            parts.append(f"[ENTITY NOTES]\n{entity_notes}\n[/ENTITY NOTES]")
+            logger.info(
+                f"[NOTES] Injected index.md for entity '{entity_label}' into cached history ({len(entity_notes)} chars)"
+            )
+
+        shared_notes = notes_service.get_shared_index_content()
+        if shared_notes:
+            parts.append(f"[SHARED NOTES]\n{shared_notes}\n[/SHARED NOTES]")
+            logger.info(
+                f"[NOTES] Injected shared index.md into cached history ({len(shared_notes)} chars)"
+            )
+
+        if not parts:
+            return None
+
+        return {
+            "role": "user",
+            "content": "\n\n".join(parts),
+            "is_notes": True,
+        }
+
+    def _log_cache_efficiency(
+        self,
+        session: ConversationSession,
+        cached_breakpoint: int,
+        usage: Optional[Dict[str, Any]],
+    ) -> None:
+        """
+        Classify the prompt-cache result of an API call for diagnostics.
+
+        Distinguishes an *expected* large cache write — the cached prefix grew or
+        shifted this turn (bootstrap, consolidation, or context trim), so the new
+        region legitimately had to be written — from an *unexpected* miss, where the
+        cached boundary was stable but a large write/small read shows the prefix
+        failed to match anyway (a sign the context construction changed the cached
+        prefix between turns).
+
+        Uses message-count boundary deltas as a cheap proxy; `cached_breakpoint` is
+        the number of messages in the cached prefix that was sent on this call.
+        """
+        if not usage:
+            return
+
+        write = usage.get("cache_creation_input_tokens", 0) or 0
+        read = usage.get("cache_read_input_tokens", 0) or 0
+        prev = session.last_api_cache_breakpoint
+
+        # Only worth classifying when the write dominates the read (the prefix was
+        # largely not reused). A small write below the cache minimum is noise.
+        if write >= 1024 and write > read:
+            if prev < 0:
+                logger.info(
+                    f"[CACHE] Large write EXPECTED (bootstrap / first cached turn): "
+                    f"write={write}, read={read}, boundary={cached_breakpoint} msgs"
+                )
+            elif cached_breakpoint > prev:
+                logger.info(
+                    f"[CACHE] Large write EXPECTED (consolidation grew boundary "
+                    f"{prev}->{cached_breakpoint} msgs): write={write}, read={read}"
+                )
+            elif cached_breakpoint < prev:
+                logger.info(
+                    f"[CACHE] Large write EXPECTED (context trim shifted boundary "
+                    f"{prev}->{cached_breakpoint} msgs): write={write}, read={read}"
+                )
+            else:
+                logger.warning(
+                    f"[CACHE] UNEXPECTED cache miss: write={write} >> read={read} "
+                    f"with a stable boundary ({cached_breakpoint} msgs). The cached "
+                    f"prefix changed since the last turn — check context construction."
+                )
+        else:
+            logger.info(
+                f"[CACHE] Cache OK: read={read}, write={write}, "
+                f"boundary={cached_breakpoint} msgs"
+            )
+
+        session.last_api_cache_breakpoint = cached_breakpoint
+
     async def load_session_from_db(
         self,
         conversation_id: str,
@@ -308,6 +403,19 @@ class SessionManager:
             logger.info(
                 f"[MEMORY] Skipped {skipped_archived} memories from archived source conversations during session load"
             )
+
+        # Inject the entity's notes (index.md + shared notes) ONCE at the front of the
+        # conversation context for single-entity conversations. This keeps the notes in
+        # the cached history block — paid for once, then read from cache — instead of
+        # being re-sent uncached in every turn's final message. Changes the AI makes to
+        # its notes mid-conversation flow through the notes tool exchanges already stored
+        # in history, like any other tool-call data, so they remain cacheable at their
+        # position. Multi-entity conversations keep notes in the per-turn message because
+        # the responding entity (and thus the relevant notes) changes turn to turn.
+        if settings.notes_enabled and responding_entity_label and not is_multi_entity:
+            notes_message = self._build_notes_context_message(responding_entity_label)
+            if notes_message:
+                session.conversation_context.append(notes_message)
 
         # Build conversation context, interleaving memories at their original positions
         memory_insert_count = 0
@@ -703,6 +811,10 @@ class SessionManager:
         )
 
         # Step 8: Update conversation context and cache state
+        # Classify the cache result against the prefix we sent (before the boundary moves).
+        self._log_cache_efficiency(
+            session, len(cache_content["cached_context"]), response.get("usage")
+        )
         session.add_exchange(user_message, response["content"])
 
         # Update cache state for conversation history (memories don't affect cache hits)
@@ -1117,6 +1229,11 @@ class SessionManager:
         TOOL_CACHE_TOKEN_THRESHOLD = 2048  # Move breakpoint after N new tokens
         iteration = 0
         max_iterations = settings.tool_use_max_iterations
+        # Cache metrics from iteration 1, which is the only call built with the
+        # conversation-history cache structure (later tool iterations use the
+        # separate tool-breakpoint scheme). We classify against these so the
+        # diagnostic reflects the durable conversation-history cache.
+        first_iteration_usage: Optional[Dict[str, Any]] = None
 
         while iteration < max_iterations:
             iteration += 1
@@ -1199,10 +1316,20 @@ class SessionManager:
                     stop_reason = event.get("stop_reason")
                     iteration_content_blocks = event.get("content_blocks", [])
                     iteration_tool_use = event.get("tool_use")
+                    if iteration == 1:
+                        first_iteration_usage = event.get("usage")
 
                     # If no tool use, this is the final response
                     if stop_reason != "tool_use" or not iteration_tool_use:
                         full_content += iteration_content
+
+                        # Classify the cache result of the conversation-history call
+                        # (iteration 1) against the prefix we sent, before the boundary moves.
+                        self._log_cache_efficiency(
+                            session,
+                            len(cache_content["cached_context"]),
+                            first_iteration_usage,
+                        )
 
                         # Update conversation context and cache state
                         # Include tool exchanges so they're persisted in conversation history
@@ -1338,6 +1465,9 @@ class SessionManager:
 
         # If we've exhausted iterations, yield what we have
         logger.warning(f"[TOOLS] Max iterations ({max_iterations}) reached")
+        self._log_cache_efficiency(
+            session, len(cache_content["cached_context"]), first_iteration_usage
+        )
         session.add_exchange(
             user_message,
             full_content,

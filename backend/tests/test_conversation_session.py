@@ -397,3 +397,37 @@ class TestConversationSessionSharedMethods:
             count_tokens_fn=lambda x: 999,  # Always over limit
         )
         assert len(session.conversation_context) >= 1
+
+    def test_trim_context_shifts_cache_breakpoint(self):
+        """Front-trimming must shift last_cached_context_length so the cache
+        breakpoint keeps pointing at the same messages. Otherwise the cached
+        prefix changes and every subsequent turn is a full cache miss."""
+        session = ConversationSession(conversation_id="conv-1")
+        session.conversation_context = [
+            {"role": "user", "content": f"m{i}"} for i in range(10)
+        ]
+        session.last_cached_context_length = 6
+
+        # Over limit until only 6 messages remain (removes the first 4).
+        removed = session.trim_context_to_limit(
+            max_tokens=50,
+            count_tokens_fn=lambda text: 1000 if len(session.conversation_context) > 6 else 10,
+        )
+        assert removed == 4
+        # Breakpoint shifts down by the number removed from the front.
+        assert session.last_cached_context_length == 2
+
+    def test_trim_context_collapses_breakpoint_inside_trimmed_region(self):
+        """If the breakpoint was inside the trimmed region it collapses to 0."""
+        session = ConversationSession(conversation_id="conv-1")
+        session.conversation_context = [
+            {"role": "user", "content": f"m{i}"} for i in range(10)
+        ]
+        session.last_cached_context_length = 2
+
+        removed = session.trim_context_to_limit(
+            max_tokens=50,
+            count_tokens_fn=lambda text: 1000 if len(session.conversation_context) > 3 else 10,
+        )
+        assert removed > 2
+        assert session.last_cached_context_length == 0
