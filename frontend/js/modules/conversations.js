@@ -296,8 +296,15 @@ export async function loadConversation(id) {
 
         // Repopulate the "memories retrieved in this session" panel so it
         // reflects the loaded conversation instead of staying empty until the
-        // next message is sent.
-        state.retrievedMemories = sessionInfo?.memories || [];
+        // next message is sent. Multi-entity conversations group memories per
+        // entity (memories_by_entity); single-entity uses the flat list. The
+        // panel prefers the grouped map when present, so only populate one.
+        if (sessionInfo?.memories_by_entity) {
+            state.retrievedMemoriesByEntity = sessionInfo.memories_by_entity;
+            state.retrievedMemories = [];
+        } else {
+            state.retrievedMemories = sessionInfo?.memories || [];
+        }
 
         // Update multi-entity state
         if (conversation.conversation_type === 'multi_entity' && conversation.entities) {

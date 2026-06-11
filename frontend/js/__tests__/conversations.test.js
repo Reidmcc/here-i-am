@@ -276,6 +276,26 @@ describe('Conversations Module', () => {
             expect(state.retrievedMemories).toEqual(memories);
         });
 
+        it('should repopulate per-entity memories for multi-entity conversations', async () => {
+            const memoriesByEntity = {
+                'entity-1': { label: 'Claude', memories: [{ id: 'm1', role: 'human', times_retrieved: 1 }] },
+                'entity-2': { label: 'GPT', memories: [{ id: 'm2', role: 'assistant', times_retrieved: 4 }] },
+            };
+            window.api.getConversation = vi.fn(() => Promise.resolve({ id: 'conv-123' }));
+            window.api.getConversationMessages = vi.fn(() => Promise.resolve([]));
+            window.api.getSessionInfo = vi.fn(() => Promise.resolve({
+                memories: [],
+                memories_by_entity: memoriesByEntity,
+            }));
+
+            await loadConversation('conv-123');
+
+            // Grouped map drives the panel; the flat list stays empty so the
+            // panel renders entity sections rather than an ungrouped list.
+            expect(state.retrievedMemoriesByEntity).toEqual(memoriesByEntity);
+            expect(state.retrievedMemories).toEqual([]);
+        });
+
         it('should still load when session info is unavailable', async () => {
             window.api.getConversation = vi.fn(() => Promise.resolve({ id: 'conv-123' }));
             window.api.getConversationMessages = vi.fn(() => Promise.resolve([]));
