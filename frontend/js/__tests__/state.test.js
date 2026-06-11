@@ -13,6 +13,7 @@ import {
     saveSelectedVoiceToStorage,
     loadResearcherName,
     saveResearcherName,
+    getValidSavedEntityModel,
 } from '../modules/state.js';
 
 describe('State Module', () => {
@@ -277,6 +278,65 @@ describe('State Module', () => {
 
             state.audioCache.delete('key');
             expect(state.audioCache.has('key')).toBe(false);
+        });
+    });
+
+    describe('getValidSavedEntityModel', () => {
+        const minimaxEntity = {
+            index_name: 'minimax-research',
+            llm_provider: 'minimax',
+            default_model: 'MiniMax-M3',
+        };
+
+        beforeEach(() => {
+            localStorage.clear();
+            state.entityModels = {};
+            state.entityModelDefaults = {};
+            state.availableModels = [
+                { id: 'MiniMax-M3', name: 'MiniMax M3', provider: 'minimax' },
+                { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax' },
+                { id: 'claude-fable-5', name: 'Claude Fable 5', provider: 'anthropic' },
+            ];
+        });
+
+        it('returns null when nothing is saved', () => {
+            expect(getValidSavedEntityModel(minimaxEntity)).toBe(null);
+        });
+
+        it('honors a saved selection that matches its recorded .env default', () => {
+            state.entityModels['minimax-research'] = 'MiniMax-M2.5';
+            state.entityModelDefaults['minimax-research'] = 'MiniMax-M3';
+            expect(getValidSavedEntityModel(minimaxEntity)).toBe('MiniMax-M2.5');
+        });
+
+        it('drops a saved selection when the entity .env default_model changed', () => {
+            // Saved against an older default; .env now configures MiniMax-M3.
+            state.entityModels['minimax-research'] = 'MiniMax-M2.5';
+            state.entityModelDefaults['minimax-research'] = 'MiniMax-M2.5';
+            expect(getValidSavedEntityModel(minimaxEntity)).toBe(null);
+            // Stale entry is removed so callers fall through to the new default.
+            expect(state.entityModels['minimax-research']).toBeUndefined();
+            expect(state.entityModelDefaults['minimax-research']).toBeUndefined();
+        });
+
+        it('treats a pre-baseline saved entry (no recorded default) as stale', () => {
+            state.entityModels['minimax-research'] = 'MiniMax-M2.5';
+            // No entityModelDefaults entry (saved before the baseline existed).
+            expect(getValidSavedEntityModel(minimaxEntity)).toBe(null);
+            expect(state.entityModels['minimax-research']).toBeUndefined();
+        });
+
+        it('drops a saved selection that is no longer valid for the provider', () => {
+            state.entityModels['minimax-research'] = 'gpt-4o';
+            state.entityModelDefaults['minimax-research'] = 'MiniMax-M3';
+            expect(getValidSavedEntityModel(minimaxEntity)).toBe(null);
+        });
+
+        it('honors a saved selection for an entity with no configured default', () => {
+            const entity = { index_name: 'claude-main', llm_provider: 'anthropic', default_model: null };
+            state.entityModels['claude-main'] = 'claude-fable-5';
+            state.entityModelDefaults['claude-main'] = null;
+            expect(getValidSavedEntityModel(entity)).toBe('claude-fable-5');
         });
     });
 });
