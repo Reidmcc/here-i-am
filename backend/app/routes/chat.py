@@ -1154,14 +1154,36 @@ async def get_session_info(
     if not session:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    # Get memories currently in context (not all retrieved, just those in context)
+    # Get memories currently in context (not all retrieved, just those in context).
+    # The two memory systems track "in context" differently: the legacy memory
+    # block uses session.in_context_ids, while memory-in-context mode embeds
+    # memories in the conversation and tracks their positions in memory_tracker.
+    # Reading only in_context_ids returns an empty list in memory-in-context mode,
+    # which blanks the "Retrieved Memories" panel after switching conversations.
+    if session.use_memory_in_context:
+        in_context_ids = session.memory_tracker.get_in_context_memory_ids(
+            len(session.conversation_context)
+        )
+    else:
+        in_context_ids = session.in_context_ids
     in_context_memories = [
         session.session_memories[mid]
-        for mid in session.in_context_ids
+        for mid in in_context_ids
         if mid in session.session_memories
     ]
 
-    return {
+    def serialize_entry(m) -> dict:
+        return {
+            "id": m.id,
+            "content": m.content[:3000] if len(m.content) > 3000 else m.content,
+            "content_preview": m.content[:200] if len(m.content) > 200 else m.content,
+            "created_at": m.created_at,
+            "times_retrieved": m.times_retrieved,
+            "role": m.role,
+            "score": m.score,
+        }
+
+    response = {
         "conversation_id": session.conversation_id,
         "model": session.model,
         "temperature": session.temperature,
@@ -1170,19 +1192,76 @@ async def get_session_info(
         "entity_id": session.entity_id,
         "message_count": len(session.conversation_context),
         "memories_in_context": len(in_context_memories),
-        "memories": [
-            {
-                "id": m.id,
-                "content": m.content[:3000] if len(m.content) > 3000 else m.content,
-                "content_preview": m.content[:200] if len(m.content) > 200 else m.content,
-                "created_at": m.created_at,
-                "times_retrieved": m.times_retrieved,
-                "role": m.role,
-                "score": m.score,
-            }
-            for m in in_context_memories
-        ],
+        "memories": [serialize_entry(m) for m in in_context_memories],
     }
+
+    # For multi-entity conversations, the in-memory session only holds the most
+    # recent responding entity's memories. The frontend panel groups retrieved
+    # memories per entity, so rebuild that grouping from the persisted
+    # ConversationMemoryLink records for every participant. Without this, the
+    # panel goes blank (or loses other entities) after switching conversations
+    # and back. See get_session_info's flat "memories" for the single-entity path.
+    if session.is_multi_entity:
+        memories_by_entity = await _build_memories_by_entity(conversation_id, db)
+        if memories_by_entity:
+            response["memories_by_entity"] = memories_by_entity
+
+    return response
+
+
+async def _build_memories_by_entity(
+    conversation_id: str,
+    db: AsyncSession,
+) -> dict:
+    """
+    Rebuild the per-entity retrieved-memory grouping for a multi-entity
+    conversation from persisted ConversationMemoryLink records.
+
+    Mirrors the reconstruction load_session_from_db performs, including the
+    archived-source filter, so the restored panel matches what retrieval would
+    actually surface. Memories from archived source conversations are skipped.
+
+    Returns a dict keyed by entity_id: {entity_id: {"label", "memories": [...]}}.
+    """
+    entity_ids = await get_multi_entity_ids(conversation_id, db)
+    if not entity_ids:
+        return {}
+
+    result: dict = {}
+    for entity_id in entity_ids:
+        archived_source_ids: set = set()
+        if memory_service.is_configured(entity_id=entity_id):
+            archived_source_ids = await memory_service.get_archived_conversation_ids(
+                db, entity_id=entity_id
+            )
+
+        retrieved_ids = await memory_service.get_retrieved_ids_for_conversation(
+            conversation_id, db, entity_id=entity_id
+        )
+
+        memories = []
+        for mem_id in retrieved_ids:
+            mem_data = await memory_service.get_full_memory_content(mem_id, db)
+            if not mem_data or mem_data["conversation_id"] in archived_source_ids:
+                continue
+            content = mem_data["content"]
+            memories.append({
+                "id": mem_data["id"],
+                "content": content[:3000] if len(content) > 3000 else content,
+                "content_preview": content[:200] if len(content) > 200 else content,
+                "created_at": mem_data["created_at"],
+                "times_retrieved": mem_data["times_retrieved"],
+                "role": mem_data["role"],
+                "score": None,
+            })
+
+        if memories:
+            result[entity_id] = {
+                "label": get_entity_label(entity_id) or entity_id,
+                "memories": memories,
+            }
+
+    return result
 
 
 @router.delete("/session/{conversation_id}")
