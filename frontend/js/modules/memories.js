@@ -205,6 +205,7 @@ export async function showMemoriesModal() {
     showModal('memoriesModal');
     await loadMemoryStats();
     await loadMemoryList();
+    await loadReflections();
     await loadMemoryOverrides();
 }
 
@@ -308,6 +309,52 @@ export async function searchMemories() {
     } catch (error) {
         showToast('Memory search not available', 'warning');
         console.error('Failed to search memories:', error);
+    }
+}
+
+// =========================================================================
+// Reflections (self-authored memories saved via memory_save)
+// =========================================================================
+
+/**
+ * Load reflection memories — those the entity saved deliberately via memory_save
+ */
+export async function loadReflections() {
+    const listEl = document.getElementById('memory-reflections-list');
+    if (!listEl) return;
+
+    try {
+        const reflections = await api.listMemories({
+            limit: 50,
+            role: 'reflection',
+            sortBy: 'created_at',
+            entityId: state.selectedEntityId
+        });
+
+        if (reflections.length === 0) {
+            listEl.innerHTML = '<div style="color: var(--text-muted);">No reflections saved yet</div>';
+            return;
+        }
+
+        listEl.innerHTML = reflections.map(mem => `
+            <div class="memory-list-item" data-memory-id="${mem.id}">
+                <div class="memory-list-item-header">
+                    <span class="memory-list-item-role">
+                        reflection
+                        ${mem.memory_status ? `<span class="memory-status-badge ${mem.memory_status}">${mem.memory_status}</span>` : ''}
+                    </span>
+                    <span class="memory-list-item-stats">
+                        ${new Date(mem.created_at).toLocaleDateString()} &middot;
+                        Retrieved ${mem.times_retrieved}&times; &middot;
+                        Significance: ${mem.significance.toFixed(2)}
+                    </span>
+                </div>
+                <div class="memory-list-item-content">${escapeHtml(mem.content_preview)}</div>
+            </div>
+        `).join('');
+    } catch (error) {
+        listEl.innerHTML = '<div style="color: var(--text-muted);">Failed to load reflections</div>';
+        console.error('Failed to load reflections:', error);
     }
 }
 

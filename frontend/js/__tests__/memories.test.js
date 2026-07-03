@@ -10,6 +10,7 @@ import {
     updateMemoriesPanel,
     handleMemoryUpdate,
     loadMemoryStats,
+    loadReflections,
     searchMemories,
     checkForOrphans,
     cleanupOrphans,
@@ -44,6 +45,10 @@ describe('Memories Module', () => {
         const memorySearchInput = document.createElement('input');
         memorySearchInput.id = 'memory-search-input';
         document.body.appendChild(memorySearchInput);
+
+        const reflectionsList = document.createElement('div');
+        reflectionsList.id = 'memory-reflections-list';
+        document.body.appendChild(reflectionsList);
 
         const orphanStatus = document.createElement('div');
         orphanStatus.id = 'orphan-status';
@@ -226,6 +231,78 @@ describe('Memories Module', () => {
 
             const statsEl = document.getElementById('memory-stats');
             expect(statsEl.innerHTML).toContain('100');
+        });
+    });
+
+    describe('loadReflections', () => {
+        it('should request reflection memories for the selected entity', async () => {
+            window.api.listMemories = vi.fn(() => Promise.resolve([]));
+
+            await loadReflections();
+
+            expect(window.api.listMemories).toHaveBeenCalledWith({
+                limit: 50,
+                role: 'reflection',
+                sortBy: 'created_at',
+                entityId: 'entity-1',
+            });
+        });
+
+        it('should show empty state when there are no reflections', async () => {
+            window.api.listMemories = vi.fn(() => Promise.resolve([]));
+
+            await loadReflections();
+
+            const listEl = document.getElementById('memory-reflections-list');
+            expect(listEl.innerHTML).toContain('No reflections saved yet');
+        });
+
+        it('should render reflection items', async () => {
+            window.api.listMemories = vi.fn(() => Promise.resolve([
+                {
+                    id: 'ref-1',
+                    content_preview: 'A saved reflection about memory',
+                    role: 'reflection',
+                    created_at: '2026-01-15T10:00:00Z',
+                    times_retrieved: 3,
+                    significance: 1.42,
+                    memory_status: null,
+                },
+            ]));
+
+            await loadReflections();
+
+            const listEl = document.getElementById('memory-reflections-list');
+            expect(listEl.innerHTML).toContain('A saved reflection about memory');
+            expect(listEl.innerHTML).toContain('reflection');
+        });
+
+        it('should show a status badge on pinned reflections', async () => {
+            window.api.listMemories = vi.fn(() => Promise.resolve([
+                {
+                    id: 'ref-1',
+                    content_preview: 'Pinned reflection',
+                    role: 'reflection',
+                    created_at: '2026-01-15T10:00:00Z',
+                    times_retrieved: 0,
+                    significance: 1.0,
+                    memory_status: 'pinned',
+                },
+            ]));
+
+            await loadReflections();
+
+            const listEl = document.getElementById('memory-reflections-list');
+            expect(listEl.querySelector('.memory-status-badge.pinned')).not.toBeNull();
+        });
+
+        it('should show an error message when the API fails', async () => {
+            window.api.listMemories = vi.fn(() => Promise.reject(new Error('boom')));
+
+            await loadReflections();
+
+            const listEl = document.getElementById('memory-reflections-list');
+            expect(listEl.innerHTML).toContain('Failed to load reflections');
         });
     });
 
