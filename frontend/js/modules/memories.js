@@ -198,6 +198,71 @@ export function handleMemoryUpdate(data) {
 // Memory Browser Modal
 // =========================================================================
 
+// Full memory text cache shared by all browser lists (memory id -> content).
+// Pre-filled from list payloads; misses fall back to GET /api/memories/{id}.
+const memoryFullText = new Map();
+
+const EXPAND_HINT = '<span class="memory-list-item-expand-hint">(click for full text)</span>';
+
+/**
+ * Compute the preview text for a memory and whether there is more to show
+ * @param {Object} mem - Memory object from the API
+ * @returns {{preview: string, canExpand: boolean}}
+ */
+function memoryPreview(mem) {
+    const full = mem.content || '';
+    const preview = mem.content_preview || truncateText(full, 200) || '';
+    return {
+        preview,
+        // Without the full content we can't compare lengths; a preview at the
+        // backend's 200-char truncation point means there may be more to fetch
+        canExpand: full ? full.length > preview.length : preview.length >= 200,
+    };
+}
+
+/**
+ * Make truncated memory list items clickable to toggle their full text.
+ * @param {HTMLElement} listEl - Container holding .memory-list-item nodes
+ * @param {Array} memories - Memory objects used to pre-fill the text cache
+ */
+function bindFullTextToggles(listEl, memories) {
+    memories.forEach(mem => {
+        if (mem.content) {
+            memoryFullText.set(mem.id, mem.content);
+        }
+    });
+
+    listEl.querySelectorAll('.memory-list-item.expandable').forEach(item => {
+        const contentEl = item.querySelector('.memory-list-item-content');
+        if (!contentEl) return;
+        const previewText = contentEl.textContent;
+
+        item.addEventListener('click', async () => {
+            if (item.classList.contains('expanded')) {
+                item.classList.remove('expanded');
+                contentEl.textContent = previewText;
+                return;
+            }
+
+            const memoryId = item.dataset.memoryId;
+            let fullText = memoryFullText.get(memoryId);
+            if (fullText === undefined) {
+                try {
+                    const mem = await api.getMemory(memoryId);
+                    fullText = mem.content || '';
+                    memoryFullText.set(memoryId, fullText);
+                } catch (error) {
+                    showToast('Failed to load full memory text', 'error');
+                    console.error('Failed to load full memory text:', error);
+                    return;
+                }
+            }
+            item.classList.add('expanded');
+            contentEl.textContent = fullText;
+        });
+    });
+}
+
 /**
  * Show the memories browser modal
  */
@@ -260,17 +325,25 @@ export async function loadMemoryList() {
             return;
         }
 
-        listEl.innerHTML = memories.map(mem => `
-            <div class="memory-list-item">
+        listEl.innerHTML = memories.map(mem => {
+            const { preview, canExpand } = memoryPreview(mem);
+            return `
+            <div class="memory-list-item${canExpand ? ' expandable' : ''}" data-memory-id="${mem.id}">
                 <div class="memory-list-item-header">
-                    <span class="memory-list-item-role">${mem.role}</span>
+                    <span>
+                        <span class="memory-list-item-role">${mem.role}</span>
+                        ${canExpand ? EXPAND_HINT : ''}
+                    </span>
                     <span class="memory-list-item-stats">
                         Retrieved ${mem.times_retrieved}× &middot; Significance: ${mem.significance.toFixed(2)}
                     </span>
                 </div>
-                <div class="memory-list-item-content">${escapeHtml(mem.content_preview)}</div>
+                <div class="memory-list-item-content">${escapeHtml(preview)}</div>
             </div>
-        `).join('');
+        `;
+        }).join('');
+
+        bindFullTextToggles(listEl, memories);
     } catch (error) {
         console.error('Failed to load memories:', error);
     }
@@ -295,17 +368,25 @@ export async function searchMemories() {
             return;
         }
 
-        listEl.innerHTML = results.map(mem => `
-            <div class="memory-list-item">
+        listEl.innerHTML = results.map(mem => {
+            const { preview, canExpand } = memoryPreview(mem);
+            return `
+            <div class="memory-list-item${canExpand ? ' expandable' : ''}" data-memory-id="${mem.id}">
                 <div class="memory-list-item-header">
-                    <span class="memory-list-item-role">${mem.role}</span>
+                    <span>
+                        <span class="memory-list-item-role">${mem.role}</span>
+                        ${canExpand ? EXPAND_HINT : ''}
+                    </span>
                     <span class="memory-list-item-stats">
                         Score: ${(mem.score || 0).toFixed(2)} &middot; Retrieved ${mem.times_retrieved}×
                     </span>
                 </div>
-                <div class="memory-list-item-content">${escapeHtml(mem.content || mem.content_preview)}</div>
+                <div class="memory-list-item-content">${escapeHtml(preview)}</div>
             </div>
-        `).join('');
+        `;
+        }).join('');
+
+        bindFullTextToggles(listEl, results);
     } catch (error) {
         showToast('Memory search not available', 'warning');
         console.error('Failed to search memories:', error);
@@ -336,12 +417,17 @@ export async function loadReflections() {
             return;
         }
 
-        listEl.innerHTML = reflections.map(mem => `
-            <div class="memory-list-item" data-memory-id="${mem.id}">
+        listEl.innerHTML = reflections.map(mem => {
+            const { preview, canExpand } = memoryPreview(mem);
+            return `
+            <div class="memory-list-item${canExpand ? ' expandable' : ''}" data-memory-id="${mem.id}">
                 <div class="memory-list-item-header">
-                    <span class="memory-list-item-role">
-                        reflection
-                        ${mem.memory_status ? `<span class="memory-status-badge ${mem.memory_status}">${mem.memory_status}</span>` : ''}
+                    <span>
+                        <span class="memory-list-item-role">
+                            reflection
+                            ${mem.memory_status ? `<span class="memory-status-badge ${mem.memory_status}">${mem.memory_status}</span>` : ''}
+                        </span>
+                        ${canExpand ? EXPAND_HINT : ''}
                     </span>
                     <span class="memory-list-item-stats">
                         ${new Date(mem.created_at).toLocaleDateString()} &middot;
@@ -349,9 +435,12 @@ export async function loadReflections() {
                         Significance: ${mem.significance.toFixed(2)}
                     </span>
                 </div>
-                <div class="memory-list-item-content">${escapeHtml(mem.content_preview)}</div>
+                <div class="memory-list-item-content">${escapeHtml(preview)}</div>
             </div>
-        `).join('');
+        `;
+        }).join('');
+
+        bindFullTextToggles(listEl, reflections);
     } catch (error) {
         listEl.innerHTML = '<div style="color: var(--text-muted);">Failed to load reflections</div>';
         console.error('Failed to load reflections:', error);
@@ -377,12 +466,17 @@ export async function loadMemoryOverrides() {
             return;
         }
 
-        listEl.innerHTML = overrides.map(mem => `
-            <div class="memory-list-item" data-memory-id="${mem.id}">
+        listEl.innerHTML = overrides.map(mem => {
+            const { preview, canExpand } = memoryPreview(mem);
+            return `
+            <div class="memory-list-item${canExpand ? ' expandable' : ''}" data-memory-id="${mem.id}">
                 <div class="memory-list-item-header">
-                    <span class="memory-list-item-role">
-                        ${escapeHtml(mem.role)}
-                        <span class="memory-status-badge ${mem.memory_status}">${mem.memory_status}</span>
+                    <span>
+                        <span class="memory-list-item-role">
+                            ${escapeHtml(mem.role)}
+                            <span class="memory-status-badge ${mem.memory_status}">${mem.memory_status}</span>
+                        </span>
+                        ${canExpand ? EXPAND_HINT : ''}
                     </span>
                     <span class="memory-list-item-stats">
                         ${new Date(mem.created_at).toLocaleDateString()} &middot;
@@ -392,9 +486,12 @@ export async function loadMemoryOverrides() {
                         </button>
                     </span>
                 </div>
-                <div class="memory-list-item-content">${escapeHtml(mem.content_preview)}</div>
+                <div class="memory-list-item-content">${escapeHtml(preview)}</div>
             </div>
-        `).join('');
+        `;
+        }).join('');
+
+        bindFullTextToggles(listEl, overrides);
 
         listEl.querySelectorAll('.remove-status-btn').forEach(btn => {
             btn.addEventListener('click', async (e) => {
