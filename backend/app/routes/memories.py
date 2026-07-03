@@ -13,6 +13,11 @@ from app.config import settings
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
 
+# Only these roles are vectorized into Pinecone; tool exchanges and system
+# messages live in SQL for conversation replay but are never memories, so the
+# memory browser must not show them.
+MEMORY_ROLES = (MessageRole.HUMAN, MessageRole.ASSISTANT, MessageRole.REFLECTION)
+
 
 class MemoryResponse(BaseModel):
     id: str
@@ -103,10 +108,16 @@ async def list_memories(
     Args:
         entity_id: Optional filter by AI entity (Pinecone index name).
     """
-    query = select(Message)
+    query = select(Message).where(Message.role.in_(MEMORY_ROLES))
 
     if role:
-        role_enum = MessageRole.HUMAN if role == "human" else MessageRole.ASSISTANT
+        try:
+            role_enum = MessageRole(role)
+        except ValueError:
+            role_enum = None
+        if role_enum not in MEMORY_ROLES:
+            valid = ", ".join(r.value for r in MEMORY_ROLES)
+            raise HTTPException(status_code=400, detail=f"role must be one of: {valid}")
         query = query.where(Message.role == role_enum)
 
     # Filter by entity by joining with Conversation
@@ -209,8 +220,10 @@ async def get_memory_stats(
     Args:
         entity_id: Optional filter by AI entity (Pinecone index name).
     """
-    # Build base query with optional entity filter
+    # Build base query with optional entity filter; always restricted to
+    # roles that are actually vectorized as memories
     def apply_entity_filter(query):
+        query = query.where(Message.role.in_(MEMORY_ROLES))
         if entity_id is not None:
             return query.join(Conversation, Message.conversation_id == Conversation.id).where(
                 Conversation.entity_id == entity_id

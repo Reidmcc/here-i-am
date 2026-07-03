@@ -132,6 +132,32 @@ async def create_test_data(test_engine):
             session.add(msg)
             created_data["messages"].append(msg.id)
 
+        # A reflection - vectorized as a memory, should appear in the browser
+        reflection = Message(
+            id=str(uuid.uuid4()),
+            conversation_id=conv_id,
+            role=MessageRole.REFLECTION,
+            content="A self-authored reflection",
+        )
+        session.add(reflection)
+        created_data["reflection_id"] = reflection.id
+
+        # Tool exchange + system messages - stored in SQL for conversation
+        # replay but never vectorized, so they must NOT appear as memories
+        for role, content in [
+            (MessageRole.TOOL_USE, '[{"type": "tool_use", "name": "web_search"}]'),
+            (MessageRole.TOOL_RESULT, '[{"type": "tool_result", "content": "results"}]'),
+            (MessageRole.SYSTEM, "System message"),
+        ]:
+            msg = Message(
+                id=str(uuid.uuid4()),
+                conversation_id=conv_id,
+                role=role,
+                content=content,
+            )
+            session.add(msg)
+            created_data.setdefault("non_memory_ids", []).append(msg.id)
+
         await session.commit()
 
     return created_data
@@ -236,7 +262,8 @@ class TestListMemories:
 
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 5
+        # 5 human/assistant + 1 reflection; tool_use/tool_result/system excluded
+        assert len(data) == 6
         # Should have significance calculated
         for memory in data:
             assert "significance" in memory
@@ -253,6 +280,43 @@ class TestListMemories:
         assert len(data) == 3
         for memory in data:
             assert memory["role"] == "human"
+
+    @pytest.mark.asyncio
+    async def test_list_memories_excludes_tool_and_system_messages(
+        self, async_client, create_test_data
+    ):
+        """Tool exchanges and system messages are not memories and must not
+        appear in the memory browser."""
+        response = await async_client.get("/api/memories/", params={"limit": 200})
+
+        assert response.status_code == 200
+        data = response.json()
+        listed_ids = {m["id"] for m in data}
+        for non_memory_id in create_test_data["non_memory_ids"]:
+            assert non_memory_id not in listed_ids
+        for memory in data:
+            assert memory["role"] in ("human", "assistant", "reflection")
+
+    @pytest.mark.asyncio
+    async def test_list_memories_filter_by_reflection_role(
+        self, async_client, create_test_data
+    ):
+        """Reflections are vectorized memories and filterable by role."""
+        response = await async_client.get("/api/memories/", params={"role": "reflection"})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["id"] == create_test_data["reflection_id"]
+
+    @pytest.mark.asyncio
+    async def test_list_memories_rejects_non_memory_role_filter(
+        self, async_client, create_test_data
+    ):
+        """Filtering by a non-memory role (e.g. tool_use) is rejected."""
+        for bad_role in ("tool_use", "tool_result", "system", "bogus"):
+            response = await async_client.get("/api/memories/", params={"role": bad_role})
+            assert response.status_code == 400
 
     @pytest.mark.asyncio
     async def test_list_memories_sort_by_significance(self, async_client, create_test_data):
@@ -380,7 +444,8 @@ class TestMemoryStats:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["total_count"] == 5
+        # 5 human/assistant + 1 reflection; tool/system messages excluded
+        assert data["total_count"] == 6
         assert data["human_count"] == 3  # indices 0, 2, 4
         assert data["assistant_count"] == 2  # indices 1, 3
         assert "avg_times_retrieved" in data
