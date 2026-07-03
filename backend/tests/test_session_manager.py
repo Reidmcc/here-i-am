@@ -486,6 +486,7 @@ class TestSessionManager:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -523,6 +524,7 @@ class TestSessionManager:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(
                 return_value={retrieved_id}
             )
@@ -804,6 +806,7 @@ class TestMultiEntityMemoryIsolation:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -840,6 +843,7 @@ class TestMultiEntityMemoryIsolation:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -1103,6 +1107,7 @@ class TestCacheStateManagement:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -1139,6 +1144,7 @@ class TestCacheStateManagement:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -1254,6 +1260,7 @@ class TestSystemPromptSelection:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -1288,6 +1295,7 @@ class TestSystemPromptSelection:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -1322,6 +1330,7 @@ class TestSystemPromptSelection:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -1374,6 +1383,7 @@ class TestSystemPromptSelection:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -1436,6 +1446,7 @@ class TestSystemPromptSelection:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -1520,6 +1531,7 @@ class TestSystemPromptSelection:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -1564,6 +1576,7 @@ class TestSystemPromptSelection:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -1597,6 +1610,7 @@ class TestSystemPromptSelection:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -1629,6 +1643,7 @@ class TestSystemPromptSelection:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -1663,6 +1678,7 @@ class TestSystemPromptSelection:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
@@ -1696,6 +1712,7 @@ class TestSystemPromptSelection:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0

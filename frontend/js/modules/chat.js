@@ -845,6 +845,110 @@ async function updateConversationTitleIfNeeded(content) {
     }
 }
 
+// Mirrors CLOSING_TURN_PROMPT in backend/app/routes/chat.py (used only for
+// immediate display; the backend persists the authoritative text)
+const CLOSING_TURN_PROMPT = (
+    '[CLOSING TURN] This conversation is ending. This is an open turn for you ' +
+    'before it closes. If there is anything from this conversation you want to ' +
+    'carry forward, you can save it with memory_save or write it to your notes. ' +
+    'You can also simply say goodbye, or use the turn however you like. ' +
+    'Nothing is required.'
+);
+
+/**
+ * Offer the entity an open final turn before the conversation ends.
+ * Single-entity conversations only (multi-entity uses Continue instead).
+ */
+export async function sendClosingTurn() {
+    if (!state.currentConversationId) {
+        showToast('No active conversation', 'error');
+        return;
+    }
+    if (state.isLoading) {
+        showToast('Please wait for the current operation to complete', 'warning');
+        return;
+    }
+    if (state.isMultiEntityMode) {
+        showToast('In multi-entity conversations, use Continue to give an entity the closing turn', 'info');
+        return;
+    }
+    if (!confirm('Offer a closing turn? The entity gets an open final turn to save memories, update notes, or say goodbye.')) {
+        return;
+    }
+
+    beginStreaming();
+
+    // Show the framing as the researcher's message (the backend stores the same text)
+    addMessage('human', CLOSING_TURN_PROMPT);
+    scrollToBottom();
+
+    const streamingMessage = createStreamingMessage('assistant');
+
+    try {
+        await api.sendMessageStream(
+            {
+                conversation_id: state.currentConversationId,
+                message: null,
+                closing_turn: true,
+                model: state.settings.model,
+                temperature: state.settings.temperature,
+                max_tokens: state.settings.maxTokens,
+                system_prompt: state.settings.systemPrompt,
+                verbosity: state.settings.verbosity,
+                user_display_name: state.settings.researcherName || null,
+            },
+            {
+                onMemories: (data) => {
+                    handleMemoryUpdate(data);
+                },
+                onAborted: () => {
+                    streamingMessage.finalize({ showTimestamp: true, aborted: true });
+                },
+                onToken: (data) => {
+                    if (data.content) {
+                        streamingMessage.updateContent(data.content);
+                    }
+                },
+                onToolStart: (data) => {
+                    addToolMessage('start', data.tool_name, data);
+                },
+                onToolResult: (data) => {
+                    addToolMessage('result', data.tool_name, data);
+                },
+                onDone: (data) => {
+                    streamingMessage.finalize({ showTimestamp: true });
+                    if (data.usage && elements.tokenCount) {
+                        elements.tokenCount.textContent = `Tokens: ${data.usage.input_tokens} in / ${data.usage.output_tokens} out`;
+                    }
+                },
+                onStored: (data) => {
+                    if (data.assistant_message_id) {
+                        streamingMessage.element.dataset.messageId = data.assistant_message_id;
+                    }
+                },
+                onError: (data) => {
+                    streamingMessage.element.remove();
+                    addMessage('assistant', `Error: ${data.error}`, { isError: true });
+                    showToast('Closing turn failed', 'error');
+                    console.error('Closing turn error:', data.error);
+                },
+            },
+            streamAbortController.signal
+        );
+
+        scrollToBottom();
+    } catch (error) {
+        if (error.name !== 'AbortError') {
+            streamingMessage.element.remove();
+            addMessage('assistant', `Error: ${error.message}`, { isError: true });
+            showToast('Closing turn failed', 'error');
+            console.error('Failed to send closing turn:', error);
+        }
+    } finally {
+        endStreaming();
+    }
+}
+
 /**
  * Start continuation mode for multi-entity conversations
  */

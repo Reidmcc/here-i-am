@@ -23,6 +23,7 @@ from app.services import memory_service, llm_service
 from app.services.tool_service import tool_service, ToolResult
 from app.services.notes_tools import set_current_entity_label
 from app.services.memory_tools import set_memory_tool_context
+from app.services.context_tools import set_context_tool_session
 from app.config import settings
 
 # Import from split modules
@@ -348,6 +349,9 @@ class SessionManager:
                     if mem_data["conversation_id"] in archived_source_ids:
                         skipped_archived += 1
                         continue
+                    # Memories released since first retrieval are not re-injected
+                    if mem_data.get("memory_status") == "released":
+                        continue
                     retrieved_ids.add(mem_id)
                     str_id = mem_data["id"]
                     memory_data_by_id[str_id] = {
@@ -384,6 +388,9 @@ class SessionManager:
                 if mem_data:
                     if mem_data["conversation_id"] in archived_source_ids:
                         skipped_archived += 1
+                        continue
+                    # Memories released since first retrieval are not re-injected
+                    if mem_data.get("memory_status") == "released":
                         continue
                     retrieved_ids.add(mem_id)
                     str_id = mem_data["id"]
@@ -475,6 +482,11 @@ class SessionManager:
                     "content": msg.content_blocks,  # Uses the property that parses JSON
                     "is_tool_result": True,
                 })
+            elif msg.role == MessageRole.REFLECTION:
+                # Self-authored memories (memory_save) are not part of the
+                # conversational back-and-forth; the tool exchange that created
+                # them is already in history. They surface via memory retrieval.
+                logger.debug(f"[SESSION] Skipping reflection message {str(msg.id)[:8]}... in history load")
             else:
                 logger.warning(f"[SESSION] Skipping message with unexpected role: {msg.role}")
 
@@ -630,11 +642,16 @@ class SessionManager:
                         logger.debug(f"[MEMORY] Skipping orphaned memory {candidate['id'][:8]}...")
                         continue
 
+                    # Released memories are excluded from retrieval
+                    if mem_data.get("memory_status") == "released":
+                        continue
+
                     # Calculate significance for re-ranking
                     significance = _calculate_significance(
                         mem_data["times_retrieved"],
                         mem_data["created_at"],
                         mem_data["last_retrieved_at"],
+                        memory_status=mem_data.get("memory_status"),
                     )
                     # Combined score: similarity boosted by significance
                     # Memories with higher significance get priority among similar matches
@@ -907,6 +924,9 @@ class SessionManager:
             set_memory_tool_context(session.entity_id, session.conversation_id)
             logger.debug(f"[MEMORY] Set memory tool context: entity_id={session.entity_id}, conversation_id={session.conversation_id[:8]}...")
 
+        # Set session for the context_status tool
+        set_context_tool_session(session)
+
         # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
         # Validate both that Pinecone is configured AND the entity_id is valid
         if memory_service.is_configured(entity_id=session.entity_id):
@@ -995,11 +1015,16 @@ class SessionManager:
                         logger.debug(f"[MEMORY] Skipping orphaned memory {candidate['id'][:8]}...")
                         continue
 
+                    # Released memories are excluded from retrieval
+                    if mem_data.get("memory_status") == "released":
+                        continue
+
                     # Calculate significance for re-ranking
                     significance = _calculate_significance(
                         mem_data["times_retrieved"],
                         mem_data["created_at"],
                         mem_data["last_retrieved_at"],
+                        memory_status=mem_data.get("memory_status"),
                     )
                     # Combined score: similarity boosted by significance
                     combined_score = candidate["score"] * (1 + significance)
@@ -1131,6 +1156,21 @@ class SessionManager:
             count_tokens_fn=llm_service.count_tokens,
             current_message=user_message,
         )
+
+        # Tell the entity when trimming removed messages, so context loss is
+        # visible from the inside. The notice is a context-only message (like
+        # memory insertions): not persisted to the DB, not vectorized.
+        if trimmed_context_count > 0:
+            session.conversation_context.append({
+                "role": "user",
+                "content": (
+                    f"[CONTEXT NOTICE] The conversation reached the context limit; "
+                    f"the {trimmed_context_count} oldest messages are no longer in your context. "
+                    f"You can check context_status, and use memory_save or your notes "
+                    f"to preserve anything important before more is trimmed."
+                ),
+                "is_context_notice": True,
+            })
 
         # Yield memory info event before starting stream
         # Include entity_id for multi-entity conversations so frontend can show per-entity memories

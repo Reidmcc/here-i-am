@@ -56,7 +56,7 @@ async def _migrate_messages_role_enum(conn):
     # Check if the CHECK constraint exists and doesn't include the new values
     # The constraint looks like: CHECK (role IN ('human', 'assistant', 'system'))
     has_check = 'CHECK' in table_sql.upper()
-    has_tool_use = 'tool_use' in table_sql.lower()
+    has_new_roles = 'tool_use' in table_sql.lower() and 'reflection' in table_sql.lower()
 
     # Also check if role column is too narrow (VARCHAR(9) can't fit 'tool_result' which is 11 chars)
     # Look for patterns like "role VARCHAR(9)" or "role VARCHAR(10)"
@@ -67,18 +67,19 @@ async def _migrate_messages_role_enum(conn):
         role_too_narrow = varchar_size < 11  # 'tool_result' is 11 chars
         print(f"Migration check: role column VARCHAR size: {varchar_size}, too narrow: {role_too_narrow}")
 
-    print(f"Migration check: has CHECK constraint: {has_check}, has tool_use: {has_tool_use}")
+    print(f"Migration check: has CHECK constraint: {has_check}, has tool_use/reflection: {has_new_roles}")
 
-    needs_migration = (has_check and not has_tool_use) or role_too_narrow
+    needs_migration = (has_check and not has_new_roles) or role_too_narrow
 
     if needs_migration:
-        reason = "CHECK constraint" if (has_check and not has_tool_use) else "VARCHAR too narrow"
-        print(f"Migrating: Updating messages table for tool_use/tool_result support (reason: {reason})...")
+        reason = "CHECK constraint" if (has_check and not has_new_roles) else "VARCHAR too narrow"
+        print(f"Migrating: Updating messages table for tool_use/tool_result/reflection support (reason: {reason})...")
 
         # Check which columns exist in the old table
         result = await conn.execute(text("PRAGMA table_info(messages)"))
         existing_columns = [row[1] for row in result.fetchall()]
         has_speaker_entity_id = 'speaker_entity_id' in existing_columns
+        has_memory_status = 'memory_status' in existing_columns
 
         # SQLite migration: recreate table with updated schema
         # Step 0: Clean up any leftover from failed migration
@@ -96,26 +97,24 @@ async def _migrate_messages_role_enum(conn):
                 token_count INTEGER,
                 times_retrieved INTEGER DEFAULT 0,
                 last_retrieved_at DATETIME,
-                speaker_entity_id VARCHAR(100)
+                speaker_entity_id VARCHAR(100),
+                memory_status VARCHAR(20)
             )
         """))
 
-        # Step 2: Copy data from old table (handle missing speaker_entity_id column)
+        # Step 2: Copy data from old table (only columns that exist in the old schema)
+        copy_columns = [
+            "id", "conversation_id", "role", "content", "created_at",
+            "token_count", "times_retrieved", "last_retrieved_at",
+        ]
         if has_speaker_entity_id:
-            await conn.execute(text("""
-                INSERT INTO messages_new
-                SELECT id, conversation_id, role, content, created_at, token_count,
-                       times_retrieved, last_retrieved_at, speaker_entity_id
-                FROM messages
-            """))
-        else:
-            await conn.execute(text("""
-                INSERT INTO messages_new (id, conversation_id, role, content, created_at,
-                                         token_count, times_retrieved, last_retrieved_at)
-                SELECT id, conversation_id, role, content, created_at, token_count,
-                       times_retrieved, last_retrieved_at
-                FROM messages
-            """))
+            copy_columns.append("speaker_entity_id")
+        if has_memory_status:
+            copy_columns.append("memory_status")
+        columns_sql = ", ".join(copy_columns)
+        await conn.execute(text(
+            f"INSERT INTO messages_new ({columns_sql}) SELECT {columns_sql} FROM messages"
+        ))
 
         # Step 3: Drop old table
         await conn.execute(text("DROP TABLE messages"))
@@ -156,6 +155,13 @@ async def run_migrations(conn):
             "ALTER TABLE messages ADD COLUMN speaker_entity_id VARCHAR(100)"
         ))
         print("  ✓ Added speaker_entity_id column")
+
+    if 'memory_status' not in columns:
+        print("Migrating: Adding 'memory_status' column to messages table...")
+        await conn.execute(text(
+            "ALTER TABLE messages ADD COLUMN memory_status VARCHAR(20)"
+        ))
+        print("  ✓ Added memory_status column for pinned/released memories")
 
     # Check if entity_id column exists in conversation_memory_links table
     result = await conn.execute(text(

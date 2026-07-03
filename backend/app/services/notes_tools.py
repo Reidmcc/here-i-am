@@ -12,6 +12,7 @@ from typing import Optional
 
 from app.services.tool_service import ToolCategory, ToolService
 from app.services.notes_service import notes_service
+from app.services.notes_vector_service import notes_vector_service
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -89,8 +90,20 @@ async def _notes_write(filename: str, content: str, shared: bool = False) -> str
         content=content,
         shared=shared,
     )
-    
+
     if result['success']:
+        # Mirror the note into the vector index so notes_search finds it.
+        # Best-effort: the filesystem write above is the source of truth.
+        try:
+            await notes_vector_service.vectorize_note(
+                entity_label=entity_label or "",
+                filename=filename,
+                content=content,
+                shared=shared,
+            )
+        except Exception as e:
+            logger.warning(f"Note vectorization failed for '{filename}': {e}")
+
         action = "Created" if result.get('created') else "Updated"
         location = "shared notes" if shared else "your notes"
         return f"{action} '{filename}' in {location}"
@@ -123,8 +136,18 @@ async def _notes_delete(filename: str, shared: bool = False) -> str:
         filename=filename,
         shared=shared,
     )
-    
+
     if result['success']:
+        # Remove the note's chunks from the vector index (best-effort)
+        try:
+            await notes_vector_service.remove_note_vectors(
+                entity_label=entity_label or "",
+                filename=filename,
+                shared=shared,
+            )
+        except Exception as e:
+            logger.warning(f"Note vector removal failed for '{filename}': {e}")
+
         location = "shared notes" if shared else "your notes"
         return f"Deleted '{filename}' from {location}"
     else:
@@ -183,6 +206,56 @@ async def _notes_list(shared: bool = False) -> str:
     return "\n".join(lines)
 
 
+async def _notes_search(query: str, num_results: int = 5) -> str:
+    """
+    Semantic search across your notes (private and shared).
+
+    Args:
+        query: Text to search for
+        num_results: Number of matching chunks to return (default 5, max 10)
+
+    Returns:
+        Matching note excerpts with filenames, or an error message
+    """
+    if not settings.notes_enabled:
+        return "Error: Notes feature is not enabled"
+
+    entity_label = get_current_entity_label()
+    if not entity_label:
+        return "Error: No entity context available for searching notes"
+
+    num_results = max(1, min(10, num_results))
+
+    try:
+        matches = await notes_vector_service.search_notes(
+            entity_label=entity_label,
+            query=query,
+            num_results=num_results,
+        )
+    except Exception as e:
+        logger.error(f"Notes search failed: {e}")
+        return f"Error searching notes: {e}"
+
+    if not matches:
+        return (
+            f"No note content found matching: \"{query}\". "
+            "Notes written before search was added may not be indexed yet."
+        )
+
+    lines = [f"Found {len(matches)} note excerpts matching: \"{query}\"", ""]
+    for i, match in enumerate(matches, 1):
+        location = "shared" if match["shared"] else "private"
+        lines.append(
+            f"--- {match['filename']} ({location}, chunk {match['chunk_index']}, "
+            f"similarity: {match['score']:.3f}) ---"
+        )
+        lines.append(match["text"])
+        lines.append("")
+
+    lines.append("Use notes_read to read any of these files in full.")
+    return "\n".join(lines)
+
+
 def register_notes_tools(tool_service: ToolService) -> None:
     """Register all notes tools with the tool service."""
     
@@ -196,7 +269,8 @@ def register_notes_tools(tool_service: ToolService) -> None:
         name="notes_read",
         description=(
             "Read a note file from your private notes or the shared notes folder. "
-            "Your private notes are only visible to you. Shared notes are visible to all entities. "
+            "Private notes are not visible to other entities; shared notes are visible to all entities. "
+            "Notes are plain files on the researcher's machine, so the researcher can also read them. "
             "Your index.md file is automatically loaded into your context at the start of each conversation."
         ),
         input_schema={
@@ -302,5 +376,37 @@ def register_notes_tools(tool_service: ToolService) -> None:
         category=ToolCategory.MEMORY,
         enabled=True,
     )
-    
-    logger.info("Notes tools registered: notes_read, notes_write, notes_delete, notes_list")
+
+    # notes_search (requires the vector store; registered only when configured)
+    if settings.pinecone_api_key:
+        tool_service.register_tool(
+            name="notes_search",
+            description=(
+                "Search your notes (private and shared) by meaning, not just filename. "
+                "Returns matching excerpts with their filenames; use notes_read to read "
+                "a file in full. Notes are indexed when written, so notes created before "
+                "search existed may need reindexing by the researcher."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Text to search for: a topic, phrase, or question."
+                    },
+                    "num_results": {
+                        "type": "integer",
+                        "description": "Number of matching excerpts to return (default: 5, max: 10).",
+                        "default": 5,
+                        "minimum": 1,
+                        "maximum": 10
+                    }
+                },
+                "required": ["query"]
+            },
+            executor=_notes_search,
+            category=ToolCategory.MEMORY,
+            enabled=True,
+        )
+
+    logger.info("Notes tools registered: notes_read, notes_write, notes_delete, notes_list, notes_search")

@@ -454,6 +454,30 @@ class ApiClient {
         });
     }
 
+    // Memories with an entity-set status (pinned or released)
+    async listMemoryOverrides(entityId = null) {
+        let url = '/memories/overrides';
+        if (entityId) {
+            url += `?entity_id=${entityId}`;
+        }
+        return this.request(url);
+    }
+
+    // Set or clear a memory's status: 'pinned', 'released', or null
+    async setMemoryStatus(id, status) {
+        return this.request(`/memories/${id}/status`, {
+            method: 'PUT',
+            body: { status },
+        });
+    }
+
+    // Notes maintenance
+    async reindexNotes() {
+        return this.request('/notes/reindex', {
+            method: 'POST',
+        });
+    }
+
     async getMemoryHealth() {
         return this.request('/memories/status/health');
     }

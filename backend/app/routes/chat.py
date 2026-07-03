@@ -17,6 +17,19 @@ from app.config import settings
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
+# Framing for the optional closing turn: an open turn offered to the entity
+# before a conversation ends. Phrased as an invitation, not an instruction.
+# Stored in conversation history as the researcher's message (the researcher
+# triggers it), but NOT vectorized into memory (it's boilerplate).
+CLOSING_TURN_PROMPT = (
+    "[CLOSING TURN] This conversation is ending. This is an open turn for you "
+    "before it closes. If there is anything from this conversation you want to "
+    "carry forward, you can save it with memory_save or write it to your notes. "
+    "You can also simply say goodbye, or use the turn however you like. "
+    "Nothing is required."
+)
+
+
 async def get_multi_entity_ids(conversation_id: str, db: AsyncSession) -> List[str]:
     """Get the list of entity IDs participating in a multi-entity conversation."""
     result = await db.execute(
@@ -96,6 +109,10 @@ class ChatRequest(BaseModel):
     user_display_name: Optional[str] = None
     # Attachments (images and files) - ephemeral, not stored in memory
     attachments: Optional[Attachments] = None
+    # Closing turn: offer the entity an open final turn before the conversation
+    # ends. When True and message is empty, a standard closing framing is used
+    # as the message (stored in history, not vectorized).
+    closing_turn: bool = False
 
 
 class MemoryInfo(BaseModel):
@@ -404,13 +421,20 @@ async def stream_message(data: ChatRequest):
                 responding_entity_id = data.responding_entity_id
                 multi_entity_ids = []
 
+                # Closing turn: substitute the standard framing as the message.
+                # It flows through as a normal human message (works for single-
+                # and multi-entity) but is excluded from vectorization below.
+                effective_message = data.message
+                if data.closing_turn and not effective_message:
+                    effective_message = CLOSING_TURN_PROMPT
+
                 # Determine if this is a continuation (no human input at all).
                 # An attachment-only message (file/image with no text) is NOT a
                 # continuation - the attachment is the human's input.
                 has_attachment_input = bool(
                     data.attachments and (data.attachments.files or data.attachments.images)
                 )
-                is_continuation = not data.message and not has_attachment_input
+                is_continuation = not effective_message and not has_attachment_input
 
                 # Continuation requires multi-entity mode
                 if is_continuation and not is_multi_entity:
@@ -520,7 +544,7 @@ async def stream_message(data: ChatRequest):
 
                 async for event in session_manager.process_message_stream(
                     session=session,
-                    user_message=data.message,
+                    user_message=effective_message,
                     db=db,
                     tool_schemas=tool_schemas,
                     attachments=attachments_dict,
@@ -555,7 +579,7 @@ async def stream_message(data: ChatRequest):
                 persistable_content = None
                 if not is_continuation:
                     # Build persistable content including extracted file text (images remain ephemeral)
-                    persistable_content = build_persistable_content(data.message, attachments_dict)
+                    persistable_content = build_persistable_content(effective_message, attachments_dict)
 
                     # Only create human message if this is not a continuation
                     human_msg = Message(

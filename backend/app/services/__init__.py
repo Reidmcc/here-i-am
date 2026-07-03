@@ -12,8 +12,10 @@ from app.services.web_tools import register_web_tools
 from app.services.github_service import GitHubService, github_service
 from app.services.github_tools import register_github_tools
 from app.services.notes_service import NotesService, notes_service
+from app.services.notes_vector_service import NotesVectorService, notes_vector_service
 from app.services.notes_tools import register_notes_tools, set_current_entity_label
 from app.services.memory_tools import register_memory_tools, set_memory_tool_context
+from app.services.context_tools import register_context_tools, set_context_tool_session
 from app.services.attachment_service import AttachmentService, attachment_service
 from app.services.codebase_navigator_service import CodebaseNavigatorService, codebase_navigator_service
 from app.services.codebase_navigator_tools import register_codebase_navigator_tools
@@ -25,6 +27,7 @@ register_web_tools(tool_service)
 register_github_tools(tool_service)
 register_notes_tools(tool_service)
 register_memory_tools(tool_service)
+register_context_tools(tool_service)
 register_codebase_navigator_tools(tool_service)
 register_moltbook_tools(tool_service)
 
@@ -46,6 +49,7 @@ __all__ = [
     "ToolResult",
     "GitHubService",
     "NotesService",
+    "NotesVectorService",
     "AttachmentService",
     "CodebaseNavigatorService",
     "MoltbookService",
@@ -62,6 +66,7 @@ __all__ = [
     "tool_service",
     "github_service",
     "notes_service",
+    "notes_vector_service",
     "attachment_service",
     "codebase_navigator_service",
     "moltbook_service",
@@ -70,9 +75,11 @@ __all__ = [
     "register_github_tools",
     "register_notes_tools",
     "register_memory_tools",
+    "register_context_tools",
     "register_codebase_navigator_tools",
     "register_moltbook_tools",
     # Context helpers
     "set_current_entity_label",
     "set_memory_tool_context",
+    "set_context_tool_session",
 ]

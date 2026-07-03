@@ -81,7 +81,8 @@ import {
     regenerateMessageWithEntity,
     performRegeneration,
     startEditMessage,
-    startContinuationMode
+    startContinuationMode,
+    sendClosingTurn
 } from './modules/chat.js';
 import {
     setElements as setMemoryElements,
@@ -199,6 +200,7 @@ class App {
             settingsBtn: document.getElementById('settings-btn'),
             memoriesBtn: document.getElementById('memories-btn'),
             exportBtn: document.getElementById('export-btn'),
+            closingTurnBtn: document.getElementById('closing-turn-btn'),
             archivedBtn: document.getElementById('archived-btn'),
 
             // Settings modal
@@ -431,6 +433,7 @@ class App {
 
         // Continue button (multi-entity)
         this.elements.continueBtn?.addEventListener('click', () => startContinuationMode());
+        this.elements.closingTurnBtn?.addEventListener('click', () => sendClosingTurn());
 
         // New conversation
         this.elements.newConversationBtn?.addEventListener('click', () => createNewConversation());
@@ -892,6 +895,17 @@ class App {
                 } catch (e) {
                     console.error('Failed to parse tool_result content:', e);
                 }
+                return;
+            }
+
+            // Self-authored memories saved via memory_save render as a
+            // distinct note (styled by .message.reflection)
+            if (msg.role === 'reflection') {
+                addMessage('reflection', msg.content, {
+                    messageId: msg.id,
+                    timestamp: msg.created_at,
+                    showTimestamp: true,
+                });
                 return;
             }
 

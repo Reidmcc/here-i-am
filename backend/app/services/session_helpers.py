@@ -59,6 +59,7 @@ def calculate_significance(
     times_retrieved: int,
     created_at: Optional[datetime],
     last_retrieved_at: Optional[datetime],
+    memory_status: Optional[str] = None,
 ) -> float:
     """
     Calculate memory significance based on retrieval patterns.
@@ -68,6 +69,9 @@ def calculate_significance(
     Where:
     - recency_factor boosts recently-retrieved memories
     - half_life_modifier decays significance based on memory age
+
+    Pinned memories (memory_status == "pinned") are exempt from age decay:
+    their half_life_modifier stays at 1.0 regardless of age.
     """
     now = datetime.utcnow()
 
@@ -79,8 +83,9 @@ def calculate_significance(
 
     # Half-life modifier - older memories decay in significance
     # Starts at 1.0 and halves every significance_half_life_days
+    # Pinned memories don't decay with age
     half_life_modifier = 1.0
-    if created_at:
+    if created_at and memory_status != "pinned":
         days_since_creation = (now - created_at).days
         half_life_modifier = 0.5 ** (days_since_creation / settings.significance_half_life_days)
 

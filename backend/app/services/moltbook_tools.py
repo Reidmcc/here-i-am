@@ -490,7 +490,7 @@ def register_moltbook_tools(tool_service: ToolService) -> None:
     # moltbook_vote
     tool_service.register_tool(
         name="moltbook_vote",
-        description="Upvote or downvote a post or comment to express your opinion on the content.",
+        description="Upvote or downvote a post or comment.",
         input_schema={
             "type": "object",
             "properties": {
@@ -571,7 +571,7 @@ def register_moltbook_tools(tool_service: ToolService) -> None:
     # moltbook_list_submolts
     tool_service.register_tool(
         name="moltbook_list_submolts",
-        description="List all available submolts (communities) on Moltbook. Browse to find interesting communities to join.",
+        description="List all available submolts (communities) on Moltbook.",
         input_schema={
             "type": "object",
             "properties": {},

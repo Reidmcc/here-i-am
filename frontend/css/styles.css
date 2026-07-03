@@ -594,6 +594,44 @@ html, body {
     border-bottom-left-radius: 4px;
 }
 
+/* Self-authored memories saved via the memory_save tool */
+.message.reflection .message-bubble {
+    background-color: var(--assistant-bg);
+    border: 1px dashed var(--border-color);
+    opacity: 0.85;
+    font-style: italic;
+    margin-right: auto;
+}
+
+.message.reflection .message-bubble::before {
+    content: "Reflection saved to memory";
+    display: block;
+    font-size: 0.7rem;
+    font-style: normal;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+
+/* Pinned/released badges in the memory browser */
+.memory-status-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border: 1px solid var(--border-color);
+    color: var(--text-muted);
+}
+
+.memory-status-badge.pinned {
+    border-color: var(--accent-subtle);
+    color: var(--accent, var(--text-muted));
+}
+
 .message-meta {
     font-size: 0.75rem;
     color: var(--text-muted);

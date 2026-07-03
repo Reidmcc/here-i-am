@@ -43,8 +43,17 @@ def format_memory_as_context_message(
         Dict formatted as a conversation context message with memory metadata
     """
     # Format content with clear markers
-    role_label = "you" if role == "assistant" else "human"
-    formatted_content = f"[MEMORY from {created_at} - originally from {role_label}]\n{content}\n[/MEMORY]"
+    # The short ID lets the entity reference this memory in memory_mark/memory_release
+    if role == "assistant":
+        role_label = "originally from you"
+    elif role == "human":
+        role_label = "originally from human"
+    elif role == "reflection":
+        role_label = "a reflection you saved"
+    else:
+        role_label = f"originally from {role}"
+    short_id = memory_id[:8]
+    formatted_content = f"[MEMORY {short_id} from {created_at} - {role_label}]\n{content}\n[/MEMORY]"
     
     return {
         "role": "user",
