@@ -10,6 +10,7 @@ import {
     updateMemoriesPanel,
     handleMemoryUpdate,
     loadMemoryStats,
+    loadMemoryList,
     loadReflections,
     searchMemories,
     checkForOrphans,
@@ -303,6 +304,93 @@ describe('Memories Module', () => {
 
             const listEl = document.getElementById('memory-reflections-list');
             expect(listEl.innerHTML).toContain('Failed to load reflections');
+        });
+    });
+
+    describe('memory full text expansion', () => {
+        const longContent = 'X'.repeat(500);
+        const makeMemory = (id, extra = {}) => ({
+            id,
+            role: 'assistant',
+            content: longContent,
+            content_preview: longContent.substring(0, 200),
+            times_retrieved: 1,
+            significance: 1.0,
+            memory_status: null,
+            ...extra,
+        });
+
+        it('should mark truncated memories as expandable with a hint', async () => {
+            window.api.listMemories = vi.fn(() => Promise.resolve([makeMemory('mem-long-1')]));
+
+            await loadMemoryList();
+
+            const item = document.querySelector('#memory-list .memory-list-item');
+            expect(item.classList.contains('expandable')).toBe(true);
+            expect(item.innerHTML).toContain('click for full text');
+        });
+
+        it('should not mark short memories as expandable', async () => {
+            window.api.listMemories = vi.fn(() => Promise.resolve([
+                makeMemory('mem-short-1', { content: 'Short', content_preview: 'Short' }),
+            ]));
+
+            await loadMemoryList();
+
+            const item = document.querySelector('#memory-list .memory-list-item');
+            expect(item.classList.contains('expandable')).toBe(false);
+            expect(item.innerHTML).not.toContain('click for full text');
+        });
+
+        it('should show the full text on click without refetching when it came with the list', async () => {
+            window.api.listMemories = vi.fn(() => Promise.resolve([makeMemory('mem-long-2')]));
+            window.api.getMemory = vi.fn();
+
+            await loadMemoryList();
+
+            const item = document.querySelector('#memory-list .memory-list-item');
+            item.click();
+            await Promise.resolve();
+
+            expect(item.classList.contains('expanded')).toBe(true);
+            expect(item.querySelector('.memory-list-item-content').textContent).toBe(longContent);
+            expect(window.api.getMemory).not.toHaveBeenCalled();
+        });
+
+        it('should collapse back to the preview on second click', async () => {
+            window.api.listMemories = vi.fn(() => Promise.resolve([makeMemory('mem-long-3')]));
+
+            await loadMemoryList();
+
+            const item = document.querySelector('#memory-list .memory-list-item');
+            item.click();
+            await Promise.resolve();
+            item.click();
+            await Promise.resolve();
+
+            expect(item.classList.contains('expanded')).toBe(false);
+            expect(item.querySelector('.memory-list-item-content').textContent)
+                .toBe(longContent.substring(0, 200));
+        });
+
+        it('should fetch the full text from the API when the list only had a preview', async () => {
+            window.api.searchMemories = vi.fn(() => Promise.resolve([
+                makeMemory('mem-preview-only', { content: undefined, score: 0.9 }),
+            ]));
+            window.api.getMemory = vi.fn(() => Promise.resolve(makeMemory('mem-preview-only')));
+
+            const searchInput = document.getElementById('memory-search-input');
+            searchInput.value = 'test';
+            await searchMemories();
+
+            const item = document.querySelector('#memory-list .memory-list-item');
+            item.click();
+            await vi.waitFor(() => {
+                expect(item.classList.contains('expanded')).toBe(true);
+            });
+
+            expect(window.api.getMemory).toHaveBeenCalledWith('mem-preview-only');
+            expect(item.querySelector('.memory-list-item-content').textContent).toBe(longContent);
         });
     });
 
