@@ -35,6 +35,30 @@ logger = logging.getLogger(__name__)
 
 # Constants
 BRAVE_SEARCH_API_URL = "https://api.search.brave.com/res/v1/web/search"
+
+# User-Agent for both httpx and Playwright fetches. Bot walls (Cloudflare
+# et al.) reject anything that self-identifies as a non-browser client, so we
+# present as an ordinary browser — this tool is an entity reading the web,
+# not a crawler.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+# Statuses bot walls use to turn away plain HTTP clients. Worth retrying with
+# a real headless browser before giving up.
+BOT_BLOCK_STATUS_CODES = {403, 429}
+
+# Phrases that mark an anti-bot interstitial rather than real page content
+BLOCK_PAGE_INDICATORS = [
+    "access denied",
+    "just a moment",
+    "attention required",
+    "verify you are human",
+    "you have been blocked",
+    "enable javascript and cookies",
+    "checking your browser",
+]
 SEARCH_TIMEOUT = 10.0  # seconds
 FETCH_TIMEOUT = 15.0  # seconds
 PLAYWRIGHT_TIMEOUT = 60000  # milliseconds (60 seconds for navigation)
@@ -122,6 +146,23 @@ def _needs_javascript_rendering(html_content: str, extracted_text: str) -> Tuple
     return False, "page appears to be static HTML"
 
 
+def _looks_like_block_page(text: str) -> bool:
+    """
+    Detect whether extracted text is an anti-bot block page rather than
+    real content.
+
+    Block interstitials are short; a page with substantial text is treated
+    as real content even if it happens to mention a blocked phrase.
+    """
+    stripped = text.strip()
+    if len(stripped) < MIN_CONTENT_LENGTH:
+        return True
+    if len(stripped) >= 2000:
+        return False
+    text_lower = stripped.lower()
+    return any(indicator in text_lower for indicator in BLOCK_PAGE_INDICATORS)
+
+
 def _fetch_with_playwright_sync(url: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Synchronous Playwright fetch - runs in a separate thread.
@@ -190,7 +231,7 @@ def _fetch_with_playwright_sync(url: str) -> Tuple[Optional[str], Optional[str]]
                 # Create a new context with a reasonable viewport
                 context = browser.new_context(
                     viewport={"width": 1280, "height": 720},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    user_agent=BROWSER_USER_AGENT,
                 )
                 page = context.new_page()
 
@@ -464,13 +505,44 @@ async def web_fetch(url: str, max_length: int = DEFAULT_MAX_LENGTH) -> str:
             response = await client.get(
                 url,
                 headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; HereIAm/1.0; Research Tool)",
+                    "User-Agent": BROWSER_USER_AGENT,
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,text/plain;q=0.8,*/*;q=0.5",
                 },
             )
 
-            if response.status_code == 403:
-                return f"Error: Access denied (403 Forbidden) for URL: {url}"
+            if response.status_code in BOT_BLOCK_STATUS_CODES:
+                # Likely a bot wall turning away the plain HTTP client; a real
+                # headless browser may be let through.
+                logger.info(
+                    f"Got {response.status_code} for {url}, retrying with headless browser"
+                )
+                rendered_html, error = await _fetch_with_playwright(url)
+
+                if error:
+                    return (
+                        f"Error: Access denied (status {response.status_code}) for URL: {url}. "
+                        f"Browser-based retry also failed: {error}"
+                    )
+
+                cleaned_text, title_text, _ = _extract_html_content(rendered_html, url)
+
+                if _looks_like_block_page(cleaned_text):
+                    return (
+                        f"Error: Access denied (status {response.status_code}) for URL: {url}. "
+                        f"The site's anti-bot protection also blocked the browser-based retry."
+                    )
+
+                if len(cleaned_text) > max_length:
+                    cleaned_text = cleaned_text[:max_length] + "\n...[truncated]"
+
+                logger.info(
+                    f"Browser retry succeeded for {url}: {len(cleaned_text)} chars "
+                    f"(after {response.status_code} from direct fetch)"
+                )
+                return (
+                    f"Content from: {url} [JavaScript rendered]\n"
+                    f"Title: {title_text}\n\n{cleaned_text}"
+                )
             elif response.status_code == 404:
                 return f"Error: Page not found (404) for URL: {url}"
             elif response.status_code != 200:
