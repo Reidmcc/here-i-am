@@ -196,11 +196,14 @@ async def search_memories(
         )
 
     # Fetch more candidates than requested so archived-conversation,
-    # released-memory, and orphan filtering doesn't shrink the result set
+    # released-memory, and orphan filtering doesn't shrink the result set.
+    # Deliberate queries are short, semantically sparse strings, so they use
+    # a lower similarity floor than automatic chat-context retrieval.
     candidates = await memory_service.search_memories(
         query=data.query,
         top_k=data.top_k * settings.retrieval_candidate_multiplier,
         entity_id=data.entity_id,
+        similarity_threshold=settings.query_similarity_threshold,
     )
 
     if not candidates:
@@ -348,6 +351,7 @@ async def memory_health():
         "entities": [entity.to_dict() for entity in entities],
         "retrieval_top_k": settings.retrieval_top_k,
         "similarity_threshold": settings.similarity_threshold,
+        "query_similarity_threshold": settings.query_similarity_threshold,
         "recency_boost_strength": settings.recency_boost_strength,
     }
 

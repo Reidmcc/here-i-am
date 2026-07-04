@@ -51,6 +51,7 @@ def mock_settings():
         mock.recency_boost_strength = 1.2
         mock.significance_floor = 0.25
         mock.retrieval_candidate_multiplier = 2
+        mock.query_similarity_threshold = 0.2
         yield mock
 
 
@@ -463,11 +464,13 @@ class TestSearchMemories:
 
         assert response.status_code == 200
         assert response.json() == []
-        # top_k is over-fetched by the candidate multiplier (10 * 2)
+        # top_k is over-fetched by the candidate multiplier (10 * 2), and
+        # deliberate queries use the lower query similarity threshold
         mock_memory_service.search_memories.assert_called_with(
             query="test query",
             top_k=20,
             entity_id="specific-entity",
+            similarity_threshold=0.2,
         )
 
     @pytest.mark.asyncio

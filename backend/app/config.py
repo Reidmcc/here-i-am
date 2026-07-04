@@ -334,7 +334,11 @@ class Settings(BaseSettings):
     # Memory retrieval defaults
     initial_retrieval_top_k: int = 5  # First retrieval in a conversation
     retrieval_top_k: int = 5  # Subsequent retrievals
-    similarity_threshold: float = 0.4  # Tuned for llama-text-embed-v2
+    similarity_threshold: float = 0.4  # Automatic retrieval from chat messages; tuned for llama-text-embed-v2
+    # Deliberate queries (memory_query tool, memory browser search) use short
+    # search strings whose semantic content is sparse compared to full chat
+    # messages, so they need a lower similarity floor
+    query_similarity_threshold: float = 0.2
     retrieval_candidate_multiplier: int = 2  # Fetch this many times top_k, then re-rank by significance
 
     # Significance calculation

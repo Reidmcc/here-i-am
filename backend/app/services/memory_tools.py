@@ -155,6 +155,9 @@ async def _memory_query(query: str, num_results: int = 5) -> str:
             exclude_ids=None,  # Include all memories
             entity_id=entity_id,
             use_cache=True,
+            # Deliberate queries are short, semantically sparse strings, so they
+            # use a lower similarity floor than automatic chat-context retrieval
+            similarity_threshold=settings.query_similarity_threshold,
         )
 
         if not candidates:

@@ -170,6 +170,7 @@ class MemoryService:
         exclude_ids: Optional[set] = None,
         entity_id: Optional[str] = None,
         use_cache: bool = True,
+        similarity_threshold: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
         Search for relevant memories using semantic similarity.
@@ -187,6 +188,11 @@ class MemoryService:
             exclude_ids: Set of message IDs to exclude (for deduplication)
             entity_id: The Pinecone index name. If None, uses default entity.
             use_cache: Whether to use cached results (default True)
+            similarity_threshold: Minimum score to include a result. Defaults
+                to settings.similarity_threshold (automatic retrieval from chat
+                messages); deliberate queries (memory_query tool, memory browser
+                search) pass the lower settings.query_similarity_threshold since
+                short search strings carry sparser semantic content.
 
         Returns:
             List of memory dicts with id, content, score, metadata
@@ -200,6 +206,8 @@ class MemoryService:
 
         top_k = top_k or settings.retrieval_top_k
         exclude_ids = exclude_ids or set()
+        if similarity_threshold is None:
+            similarity_threshold = settings.similarity_threshold
 
         # Normalize exclude_conversation_id to string for consistent comparison
         exclude_conv_id_normalized = str(exclude_conversation_id) if exclude_conversation_id else None
@@ -216,11 +224,12 @@ class MemoryService:
             if cached_results is not None:
                 logger.info(f"[MEMORY] Cache HIT for entity={entity_id}")
                 # Apply exclude_ids filter to cached results
+                # (cached results are pre-threshold, so a per-call threshold is safe)
                 filtered = []
                 for mem in cached_results:
                     if mem["id"] in exclude_ids:
                         continue
-                    if mem["score"] < settings.similarity_threshold:
+                    if mem["score"] < similarity_threshold:
                         continue
                     filtered.append(mem)
                     if len(filtered) >= top_k:
@@ -231,7 +240,7 @@ class MemoryService:
             # Query more than we need to allow for filtering by exclude_ids
             fetch_k = top_k * 2
 
-            logger.info(f"[MEMORY] Searching memories: threshold={settings.similarity_threshold}, top_k={top_k}, entity={entity_id}")
+            logger.info(f"[MEMORY] Searching memories: threshold={similarity_threshold}, top_k={top_k}, entity={entity_id}")
 
             # Build search query with optional metadata filter
             search_query = {
@@ -298,8 +307,8 @@ class MemoryService:
             # Now apply exclude_ids and threshold filtering
             memories = []
             for mem in all_memories:
-                if mem["score"] < settings.similarity_threshold:
-                    logger.debug(f"SKIP (score {mem['score']:.3f} < {settings.similarity_threshold}): {mem['id'][:8]}...")
+                if mem["score"] < similarity_threshold:
+                    logger.debug(f"SKIP (score {mem['score']:.3f} < {similarity_threshold}): {mem['id'][:8]}...")
                     continue
 
                 if mem["id"] in exclude_ids:
