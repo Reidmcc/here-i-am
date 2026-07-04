@@ -13,6 +13,8 @@ import {
     saveSelectedVoiceToStorage,
     loadResearcherName,
     saveResearcherName,
+    loadEnterInsertsNewline,
+    saveEnterInsertsNewline,
     getValidSavedEntityModel,
 } from '../modules/state.js';
 
@@ -244,6 +246,50 @@ describe('State Module', () => {
 
             expect(state.settings.researcherName).toBe('');
             expect(localStorage.setItem).toHaveBeenCalledWith('researcher_name', '');
+        });
+    });
+
+    describe('loadEnterInsertsNewline', () => {
+        it('should load true when saved as true', () => {
+            localStorage.setItem('enter_inserts_newline', 'true');
+
+            const result = loadEnterInsertsNewline();
+
+            expect(result).toBe(true);
+            expect(state.settings.enterInsertsNewline).toBe(true);
+        });
+
+        it('should default to false when nothing is saved', () => {
+            const result = loadEnterInsertsNewline();
+
+            expect(result).toBe(false);
+            expect(state.settings.enterInsertsNewline).toBe(false);
+        });
+    });
+
+    describe('saveEnterInsertsNewline', () => {
+        it('should save true to state and localStorage', () => {
+            saveEnterInsertsNewline(true);
+
+            expect(state.settings.enterInsertsNewline).toBe(true);
+            expect(localStorage.setItem).toHaveBeenCalledWith('enter_inserts_newline', 'true');
+        });
+
+        it('should save false to state and localStorage', () => {
+            state.settings.enterInsertsNewline = true;
+
+            saveEnterInsertsNewline(false);
+
+            expect(state.settings.enterInsertsNewline).toBe(false);
+            expect(localStorage.setItem).toHaveBeenCalledWith('enter_inserts_newline', 'false');
+        });
+
+        it('should use existing state value when argument is undefined', () => {
+            state.settings.enterInsertsNewline = true;
+
+            saveEnterInsertsNewline(undefined);
+
+            expect(localStorage.setItem).toHaveBeenCalledWith('enter_inserts_newline', 'true');
         });
     });
 

@@ -4,7 +4,7 @@
  */
 
 // Import modules
-import { state, resetMemoryState, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName, getValidSavedEntityModel, LEGACY_ENTITY_PROMPTS_KEY } from './modules/state.js';
+import { state, resetMemoryState, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName, loadEnterInsertsNewline, getValidSavedEntityModel, LEGACY_ENTITY_PROMPTS_KEY } from './modules/state.js';
 import { showToast, showLoading, setToastContainer, escapeHtml, renderMarkdown, truncateText, stripMarkdown } from './modules/utils.js';
 import { loadTheme, getCurrentTheme, setTheme } from './modules/theme.js';
 import { setElements as setModalElements, showModal, hideModal, closeActiveModal, isModalOpen, closeAllDropdowns } from './modules/modals.js';
@@ -217,6 +217,7 @@ class App {
             themeSelect: document.getElementById('theme-select'),
             verbositySelect: document.getElementById('verbosity-select'),
             researcherNameInput: document.getElementById('researcher-name-input'),
+            enterInsertsNewlineCheckbox: document.getElementById('enter-inserts-newline'),
             voiceSelect: document.getElementById('voice-select'),
             voiceSelectGroup: document.getElementById('voice-select-group'),
 
@@ -421,7 +422,7 @@ class App {
         // Send message
         this.elements.sendBtn?.addEventListener('click', () => sendMessage());
         this.elements.messageInput?.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter' && !e.shiftKey && !state.settings.enterInsertsNewline) {
                 e.preventDefault();
                 sendMessage();
             }
@@ -579,6 +580,7 @@ class App {
         if (savedResearcherName) {
             state.settings.researcherName = savedResearcherName;
         }
+        loadEnterInsertsNewline();
 
         // Load chat config (available models)
         await this.loadChatConfig();

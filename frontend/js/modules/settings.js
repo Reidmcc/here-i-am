@@ -3,7 +3,7 @@
  * Handles settings modal, configuration presets, and settings application
  */
 
-import { state, saveEntityModelsToStorage, getValidSavedEntityModel, saveSelectedVoiceToStorage, clearAudioCache, saveResearcherName } from './state.js';
+import { state, saveEntityModelsToStorage, getValidSavedEntityModel, saveSelectedVoiceToStorage, clearAudioCache, saveResearcherName, saveEnterInsertsNewline } from './state.js';
 import { showToast } from './utils.js';
 import { showModal, hideModal } from './modals.js';
 import { setTheme } from './theme.js';
@@ -51,6 +51,11 @@ export async function applySettings() {
     // Save researcher name
     state.settings.researcherName = elements.researcherNameInput.value.trim() || '';
     saveResearcherName(state.settings.researcherName);
+
+    // Save Enter-key behavior preference
+    if (elements.enterInsertsNewlineCheckbox) {
+        saveEnterInsertsNewline(elements.enterInsertsNewlineCheckbox.checked);
+    }
 
     // Persist the system prompt per-entity on the backend (the source of
     // truth) so it survives across sessions and browsers. The model stays a
@@ -379,6 +384,9 @@ export function initializeSettingsUI() {
     }
     if (elements.researcherNameInput) {
         elements.researcherNameInput.value = state.settings.researcherName || '';
+    }
+    if (elements.enterInsertsNewlineCheckbox) {
+        elements.enterInsertsNewlineCheckbox.checked = state.settings.enterInsertsNewline === true;
     }
 
     updateTemperatureControlState();
