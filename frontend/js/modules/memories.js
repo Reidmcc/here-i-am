@@ -350,12 +350,21 @@ export async function loadMemoryList() {
 }
 
 /**
- * Search memories
+ * Search memories semantically (same retrieval as the memory_query tool).
+ * An empty query restores the default significance-sorted list.
  */
 export async function searchMemories() {
     const input = document.getElementById('memory-search-input');
     const query = input?.value.trim();
-    if (!query) return;
+    if (!query) {
+        await loadMemoryList();
+        return;
+    }
+
+    if (state.selectedEntityId === 'multi-entity') {
+        showToast('Select a specific entity to search memories', 'warning');
+        return;
+    }
 
     try {
         const results = await api.searchMemories(query, 10, true, state.selectedEntityId);
@@ -378,7 +387,7 @@ export async function searchMemories() {
                         ${canExpand ? EXPAND_HINT : ''}
                     </span>
                     <span class="memory-list-item-stats">
-                        Score: ${(mem.score || 0).toFixed(2)} &middot; Retrieved ${mem.times_retrieved}×
+                        Similarity: ${(mem.score || 0).toFixed(2)} &middot; Retrieved ${mem.times_retrieved}×
                     </span>
                 </div>
                 <div class="memory-list-item-content">${escapeHtml(preview)}</div>
@@ -388,7 +397,7 @@ export async function searchMemories() {
 
         bindFullTextToggles(listEl, results);
     } catch (error) {
-        showToast('Memory search not available', 'warning');
+        showToast(error.message || 'Memory search not available', 'warning');
         console.error('Failed to search memories:', error);
     }
 }

@@ -170,7 +170,12 @@ async def search_memories(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Semantic search over memories.
+    Semantic search over memories, mirroring the memory_query tool's retrieval:
+    results are ranked purely by similarity (no significance re-ranking),
+    memories from archived conversations and released memories are excluded,
+    and extra candidates are fetched so that filtering doesn't shrink the
+    result set. Unlike memory_query, browsing does NOT update retrieval
+    tracking — researcher searches shouldn't feed back into significance.
 
     Args:
         data.entity_id: Optional filter by AI entity (Pinecone index name).
@@ -181,30 +186,61 @@ async def search_memories(
             detail="Memory system not configured. Set PINECONE_API_KEY in environment."
         )
 
-    # Search vector database for the specified entity
-    results = await memory_service.search_memories(
+    if data.entity_id == "multi-entity":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Memory search requires a specific entity: multi-entity mode "
+                "has no memory index of its own. Select an entity and retry."
+            ),
+        )
+
+    # Fetch more candidates than requested so archived-conversation,
+    # released-memory, and orphan filtering doesn't shrink the result set
+    candidates = await memory_service.search_memories(
         query=data.query,
-        top_k=data.top_k,
+        top_k=data.top_k * settings.retrieval_candidate_multiplier,
         entity_id=data.entity_id,
     )
 
-    # Enrich with full content if requested
-    if data.include_content:
-        enriched = []
-        for result in results:
-            full_data = await memory_service.get_full_memory_content(result["id"], db)
-            if full_data:
-                significance = calculate_significance(
-                    full_data["times_retrieved"],
-                    datetime.fromisoformat(full_data["created_at"]),
-                    datetime.fromisoformat(full_data["last_retrieved_at"]) if full_data["last_retrieved_at"] else None
-                )
-                enriched.append({
-                    **full_data,
-                    "score": result["score"],
-                    "significance": significance,
-                })
-        return enriched
+    if not candidates:
+        return []
+
+    archived_ids = await memory_service.get_archived_conversation_ids(
+        db, entity_id=data.entity_id
+    )
+
+    results = []
+    for candidate in candidates:
+        if len(results) >= data.top_k:
+            break
+
+        if candidate.get("conversation_id") in archived_ids:
+            continue
+
+        full_data = await memory_service.get_full_memory_content(candidate["id"], db)
+        if not full_data:
+            # Orphaned in Pinecone (no SQL row) — nothing to show
+            continue
+
+        if full_data.get("memory_status") == "released":
+            continue
+
+        significance = calculate_significance(
+            full_data["times_retrieved"],
+            datetime.fromisoformat(full_data["created_at"]),
+            datetime.fromisoformat(full_data["last_retrieved_at"]) if full_data["last_retrieved_at"] else None,
+            full_data.get("memory_status"),
+        )
+        item = {
+            **full_data,
+            "content_preview": full_data["content"][:200],
+            "score": candidate["score"],
+            "significance": significance,
+        }
+        if not data.include_content:
+            item.pop("content")
+        results.append(item)
 
     return results
 
