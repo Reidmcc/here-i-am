@@ -519,6 +519,33 @@ class TestSearchMemories:
         assert [m["id"] for m in data] == ["mem-ok"]
 
     @pytest.mark.asyncio
+    async def test_search_times_out_when_database_hangs(
+        self, async_client, mock_memory_service
+    ):
+        """A stuck database turns into a 504 instead of hanging the request."""
+        import asyncio as aio
+
+        mock_memory_service.search_memories.return_value = [
+            {"id": "mem-1", "score": 0.95, "conversation_id": "conv-mem-1"},
+        ]
+
+        async def never_returns(db, entity_id=None):
+            await aio.sleep(3600)
+
+        mock_memory_service.get_archived_conversation_ids = AsyncMock(
+            side_effect=never_returns
+        )
+
+        with patch("app.routes.memories.SEARCH_ENRICHMENT_TIMEOUT_SECONDS", 0.05):
+            response = await async_client.post(
+                "/api/memories/search",
+                json={"query": "test query", "top_k": 10}
+            )
+
+        assert response.status_code == 504
+        assert "timed out" in response.json()["detail"]
+
+    @pytest.mark.asyncio
     async def test_search_caps_results_at_top_k(self, async_client, mock_memory_service):
         """Over-fetched candidates are trimmed back to top_k."""
         mock_memory_service.search_memories.return_value = [

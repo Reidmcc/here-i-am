@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -11,7 +13,13 @@ from app.models import Message, MessageRole, Conversation
 from app.services import memory_service
 from app.config import settings
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/memories", tags=["memories"])
+
+# The post-search SQL enrichment is a few primary-key lookups; if it takes this
+# long the database is stuck and we fail the request instead of hanging it
+SEARCH_ENRICHMENT_TIMEOUT_SECONDS = 15
 
 # Only these roles are vectorized into Pinecone; tool exchanges and system
 # messages live in SQL for conversation replay but are never memories, so the
@@ -209,42 +217,70 @@ async def search_memories(
     if not candidates:
         return []
 
-    archived_ids = await memory_service.get_archived_conversation_ids(
-        db, entity_id=data.entity_id
-    )
+    logger.info(f"[MEMORY] Browser search: enriching {len(candidates)} candidates from SQL")
 
-    results = []
-    for candidate in candidates:
-        if len(results) >= data.top_k:
-            break
-
-        if candidate.get("conversation_id") in archived_ids:
-            continue
-
-        full_data = await memory_service.get_full_memory_content(candidate["id"], db)
-        if not full_data:
-            # Orphaned in Pinecone (no SQL row) — nothing to show
-            continue
-
-        if full_data.get("memory_status") == "released":
-            continue
-
-        significance = calculate_significance(
-            full_data["times_retrieved"],
-            datetime.fromisoformat(full_data["created_at"]),
-            datetime.fromisoformat(full_data["last_retrieved_at"]) if full_data["last_retrieved_at"] else None,
-            full_data.get("memory_status"),
+    async def _enrich() -> list:
+        archived_ids = await memory_service.get_archived_conversation_ids(
+            db, entity_id=data.entity_id
         )
-        item = {
-            **full_data,
-            "content_preview": full_data["content"][:200],
-            "score": candidate["score"],
-            "significance": significance,
-        }
-        if not data.include_content:
-            item.pop("content")
-        results.append(item)
+        logger.info(
+            f"[MEMORY] Browser search: filtering against {len(archived_ids)} archived conversation(s)"
+        )
 
+        results = []
+        for candidate in candidates:
+            if len(results) >= data.top_k:
+                break
+
+            if candidate.get("conversation_id") in archived_ids:
+                continue
+
+            full_data = await memory_service.get_full_memory_content(candidate["id"], db)
+            if not full_data:
+                # Orphaned in Pinecone (no SQL row) — nothing to show
+                continue
+
+            if full_data.get("memory_status") == "released":
+                continue
+
+            significance = calculate_significance(
+                full_data["times_retrieved"],
+                datetime.fromisoformat(full_data["created_at"]),
+                datetime.fromisoformat(full_data["last_retrieved_at"]) if full_data["last_retrieved_at"] else None,
+                full_data.get("memory_status"),
+            )
+            item = {
+                **full_data,
+                "content_preview": full_data["content"][:200],
+                "score": candidate["score"],
+                "significance": significance,
+            }
+            if not data.include_content:
+                item.pop("content")
+            results.append(item)
+
+        return results
+
+    # The SQL enrichment is a handful of primary-key lookups and should be
+    # near-instant; if the database blocks (e.g., connection pool exhausted,
+    # locked file), surface a clear error instead of hanging the request forever.
+    try:
+        results = await asyncio.wait_for(_enrich(), timeout=SEARCH_ENRICHMENT_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.error(
+            f"[MEMORY] Browser search timed out after {SEARCH_ENRICHMENT_TIMEOUT_SECONDS}s "
+            "while loading memory content from SQL. The vector search succeeded, so the "
+            "database is not responding (locked file or exhausted connection pool?)."
+        )
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "Memory search timed out while loading memory content from the "
+                "database (vector search succeeded). See server logs."
+            ),
+        )
+
+    logger.info(f"[MEMORY] Browser search: returning {len(results)} memories")
     return results
 
 
