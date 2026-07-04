@@ -361,7 +361,7 @@ class TestWebFetch:
 
     @pytest.mark.asyncio
     async def test_fetch_403_forbidden(self):
-        """Test handling of 403 Forbidden."""
+        """Test that 403 falls back to Playwright; error when that also fails."""
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = MagicMock()
             mock_response.status_code = 403
@@ -372,10 +372,123 @@ class TestWebFetch:
             mock_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_instance
 
-            result = await web_fetch("https://example.com")
+            with patch(
+                "app.services.web_tools._fetch_with_playwright",
+                new=AsyncMock(return_value=(None, "Playwright is not installed")),
+            ) as mock_playwright:
+                result = await web_fetch("https://example.com")
 
-            assert "Error" in result
-            assert "403" in result or "Forbidden" in result
+                mock_playwright.assert_awaited_once_with("https://example.com")
+                assert "Error" in result
+                assert "403" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_403_browser_retry_succeeds(self):
+        """Test that a 403 from the direct fetch is recovered via Playwright."""
+        rendered_html = """
+        <!DOCTYPE html>
+        <html>
+        <head><title>Real Article</title></head>
+        <body><main><h1>Real Article</h1><p>{}</p></main></body>
+        </html>
+        """.format("Substantive article text. " * 20)
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 403
+
+            mock_instance = AsyncMock()
+            mock_instance.get = AsyncMock(return_value=mock_response)
+            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_instance.__aexit__ = AsyncMock(return_value=None)
+            mock_client.return_value = mock_instance
+
+            with patch(
+                "app.services.web_tools._fetch_with_playwright",
+                new=AsyncMock(return_value=(rendered_html, None)),
+            ):
+                result = await web_fetch("https://example.com")
+
+                assert "Error" not in result
+                assert "Real Article" in result
+                assert "[JavaScript rendered]" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_403_browser_retry_hits_block_page(self):
+        """Test that a block interstitial from the retry is reported as denial."""
+        block_html = """
+        <!DOCTYPE html>
+        <html>
+        <head><title>Just a moment...</title></head>
+        <body><p>Verify you are human by completing the action below.</p></body>
+        </html>
+        """
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 403
+
+            mock_instance = AsyncMock()
+            mock_instance.get = AsyncMock(return_value=mock_response)
+            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_instance.__aexit__ = AsyncMock(return_value=None)
+            mock_client.return_value = mock_instance
+
+            with patch(
+                "app.services.web_tools._fetch_with_playwright",
+                new=AsyncMock(return_value=(block_html, None)),
+            ):
+                result = await web_fetch("https://example.com")
+
+                assert "Error" in result
+                assert "403" in result
+                assert "anti-bot" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_429_triggers_browser_retry(self):
+        """Test that 429 (rate-limit style bot wall) also triggers the retry."""
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 429
+
+            mock_instance = AsyncMock()
+            mock_instance.get = AsyncMock(return_value=mock_response)
+            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_instance.__aexit__ = AsyncMock(return_value=None)
+            mock_client.return_value = mock_instance
+
+            with patch(
+                "app.services.web_tools._fetch_with_playwright",
+                new=AsyncMock(return_value=(None, "timed out")),
+            ) as mock_playwright:
+                result = await web_fetch("https://example.com")
+
+                mock_playwright.assert_awaited_once()
+                assert "Error" in result
+                assert "429" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_sends_browser_user_agent(self):
+        """Test that the direct fetch presents a plain browser User-Agent."""
+        from app.services.web_tools import BROWSER_USER_AGENT
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.headers = {"content-type": "text/plain"}
+            mock_response.text = "hello"
+
+            mock_instance = AsyncMock()
+            mock_instance.get = AsyncMock(return_value=mock_response)
+            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_instance.__aexit__ = AsyncMock(return_value=None)
+            mock_client.return_value = mock_instance
+
+            await web_fetch("https://example.com")
+
+            headers = mock_instance.get.call_args.kwargs["headers"]
+            assert headers["User-Agent"] == BROWSER_USER_AGENT
+            assert "compatible" not in headers["User-Agent"]
 
     @pytest.mark.asyncio
     async def test_fetch_404_not_found(self):
