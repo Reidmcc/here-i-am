@@ -51,6 +51,7 @@ export const state = {
         conversationType: 'normal',
         verbosity: 'medium',
         researcherName: '',
+        enterInsertsNewline: false,
     },
 
     // Memory state
@@ -280,4 +281,25 @@ export function saveResearcherName(name) {
         state.settings.researcherName = name;
     }
     localStorage.setItem('researcher_name', state.settings.researcherName || '');
+}
+
+/**
+ * Load the Enter-key behavior preference from localStorage
+ * @returns {boolean} True if Enter should insert a newline instead of sending
+ */
+export function loadEnterInsertsNewline() {
+    const saved = localStorage.getItem('enter_inserts_newline');
+    state.settings.enterInsertsNewline = saved === 'true';
+    return state.settings.enterInsertsNewline;
+}
+
+/**
+ * Save the Enter-key behavior preference to localStorage
+ * @param {boolean} enabled - True if Enter should insert a newline instead of sending
+ */
+export function saveEnterInsertsNewline(enabled) {
+    if (enabled !== undefined) {
+        state.settings.enterInsertsNewline = !!enabled;
+    }
+    localStorage.setItem('enter_inserts_newline', state.settings.enterInsertsNewline ? 'true' : 'false');
 }
