@@ -50,6 +50,8 @@ def mock_settings():
         mock.significance_half_life_days = 60
         mock.recency_boost_strength = 1.2
         mock.significance_floor = 0.25
+        mock.retrieval_candidate_multiplier = 2
+        mock.query_similarity_threshold = 0.2
         yield mock
 
 
@@ -60,6 +62,7 @@ def mock_memory_service():
         mock.is_configured.return_value = True
         mock.search_memories = AsyncMock(return_value=[])
         mock.get_full_memory_content = AsyncMock(return_value=None)
+        mock.get_archived_conversation_ids = AsyncMock(return_value=set())
         mock.delete_memory = AsyncMock(return_value=True)
         mock.find_orphaned_records = AsyncMock(return_value=[])
         mock.cleanup_orphaned_records = AsyncMock(return_value={
@@ -384,13 +387,56 @@ class TestSearchMemories:
         assert response.status_code == 503
         assert "not configured" in response.json()["detail"].lower()
 
+    @staticmethod
+    def _full_content(memory_id: str, **overrides):
+        """Build a get_full_memory_content-style payload for a memory ID."""
+        data = {
+            "id": memory_id,
+            "conversation_id": f"conv-{memory_id}",
+            "role": "human",
+            "content": f"Content of {memory_id}",
+            "created_at": datetime.utcnow().isoformat(),
+            "times_retrieved": 1,
+            "last_retrieved_at": None,
+            "memory_status": None,
+        }
+        data.update(overrides)
+        return data
+
     @pytest.mark.asyncio
     async def test_search_basic(self, async_client, mock_memory_service):
-        """Test basic memory search."""
+        """Test basic memory search returns similarity-ordered results."""
         mock_memory_service.search_memories.return_value = [
-            {"id": "mem-1", "score": 0.95},
-            {"id": "mem-2", "score": 0.85},
+            {"id": "mem-1", "score": 0.95, "conversation_id": "conv-mem-1"},
+            {"id": "mem-2", "score": 0.85, "conversation_id": "conv-mem-2"},
         ]
+        mock_memory_service.get_full_memory_content = AsyncMock(
+            side_effect=lambda memory_id, db: TestSearchMemories._full_content(memory_id)
+        )
+
+        response = await async_client.post(
+            "/api/memories/search",
+            json={"query": "test query", "top_k": 10}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 2
+        assert data[0]["id"] == "mem-1"
+        assert data[0]["score"] == 0.95
+        assert data[0]["content"] == "Content of mem-1"
+        assert "significance" in data[0]
+        mock_memory_service.search_memories.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_search_without_content(self, async_client, mock_memory_service):
+        """include_content=False omits full content but keeps the preview."""
+        mock_memory_service.search_memories.return_value = [
+            {"id": "mem-1", "score": 0.95, "conversation_id": "conv-mem-1"},
+        ]
+        mock_memory_service.get_full_memory_content = AsyncMock(
+            side_effect=lambda memory_id, db: TestSearchMemories._full_content(memory_id)
+        )
 
         response = await async_client.post(
             "/api/memories/search",
@@ -399,12 +445,13 @@ class TestSearchMemories:
 
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        mock_memory_service.search_memories.assert_called_once()
+        assert len(data) == 1
+        assert "content" not in data[0]
+        assert data[0]["content_preview"] == "Content of mem-1"
 
     @pytest.mark.asyncio
     async def test_search_with_entity_filter(self, async_client, mock_memory_service):
-        """Test memory search with entity filter."""
+        """Test memory search with entity filter over-fetches candidates."""
         mock_memory_service.search_memories.return_value = []
 
         response = await async_client.post(
@@ -416,11 +463,108 @@ class TestSearchMemories:
         )
 
         assert response.status_code == 200
+        assert response.json() == []
+        # top_k is over-fetched by the candidate multiplier (10 * 2), and
+        # deliberate queries use the lower query similarity threshold
         mock_memory_service.search_memories.assert_called_with(
             query="test query",
-            top_k=10,
+            top_k=20,
             entity_id="specific-entity",
+            similarity_threshold=0.2,
         )
+
+    @pytest.mark.asyncio
+    async def test_search_multi_entity_rejected(self, async_client, mock_memory_service):
+        """The multi-entity sentinel is not a searchable index."""
+        response = await async_client.post(
+            "/api/memories/search",
+            json={"query": "test query", "entity_id": "multi-entity"}
+        )
+
+        assert response.status_code == 400
+        assert "specific entity" in response.json()["detail"]
+        mock_memory_service.search_memories.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_search_filters_archived_released_and_orphans(
+        self, async_client, mock_memory_service
+    ):
+        """Archived-conversation, released, and orphaned memories are excluded."""
+        mock_memory_service.search_memories.return_value = [
+            {"id": "mem-archived", "score": 0.99, "conversation_id": "conv-archived"},
+            {"id": "mem-released", "score": 0.98, "conversation_id": "conv-mem-released"},
+            {"id": "mem-orphan", "score": 0.97, "conversation_id": "conv-mem-orphan"},
+            {"id": "mem-ok", "score": 0.90, "conversation_id": "conv-mem-ok"},
+        ]
+        mock_memory_service.get_archived_conversation_ids = AsyncMock(
+            return_value={"conv-archived"}
+        )
+
+        def full_content(memory_id, db):
+            if memory_id == "mem-orphan":
+                return None
+            if memory_id == "mem-released":
+                return TestSearchMemories._full_content(memory_id, memory_status="released")
+            return TestSearchMemories._full_content(memory_id)
+
+        mock_memory_service.get_full_memory_content = AsyncMock(side_effect=full_content)
+
+        response = await async_client.post(
+            "/api/memories/search",
+            json={"query": "test query", "top_k": 10}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert [m["id"] for m in data] == ["mem-ok"]
+
+    @pytest.mark.asyncio
+    async def test_search_times_out_when_database_hangs(
+        self, async_client, mock_memory_service
+    ):
+        """A stuck database turns into a 504 instead of hanging the request."""
+        import asyncio as aio
+
+        mock_memory_service.search_memories.return_value = [
+            {"id": "mem-1", "score": 0.95, "conversation_id": "conv-mem-1"},
+        ]
+
+        async def never_returns(db, entity_id=None):
+            await aio.sleep(3600)
+
+        mock_memory_service.get_archived_conversation_ids = AsyncMock(
+            side_effect=never_returns
+        )
+
+        with patch("app.routes.memories.SEARCH_ENRICHMENT_TIMEOUT_SECONDS", 0.05):
+            response = await async_client.post(
+                "/api/memories/search",
+                json={"query": "test query", "top_k": 10}
+            )
+
+        assert response.status_code == 504
+        assert "timed out" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_search_caps_results_at_top_k(self, async_client, mock_memory_service):
+        """Over-fetched candidates are trimmed back to top_k."""
+        mock_memory_service.search_memories.return_value = [
+            {"id": f"mem-{i}", "score": 0.9 - i * 0.01, "conversation_id": f"conv-mem-{i}"}
+            for i in range(6)
+        ]
+        mock_memory_service.get_full_memory_content = AsyncMock(
+            side_effect=lambda memory_id, db: TestSearchMemories._full_content(memory_id)
+        )
+
+        response = await async_client.post(
+            "/api/memories/search",
+            json={"query": "test query", "top_k": 3}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 3
+        assert [m["id"] for m in data] == ["mem-0", "mem-1", "mem-2"]
 
 
 class TestMemoryStats:

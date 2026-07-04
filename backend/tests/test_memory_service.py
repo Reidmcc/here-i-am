@@ -252,6 +252,42 @@ class TestMemoryServiceSearch:
             assert len(results) == 0
 
     @pytest.mark.asyncio
+    async def test_search_memories_custom_threshold_overrides_settings(self, mock_pinecone_index):
+        """A per-call similarity_threshold (deliberate queries) overrides the settings default."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.95  # High default threshold
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service = MemoryService()
+
+            # Mock cache service (set directly on _cache_service)
+            mock_cache = MagicMock()
+            mock_cache.get_search_results.return_value = None
+            service._cache_service = mock_cache
+
+            mock_hit = MagicMock()
+            mock_hit.to_dict.return_value = {
+                "_id": "low-score-memory",
+                "_score": 0.3,  # Below the 0.95 default, above the explicit 0.2
+                "fields": {"conversation_id": "conv-1", "created_at": "2024-01-01"},
+            }
+
+            mock_result = MagicMock()
+            mock_result.hits = [mock_hit]
+            mock_search_result = MagicMock()
+            mock_search_result.result = mock_result
+            mock_pinecone_index.search = MagicMock(return_value=mock_search_result)
+
+            service._indexes["default"] = mock_pinecone_index
+
+            results = await service.search_memories("Query", similarity_threshold=0.2)
+
+            assert len(results) == 1
+            assert results[0]["id"] == "low-score-memory"
+
+    @pytest.mark.asyncio
     async def test_search_memories_excludes_current_conversation(self, mock_pinecone_index):
         """Test that current conversation is excluded from results."""
         with patch("app.services.memory_service.settings") as mock_settings:

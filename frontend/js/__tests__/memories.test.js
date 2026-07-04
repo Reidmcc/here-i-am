@@ -404,6 +404,27 @@ describe('Memories Module', () => {
             expect(window.api.searchMemories).not.toHaveBeenCalled();
         });
 
+        it('should restore the default list when query is empty', async () => {
+            const searchInput = document.getElementById('memory-search-input');
+            searchInput.value = '';
+            window.api.listMemories = vi.fn(() => Promise.resolve([]));
+
+            await searchMemories();
+
+            expect(window.api.listMemories).toHaveBeenCalled();
+        });
+
+        it('should not search in multi-entity mode', async () => {
+            state.selectedEntityId = 'multi-entity';
+            const searchInput = document.getElementById('memory-search-input');
+            searchInput.value = 'test query';
+            window.api.searchMemories = vi.fn(() => Promise.resolve([]));
+
+            await searchMemories();
+
+            expect(window.api.searchMemories).not.toHaveBeenCalled();
+        });
+
         it('should call API with correct parameters', async () => {
             const searchInput = document.getElementById('memory-search-input');
             searchInput.value = 'test query';

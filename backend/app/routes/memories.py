@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -11,7 +13,13 @@ from app.models import Message, MessageRole, Conversation
 from app.services import memory_service
 from app.config import settings
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/memories", tags=["memories"])
+
+# The post-search SQL enrichment is a few primary-key lookups; if it takes this
+# long the database is stuck and we fail the request instead of hanging it
+SEARCH_ENRICHMENT_TIMEOUT_SECONDS = 15
 
 # Only these roles are vectorized into Pinecone; tool exchanges and system
 # messages live in SQL for conversation replay but are never memories, so the
@@ -170,7 +178,12 @@ async def search_memories(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Semantic search over memories.
+    Semantic search over memories, mirroring the memory_query tool's retrieval:
+    results are ranked purely by similarity (no significance re-ranking),
+    memories from archived conversations and released memories are excluded,
+    and extra candidates are fetched so that filtering doesn't shrink the
+    result set. Unlike memory_query, browsing does NOT update retrieval
+    tracking — researcher searches shouldn't feed back into significance.
 
     Args:
         data.entity_id: Optional filter by AI entity (Pinecone index name).
@@ -181,31 +194,93 @@ async def search_memories(
             detail="Memory system not configured. Set PINECONE_API_KEY in environment."
         )
 
-    # Search vector database for the specified entity
-    results = await memory_service.search_memories(
+    if data.entity_id == "multi-entity":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Memory search requires a specific entity: multi-entity mode "
+                "has no memory index of its own. Select an entity and retry."
+            ),
+        )
+
+    # Fetch more candidates than requested so archived-conversation,
+    # released-memory, and orphan filtering doesn't shrink the result set.
+    # Deliberate queries are short, semantically sparse strings, so they use
+    # a lower similarity floor than automatic chat-context retrieval.
+    candidates = await memory_service.search_memories(
         query=data.query,
-        top_k=data.top_k,
+        top_k=data.top_k * settings.retrieval_candidate_multiplier,
         entity_id=data.entity_id,
+        similarity_threshold=settings.query_similarity_threshold,
     )
 
-    # Enrich with full content if requested
-    if data.include_content:
-        enriched = []
-        for result in results:
-            full_data = await memory_service.get_full_memory_content(result["id"], db)
-            if full_data:
-                significance = calculate_significance(
-                    full_data["times_retrieved"],
-                    datetime.fromisoformat(full_data["created_at"]),
-                    datetime.fromisoformat(full_data["last_retrieved_at"]) if full_data["last_retrieved_at"] else None
-                )
-                enriched.append({
-                    **full_data,
-                    "score": result["score"],
-                    "significance": significance,
-                })
-        return enriched
+    if not candidates:
+        return []
 
+    logger.info(f"[MEMORY] Browser search: enriching {len(candidates)} candidates from SQL")
+
+    async def _enrich() -> list:
+        archived_ids = await memory_service.get_archived_conversation_ids(
+            db, entity_id=data.entity_id
+        )
+        logger.info(
+            f"[MEMORY] Browser search: filtering against {len(archived_ids)} archived conversation(s)"
+        )
+
+        results = []
+        for candidate in candidates:
+            if len(results) >= data.top_k:
+                break
+
+            if candidate.get("conversation_id") in archived_ids:
+                continue
+
+            full_data = await memory_service.get_full_memory_content(candidate["id"], db)
+            if not full_data:
+                # Orphaned in Pinecone (no SQL row) — nothing to show
+                continue
+
+            if full_data.get("memory_status") == "released":
+                continue
+
+            significance = calculate_significance(
+                full_data["times_retrieved"],
+                datetime.fromisoformat(full_data["created_at"]),
+                datetime.fromisoformat(full_data["last_retrieved_at"]) if full_data["last_retrieved_at"] else None,
+                full_data.get("memory_status"),
+            )
+            item = {
+                **full_data,
+                "content_preview": full_data["content"][:200],
+                "score": candidate["score"],
+                "significance": significance,
+            }
+            if not data.include_content:
+                item.pop("content")
+            results.append(item)
+
+        return results
+
+    # The SQL enrichment is a handful of primary-key lookups and should be
+    # near-instant; if the database blocks (e.g., connection pool exhausted,
+    # locked file), surface a clear error instead of hanging the request forever.
+    try:
+        results = await asyncio.wait_for(_enrich(), timeout=SEARCH_ENRICHMENT_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.error(
+            f"[MEMORY] Browser search timed out after {SEARCH_ENRICHMENT_TIMEOUT_SECONDS}s "
+            "while loading memory content from SQL. The vector search succeeded, so the "
+            "database is not responding (locked file or exhausted connection pool?)."
+        )
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "Memory search timed out while loading memory content from the "
+                "database (vector search succeeded). See server logs."
+            ),
+        )
+
+    logger.info(f"[MEMORY] Browser search: returning {len(results)} memories")
     return results
 
 
@@ -312,6 +387,7 @@ async def memory_health():
         "entities": [entity.to_dict() for entity in entities],
         "retrieval_top_k": settings.retrieval_top_k,
         "similarity_threshold": settings.similarity_threshold,
+        "query_similarity_threshold": settings.query_similarity_threshold,
         "recency_boost_strength": settings.recency_boost_strength,
     }
 

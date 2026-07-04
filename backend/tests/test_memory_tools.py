@@ -16,6 +16,7 @@ from app.services.memory_tools import (
     _memory_query,
 )
 from app.services.tool_service import ToolService, ToolCategory
+from app.config import settings
 
 
 class TestMemoryToolContext:
@@ -146,6 +147,8 @@ class TestMemoryQuerySearch:
                 exclude_ids=None,  # Deliberate recall includes all
                 entity_id="my-entity",
                 use_cache=True,
+                # Deliberate queries use the lower query similarity threshold
+                similarity_threshold=settings.query_similarity_threshold,
             )
 
     @pytest.mark.asyncio

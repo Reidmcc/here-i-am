@@ -488,6 +488,12 @@ class App {
         // Memories modal
         document.getElementById('close-memories')?.addEventListener('click', () => hideModal('memoriesModal'));
         document.getElementById('memory-search-btn')?.addEventListener('click', () => searchMemories());
+        document.getElementById('memory-search-input')?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                searchMemories();
+            }
+        });
         document.getElementById('check-orphans-btn')?.addEventListener('click', () => checkForOrphans());
         document.getElementById('cleanup-orphans-btn')?.addEventListener('click', () => cleanupOrphans());
 
