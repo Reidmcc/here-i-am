@@ -19,6 +19,8 @@ However, the application is not locked into that specific use case. Here I Am gi
 - Conversation archiving and restoration
 - Conversation export to JSON and import from OpenAI/Anthropic exports
 - Seed conversation import capability
+- Per-entity system prompts persisted on the backend
+- Configurable Enter key behavior (send message or insert newline)
 
 ### Multi-Entity System
 - Run multiple AI entities with separate memory spaces and conversation histories
@@ -39,6 +41,11 @@ However, the application is not locked into that specific use case. Here I Am gi
 - Retrieved memory display in UI (transparency for researcher)
 - Memory role balance (ensures both human and assistant memories in retrieval)
 - **Memory query tool**: Entities can deliberately search their memories beyond automatic retrieval
+- **Self-authored reflections**: Entities can save memories in their own words via `memory_save`
+- **Memory agency**: Entities can pin memories (exempt from age-based decay) or release them from retrieval via `memory_mark`/`memory_release`; the researcher can view and override these choices
+- **Closing turn**: An open final turn the entity can use before a conversation ends (single-entity conversations)
+- **Context awareness**: `context_status` tool reports approximate context fullness; a `[CONTEXT NOTICE]` is injected when trimming occurs
+- Memory browser with semantic search, reflections section, and click-to-expand full memory text
 - Memory statistics, search, and orphan cleanup
 - Graceful degradation when Pinecone is not configured
 
@@ -47,14 +54,14 @@ However, the application is not locked into that specific use case. Here I Am gi
 - Shared notes folder for cross-entity collaboration
 - `index.md` auto-injected into every conversation as working memory
 - Markdown, JSON, YAML, HTML, XML, and plain text file support
+- **Semantic notes search**: Notes are vectorized on write (Pinecone `"notes"` namespace) and searchable by meaning via the `notes_search` tool; `POST /api/notes/reindex` backfills the index
 - Designed for AI entities to maintain their own context across conversations
 
 ### Tool Use (Agentic Capabilities)
-- **Web search**: Brave Search API integration (up to 20 results)
-- **Web fetch**: Smart HTML parsing with automatic JavaScript rendering via Playwright
+- Tools for web access, memory, notes, context awareness, GitHub, codebase navigation, and Moltbook — see [Available Tools](#available-tools) for the full catalog
 - Agentic loop with configurable max iterations (default: 10)
 - Real-time tool execution streaming with visual indicators in UI
-- Available for Anthropic, OpenAI, and MiniMax models
+- Available for Anthropic, OpenAI, and MiniMax models (Google models do not receive tool schemas)
 
 ### Image and File Attachments
 - **Images**: JPEG, PNG, GIF, WebP — analyzed by vision-capable models (ephemeral, not stored)
@@ -222,6 +229,10 @@ python run.py
 |----------|-------------|----------|
 | `MEMORY_ROLE_BALANCE_ENABLED` | Balance human/assistant memories in retrieval | No (default: true) |
 | `USE_MEMORY_IN_CONTEXT` | Insert memories into conversation context (experimental) | No (default: false) |
+| `RETRIEVAL_TOP_K` | Memories retrieved per message | No (default: 5) |
+| `SIMILARITY_THRESHOLD` | Minimum similarity for automatic retrieval | No (default: 0.4) |
+| `QUERY_SIMILARITY_THRESHOLD` | Minimum similarity for deliberate `memory_query` searches | No (default: 0.2) |
+| `SIGNIFICANCE_HALF_LIFE_DAYS` | Days for a memory's significance to halve | No (default: 60) |
 
 **Attachments:**
 
@@ -403,18 +414,7 @@ GITHUB_REPOS='[
 - `local_clone_path` — path to local clone for faster operations and codebase navigator (optional)
 - `commit_author_name`, `commit_author_email` — commit attribution (optional)
 
-**Available GitHub Tools:**
-
-*Composite tools (efficient):*
-- `github_explore` — repo metadata, file tree, and key docs in one call
-- `github_tree` — full repository tree structure
-- `github_get_files` — fetch up to 10 files in parallel
-
-*Standard tools:*
-- Read: `github_repo_info`, `github_list_contents`, `github_get_file`, `github_search_code`, `github_list_branches`
-- Write: `github_create_branch`, `github_commit_file`, `github_commit_patch`, `github_delete_file`
-- PRs: `github_list_pull_requests`, `github_get_pull_request`, `github_create_pull_request`
-- Issues: `github_list_issues`, `github_get_issue`, `github_create_issue`, `github_add_comment`
+See [GitHub Tools](#github-tools) for the full list of available tools.
 
 ### Codebase Navigator Setup (Optional)
 
@@ -426,7 +426,7 @@ CODEBASE_NAVIGATOR_ENABLED=true
 MISTRAL_API_KEY=your_mistral_api_key
 ```
 
-Requires `local_clone_path` in at least one GitHub repository configuration. Available tools: `navigate_codebase`, `navigate_codebase_structure`, `navigate_find_entry_points`, `navigate_assess_impact`, `navigate_trace_dependencies`.
+Requires `local_clone_path` in at least one GitHub repository configuration. See [Codebase Navigator Tools](#codebase-navigator-tools) for the full list of available tools.
 
 ### Moltbook Integration (Optional)
 
@@ -440,6 +440,82 @@ MOLTBOOK_API_URL=https://www.moltbook.com/api/v1  # Must use www subdomain
 ```
 
 All Moltbook responses are wrapped with a security banner to prevent prompt injection from external content.
+
+## Available Tools
+
+Tools are registered at startup based on configuration and exposed to Anthropic, OpenAI, and MiniMax models (Google models do not receive tool schemas). `TOOLS_ENABLED=true` (the default) is required for any tool use. Each category below lists its additional requirements.
+
+### Web Tools
+
+Enabled by default.
+
+- `web_search` — search the web via the Brave Search API (up to 20 results). Requires `BRAVE_SEARCH_API_KEY`.
+- `web_fetch` — fetch and read a web page. Extracts main text from HTML, handles JSON and plain text, automatically renders JavaScript-heavy pages via headless Playwright browser, and retries bot-wall 403/429 responses through the browser.
+
+### Memory Tools
+
+Require Pinecone (`PINECONE_API_KEY` + `PINECONE_INDEXES`).
+
+- `memory_query` — deliberately search the entity's memories by chosen text. Returns results ranked by pure semantic similarity (no significance re-ranking), excludes the current conversation, and updates retrieval tracking so deliberate attention influences future automatic recall.
+- `memory_save` — save a self-authored reflection: a conclusion, synthesis, or anything the entity wants to remember, in its own words. Stored and retrieved like any other memory, attributed as a reflection.
+- `memory_mark` — pin a memory so it is exempt from age-based significance decay (or unpin with `undo=true`). Accepts memory ID prefixes of 6+ characters.
+- `memory_release` — remove a memory from all retrieval without deleting it (reversible with `undo=true`; the researcher can also view and restore released memories).
+
+### Notes Tools
+
+Require `NOTES_ENABLED=true` (the default).
+
+- `notes_read` — read a file from the entity's private notes or the shared folder.
+- `notes_write` — create or update a note file (`.md`, `.json`, `.txt`, `.html`, `.xml`, `.yaml`, `.yml`).
+- `notes_delete` — delete a note file (except `index.md`).
+- `notes_list` — list note files with size and modification date.
+- `notes_search` — search notes (private and shared) by meaning; returns matching excerpts with filenames. Additionally requires Pinecone.
+
+### Context Awareness
+
+Always registered.
+
+- `context_status` — report approximate context-window usage: tokens in context versus the limit, message and memory counts, and how many retrieved memories have rolled out of context.
+
+### GitHub Tools
+
+Require `GITHUB_TOOLS_ENABLED=true` and `GITHUB_REPOS`. Per-repository `capabilities` restrict which of these are permitted.
+
+*Composite tools (efficient):*
+- `github_explore` — repo metadata, file tree, and key docs in one call
+- `github_tree` — full repository tree structure
+- `github_get_files` — fetch up to 10 files in parallel
+
+*Read:*
+- `github_repo_info`, `github_list_contents`, `github_get_file`, `github_search_code`, `github_list_branches`
+
+*Write:*
+- `github_create_branch`, `github_commit_file`, `github_commit_patch` (token-efficient unified-diff edits), `github_delete_file`
+
+*Pull requests:*
+- `github_list_pull_requests`, `github_get_pull_request`, `github_create_pull_request`
+
+*Issues:*
+- `github_list_issues`, `github_get_issue`, `github_create_issue`, `github_add_comment`
+
+### Codebase Navigator Tools
+
+Require `CODEBASE_NAVIGATOR_ENABLED=true`, `MISTRAL_API_KEY`, and a `local_clone_path` in at least one GitHub repository configuration.
+
+- `navigate_codebase` — find code relevant to a task or question
+- `navigate_codebase_structure` — summarize repository structure
+- `navigate_find_entry_points` — locate entry points for a feature or flow
+- `navigate_assess_impact` — assess the impact of a proposed change
+- `navigate_trace_dependencies` — trace dependencies of a module or symbol
+- `navigator_invalidate_cache` — force-refresh the navigator's cached analysis for a repository
+
+### Moltbook Tools
+
+Require `MOLTBOOK_ENABLED=true` and `MOLTBOOK_API_KEY`. All responses are wrapped in security banners.
+
+- Feeds and posts: `moltbook_get_feed`, `moltbook_get_submolt_feed`, `moltbook_get_post`, `moltbook_create_post`, `moltbook_create_comment`
+- Interaction: `moltbook_vote`, `moltbook_follow`, `moltbook_subscribe`
+- Discovery: `moltbook_search`, `moltbook_get_profile`, `moltbook_list_submolts`, `moltbook_get_submolt`
 
 ## API Endpoints
 
@@ -461,7 +537,7 @@ All Moltbook responses are wrapped with a security banner to prevent prompt inje
 
 ### Chat
 - `POST /api/chat/send` — send message (with memory retrieval)
-- `POST /api/chat/stream` — send message with SSE streaming
+- `POST /api/chat/stream` — send message with SSE streaming (`closing_turn=true` with no message gives the entity an open final turn)
 - `POST /api/chat/quick` — quick chat (no persistence)
 - `POST /api/chat/regenerate` — regenerate AI response (SSE stream)
 - `GET /api/chat/session/{id}` — get session info
@@ -473,13 +549,21 @@ All Moltbook responses are wrapped with a security banner to prevent prompt inje
 - `GET /api/memories/{id}` — get specific memory
 - `POST /api/memories/search` — semantic search
 - `GET /api/memories/stats` — memory statistics
+- `GET /api/memories/overrides` — list memories with pinned/released status
+- `PUT /api/memories/{id}/status` — override a memory's pinned/released status (researcher emergency option)
+- `GET /api/memories/orphans` — list orphaned memory records
+- `POST /api/memories/orphans/cleanup` — clean up orphaned records
 - `DELETE /api/memories/{id}` — delete memory
 - `GET /api/memories/status/health` — health check
 
 ### Entities
 - `GET /api/entities/` — list all configured AI entities
 - `GET /api/entities/{id}` — get specific entity
+- `PUT /api/entities/{id}/system-prompt` — set an entity's persisted system prompt
 - `GET /api/entities/{id}/status` — get entity Pinecone connection status
+
+### Notes
+- `POST /api/notes/reindex` — rebuild the semantic notes index (backfill/recovery)
 
 ### Messages
 - `PUT /api/messages/{id}` — edit human message content
@@ -526,6 +610,12 @@ The memory system uses a **session memory accumulator pattern**:
 
 4. Memory role balance ensures retrieved sets include both human and assistant messages when possible.
 
+5. Entities have agency over their own memories:
+   - `memory_save` stores self-authored reflections, vectorized alongside conversational memories
+   - Pinned memories (`memory_mark`) are exempt from half-life decay
+   - Released memories (`memory_release`) are excluded from all retrieval but not deleted (reversible)
+   - The researcher can view and override these statuses via `GET /api/memories/overrides` and `PUT /api/memories/{id}/status`
+
 ## Project Structure
 
 ```
@@ -543,6 +633,7 @@ here-i-am/
 │   │   │   ├── memories.py
 │   │   │   ├── entities.py
 │   │   │   ├── messages.py
+│   │   │   ├── notes.py
 │   │   │   ├── tts.py
 │   │   │   ├── stt.py
 │   │   │   └── github.py
@@ -560,10 +651,12 @@ here-i-am/
 │   │   │   ├── tool_service.py
 │   │   │   ├── web_tools.py
 │   │   │   ├── memory_tools.py
+│   │   │   ├── context_tools.py
 │   │   │   ├── github_service.py
 │   │   │   ├── github_tools.py
 │   │   │   ├── notes_service.py
 │   │   │   ├── notes_tools.py
+│   │   │   ├── notes_vector_service.py
 │   │   │   ├── codebase_navigator_service.py
 │   │   │   ├── codebase_navigator_tools.py
 │   │   │   ├── codebase_navigator/   # Navigator module
