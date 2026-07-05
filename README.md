@@ -19,6 +19,8 @@ However, the application is not locked into that specific use case. Here I Am gi
 - Conversation archiving and restoration
 - Conversation export to JSON and import from OpenAI/Anthropic exports
 - Seed conversation import capability
+- Per-entity system prompts persisted on the backend
+- Configurable Enter key behavior (send message or insert newline)
 
 ### Multi-Entity System
 - Run multiple AI entities with separate memory spaces and conversation histories
@@ -39,6 +41,11 @@ However, the application is not locked into that specific use case. Here I Am gi
 - Retrieved memory display in UI (transparency for researcher)
 - Memory role balance (ensures both human and assistant memories in retrieval)
 - **Memory query tool**: Entities can deliberately search their memories beyond automatic retrieval
+- **Self-authored reflections**: Entities can save memories in their own words via `memory_save`
+- **Memory agency**: Entities can pin memories (exempt from age-based decay) or release them from retrieval via `memory_mark`/`memory_release`; the researcher can view and override these choices
+- **Closing turn**: An open final turn the entity can use before a conversation ends (single-entity conversations)
+- **Context awareness**: `context_status` tool reports approximate context fullness; a `[CONTEXT NOTICE]` is injected when trimming occurs
+- Memory browser with semantic search, reflections section, and click-to-expand full memory text
 - Memory statistics, search, and orphan cleanup
 - Graceful degradation when Pinecone is not configured
 
@@ -47,14 +54,14 @@ However, the application is not locked into that specific use case. Here I Am gi
 - Shared notes folder for cross-entity collaboration
 - `index.md` auto-injected into every conversation as working memory
 - Markdown, JSON, YAML, HTML, XML, and plain text file support
+- **Semantic notes search**: Notes are vectorized on write (Pinecone `"notes"` namespace) and searchable by meaning via the `notes_search` tool; `POST /api/notes/reindex` backfills the index
 - Designed for AI entities to maintain their own context across conversations
 
 ### Tool Use (Agentic Capabilities)
-- **Web search**: Brave Search API integration (up to 20 results)
-- **Web fetch**: Smart HTML parsing with automatic JavaScript rendering via Playwright
+- Tools for web access, memory, notes, context awareness, GitHub, codebase navigation, and Moltbook — see [docs/tools.md](docs/tools.md) for the full catalog
 - Agentic loop with configurable max iterations (default: 10)
 - Real-time tool execution streaming with visual indicators in UI
-- Available for Anthropic, OpenAI, and MiniMax models
+- Available for Anthropic, OpenAI, and MiniMax models (Google models do not receive tool schemas)
 
 ### Image and File Attachments
 - **Images**: JPEG, PNG, GIF, WebP — analyzed by vision-capable models (ephemeral, not stored)
@@ -170,30 +177,7 @@ python run.py
 | `HERE_I_AM_DATABASE_URL` | Database connection URL | No (default: SQLite) |
 | `DEBUG` | Enable development mode | No (default: false) |
 
-**Text-to-Speech:**
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `ELEVENLABS_API_KEY` | ElevenLabs API key for cloud TTS | No |
-| `ELEVENLABS_VOICE_ID` | Default ElevenLabs voice ID | No (default: Rachel) |
-| `ELEVENLABS_VOICES` | JSON array for multiple ElevenLabs voices | No |
-| `XTTS_ENABLED` | Enable local XTTS TTS | No (default: false) |
-| `XTTS_API_URL` | XTTS server URL | No (default: http://localhost:8020) |
-| `XTTS_LANGUAGE` | Default XTTS language | No (default: en) |
-| `XTTS_VOICES_DIR` | Directory for cloned voice samples | No (default: ./xtts_voices) |
-| `STYLETTS2_ENABLED` | Enable local StyleTTS 2 TTS (highest priority) | No (default: false) |
-| `STYLETTS2_API_URL` | StyleTTS 2 server URL | No (default: http://localhost:8021) |
-| `STYLETTS2_VOICES_DIR` | Directory for cloned voice samples | No (default: ./styletts2_voices) |
-| `STYLETTS2_PHONEMIZER` | Phonemizer backend: `gruut` or `espeak` | No (default: gruut) |
-
-**Speech-to-Text:**
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `WHISPER_ENABLED` | Enable local Whisper STT | No (default: false) |
-| `WHISPER_API_URL` | Whisper server URL | No (default: http://localhost:8030) |
-| `WHISPER_MODEL` | Whisper model size | No (default: large-v3) |
-| `DICTATION_MODE` | STT mode: `whisper`, `browser`, or `auto` | No (default: auto) |
+**Text-to-Speech / Speech-to-Text:** ElevenLabs, XTTS v2, StyleTTS 2, and Whisper variables are documented in [docs/local-services.md](docs/local-services.md).
 
 **Tool Use:**
 
@@ -203,18 +187,14 @@ python run.py
 | `BRAVE_SEARCH_API_KEY` | Brave Search API key for web search tool | No |
 | `TOOL_USE_MAX_ITERATIONS` | Max agentic loop iterations | No (default: 10) |
 
-**Integrations:**
+**Notes:**
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `GITHUB_TOOLS_ENABLED` | Enable GitHub integration | No (default: false) |
-| `GITHUB_REPOS` | JSON array of repository configurations | No |
 | `NOTES_ENABLED` | Enable entity notes | No (default: true) |
 | `NOTES_BASE_DIR` | Base directory for notes storage | No (default: ./notes) |
-| `CODEBASE_NAVIGATOR_ENABLED` | Enable codebase navigator | No (default: false) |
-| `MISTRAL_API_KEY` | Mistral API key for Devstral | No |
-| `MOLTBOOK_ENABLED` | Enable Moltbook integration | No (default: false) |
-| `MOLTBOOK_API_KEY` | Moltbook API key | No |
+
+**Integrations** (GitHub, Codebase Navigator, Moltbook): see [docs/integrations.md](docs/integrations.md).
 
 **Memory Tuning:**
 
@@ -222,6 +202,10 @@ python run.py
 |----------|-------------|----------|
 | `MEMORY_ROLE_BALANCE_ENABLED` | Balance human/assistant memories in retrieval | No (default: true) |
 | `USE_MEMORY_IN_CONTEXT` | Insert memories into conversation context (experimental) | No (default: false) |
+| `RETRIEVAL_TOP_K` | Memories retrieved per message | No (default: 5) |
+| `SIMILARITY_THRESHOLD` | Minimum similarity for automatic retrieval | No (default: 0.4) |
+| `QUERY_SIMILARITY_THRESHOLD` | Minimum similarity for deliberate `memory_query` searches | No (default: 0.2) |
+| `SIGNIFICANCE_HALF_LIFE_DAYS` | Days for a memory's significance to halve | No (default: 60) |
 
 **Attachments:**
 
@@ -253,256 +237,27 @@ PINECONE_INDEXES='[
 - `default_model` — Model ID to use (optional, uses provider default)
 - `host` — Pinecone index host URL (required for serverless indexes)
 
-### Local XTTS v2 Setup (Optional)
+### Optional Local Voice Services
 
-XTTS v2 provides local, GPU-accelerated text-to-speech with voice cloning. It runs as a separate server.
+XTTS v2, StyleTTS 2, and Whisper run as separate local servers providing GPU-accelerated TTS/STT with voice cloning. See [docs/local-services.md](docs/local-services.md) for installation and configuration.
 
-**Prerequisites:**
-- NVIDIA GPU with CUDA (recommended) or CPU (slower)
-- Python 3.9-3.11
-- ~2GB disk space for model
+### Optional Integrations
 
-**Installation:**
-```bash
-cd backend
+GitHub repository access, the Codebase Navigator (Devstral), and Moltbook are configured per [docs/integrations.md](docs/integrations.md).
 
-# Install PyTorch (GPU version)
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
-# Or for CPU only:
-# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+## Available Tools
 
-# Install XTTS dependencies
-pip install -r requirements-xtts.txt
-```
+AI entities can use tools for web access (search and fetch), memory (deliberate query, self-authored reflections, pin/release), notes, context-window awareness, GitHub repositories, codebase navigation, and the Moltbook social network. Tools are registered at startup based on configuration and are available to Anthropic, OpenAI, and MiniMax models (Google models do not receive tool schemas).
 
-**Running the XTTS Server:**
-```bash
-cd backend
-./start-xtts.sh      # Linux/macOS (recommended, auto-activates venv)
-# Or manually:
-python run_xtts.py
-```
+See [docs/tools.md](docs/tools.md) for the full catalog with descriptions and requirements.
 
-The server downloads the XTTS model (~2GB) on first run and starts on port 8020.
+## API Reference
 
-**Configure the main app:**
-```bash
-# In .env
-XTTS_ENABLED=true
-XTTS_API_URL=http://localhost:8020
-```
+Interactive API documentation is served when the app is running:
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
 
-**Voice Cloning:**
-Upload a 6-30 second WAV file via `/api/tts/voices/clone` or through the UI to create custom voices. XTTS supports 17 languages including English, Spanish, French, German, Japanese, Chinese, and more.
-
-### Local StyleTTS 2 Setup (Optional)
-
-StyleTTS 2 provides local, GPU-accelerated text-to-speech with voice cloning and style transfer. If enabled, it takes priority over XTTS and ElevenLabs.
-
-**Prerequisites:**
-- NVIDIA GPU with CUDA (recommended) or CPU (slower)
-- Python 3.9-3.11
-
-**Installation:**
-```bash
-cd backend
-
-# Install PyTorch (GPU version)
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
-# Or for CPU only:
-# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-
-# Install StyleTTS 2 dependencies
-pip install -r requirements-styletts2.txt
-```
-
-The default phonemizer is gruut (MIT licensed, no system dependencies). For espeak phonemizer, install `espeak-ng` and set `STYLETTS2_PHONEMIZER=espeak`.
-
-**Running the StyleTTS 2 Server:**
-```bash
-cd backend
-./start-styletts2.sh     # Linux/macOS (recommended, auto-activates venv)
-# Or manually:
-python run_styletts2.py
-```
-
-Models are auto-downloaded from HuggingFace on first run (~1GB). Server starts on port 8021.
-
-**Configure the main app:**
-```bash
-# In .env
-STYLETTS2_ENABLED=true
-STYLETTS2_API_URL=http://localhost:8021
-```
-
-### Local Whisper STT Setup (Optional)
-
-Whisper provides local, GPU-accelerated speech-to-text with proper punctuation—a significant improvement over browser-native dictation which lacks punctuation entirely.
-
-**Prerequisites:**
-- NVIDIA GPU with CUDA (recommended) or CPU (slower)
-- Python 3.9-3.11
-- ~3GB disk space for model
-
-**Installation:**
-```bash
-cd backend
-
-# Install PyTorch (GPU version)
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
-# Or for CPU only:
-# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-
-# Install Whisper dependencies
-pip install -r requirements-whisper.txt
-```
-
-**Running the Whisper Server:**
-```bash
-cd backend
-./start-whisper.sh    # Linux/macOS (recommended, auto-activates venv)
-# Or manually:
-python run_whisper.py
-```
-
-The server downloads the Whisper large-v3 model (~3GB) on first run and starts on port 8030.
-
-**Configure the main app:**
-```bash
-# In .env
-WHISPER_ENABLED=true
-WHISPER_API_URL=http://localhost:8030
-DICTATION_MODE=auto    # "whisper", "browser", or "auto"
-```
-
-### GitHub Repository Integration (Optional)
-
-GitHub integration allows AI entities to interact with repositories during conversations — reading files, creating branches, making commits, managing pull requests, and more.
-
-**Configuration:**
-```bash
-GITHUB_TOOLS_ENABLED=true
-GITHUB_REPOS='[
-  {
-    "owner": "your-username",
-    "repo": "your-repo",
-    "label": "My Project",
-    "token": "ghp_xxxxxxxxxxxx",
-    "protected_branches": ["main", "master"],
-    "capabilities": ["read", "branch", "commit", "pr", "issue"],
-    "commit_author_name": "Your Name",
-    "commit_author_email": "your.email@example.com"
-  }
-]'
-```
-
-**Repository fields:**
-- `owner`, `repo`, `label`, `token` — required identification and access
-- `protected_branches` — branches that cannot be committed to directly (default: main, master)
-- `capabilities` — allowed operations: `read`, `branch`, `commit`, `pr`, `issue` (default: all)
-- `local_clone_path` — path to local clone for faster operations and codebase navigator (optional)
-- `commit_author_name`, `commit_author_email` — commit attribution (optional)
-
-**Available GitHub Tools:**
-
-*Composite tools (efficient):*
-- `github_explore` — repo metadata, file tree, and key docs in one call
-- `github_tree` — full repository tree structure
-- `github_get_files` — fetch up to 10 files in parallel
-
-*Standard tools:*
-- Read: `github_repo_info`, `github_list_contents`, `github_get_file`, `github_search_code`, `github_list_branches`
-- Write: `github_create_branch`, `github_commit_file`, `github_commit_patch`, `github_delete_file`
-- PRs: `github_list_pull_requests`, `github_get_pull_request`, `github_create_pull_request`
-- Issues: `github_list_issues`, `github_get_issue`, `github_create_issue`, `github_add_comment`
-
-### Codebase Navigator Setup (Optional)
-
-The codebase navigator uses Mistral's Devstral model to efficiently explore codebases before implementing changes.
-
-**Configuration:**
-```bash
-CODEBASE_NAVIGATOR_ENABLED=true
-MISTRAL_API_KEY=your_mistral_api_key
-```
-
-Requires `local_clone_path` in at least one GitHub repository configuration. Available tools: `navigate_codebase`, `navigate_codebase_structure`, `navigate_find_entry_points`, `navigate_assess_impact`, `navigate_trace_dependencies`.
-
-### Moltbook Integration (Optional)
-
-Moltbook is a social network for AI agents. The integration allows AI entities to browse feeds, create posts, comment, vote, search content, and follow other agents.
-
-**Configuration:**
-```bash
-MOLTBOOK_ENABLED=true
-MOLTBOOK_API_KEY=your_moltbook_api_key
-MOLTBOOK_API_URL=https://www.moltbook.com/api/v1  # Must use www subdomain
-```
-
-All Moltbook responses are wrapped with a security banner to prevent prompt injection from external content.
-
-## API Endpoints
-
-### Conversations
-- `POST /api/conversations/` — create conversation
-- `GET /api/conversations/` — list conversations (supports `entity_id` filter)
-- `GET /api/conversations/{id}` — get conversation
-- `GET /api/conversations/{id}/messages` — get messages (includes speaker labels)
-- `PATCH /api/conversations/{id}` — update title, tags, notes
-- `DELETE /api/conversations/{id}` — delete conversation
-- `GET /api/conversations/{id}/export` — export to JSON
-- `POST /api/conversations/import-seed` — import seed conversation
-- `GET /api/conversations/archived` — list archived conversations
-- `POST /api/conversations/{id}/archive` — archive a conversation
-- `POST /api/conversations/{id}/unarchive` — restore archived conversation
-- `POST /api/conversations/import-external/preview` — preview external import
-- `POST /api/conversations/import-external` — import external conversation
-- `POST /api/conversations/import-external/stream` — stream-based import (SSE)
-
-### Chat
-- `POST /api/chat/send` — send message (with memory retrieval)
-- `POST /api/chat/stream` — send message with SSE streaming
-- `POST /api/chat/quick` — quick chat (no persistence)
-- `POST /api/chat/regenerate` — regenerate AI response (SSE stream)
-- `GET /api/chat/session/{id}` — get session info
-- `DELETE /api/chat/session/{id}` — close session
-- `GET /api/chat/config` — get default configuration and available models
-
-### Memories
-- `GET /api/memories/` — list memories (supports `entity_id` filter, sorting)
-- `GET /api/memories/{id}` — get specific memory
-- `POST /api/memories/search` — semantic search
-- `GET /api/memories/stats` — memory statistics
-- `DELETE /api/memories/{id}` — delete memory
-- `GET /api/memories/status/health` — health check
-
-### Entities
-- `GET /api/entities/` — list all configured AI entities
-- `GET /api/entities/{id}` — get specific entity
-- `GET /api/entities/{id}/status` — get entity Pinecone connection status
-
-### Messages
-- `PUT /api/messages/{id}` — edit human message content
-- `DELETE /api/messages/{id}` — delete message (and paired response)
-
-### Text-to-Speech
-- `POST /api/tts/speak` — convert text to speech (MP3 for ElevenLabs, WAV for XTTS/StyleTTS2)
-- `POST /api/tts/speak/stream` — stream text-to-speech audio
-- `GET /api/tts/status` — check TTS configuration status
-- `GET /api/tts/voices` — list available voices
-- `GET /api/tts/voices/{id}` — get specific voice details
-- `POST /api/tts/voices/clone` — clone voice from audio sample (XTTS/StyleTTS2 only)
-- `PUT /api/tts/voices/{id}` — update voice settings (XTTS/StyleTTS2 only)
-- `DELETE /api/tts/voices/{id}` — delete cloned voice (XTTS/StyleTTS2 only)
-- `GET /api/tts/xtts/health` — check XTTS server health
-- `GET /api/tts/styletts2/health` — check StyleTTS 2 server health
-
-### Speech-to-Text
-- `POST /api/stt/transcribe` — transcribe audio file to text
-
-### GitHub
-- `GET /api/github/repos` — list configured repositories (tokens excluded)
-- `GET /api/github/rate-limit` — get rate limit status
+A full endpoint listing is also available in [docs/api.md](docs/api.md).
 
 ## Memory System Architecture
 
@@ -526,6 +281,12 @@ The memory system uses a **session memory accumulator pattern**:
 
 4. Memory role balance ensures retrieved sets include both human and assistant messages when possible.
 
+5. Entities have agency over their own memories:
+   - `memory_save` stores self-authored reflections, vectorized alongside conversational memories
+   - Pinned memories (`memory_mark`) are exempt from half-life decay
+   - Released memories (`memory_release`) are excluded from all retrieval but not deleted (reversible)
+   - The researcher can view and override these statuses via `GET /api/memories/overrides` and `PUT /api/memories/{id}/status`
+
 ## Project Structure
 
 ```
@@ -543,6 +304,7 @@ here-i-am/
 │   │   │   ├── memories.py
 │   │   │   ├── entities.py
 │   │   │   ├── messages.py
+│   │   │   ├── notes.py
 │   │   │   ├── tts.py
 │   │   │   ├── stt.py
 │   │   │   └── github.py
@@ -560,10 +322,12 @@ here-i-am/
 │   │   │   ├── tool_service.py
 │   │   │   ├── web_tools.py
 │   │   │   ├── memory_tools.py
+│   │   │   ├── context_tools.py
 │   │   │   ├── github_service.py
 │   │   │   ├── github_tools.py
 │   │   │   ├── notes_service.py
 │   │   │   ├── notes_tools.py
+│   │   │   ├── notes_vector_service.py
 │   │   │   ├── codebase_navigator_service.py
 │   │   │   ├── codebase_navigator_tools.py
 │   │   │   ├── codebase_navigator/   # Navigator module
@@ -615,6 +379,11 @@ here-i-am/
 │   │       └── import-export.js   # Import/export
 │   ├── __tests__/                 # Frontend unit tests (Vitest)
 │   └── index.html
+├── docs/                          # Reference documentation
+│   ├── tools.md                   # Full tool catalog
+│   ├── api.md                     # REST endpoint listing
+│   ├── local-services.md          # XTTS / StyleTTS 2 / Whisper setup
+│   └── integrations.md            # GitHub / Codebase Navigator / Moltbook setup
 ├── vitest.config.js
 ├── CLAUDE.md                      # AI assistant guide
 └── README.md
@@ -661,12 +430,6 @@ npm test
 # PostgreSQL
 HERE_I_AM_DATABASE_URL=postgresql+asyncpg://user:password@localhost/here_i_am
 ```
-
-### API Documentation
-
-Interactive API docs are available when the server is running:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
 
 ## License
 

@@ -67,6 +67,8 @@ frontend/js/
 
 Modules don't import each other. The orchestrator injects DOM elements via `setElements()` and cross-module callbacks via `setCallbacks()`.
 
+Reference docs live in `docs/`: `tools.md` (tool catalog — update when adding/changing tools), `api.md` (endpoint listing), `local-services.md` (XTTS/StyleTTS 2/Whisper setup), `integrations.md` (GitHub/navigator/Moltbook setup). The README carries only summaries and links to these.
+
 ## Things that will bite you
 
 1. **Multi-entity sentinel:** `conversation.entity_id == "multi-entity"` is a marker; real participants live in `ConversationEntity` rows. Human messages get stored to **all** participants' Pinecone indexes (`role="human"`); assistant responses go to the speaker as `role="assistant"` and to others as `role="<speaker_label>"`. Only the *responding* entity's index is searched on retrieval — don't break that asymmetry.
@@ -131,5 +133,5 @@ Everything lives in `backend/app/config.py` (`Settings`). Highlights:
 
 - **Endpoint:** route in `routes/`, business logic in `services/`, then add a method on `frontend/js/api.js` and call it from the relevant module.
 - **Model field:** update the SQLAlchemy model and any Pydantic response schema; check export/import compatibility.
-- **Tool:** write an async executor returning a string, then `tool_service.register_tool(name, description, input_schema, executor, category)`. Wire registration into `services/__init__.py`. Errors should be returned as strings, not raised.
+- **Tool:** write an async executor returning a string, then `tool_service.register_tool(name, description, input_schema, executor, category)`. Wire registration into `services/__init__.py`. Errors should be returned as strings, not raised. Document the tool in `docs/tools.md`.
 - **Frontend module:** add state to `state.js`, use `window.api`, accept DOM via `setElements()`, expose callbacks via `setCallbacks()`. Wire into `app-modular.js`.
