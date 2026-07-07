@@ -108,13 +108,6 @@ class ConversationSession:
     # new messages are written to the cache once and read on later turns.
     last_cached_context_length: int = 0
 
-    # Length (in messages) of the cached prefix sent on the previous API call.
-    # Used only for diagnostics: comparing it to the current cached prefix length
-    # lets us tell an expected cache write (boundary grew/shifted) from an
-    # unexpected miss (boundary stable but the prefix still failed to match).
-    # -1 means "no API call has been made yet this session".
-    last_api_cache_breakpoint: int = -1
-
     # ===== Legacy memory block methods (to be deprecated) =====
     
     def add_memory(self, memory: MemoryEntry) -> Tuple[bool, bool]:
