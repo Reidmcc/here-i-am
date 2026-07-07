@@ -855,9 +855,10 @@ class SessionManager:
             set_current_entity_label(entity_label)
             logger.debug(f"[NOTES] Set entity label context: {entity_label}")
 
-        # Set context for memory query tool
+        # Set context for memory query tool. Passing the session lets memory_query
+        # exclude memories already in the conversation context from its results.
         if session.entity_id:
-            set_memory_tool_context(session.entity_id, session.conversation_id)
+            set_memory_tool_context(session.entity_id, session.conversation_id, session=session)
             logger.debug(f"[MEMORY] Set memory tool context: entity_id={session.entity_id}, conversation_id={session.conversation_id[:8]}...")
 
         # Set session for the context_status tool

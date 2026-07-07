@@ -144,12 +144,32 @@ class TestMemoryQuerySearch:
                 query="here i am",
                 top_k=14,  # 2x num_results for archived/released filtering headroom
                 exclude_conversation_id="my-conversation",  # Excludes current conversation
-                exclude_ids=None,  # Deliberate recall includes all
+                exclude_ids=set(),  # No session set -> nothing already in context
                 entity_id="my-entity",
                 use_cache=True,
                 # Deliberate queries use the lower query similarity threshold
                 similarity_threshold=settings.query_similarity_threshold,
             )
+
+    @pytest.mark.asyncio
+    async def test_search_excludes_in_context_memories(self):
+        """Memories already in the conversation context are excluded from search."""
+        session = MagicMock()
+        session.get_in_context_memory_ids.return_value = {"mem-in-ctx-1", "mem-in-ctx-2"}
+        set_memory_tool_context("test-entity", "test-conversation", session=session)
+
+        with patch("app.services.memory_tools.memory_service") as mock_service:
+            mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_service.search_memories = AsyncMock(return_value=[])
+
+            await _memory_query("something")
+
+            call_kwargs = mock_service.search_memories.call_args[1]
+            assert call_kwargs["exclude_ids"] == {"mem-in-ctx-1", "mem-in-ctx-2"}
+
+        # Reset session so later tests are unaffected
+        set_memory_tool_context("test-entity", "test-conversation")
 
     @pytest.mark.asyncio
     async def test_search_excludes_current_conversation(self):
