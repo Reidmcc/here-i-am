@@ -436,7 +436,8 @@ class AnthropicService:
         2. Assistant: cached history msg 2
         ...
         N. Last cached history msg*       <- cache breakpoint (cache_control here)
-        N+1. New history messages (uncached, grows until consolidation)
+        N+1. New history messages (added since the breakpoint was last advanced;
+             sent uncached this turn, cached from the next turn onward)
         ...
         M-1. User: [/CONVERSATION HISTORY] + [MEMORIES] + memories block + [/MEMORIES]
         M. User: [CURRENT USER MESSAGE] + date context + entity notes + current message
@@ -495,6 +496,10 @@ class AnthropicService:
                 for m in cached_context
             )
             cached_history_tokens = self.count_tokens(cached_history_text)
+            # 1024 is the minimum cacheable prefix for the default Sonnet
+            # models; some models (e.g. Opus 4.x) have higher minimums, where
+            # a too-small marker is silently ignored by the API (no error, no
+            # write charge), so this check erring low is harmless.
             will_cache_history = enable_caching and cached_history_tokens >= 1024
             # Count messages by role for debugging
             user_count = sum(1 for m in cached_context if m.get('role') == 'user')
@@ -548,7 +553,11 @@ class AnthropicService:
                     else:
                         messages.append({"role": msg["role"], "content": content})
 
-        # STEP 2: Add new conversation history (uncached, grows until consolidation)
+        # STEP 2: Add new conversation history (messages appended since the
+        # last API call, e.g. memory-in-context insertions and context
+        # notices). Sent uncached this turn; the cache breakpoint advances
+        # over them after this turn's call, so they're written to the cache
+        # on the next call.
         if new_context:
             tool_count = sum(1 for m in new_context if m.get('is_tool_use') or m.get('is_tool_result'))
             logger.info(f"[CACHE] New history: {len(new_context)} messages (uncached, {tool_count} tool)")

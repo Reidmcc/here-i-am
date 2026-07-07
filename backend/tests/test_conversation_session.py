@@ -5,7 +5,7 @@ Tests cover:
 - MemoryEntry: Dataclass initialization
 - ConversationSession: Legacy memory system (add_memory, get_memories_for_injection, trim_memories_to_limit)
 - ConversationSession: New memory-in-context system (insert_memory_into_context, get_in_context_memory_count)
-- ConversationSession: Shared methods (add_exchange, get_cache_aware_content, should_consolidate_cache,
+- ConversationSession: Shared methods (add_exchange, get_cache_aware_content,
   update_cache_state, trim_context_to_limit)
 """
 
@@ -306,30 +306,6 @@ class TestConversationSessionSharedMethods:
         result = session.get_cache_aware_content()
         assert len(result["cached_context"]) == 0
         assert len(result["new_context"]) == 1
-
-    def test_should_consolidate_cache_empty_context(self):
-        """Should not consolidate empty context."""
-        session = ConversationSession(conversation_id="conv-1")
-        assert session.should_consolidate_cache(lambda x: len(x)) is False
-
-    def test_should_consolidate_cache_no_new_context(self):
-        """Should not consolidate when there's no new context."""
-        session = ConversationSession(conversation_id="conv-1")
-        session.conversation_context = [{"role": "user", "content": "Hello"}]
-        session.last_cached_context_length = 1
-        assert session.should_consolidate_cache(lambda x: len(x)) is False
-
-    def test_should_consolidate_cache_small_cached(self):
-        """Should consolidate when cached context is too small (< 1024 tokens)."""
-        session = ConversationSession(conversation_id="conv-1")
-        session.conversation_context = [
-            {"role": "user", "content": "Short"},
-            {"role": "assistant", "content": "Also short"},
-            {"role": "user", "content": "New message"},
-        ]
-        session.last_cached_context_length = 2
-        # Token counter returns small numbers
-        assert session.should_consolidate_cache(lambda x: 100) is True
 
     def test_update_cache_state(self):
         """Should update cached context length."""

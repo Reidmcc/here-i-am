@@ -8,7 +8,6 @@ Tests cover:
 - get_message_content_text: Content text extraction from messages
 - build_memory_block_text: Memory block text formatting
 - add_cache_control_to_tool_result: Cache control insertion
-- estimate_tool_exchange_tokens: Token estimation for tool exchanges
 """
 
 import pytest
@@ -22,7 +21,6 @@ from app.services.session_helpers import (
     get_message_content_text,
     build_memory_block_text,
     add_cache_control_to_tool_result,
-    estimate_tool_exchange_tokens,
 )
 
 
@@ -432,87 +430,3 @@ class TestAddCacheControlToToolResult:
 
         assert "cache_control" not in original_block
         assert "cache_control" in result["content"][0]
-
-
-# ============================================================
-# Tests for estimate_tool_exchange_tokens
-# ============================================================
-
-class TestEstimateToolExchangeTokens:
-    """Tests for estimating token counts in tool exchanges."""
-
-    def _mock_count_tokens(self, text):
-        """Simple mock: 1 token per word."""
-        return len(text.split())
-
-    def test_basic_tool_exchange(self):
-        """Should estimate tokens for a basic tool exchange."""
-        exchange = {
-            "assistant": {
-                "content": [
-                    {"type": "tool_use", "name": "web_search", "input": {"query": "test"}},
-                ],
-            },
-            "user": {
-                "content": [
-                    {"type": "tool_result", "content": "Search results here"},
-                ],
-            },
-        }
-        tokens = estimate_tool_exchange_tokens(exchange, self._mock_count_tokens)
-        assert tokens > 0
-
-    def test_text_block_in_assistant(self):
-        """Should count text blocks in assistant content."""
-        exchange = {
-            "assistant": {
-                "content": [
-                    {"type": "text", "text": "Let me search for that."},
-                    {"type": "tool_use", "name": "search", "input": {}},
-                ],
-            },
-            "user": {
-                "content": [
-                    {"type": "tool_result", "content": "Done"},
-                ],
-            },
-        }
-        tokens = estimate_tool_exchange_tokens(exchange, self._mock_count_tokens)
-        assert tokens > 0
-
-    def test_tool_result_with_content_blocks(self):
-        """Should handle tool result with content block list."""
-        exchange = {
-            "assistant": {
-                "content": [
-                    {"type": "tool_use", "name": "search", "input": {}},
-                ],
-            },
-            "user": {
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "content": [
-                            {"type": "text", "text": "Result text here"},
-                        ],
-                    },
-                ],
-            },
-        }
-        tokens = estimate_tool_exchange_tokens(exchange, self._mock_count_tokens)
-        assert tokens > 0
-
-    def test_empty_exchange(self):
-        """Should return 0 for empty exchange."""
-        exchange = {"assistant": {}, "user": {}}
-        tokens = estimate_tool_exchange_tokens(exchange, self._mock_count_tokens)
-        assert tokens == 0
-
-    def test_string_content_not_counted_as_list(self):
-        """Should handle string content in assistant (not list)."""
-        exchange = {
-            "assistant": {"content": "Plain text"},
-            "user": {"content": "Also plain text"},
-        }
-        tokens = estimate_tool_exchange_tokens(exchange, self._mock_count_tokens)
-        assert tokens == 0  # Only list content is processed
