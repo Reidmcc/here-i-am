@@ -316,7 +316,7 @@ class Settings(BaseSettings):
     # When True, memories are inserted directly into conversation context as user messages
     # (better cacheability - memories only paid for once per conversation)
     # When False (default), memories are rendered as a separate block each turn (legacy behavior)
-    use_memory_in_context: bool = False
+    use_memory_in_context: bool = True
 
     # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, llm_provider, default_model)
     # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'
