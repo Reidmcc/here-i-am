@@ -512,11 +512,70 @@ class TestNotesToolRegistration:
     def test_tools_not_registered_when_disabled(self):
         """Test that tools aren't registered when notes_enabled=False."""
         tool_service = ToolService()
-        
+
         with patch("app.services.notes_tools.settings") as mock_settings:
             mock_settings.notes_enabled = False
             register_notes_tools(tool_service)
-        
+
         # Tools should not be registered
         assert tool_service.get_tool("notes_read") is None
         assert tool_service.get_tool("notes_write") is None
+
+
+class TestNotesSearchThreshold:
+    """notes_search should filter with the deliberate-query threshold."""
+
+    def _fake_index(self, scores):
+        """Build a fake Pinecone index whose search returns the given scores."""
+        hits = []
+        for i, score in enumerate(scores):
+            hit = MagicMock()
+            hit.to_dict.return_value = {
+                "_score": score,
+                "fields": {
+                    "note_filename": f"note{i}.md",
+                    "note_shared": False,
+                    "chunk_index": 0,
+                    "text": f"chunk {i}",
+                },
+            }
+            hits.append(hit)
+        index = MagicMock()
+        index.search.return_value = MagicMock(result=MagicMock(hits=hits))
+        return index
+
+    @pytest.mark.asyncio
+    async def test_uses_query_similarity_threshold(self):
+        from app.services.notes_vector_service import NotesVectorService
+
+        service = NotesVectorService()
+        # Scores straddling the query threshold (0.2) but all below the
+        # automatic-retrieval threshold (0.4).
+        index = self._fake_index([0.35, 0.25, 0.15, 0.05])
+
+        with patch("app.services.notes_vector_service.settings") as mock_settings, \
+             patch.object(service, "_get_index_for_label", return_value=index):
+            mock_settings.query_similarity_threshold = 0.2
+            mock_settings.similarity_threshold = 0.4
+
+            matches = await service.search_notes("q", "query", num_results=5)
+
+        # Only the two hits >= 0.2 survive; the stricter 0.4 would have dropped all.
+        assert [m["score"] for m in matches] == [0.35, 0.25]
+
+    @pytest.mark.asyncio
+    async def test_respects_num_results_after_filtering(self):
+        from app.services.notes_vector_service import NotesVectorService
+
+        service = NotesVectorService()
+        index = self._fake_index([0.9, 0.8, 0.7, 0.6])
+
+        with patch("app.services.notes_vector_service.settings") as mock_settings, \
+             patch.object(service, "_get_index_for_label", return_value=index):
+            mock_settings.query_similarity_threshold = 0.2
+
+            matches = await service.search_notes("q", "query", num_results=2)
+
+        assert len(matches) == 2
+        # Fetches extra candidates (top_k = num_results * 2) to survive filtering.
+        assert index.search.call_args.kwargs["query"]["top_k"] == 4
