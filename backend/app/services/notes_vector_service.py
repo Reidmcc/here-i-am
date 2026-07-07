@@ -227,12 +227,19 @@ class NotesVectorService:
         if index is None:
             return []
 
+        # notes_search is a deliberate query tool (like memory_query), so it
+        # uses the lower query_similarity_threshold rather than the stricter
+        # similarity_threshold that automatic chat-context retrieval applies.
+        similarity_threshold = settings.query_similarity_threshold
+
         try:
+            # Fetch extra candidates so threshold filtering below does not
+            # silently shrink the result set.
             results = index.search(
                 namespace=NOTES_NAMESPACE,
                 query={
                     "inputs": {"text": query},
-                    "top_k": num_results,
+                    "top_k": num_results * 2,
                 },
             )
         except Exception as e:
@@ -243,14 +250,19 @@ class NotesVectorService:
         matches = []
         for hit in hits:
             hit_dict = hit.to_dict() if hasattr(hit, "to_dict") else hit
+            score = hit_dict.get("_score", 0)
+            if score < similarity_threshold:
+                continue
             fields = hit_dict.get("fields", {})
             matches.append({
                 "filename": fields.get("note_filename", "unknown"),
                 "shared": bool(fields.get("note_shared", False)),
                 "chunk_index": fields.get("chunk_index", 0),
                 "text": fields.get("text", ""),
-                "score": hit_dict.get("_score", 0),
+                "score": score,
             })
+            if len(matches) >= num_results:
+                break
         return matches
 
     async def reindex_all(self) -> Dict[str, Any]:
