@@ -35,6 +35,8 @@ from app.services.session_helpers import (
     get_message_content_text,
     build_memory_block_text,
     add_cache_control_to_tool_result,
+    estimate_prompt_tokens,
+    total_prompt_tokens_from_usage,
     # Backward compatibility aliases (with underscore prefix)
     _build_memory_queries,
     _calculate_significance,
@@ -763,6 +765,15 @@ class SessionManager:
             provider_hint=session.provider_hint,
         )
 
+        # Record the provider-reported prompt size against the local estimate
+        # of the same prompt, to calibrate later trimming/context-status counts
+        session.record_prompt_usage(
+            actual_tokens=total_prompt_tokens_from_usage(response.get("usage")),
+            estimated_tokens=estimate_prompt_tokens(
+                messages, llm_service.count_tokens, session.system_prompt
+            ),
+        )
+
         # Step 7: Update conversation context and cache state
         session.add_exchange(user_message, response["content"])
 
@@ -1273,6 +1284,16 @@ class SessionManager:
                     # If no tool use, this is the final response
                     if stop_reason != "tool_use" or not iteration_tool_use:
                         full_content += iteration_content
+
+                        # Record the provider-reported prompt size against the
+                        # local estimate of the same prompt (this iteration's
+                        # working messages), to calibrate later trimming counts
+                        session.record_prompt_usage(
+                            actual_tokens=total_prompt_tokens_from_usage(event.get("usage")),
+                            estimated_tokens=estimate_prompt_tokens(
+                                working_messages, llm_service.count_tokens, session.system_prompt
+                            ),
+                        )
 
                         # Update conversation context and cache state
                         # Include tool exchanges so they're persisted in conversation history

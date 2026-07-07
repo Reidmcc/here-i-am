@@ -8,6 +8,8 @@ trimming is invisible from the inside—things silently cease to be in mind.
 
 Token counts use the same approximate counter as the trimming logic
 (tiktoken GPT-4 encoding), so the numbers match what trimming will act on.
+Both are calibrated against the provider-reported prompt size of the last
+API request (session.token_calibration_ratio) when one has been recorded.
 
 Tools are registered via register_context_tools() called from services/__init__.py.
 """
@@ -53,7 +55,11 @@ async def _context_status() -> str:
             f"{msg['role']}: {get_message_content_text(msg.get('content', ''))}"
             for msg in session.conversation_context
         )
-        context_tokens = llm_service.count_tokens(context_text) if context_text else 0
+        estimated_tokens = llm_service.count_tokens(context_text) if context_text else 0
+        # Apply the same provider-usage calibration the trimmer uses, so the
+        # reported fullness matches what trimming will act on
+        calibration_ratio = session.token_calibration_ratio
+        context_tokens = int(estimated_tokens * calibration_ratio)
         limit = settings.context_token_limit
         percent = (context_tokens / limit * 100) if limit else 0.0
 
@@ -74,6 +80,12 @@ async def _context_status() -> str:
             f"Memories in context: {memories_in_context}",
         ]
 
+        if session.last_prompt_actual_tokens:
+            lines.append(
+                f"Last request actual prompt size: {session.last_prompt_actual_tokens:,} tokens "
+                "(provider-reported; includes system prompt and memories)"
+            )
+
         if rolled_out_memories:
             lines.append(
                 f"Memories retrieved this conversation but no longer in context: {rolled_out_memories}"
@@ -91,9 +103,15 @@ async def _context_status() -> str:
                 "eventually occur as the conversation continues."
             )
 
-        lines.append(
-            "Token counts are approximate (tiktoken estimate, not the provider's exact count)."
-        )
+        if calibration_ratio != 1.0:
+            lines.append(
+                f"Token counts are estimates calibrated against the provider's reported "
+                f"usage for the last request (calibration factor {calibration_ratio:.2f})."
+            )
+        else:
+            lines.append(
+                "Token counts are approximate (tiktoken estimate, not the provider's exact count)."
+            )
 
         return "\n".join(lines)
     except Exception as e:

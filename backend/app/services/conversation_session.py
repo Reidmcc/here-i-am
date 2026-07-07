@@ -108,6 +108,36 @@ class ConversationSession:
     # new messages are written to the cache once and read on later turns.
     last_cached_context_length: int = 0
 
+    # ===== Provider-usage token calibration =====
+    # After each API response, the provider-reported prompt-side total
+    # (input + cache_creation + cache_read) is recorded alongside the local
+    # tiktoken estimate of the same prompt. Their ratio calibrates the local
+    # counter, which undercounts Claude tokens by roughly 15-20%.
+    last_prompt_actual_tokens: Optional[int] = None
+    last_prompt_estimated_tokens: Optional[int] = None
+
+    def record_prompt_usage(self, actual_tokens: int, estimated_tokens: int) -> None:
+        """
+        Record the provider-reported prompt size and the local estimate of the
+        same prompt, for calibrating later local counts. Ignores requests where
+        either side is unavailable (e.g. providers that report zero usage).
+        """
+        if actual_tokens > 0 and estimated_tokens > 0:
+            self.last_prompt_actual_tokens = actual_tokens
+            self.last_prompt_estimated_tokens = estimated_tokens
+
+    @property
+    def token_calibration_ratio(self) -> float:
+        """
+        Ratio of provider-reported to locally-estimated prompt tokens for the
+        last request (1.0 until usage has been recorded). Clamped to [0.5, 2.0]
+        so a pathological reading can't wildly distort trimming.
+        """
+        if not self.last_prompt_actual_tokens or not self.last_prompt_estimated_tokens:
+            return 1.0
+        ratio = self.last_prompt_actual_tokens / self.last_prompt_estimated_tokens
+        return max(0.5, min(2.0, ratio))
+
     # ===== Legacy memory block methods (to be deprecated) =====
     
     def add_memory(self, memory: MemoryEntry) -> Tuple[bool, bool]:
@@ -388,7 +418,9 @@ class ConversationSession:
             if current_message:
                 context_text += f"\nuser: {current_message}"
 
-            current_tokens = count_tokens_fn(context_text)
+            # Calibrate the local estimate against the provider-reported size
+            # of the last prompt (ratio is 1.0 until usage has been recorded)
+            current_tokens = int(count_tokens_fn(context_text) * self.token_calibration_ratio)
 
             if current_tokens <= max_tokens:
                 break

@@ -46,6 +46,26 @@ def get_entity_label(entity_id: str) -> Optional[str]:
     return entity.label if entity else None
 
 
+def assistant_token_count(
+    content: str,
+    usage: Optional[dict],
+    tool_exchanges: Optional[list] = None,
+) -> int:
+    """
+    Token count for a persisted assistant message.
+
+    Prefers the provider's exact output_tokens when it maps 1:1 to the
+    persisted content: with tool exchanges the response spans several API
+    calls and the final call's usage covers only the last one, so fall back
+    to the local tiktoken estimate there (and when usage is unavailable).
+    """
+    if not tool_exchanges:
+        output_tokens = (usage or {}).get("output_tokens")
+        if output_tokens:
+            return int(output_tokens)
+    return llm_service.count_tokens(content)
+
+
 class ImageAttachment(BaseModel):
     """
     An image attachment for multimodal messages.
@@ -295,7 +315,7 @@ async def send_message(
         conversation_id=data.conversation_id,
         role=MessageRole.ASSISTANT,
         content=response["content"],
-        token_count=llm_service.count_tokens(response["content"]),
+        token_count=assistant_token_count(response["content"], response.get("usage")),
         speaker_entity_id=responding_entity_id if is_multi_entity else None,
     )
     db.add(assistant_msg)
@@ -622,7 +642,7 @@ async def stream_message(data: ChatRequest):
                     conversation_id=data.conversation_id,
                     role=MessageRole.ASSISTANT,
                     content=full_content,
-                    token_count=llm_service.count_tokens(full_content),
+                    token_count=assistant_token_count(full_content, usage_data, tool_exchanges),
                     speaker_entity_id=responding_entity_id if is_multi_entity else None,
                 )
                 db.add(assistant_msg)
@@ -1060,7 +1080,7 @@ async def regenerate_response(data: RegenerateRequest):
                     conversation_id=conversation_id,
                     role=MessageRole.ASSISTANT,
                     content=full_content,
-                    token_count=llm_service.count_tokens(full_content),
+                    token_count=assistant_token_count(full_content, usage_data, tool_exchanges),
                     speaker_entity_id=responding_entity_id if is_multi_entity else None,
                 )
                 db.add(assistant_msg)

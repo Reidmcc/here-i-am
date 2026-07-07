@@ -407,3 +407,62 @@ class TestConversationSessionSharedMethods:
         )
         assert removed > 2
         assert session.last_cached_context_length == 0
+
+
+class TestTokenCalibration:
+    """Tests for provider-usage token calibration."""
+
+    def test_ratio_defaults_to_one(self):
+        """Ratio is 1.0 before any usage has been recorded."""
+        session = ConversationSession(conversation_id="conv-1")
+        assert session.token_calibration_ratio == 1.0
+
+    def test_record_prompt_usage_sets_ratio(self):
+        """Ratio reflects provider-reported vs estimated tokens."""
+        session = ConversationSession(conversation_id="conv-1")
+        session.record_prompt_usage(actual_tokens=1200, estimated_tokens=1000)
+        assert session.last_prompt_actual_tokens == 1200
+        assert session.last_prompt_estimated_tokens == 1000
+        assert session.token_calibration_ratio == 1.2
+
+    def test_record_prompt_usage_ignores_missing_data(self):
+        """Zero/absent usage (e.g. providers reporting nothing) is not recorded."""
+        session = ConversationSession(conversation_id="conv-1")
+        session.record_prompt_usage(actual_tokens=0, estimated_tokens=1000)
+        assert session.last_prompt_actual_tokens is None
+        assert session.token_calibration_ratio == 1.0
+
+        session.record_prompt_usage(actual_tokens=1000, estimated_tokens=0)
+        assert session.last_prompt_actual_tokens is None
+        assert session.token_calibration_ratio == 1.0
+
+    def test_ratio_is_clamped(self):
+        """Pathological readings can't wildly distort trimming."""
+        session = ConversationSession(conversation_id="conv-1")
+        session.record_prompt_usage(actual_tokens=100_000, estimated_tokens=100)
+        assert session.token_calibration_ratio == 2.0
+
+        session.record_prompt_usage(actual_tokens=100, estimated_tokens=100_000)
+        assert session.token_calibration_ratio == 0.5
+
+    def test_trim_applies_calibration_ratio(self):
+        """A raw count under the limit still trims when the calibrated count is over."""
+        session = ConversationSession(conversation_id="conv-1")
+        session.conversation_context = [
+            {"role": "user", "content": "M1"},
+            {"role": "assistant", "content": "R1"},
+            {"role": "user", "content": "M2"},
+            {"role": "assistant", "content": "R2"},
+        ]
+        # Estimator says 90 (< 100 limit), but calibration says real usage
+        # runs 1.5x the estimate -> 135 (> 100), so trimming must kick in.
+        session.record_prompt_usage(actual_tokens=150, estimated_tokens=100)
+
+        def mock_count(text):
+            return 90 if len(session.conversation_context) > 2 else 10
+
+        removed = session.trim_context_to_limit(
+            max_tokens=100,
+            count_tokens_fn=mock_count,
+        )
+        assert removed == 2
