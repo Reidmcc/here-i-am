@@ -35,7 +35,6 @@ from app.services.session_helpers import (
     get_message_content_text,
     build_memory_block_text,
     add_cache_control_to_tool_result,
-    estimate_tool_exchange_tokens,
     # Backward compatibility aliases (with underscore prefix)
     _build_memory_queries,
     _calculate_significance,
@@ -43,7 +42,6 @@ from app.services.session_helpers import (
     _get_message_content_text,
     _build_memory_block_text,
     _add_cache_control_to_tool_result,
-    _estimate_tool_exchange_tokens,
 )
 from app.services.memory_context import format_memory_as_context_message
 
@@ -146,11 +144,11 @@ class SessionManager:
         Classify the prompt-cache result of an API call for diagnostics.
 
         Distinguishes an *expected* large cache write — the cached prefix grew or
-        shifted this turn (bootstrap, consolidation, or context trim), so the new
-        region legitimately had to be written — from an *unexpected* miss, where the
-        cached boundary was stable but a large write/small read shows the prefix
-        failed to match anyway (a sign the context construction changed the cached
-        prefix between turns).
+        shifted this turn (bootstrap, a large new turn advancing the boundary, or
+        a context trim), so the new region legitimately had to be written — from
+        an *unexpected* miss, where the cached boundary was stable but a large
+        write/small read shows the prefix failed to match anyway (a sign the
+        context construction changed the cached prefix between turns).
 
         Uses message-count boundary deltas as a cheap proxy; `cached_breakpoint` is
         the number of messages in the cached prefix that was sent on this call.
@@ -172,8 +170,9 @@ class SessionManager:
                 )
             elif cached_breakpoint > prev:
                 logger.info(
-                    f"[CACHE] Large write EXPECTED (consolidation grew boundary "
-                    f"{prev}->{cached_breakpoint} msgs): write={write}, read={read}"
+                    f"[CACHE] Large write EXPECTED (boundary advanced "
+                    f"{prev}->{cached_breakpoint} msgs; new turn content written to cache): "
+                    f"write={write}, read={read}"
                 )
             elif cached_breakpoint < prev:
                 logger.info(
@@ -778,11 +777,7 @@ class SessionManager:
             current_message=user_message,
         )
 
-        # Step 5: Check if we should consolidate (grow) the cached history
-        # This causes a cache MISS but creates a larger cache for future hits
-        should_consolidate = session.should_consolidate_cache(llm_service.count_tokens)
-
-        # Step 6: Build API messages with conversation-first caching
+        # Step 5: Build API messages with conversation-first caching
         # Cache breakpoint: end of cached conversation history
         # Memories are placed after history (don't invalidate cache)
         memories_for_injection = session.get_memories_for_injection()
@@ -815,7 +810,7 @@ class SessionManager:
             provider_hint=session.provider_hint,
         )
 
-        # Step 7: Call LLM API (routes to appropriate provider based on model)
+        # Step 6: Call LLM API (routes to appropriate provider based on model)
         response = await llm_service.send_message(
             messages=messages,
             model=session.model,
@@ -827,25 +822,18 @@ class SessionManager:
             provider_hint=session.provider_hint,
         )
 
-        # Step 8: Update conversation context and cache state
+        # Step 7: Update conversation context and cache state
         # Classify the cache result against the prefix we sent (before the boundary moves).
         self._log_cache_efficiency(
             session, len(cache_content["cached_context"]), response.get("usage")
         )
         session.add_exchange(user_message, response["content"])
 
-        # Update cache state for conversation history (memories don't affect cache hits)
-        if should_consolidate:
-            # Consolidate: grow the cached history (excluding the 2 messages just added)
-            new_cached_ctx_len = len(session.conversation_context) - 2
-        elif session.last_cached_context_length == 0 and len(session.conversation_context) > 0:
-            # Bootstrap: start caching with all current content
-            new_cached_ctx_len = len(session.conversation_context)
-        else:
-            # Keep stable: don't grow the cache (for cache hits)
-            new_cached_ctx_len = session.last_cached_context_length
-
-        session.update_cache_state(new_cached_ctx_len)
+        # Advance the cache breakpoint over the full history. Next turn this
+        # writes only the new tail to the cache while reading the existing
+        # prefix (longest-prefix matching), so full caching every turn is an
+        # incremental write, not a miss.
+        session.update_cache_state(len(session.conversation_context))
 
         # Step 8: Store new messages as memories (happens in route layer with DB)
         # Return data for the route to handle storage
@@ -1195,10 +1183,7 @@ class SessionManager:
             "trimmed_context_messages": trimmed_context_count,
         }
 
-        # Step 4: Check if we should consolidate (grow) the cached history
-        should_consolidate = session.should_consolidate_cache(llm_service.count_tokens)
-
-        # Step 5: Build API messages with conversation-first caching
+        # Step 4: Build API messages with conversation-first caching
         # Cache breakpoint: end of cached conversation history
         # With memory-in-context, memories are already in conversation_context
         if session.use_memory_in_context:
@@ -1255,18 +1240,15 @@ class SessionManager:
         # Lazy initialization - only built when tool use is detected
         base_messages_no_memories = None
 
-        # Step 6: Stream LLM response with caching enabled
+        # Step 5: Stream LLM response with caching enabled
         # This includes a tool use loop if tools are provided
         full_content = ""
         accumulated_tool_uses = []  # Track all tool uses across iterations
         tool_exchanges = []  # Track tool exchanges for rebuilding messages without memories
-        tool_exchange_tokens = []  # Token count for each exchange (parallel to tool_exchanges)
-        # Single moving cache breakpoint (like conversation history caching)
-        # Only moves when enough new tokens accumulate, ensuring cache hits on prefix
-        tool_cache_breakpoint_index: Optional[int] = None  # Index of exchange with cache_control
-        total_tool_tokens = 0  # Total tokens across all tool exchanges
-        tokens_at_last_breakpoint = 0  # Total tokens when breakpoint was last set/moved
-        TOOL_CACHE_TOKEN_THRESHOLD = 2048  # Move breakpoint after N new tokens
+        # Single moving cache breakpoint (like conversation history caching):
+        # it sits on the latest tool_result every iteration, so each iteration
+        # incrementally writes only the newest exchange while reading the rest
+        # of the prefix from cache (longest-prefix matching).
         iteration = 0
         max_iterations = settings.tool_use_max_iterations
         # Cache metrics from iteration 1, which is the only call built with the
@@ -1312,19 +1294,18 @@ class SessionManager:
                     )
 
                 # Rebuild from base (no memories) + accumulated tool exchanges
-                # Use single moving cache breakpoint (like conversation history)
-                # Only the exchange at the breakpoint index gets cache_control
+                # Single moving cache breakpoint: cache_control goes on the
+                # latest tool_result, so each iteration writes only the newest
+                # exchange and reads everything before it from cache.
                 working_messages = list(base_messages_no_memories)
                 for i, exchange in enumerate(tool_exchanges):
                     working_messages.append(exchange["assistant"])
-                    # Only add cache_control at the single breakpoint position
-                    if i == tool_cache_breakpoint_index:
+                    if i == len(tool_exchanges) - 1:
                         user_msg = _add_cache_control_to_tool_result(exchange["user"])
                     else:
                         user_msg = exchange["user"]
                     working_messages.append(user_msg)
-                breakpoint_info = f"breakpoint at {tool_cache_breakpoint_index}" if tool_cache_breakpoint_index is not None else "no breakpoint"
-                logger.info(f"[TOOLS] Iteration {iteration}: Using messages without memory block ({len(working_messages)} messages, {len(tool_exchanges)} tool exchanges, {breakpoint_info})")
+                logger.info(f"[TOOLS] Iteration {iteration}: Using messages without memory block ({len(working_messages)} messages, {len(tool_exchanges)} tool exchanges, breakpoint on latest tool_result)")
 
             async for event in llm_service.send_message_stream(
                 messages=working_messages,
@@ -1379,17 +1360,11 @@ class SessionManager:
                             tool_exchanges=tool_exchanges if tool_exchanges else None,
                         )
 
-                        # Update cache state for conversation history (memories don't affect cache hits)
-                        if should_consolidate:
-                            new_cached_ctx_len = len(session.conversation_context) - 2
-                        elif session.last_cached_context_length == 0 and len(session.conversation_context) > 0:
-                            # Bootstrap: start caching with all current content
-                            new_cached_ctx_len = len(session.conversation_context)
-                        else:
-                            # Keep stable for cache hits
-                            new_cached_ctx_len = session.last_cached_context_length
-
-                        session.update_cache_state(new_cached_ctx_len)
+                        # Advance the cache breakpoint over the full history
+                        # (including this turn's exchange and any tool
+                        # exchanges). Next turn writes only the new tail to
+                        # the cache and reads the existing prefix.
+                        session.update_cache_state(len(session.conversation_context))
 
                         # Add tool data to done event if any tools were used
                         final_event = dict(event)
@@ -1485,21 +1460,6 @@ class SessionManager:
                 }
                 tool_exchanges.append(exchange)
 
-                # Track tokens and determine if breakpoint should move (single moving breakpoint)
-                exchange_tokens = _estimate_tool_exchange_tokens(exchange, llm_service.count_tokens)
-                tool_exchange_tokens.append(exchange_tokens)
-                total_tool_tokens += exchange_tokens
-
-                # Move breakpoint when enough new tokens have accumulated since last breakpoint
-                # This uses a single cache breakpoint that moves forward, like conversation history
-                tokens_since_breakpoint = total_tool_tokens - tokens_at_last_breakpoint
-                if tokens_since_breakpoint >= TOOL_CACHE_TOKEN_THRESHOLD:
-                    exchange_index = len(tool_exchanges) - 1
-                    old_breakpoint = tool_cache_breakpoint_index
-                    tool_cache_breakpoint_index = exchange_index
-                    tokens_at_last_breakpoint = total_tool_tokens
-                    logger.debug(f"[TOOLS] Moved cache breakpoint: {old_breakpoint} -> {exchange_index} ({total_tool_tokens} total tokens)")
-
                 # Accumulate any text content from this iteration
                 full_content += iteration_content
 
@@ -1514,17 +1474,9 @@ class SessionManager:
             tool_exchanges=tool_exchanges if tool_exchanges else None,
         )
 
-        # Update cache state for conversation history (same logic as normal exit path)
-        if should_consolidate:
-            new_cached_ctx_len = len(session.conversation_context) - 2
-        elif session.last_cached_context_length == 0 and len(session.conversation_context) > 0:
-            # Bootstrap: start caching with all current content
-            new_cached_ctx_len = len(session.conversation_context)
-        else:
-            # Keep stable for cache hits
-            new_cached_ctx_len = session.last_cached_context_length
-
-        session.update_cache_state(new_cached_ctx_len)
+        # Advance the cache breakpoint over the full history (same as the
+        # normal exit path).
+        session.update_cache_state(len(session.conversation_context))
 
         yield {
             "type": "done",

@@ -1002,101 +1002,67 @@ class TestCacheStateManagement:
 
         assert session.last_cached_context_length == 4
 
-    def test_should_consolidate_cache_context_threshold(self):
-        """Test consolidation triggers at 2048 token context threshold."""
+    def test_cache_breakpoint_advances_every_turn(self):
+        """The breakpoint covers the full history after every exchange, so each
+        turn's new messages are cached incrementally (longest-prefix matching
+        makes this a write of the tail, not a miss)."""
         session = ConversationSession(conversation_id="conv-123")
 
-        # Add conversation context - some cached, some new
-        for i in range(10):
-            session.add_exchange(f"Question {i} " * 50, f"Answer {i} " * 50)
-
-        # First 4 messages are cached
-        session.last_cached_context_length = 4
-
-        # Token counter
-        call_count = [0]
-        def count_tokens(text):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                # Cached context check - return high value (so we don't hit "too small" branch)
-                return 2000
-            else:
-                # New context check - return value above 2048 threshold
-                return 2500
-
-        result = session.should_consolidate_cache(count_tokens)
-
-        # Should consolidate because new context >= 2048 tokens
-        assert result is True
-
-    def test_should_consolidate_cache_context_below_threshold(self):
-        """Test consolidation doesn't trigger below context threshold."""
-        session = ConversationSession(conversation_id="conv-123")
-
-        # Add a small amount of context
-        session.add_exchange("Hello", "Hi")
-        session.add_exchange("Question", "Answer")
-
-        # First 2 messages are cached
-        session.last_cached_context_length = 2
-
-        # Token counter - cached is large enough, new is below threshold
-        call_count = [0]
-        def count_tokens(text):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return 2000  # Cached context
-            else:
-                return 500  # New context - below 2048 threshold
-
-        result = session.should_consolidate_cache(count_tokens)
-
-        # Should not consolidate because new context < 2048 tokens
-        assert result is False
-
-    def test_should_consolidate_cache_small_cached_context(self):
-        """Test consolidation triggers when cached context is too small."""
-        session = ConversationSession(conversation_id="conv-123")
-
-        # Add some context
-        session.add_exchange("Hi", "Hello")
-        session.add_exchange("Question", "Answer")
-
-        # First 2 messages are "cached" but small
-        session.last_cached_context_length = 2
-
-        # Token counter - cached context is below 1024 minimum
-        def count_tokens(text):
-            return 500  # Below 1024 minimum
-
-        result = session.should_consolidate_cache(count_tokens)
-
-        # Should consolidate to grow the cache
-        assert result is True
-
-    def test_cache_state_preserved_across_exchanges(self):
-        """Test that cache state remains stable as new exchanges are added."""
-        session = ConversationSession(conversation_id="conv-123")
-
-        # Initial exchanges
         session.add_exchange("First", "Response 1")
+        session.update_cache_state(len(session.conversation_context))
+        assert session.last_cached_context_length == 2
+
         session.add_exchange("Second", "Response 2")
-
-        # Set cache state (only context length now - memories are after cache breakpoint)
-        session.update_cache_state(cached_context_length=4)  # All 4 messages cached
-
-        # Add more exchanges
-        session.add_exchange("Third", "Response 3")
-
-        # Cache state should be unchanged
+        session.update_cache_state(len(session.conversation_context))
         assert session.last_cached_context_length == 4
 
-        # Get cache-aware content
+        # Everything is in the cached prefix; nothing rides uncached
         content = session.get_cache_aware_content()
-
-        # First 4 messages should be cached, last 2 should be new
         assert len(content["cached_context"]) == 4
-        assert len(content["new_context"]) == 2
+        assert len(content["new_context"]) == 0
+
+    def test_cache_breakpoint_advances_over_tool_exchanges(self):
+        """Tool exchanges added by add_exchange are included when the
+        breakpoint advances — no messages are left dangling outside the cache."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        tool_exchanges = [
+            {
+                "assistant": {"content": [{"type": "tool_use", "name": "search", "id": "t1", "input": {}}]},
+                "user": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "results"}]},
+            },
+        ]
+        session.add_exchange("Search this", "Found it.", tool_exchanges=tool_exchanges)
+        session.update_cache_state(len(session.conversation_context))
+
+        # user + tool_use + tool_result + assistant = 4 messages, all cached
+        assert session.last_cached_context_length == 4
+        content = session.get_cache_aware_content()
+        assert len(content["new_context"]) == 0
+
+    def test_messages_added_after_breakpoint_ride_uncached_one_turn(self):
+        """Messages appended after the breakpoint (e.g. memory-in-context
+        insertions) are new_context until the next advance absorbs them."""
+        session = ConversationSession(conversation_id="conv-123")
+
+        session.add_exchange("First", "Response 1")
+        session.update_cache_state(len(session.conversation_context))
+
+        # Simulate a memory-in-context insertion after the breakpoint
+        session.conversation_context.append(
+            {"role": "user", "content": "[MEMORY] something relevant", "is_memory": True}
+        )
+
+        content = session.get_cache_aware_content()
+        assert len(content["cached_context"]) == 2
+        assert len(content["new_context"]) == 1
+
+        # Next turn's advance absorbs it into the cached prefix
+        session.add_exchange("Second", "Response 2")
+        session.update_cache_state(len(session.conversation_context))
+        content = session.get_cache_aware_content()
+        assert len(content["cached_context"]) == 5
+        assert len(content["new_context"]) == 0
 
     @pytest.mark.asyncio
     async def test_load_session_preserves_context_cache_length(
@@ -2439,13 +2405,13 @@ class TestAddCacheControlToToolResult:
 
 
 class TestToolIterationCaching:
-    """Tests for cache_control being added to tool iterations based on token threshold."""
+    """Tests for the tool-loop cache breakpoint sitting on the latest tool_result."""
 
     @pytest.mark.asyncio
-    async def test_cache_control_added_when_token_threshold_reached(
+    async def test_cache_control_added_to_tool_result(
         self, db_session, sample_conversation
     ):
-        """Test that cache_control is added when tool exchange tokens exceed threshold (2048)."""
+        """Test that cache_control is placed on the tool_result of the latest exchange."""
         manager = SessionManager()
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
@@ -2468,7 +2434,6 @@ class TestToolIterationCaching:
                 return [{"role": "user", "content": "base"}]
 
             mock_llm.build_messages_with_memories.side_effect = build_messages
-            # Return 3000 tokens to exceed the 2048 threshold
             mock_llm.count_tokens = MagicMock(return_value=3000)
 
             call_count = [0]
@@ -2525,7 +2490,7 @@ class TestToolIterationCaching:
         # Should have two LLM calls
         assert len(sent_messages) == 2
 
-        # Second iteration should have cache_control because threshold was exceeded
+        # Second iteration should have cache_control on the latest tool_result
         tool_result_msg = sent_messages[1][2]  # base + assistant + user (tool_result)
         assert tool_result_msg["role"] == "user"
         assert isinstance(tool_result_msg["content"], list)
@@ -2534,10 +2499,11 @@ class TestToolIterationCaching:
         assert last_block.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
 
     @pytest.mark.asyncio
-    async def test_no_cache_control_when_under_threshold(
+    async def test_cache_control_added_even_for_small_exchanges(
         self, db_session, sample_conversation
     ):
-        """Test that cache_control is NOT added when tool exchange tokens are below threshold."""
+        """Even a small tool exchange gets cache_control — there is no token
+        threshold; the breakpoint always sits on the latest tool_result."""
         manager = SessionManager()
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
@@ -2560,7 +2526,7 @@ class TestToolIterationCaching:
                 return [{"role": "user", "content": "base"}]
 
             mock_llm.build_messages_with_memories.side_effect = build_messages
-            # Return only 100 tokens - below the 2048 threshold
+            # Small token counts don't matter: caching is unconditional
             mock_llm.count_tokens = MagicMock(return_value=100)
 
             call_count = [0]
@@ -2617,19 +2583,18 @@ class TestToolIterationCaching:
         # Should have two LLM calls
         assert len(sent_messages) == 2
 
-        # Second iteration should NOT have cache_control because threshold wasn't reached
+        # Second iteration should have cache_control despite the small exchange
         tool_result_msg = sent_messages[1][2]  # base + assistant + user (tool_result)
         assert tool_result_msg["role"] == "user"
         assert isinstance(tool_result_msg["content"], list)
-        # The last content block should NOT have cache_control
         last_block = tool_result_msg["content"][-1]
-        assert last_block.get("cache_control") is None
+        assert last_block.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
 
     @pytest.mark.asyncio
-    async def test_multiple_tool_iterations_cache_control_moves_with_threshold(
+    async def test_multiple_tool_iterations_cache_control_moves_to_latest(
         self, db_session, sample_conversation
     ):
-        """Test that cache breakpoint moves when token threshold is exceeded across iterations."""
+        """Test that the cache breakpoint moves to the newest exchange every iteration."""
         manager = SessionManager()
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
@@ -2652,7 +2617,6 @@ class TestToolIterationCaching:
                 return [{"role": "user", "content": "base"}]
 
             mock_llm.build_messages_with_memories.side_effect = build_messages
-            # Use 3000 tokens to exceed the 2048 threshold per tool exchange
             mock_llm.count_tokens = MagicMock(return_value=3000)
 
             call_count = [0]
@@ -2727,16 +2691,14 @@ class TestToolIterationCaching:
         # Should have three LLM calls
         assert len(sent_messages) == 3
 
-        # Second iteration: should have cache_control on first tool result (threshold reached)
+        # Second iteration: cache_control on the (only) tool result
         # Messages: base, assistant (tool_use), user (tool_result with cache_control)
         second_call_tool_result = sent_messages[1][2]
         assert second_call_tool_result["role"] == "user"
         last_block = second_call_tool_result["content"][-1]
         assert last_block.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
 
-        # Third iteration: cache breakpoint moves to the NEWEST tool exchange
-        # The implementation uses a single moving breakpoint that tracks accumulated tokens
-        # When threshold is exceeded again, breakpoint moves to the latest exchange
+        # Third iteration: the breakpoint moves to the NEWEST tool exchange.
         # First tool result should NOT have cache_control (breakpoint moved past it)
         third_call_first_tool_result = sent_messages[2][2]
         assert third_call_first_tool_result["role"] == "user"

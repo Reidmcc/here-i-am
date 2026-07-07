@@ -103,8 +103,10 @@ class ConversationSession:
     # Flag to enable new memory system (set to True to use memory-in-context)
     use_memory_in_context: bool = False
 
-    # Cache tracking for conversation history (single breakpoint)
-    last_cached_context_length: int = 0  # Frozen history length for cache stability
+    # Cache tracking for conversation history (single breakpoint).
+    # Advanced to the full context length after every exchange, so each turn's
+    # new messages are written to the cache once and read on later turns.
+    last_cached_context_length: int = 0
 
     # Length (in messages) of the cached prefix sent on the previous API call.
     # Used only for diagnostics: comparing it to the current cached prefix length
@@ -333,11 +335,16 @@ class ConversationSession:
         Get context split into cached vs new portions for cache hit optimization.
 
         Single-breakpoint caching strategy:
-        - Conversation history is cached (frozen portion)
-        - With memory-in-context, memories are part of the cached history
+        - cached_context is everything up to the breakpoint set after the last
+          API call; the cache_control marker goes on its final message.
+        - new_context is anything appended since then (memory-in-context
+          insertions, context notices). It is sent uncached this turn and
+          absorbed into cached_context when the breakpoint advances after
+          this turn's API call.
 
-        Cache hits occur when cached conversation history is identical to previous call.
-        Periodic consolidation moves new_context into cached_context.
+        Anthropic caching is longest-prefix matching, so advancing the
+        breakpoint every turn is an incremental cache write of the new tail,
+        not a miss: the previously cached prefix is still read from cache.
         """
         # Split context into cached (frozen) vs new
         cached_context = self.conversation_context[:self.last_cached_context_length]
@@ -347,53 +354,6 @@ class ConversationSession:
             "cached_context": cached_context,
             "new_context": new_context,
         }
-
-    def should_consolidate_cache(self, count_tokens_fn: Callable[[str], int]) -> bool:
-        """
-        Determine if we should consolidate (grow) the cached conversation history.
-
-        Consolidation causes a cache MISS but creates a larger cache for future hits.
-
-        We consolidate when:
-        1. Cached history is too small to actually cache (< 1024 tokens)
-        2. New history >= 2048 tokens (balance between cache hits and prefix growth)
-        """
-        # Check conversation context
-        if not self.conversation_context:
-            return False
-
-        cached_context = self.conversation_context[:self.last_cached_context_length]
-        new_context = self.conversation_context[self.last_cached_context_length:]
-
-        if not new_context:
-            return False
-
-        # Calculate tokens in cached context
-        cached_tokens = 0
-        if cached_context:
-            cached_text = "\n".join(
-                f"{m['role']}: {get_message_content_text(m['content'])}"
-                for m in cached_context
-            )
-            cached_tokens = count_tokens_fn(cached_text)
-
-            # If cached context is too small to be cached (< 1024 tokens), grow it
-            if cached_tokens < 1024:
-                logger.info(f"[CACHE] Consolidation check: cached_tokens={cached_tokens} < 1024, will consolidate")
-                return True
-
-        # Calculate tokens in new context
-        new_text = "\n".join(
-            f"{m['role']}: {get_message_content_text(m['content'])}"
-            for m in new_context
-        )
-        new_tokens = count_tokens_fn(new_text)
-
-        # Consolidate when new history reaches threshold (balance cache hits vs prefix growth)
-        will_consolidate = new_tokens >= 2048
-        logger.info(f"[CACHE] Consolidation check: cached_history={len(cached_context)} msgs/{cached_tokens} tokens, new_history={len(new_context)} msgs/{new_tokens} tokens, threshold=2048, will_consolidate={will_consolidate}")
-
-        return will_consolidate
 
     def update_cache_state(self, cached_context_length: int):
         """

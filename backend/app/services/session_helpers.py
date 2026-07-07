@@ -7,7 +7,7 @@ significance calculation, caching, and token estimation.
 Split from session_manager.py to reduce file size and improve maintainability.
 """
 
-from typing import Dict, List, Optional, Any, Callable, Tuple
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import json
 import logging
@@ -186,7 +186,7 @@ def get_message_content_text(content: Any) -> str:
 
     For string content, returns the string directly.
     For content blocks (tool_use, tool_result, text), extracts text/content fields.
-    This is used for accurate token counting in cache consolidation decisions.
+    This is used for token counting (context trimming, minimum-cacheable checks).
     """
     if isinstance(content, str):
         return content
@@ -249,8 +249,12 @@ def add_cache_control_to_tool_result(user_msg: Dict[str, Any]) -> Dict[str, Any]
     """
     Add cache_control to the last tool_result block in a user message.
 
-    This enables Anthropic's prompt caching between tool iterations, so that
-    previous tool exchanges are cached when making the next API call.
+    This enables Anthropic's prompt caching between tool iterations: the
+    breakpoint sits on the latest tool_result every iteration, so each API
+    call writes only the newest exchange and reads the rest of the prefix
+    from cache. The 1h TTL matters because with memory-in-context
+    (USE_MEMORY_IN_CONTEXT=true) tool exchanges can survive into the next
+    turn, which is human-paced and may exceed the 5-minute TTL.
 
     Args:
         user_msg: The user message containing tool_result content blocks
@@ -279,51 +283,6 @@ def add_cache_control_to_tool_result(user_msg: Dict[str, Any]) -> Dict[str, Any]
     return result
 
 
-def estimate_tool_exchange_tokens(
-    exchange: Dict[str, Any],
-    count_tokens_fn: Callable[[str], int]
-) -> int:
-    """
-    Estimate the token count for a tool exchange (assistant tool_use + user tool_result).
-
-    Args:
-        exchange: Dict with "assistant" and "user" message dicts
-        count_tokens_fn: Function to count tokens in text
-
-    Returns:
-        Estimated token count for the exchange
-    """
-    total = 0
-
-    # Count tokens in assistant's tool_use content
-    assistant_content = exchange.get("assistant", {}).get("content", [])
-    if isinstance(assistant_content, list):
-        for block in assistant_content:
-            if block.get("type") == "tool_use":
-                # Count tool name and input
-                total += count_tokens_fn(block.get("name", ""))
-                input_json = json.dumps(block.get("input", {}))
-                total += count_tokens_fn(input_json)
-            elif block.get("type") == "text":
-                total += count_tokens_fn(block.get("text", ""))
-
-    # Count tokens in user's tool_result content
-    user_content = exchange.get("user", {}).get("content", [])
-    if isinstance(user_content, list):
-        for block in user_content:
-            if block.get("type") == "tool_result":
-                content = block.get("content", "")
-                if isinstance(content, str):
-                    total += count_tokens_fn(content)
-                elif isinstance(content, list):
-                    # Content can be a list of content blocks
-                    for sub_block in content:
-                        if isinstance(sub_block, dict) and sub_block.get("type") == "text":
-                            total += count_tokens_fn(sub_block.get("text", ""))
-
-    return total
-
-
 # Backward compatibility aliases (with underscore prefix matching old names)
 # These allow existing code to import from here without changes
 _build_memory_queries = build_memory_queries
@@ -332,4 +291,3 @@ _ensure_role_balance = ensure_role_balance
 _get_message_content_text = get_message_content_text
 _build_memory_block_text = build_memory_block_text
 _add_cache_control_to_tool_result = add_cache_control_to_tool_result
-_estimate_tool_exchange_tokens = estimate_tool_exchange_tokens
