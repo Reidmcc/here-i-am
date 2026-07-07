@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-A research tool for AI introspection — not a chatbot product. Single-researcher, local-trust, no auth. Avoid "helpful assistant" UX patterns and don't add a default system prompt.
-
 ## Stack
 
 - **Backend:** Python 3.10+, FastAPI (async), SQLAlchemy 2.x async, Pydantic settings. SQLite dev / Postgres prod via `HERE_I_AM_DATABASE_URL` (NOT `DATABASE_URL`).
