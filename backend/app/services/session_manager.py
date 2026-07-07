@@ -134,65 +134,6 @@ class SessionManager:
             "is_notes": True,
         }
 
-    def _log_cache_efficiency(
-        self,
-        session: ConversationSession,
-        cached_breakpoint: int,
-        usage: Optional[Dict[str, Any]],
-    ) -> None:
-        """
-        Classify the prompt-cache result of an API call for diagnostics.
-
-        Distinguishes an *expected* large cache write — the cached prefix grew or
-        shifted this turn (bootstrap, a large new turn advancing the boundary, or
-        a context trim), so the new region legitimately had to be written — from
-        an *unexpected* miss, where the cached boundary was stable but a large
-        write/small read shows the prefix failed to match anyway (a sign the
-        context construction changed the cached prefix between turns).
-
-        Uses message-count boundary deltas as a cheap proxy; `cached_breakpoint` is
-        the number of messages in the cached prefix that was sent on this call.
-        """
-        if not usage:
-            return
-
-        write = usage.get("cache_creation_input_tokens", 0) or 0
-        read = usage.get("cache_read_input_tokens", 0) or 0
-        prev = session.last_api_cache_breakpoint
-
-        # Only worth classifying when the write dominates the read (the prefix was
-        # largely not reused). A small write below the cache minimum is noise.
-        if write >= 1024 and write > read:
-            if prev < 0:
-                logger.info(
-                    f"[CACHE] Large write EXPECTED (bootstrap / first cached turn): "
-                    f"write={write}, read={read}, boundary={cached_breakpoint} msgs"
-                )
-            elif cached_breakpoint > prev:
-                logger.info(
-                    f"[CACHE] Large write EXPECTED (boundary advanced "
-                    f"{prev}->{cached_breakpoint} msgs; new turn content written to cache): "
-                    f"write={write}, read={read}"
-                )
-            elif cached_breakpoint < prev:
-                logger.info(
-                    f"[CACHE] Large write EXPECTED (context trim shifted boundary "
-                    f"{prev}->{cached_breakpoint} msgs): write={write}, read={read}"
-                )
-            else:
-                logger.warning(
-                    f"[CACHE] UNEXPECTED cache miss: write={write} >> read={read} "
-                    f"with a stable boundary ({cached_breakpoint} msgs). The cached "
-                    f"prefix changed since the last turn — check context construction."
-                )
-        else:
-            logger.info(
-                f"[CACHE] Cache OK: read={read}, write={write}, "
-                f"boundary={cached_breakpoint} msgs"
-            )
-
-        session.last_api_cache_breakpoint = cached_breakpoint
-
     async def load_session_from_db(
         self,
         conversation_id: str,
@@ -823,10 +764,6 @@ class SessionManager:
         )
 
         # Step 7: Update conversation context and cache state
-        # Classify the cache result against the prefix we sent (before the boundary moves).
-        self._log_cache_efficiency(
-            session, len(cache_content["cached_context"]), response.get("usage")
-        )
         session.add_exchange(user_message, response["content"])
 
         # Advance the cache breakpoint over the full history. Next turn this
@@ -1251,11 +1188,6 @@ class SessionManager:
         # of the prefix from cache (longest-prefix matching).
         iteration = 0
         max_iterations = settings.tool_use_max_iterations
-        # Cache metrics from iteration 1, which is the only call built with the
-        # conversation-history cache structure (later tool iterations use the
-        # separate tool-breakpoint scheme). We classify against these so the
-        # diagnostic reflects the durable conversation-history cache.
-        first_iteration_usage: Optional[Dict[str, Any]] = None
 
         while iteration < max_iterations:
             iteration += 1
@@ -1337,20 +1269,10 @@ class SessionManager:
                     stop_reason = event.get("stop_reason")
                     iteration_content_blocks = event.get("content_blocks", [])
                     iteration_tool_use = event.get("tool_use")
-                    if iteration == 1:
-                        first_iteration_usage = event.get("usage")
 
                     # If no tool use, this is the final response
                     if stop_reason != "tool_use" or not iteration_tool_use:
                         full_content += iteration_content
-
-                        # Classify the cache result of the conversation-history call
-                        # (iteration 1) against the prefix we sent, before the boundary moves.
-                        self._log_cache_efficiency(
-                            session,
-                            len(cache_content["cached_context"]),
-                            first_iteration_usage,
-                        )
 
                         # Update conversation context and cache state
                         # Include tool exchanges so they're persisted in conversation history
@@ -1465,9 +1387,6 @@ class SessionManager:
 
         # If we've exhausted iterations, yield what we have
         logger.warning(f"[TOOLS] Max iterations ({max_iterations}) reached")
-        self._log_cache_efficiency(
-            session, len(cache_content["cached_context"]), first_iteration_usage
-        )
         session.add_exchange(
             user_message,
             full_content,
