@@ -32,7 +32,7 @@ Require `NOTES_ENABLED=true` (the default).
 
 Always registered.
 
-- `context_status` — report approximate context-window usage: tokens in context versus the limit, message and memory counts, and how many retrieved memories have rolled out of context.
+- `context_status` — report approximate context-window usage: tokens in context versus the limit, message and memory counts, and how many retrieved memories have rolled out of context. Counts are calibrated against the provider-reported prompt usage of the session's last API request, and the last request's actual prompt size is included when available.
 
 ## GitHub Tools
 

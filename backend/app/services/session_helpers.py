@@ -7,7 +7,7 @@ significance calculation, caching, and token estimation.
 Split from session_manager.py to reduce file size and improve maintainability.
 """
 
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Callable, Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import json
 import logging
@@ -218,6 +218,46 @@ def get_message_content_text(content: Any) -> str:
                 text_parts.append(f"[Tool result: {json.dumps(result_content)}]")
 
     return "\n".join(text_parts)
+
+
+def total_prompt_tokens_from_usage(usage: Optional[Dict[str, Any]]) -> int:
+    """
+    Total prompt-side tokens the provider actually processed for a request:
+    uncached input + cache writes + cache reads.
+
+    Returns 0 when usage is missing or reports nothing (some providers
+    return zeros or None for these fields).
+    """
+    if not usage:
+        return 0
+    total = 0
+    for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+        value = usage.get(key)
+        if value:
+            total += int(value)
+    return total
+
+
+def estimate_prompt_tokens(
+    messages: List[Dict[str, Any]],
+    count_tokens_fn: Callable[[str], int],
+    system_prompt: Optional[str] = None,
+) -> int:
+    """
+    Local estimate of a full API prompt's token size, using the same text
+    extraction as context trimming.
+
+    Paired with the provider-reported total for the same request
+    (total_prompt_tokens_from_usage), this yields a calibration ratio for
+    the local counter, which is approximate for non-OpenAI tokenizers.
+    """
+    parts = []
+    if system_prompt:
+        parts.append(system_prompt)
+    for msg in messages:
+        parts.append(f"{msg.get('role', '')}: {get_message_content_text(msg.get('content', ''))}")
+    text = "\n".join(parts)
+    return count_tokens_fn(text) if text else 0
 
 
 def build_memory_block_text(

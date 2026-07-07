@@ -21,6 +21,8 @@ from app.services.session_helpers import (
     get_message_content_text,
     build_memory_block_text,
     add_cache_control_to_tool_result,
+    estimate_prompt_tokens,
+    total_prompt_tokens_from_usage,
 )
 
 
@@ -430,3 +432,70 @@ class TestAddCacheControlToToolResult:
 
         assert "cache_control" not in original_block
         assert "cache_control" in result["content"][0]
+
+
+# ============================================================
+# Tests for provider-usage calibration helpers
+# ============================================================
+
+class TestTotalPromptTokensFromUsage:
+    """Tests for summing prompt-side tokens from a provider usage dict."""
+
+    def test_sums_all_prompt_side_fields(self):
+        usage = {
+            "input_tokens": 100,
+            "cache_creation_input_tokens": 50,
+            "cache_read_input_tokens": 850,
+            "output_tokens": 400,  # output side must be excluded
+        }
+        assert total_prompt_tokens_from_usage(usage) == 1000
+
+    def test_handles_missing_cache_fields(self):
+        assert total_prompt_tokens_from_usage({"input_tokens": 42}) == 42
+
+    def test_handles_none_values(self):
+        """Some Anthropic-compatible APIs return None instead of omitting."""
+        usage = {"input_tokens": 10, "cache_read_input_tokens": None}
+        assert total_prompt_tokens_from_usage(usage) == 10
+
+    def test_handles_missing_usage(self):
+        assert total_prompt_tokens_from_usage(None) == 0
+        assert total_prompt_tokens_from_usage({}) == 0
+
+
+class TestEstimatePromptTokens:
+    """Tests for locally estimating a full API prompt's token size."""
+
+    def test_counts_messages_and_system_prompt(self):
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+        ]
+        captured = []
+
+        def fake_count(text):
+            captured.append(text)
+            return len(text)
+
+        result = estimate_prompt_tokens(messages, fake_count, system_prompt="Be kind")
+        assert result > 0
+        assert len(captured) == 1
+        assert "Be kind" in captured[0]
+        assert "user: Hello" in captured[0]
+        assert "assistant: Hi there" in captured[0]
+
+    def test_extracts_text_from_content_blocks(self):
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "Block text"}]},
+        ]
+        captured = []
+
+        def fake_count(text):
+            captured.append(text)
+            return 5
+
+        assert estimate_prompt_tokens(messages, fake_count) == 5
+        assert "Block text" in captured[0]
+
+    def test_empty_messages(self):
+        assert estimate_prompt_tokens([], lambda t: len(t)) == 0
