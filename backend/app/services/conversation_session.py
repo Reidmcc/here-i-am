@@ -355,12 +355,7 @@ class ConversationSession:
         Args:
             cached_context_length: Number of messages in the cached history block
         """
-        old_ctx_len = self.last_cached_context_length
         self.last_cached_context_length = cached_context_length
-
-        # Log if cache state changed
-        if cached_context_length != old_ctx_len:
-            logger.info(f"[CACHE] Cache state updated: history {old_ctx_len}->{cached_context_length} msgs")
 
     def trim_context_to_limit(
         self,
