@@ -27,6 +27,7 @@ from app.services.context_tools import set_context_tool_session
 from app.config import settings
 
 # Import from split modules
+from app.services.attachment_service import build_persistable_content
 from app.services.conversation_session import ConversationSession, MemoryEntry
 from app.services.session_helpers import (
     build_memory_queries,
@@ -841,9 +842,12 @@ class SessionManager:
         If user_message is None (multi-entity continuation), the entity responds
         based on existing conversation context without a new human message.
 
-        Attachments (images and files) are processed and included in the current
-        message for multimodal models. Attachments are ephemeral - they are not
-        stored in conversation history or memories.
+        Attachments are processed and included in the current message for
+        multimodal models. Extracted text-file content is folded into the
+        message text with the same [ATTACHED FILE] rendering the route
+        persists to the DB, so the live context matches what a session
+        reload rebuilds (prompt-cache stable). Images remain ephemeral -
+        not stored in conversation history or memories.
 
         user_message_timestamp is the timestamp stamped onto the current
         message in LLM context (defaults to now). Routes pass the same value
@@ -1108,13 +1112,27 @@ class SessionManager:
                 count_tokens_fn=llm_service.count_tokens,
             )
 
-        # Timestamp the current message for LLM context (memory queries above
-        # used the raw text; the DB row persisted by the route stays unstamped).
-        # Stamped once here so the API call and the context history match.
+        # Fold extracted text-file content into the message using the same
+        # rendering the route persists to the DB (build_persistable_content),
+        # so the live context stores exactly what a session reload rebuilds
+        # from the DB row — otherwise the [ATTACHED FILE] blocks appear only
+        # on reload and bust the prompt cache. The files are then dropped
+        # from the attachments passed to message building (their content is
+        # now in the message text); images stay as ephemeral multimodal
+        # blocks. Memory queries above used the raw text.
+        context_user_message = user_message
+        llm_attachments = attachments
+        if attachments and attachments.get("files"):
+            context_user_message = build_persistable_content(user_message, attachments)
+            llm_attachments = {**attachments, "files": []}
+
+        # Timestamp the current message for LLM context (the DB row persisted
+        # by the route stays unstamped). Stamped once here so the API call
+        # and the context history match.
         stamped_user_message = None
-        if user_message is not None:
+        if context_user_message is not None:
             stamped_user_message = stamp_human_message(
-                user_message, user_message_timestamp or datetime.utcnow()
+                context_user_message, user_message_timestamp or datetime.utcnow()
             )
 
         # Trim conversation context if over limit (FIFO - oldest messages first)
@@ -1210,7 +1228,7 @@ class SessionManager:
             entity_labels=session.entity_labels,
             responding_entity_label=session.responding_entity_label,
             user_display_name=session.user_display_name,
-            attachments=attachments,  # Include attachments for multimodal support
+            attachments=llm_attachments,  # Images only - file text is in the message
             provider_hint=session.provider_hint,
         )
 
@@ -1259,11 +1277,12 @@ class SessionManager:
                         entity_labels=session.entity_labels,
                         responding_entity_label=session.responding_entity_label,
                         user_display_name=session.user_display_name,
-                        # Keep attachments on the current message so the file/image
-                        # content survives across tool-use iterations. Without this,
-                        # any tool call drops the attachment from the final answer's
-                        # context and the model responds as if nothing was attached.
-                        attachments=attachments,
+                        # Keep image attachments on the current message so they
+                        # survive across tool-use iterations. Without this, any
+                        # tool call drops the attachment from the final answer's
+                        # context and the model responds as if nothing was
+                        # attached. (File text travels in stamped_user_message.)
+                        attachments=llm_attachments,
                         provider_hint=session.provider_hint,
                     )
 
