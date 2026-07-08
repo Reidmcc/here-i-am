@@ -904,7 +904,7 @@ class TestMultiEntityMemoryIsolation:
         assert session.responding_entity_label == "Claude"
 
     def test_multi_entity_add_exchange_labels_messages(self):
-        """Test that add_exchange labels assistant messages in multi-entity conversations."""
+        """Test that add_exchange labels messages in multi-entity conversations."""
         session = ConversationSession(
             conversation_id="conv-123",
             is_multi_entity=True,
@@ -914,8 +914,9 @@ class TestMultiEntityMemoryIsolation:
         session.add_exchange("Hello!", "Hi there!")
 
         assert len(session.conversation_context) == 2
-        # Human messages are NOT labeled (only one human in conversation)
-        assert session.conversation_context[0]["content"] == "Hello!"
+        # Human messages are labeled [Human], matching session reload rendering
+        # (live and reloaded context must be identical for cache stability)
+        assert session.conversation_context[0]["content"] == "[Human]: Hello!"
         # Assistant messages should be labeled with responding entity
         assert session.conversation_context[1]["content"] == "[Claude]: Hi there!"
 

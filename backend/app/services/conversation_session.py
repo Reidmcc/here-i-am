@@ -335,7 +335,13 @@ class ConversationSession:
                 the tool_use and tool_result messages respectively.
         """
         if human_message:
-            self.conversation_context.append({"role": "user", "content": human_message})
+            # Label with [Human] in multi-entity mode, matching how the message
+            # is rendered on session reload (load_session_from_db) — the live
+            # and reloaded context must be identical for prompt-cache stability.
+            if self.is_multi_entity:
+                self.conversation_context.append({"role": "user", "content": f"[Human]: {human_message}"})
+            else:
+                self.conversation_context.append({"role": "user", "content": human_message})
 
         # Add tool exchanges if any occurred during this response
         # These go between the user message and the final assistant response

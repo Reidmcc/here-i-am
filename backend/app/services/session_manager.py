@@ -480,6 +480,7 @@ class SessionManager:
         session: ConversationSession,
         user_message: str,
         db: AsyncSession,
+        user_message_timestamp: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """
         Process a user message through the full pipeline.
@@ -712,8 +713,12 @@ class SessionManager:
 
         # Timestamp the current message for LLM context (memory queries above
         # used the raw text; the DB row persisted by the route stays unstamped).
-        # Stamped once here so the API call and the context history match.
-        stamped_user_message = stamp_human_message(user_message, datetime.utcnow())
+        # The route passes the same timestamp it sets as the DB row's
+        # created_at, so a session reload re-renders the identical prefix
+        # (prompt-cache stable across conversation switches).
+        stamped_user_message = stamp_human_message(
+            user_message, user_message_timestamp or datetime.utcnow()
+        )
 
         # Step 4: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)
@@ -840,9 +845,11 @@ class SessionManager:
         message for multimodal models. Attachments are ephemeral - they are not
         stored in conversation history or memories.
 
-        user_message_timestamp overrides the timestamp stamped onto the current
-        message in LLM context (defaults to now). Regeneration passes the
-        original message's created_at so the context keeps the real send time.
+        user_message_timestamp is the timestamp stamped onto the current
+        message in LLM context (defaults to now). Routes pass the same value
+        they set as the persisted row's created_at, and regeneration passes
+        the original message's created_at, so live and reloaded sessions
+        render identical prefixes (prompt-cache stable across reloads).
 
         Yields events:
         - {"type": "memories", "new_memories": [...], "total_in_context": int}

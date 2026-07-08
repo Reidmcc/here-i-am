@@ -293,11 +293,17 @@ async def send_message(
     if data.user_display_name is not None:
         session.user_display_name = data.user_display_name
 
+    # Capture the send time once: it is stamped onto the message in LLM
+    # context AND set as the DB row's created_at, so a session reload
+    # re-renders the identical timestamp prefix (prompt-cache stable).
+    message_sent_at = datetime.utcnow()
+
     # Process the message through the full pipeline
     response = await session_manager.process_message(
         session=session,
         user_message=data.message,
         db=db,
+        user_message_timestamp=message_sent_at,
     )
 
     # Store new messages in database
@@ -307,6 +313,7 @@ async def send_message(
         role=MessageRole.HUMAN,
         content=data.message,
         token_count=llm_service.count_tokens(data.message),
+        created_at=message_sent_at,
     )
     db.add(human_msg)
 
@@ -562,12 +569,19 @@ async def stream_message(data: ChatRequest):
                     if provider in (ModelProvider.ANTHROPIC, ModelProvider.OPENAI, ModelProvider.MINIMAX):
                         tool_schemas = tool_service.get_tool_schemas()
 
+                # Capture the send time once: it is stamped onto the message in
+                # LLM context AND set as the DB row's created_at, so a session
+                # reload re-renders the identical timestamp prefix
+                # (prompt-cache stable across conversation switches).
+                message_sent_at = datetime.utcnow()
+
                 async for event in session_manager.process_message_stream(
                     session=session,
                     user_message=effective_message,
                     db=db,
                     tool_schemas=tool_schemas,
                     attachments=attachments_dict,
+                    user_message_timestamp=message_sent_at,
                 ):
                     event_type = event.get("type")
 
@@ -607,6 +621,7 @@ async def stream_message(data: ChatRequest):
                         role=MessageRole.HUMAN,
                         content=persistable_content,
                         token_count=llm_service.count_tokens(persistable_content),
+                        created_at=message_sent_at,
                     )
                     db.add(human_msg)
 
