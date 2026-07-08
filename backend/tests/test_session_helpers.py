@@ -23,7 +23,28 @@ from app.services.session_helpers import (
     add_cache_control_to_tool_result,
     estimate_prompt_tokens,
     total_prompt_tokens_from_usage,
+    stamp_human_message,
 )
+
+
+# ============================================================
+# Tests for stamp_human_message
+# ============================================================
+
+class TestStampHumanMessage:
+    """Tests for timestamping human messages in LLM context."""
+
+    def test_prefixes_timestamp(self):
+        ts = datetime(2026, 7, 8, 14, 32, 45)
+        assert stamp_human_message("Hello", ts) == "[2026-07-08 14:32 UTC] Hello"
+
+    def test_timestamp_is_prefix_so_suffix_matching_survives(self):
+        # Regenerate matches context entries via endswith(original content)
+        ts = datetime(2026, 7, 8, 14, 32)
+        assert stamp_human_message("Hello", ts).endswith("Hello")
+
+    def test_none_timestamp_returns_content_unchanged(self):
+        assert stamp_human_message("Hello", None) == "Hello"
 
 
 # ============================================================

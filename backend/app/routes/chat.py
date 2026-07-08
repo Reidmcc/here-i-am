@@ -1017,11 +1017,14 @@ async def regenerate_response(data: RegenerateRequest):
                         tool_schemas = tool_service.get_tool_schemas()
 
                 # Stream the new response
+                # Pass the original send time so the context timestamp on the
+                # regenerated-from human message stays accurate
                 async for event in session_manager.process_message_stream(
                     session=session,
                     user_message=user_message_content,
                     db=db,
                     tool_schemas=tool_schemas,
+                    user_message_timestamp=human_message.created_at if human_message else None,
                 ):
                     event_type = event.get("type")
 

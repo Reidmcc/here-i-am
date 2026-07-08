@@ -1,6 +1,7 @@
 """
 Unit tests for SessionManager.
 """
+import re
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from datetime import datetime
@@ -580,7 +581,11 @@ class TestSessionManager:
 
         assert result["content"] == "Hi there!"
         assert len(session.conversation_context) == 2  # User + assistant
-        assert session.conversation_context[0]["content"] == "Hello"
+        # Human messages carry a context-only timestamp prefix
+        assert re.fullmatch(
+            r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\] Hello",
+            session.conversation_context[0]["content"],
+        )
         assert session.conversation_context[1]["content"] == "Hi there!"
         assert result["trimmed_memory_ids"] == []
         assert result["trimmed_context_messages"] == 0

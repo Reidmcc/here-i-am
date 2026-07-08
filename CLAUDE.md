@@ -104,6 +104,7 @@ half_life_modifier = 0.5 ** (days_since_creation / 60)
 - **Notes vectorization:** notes are mirrored into the `"notes"` namespace of each entity's Pinecone index on write (shared notes go to *all* entities' indexes); `notes_search` queries it. Backfill/recovery: `POST /api/notes/reindex`.
 - **Closing turn:** `POST /api/chat/stream` with `closing_turn=true` and no message gives the entity an open final turn (framing stored as a human message, *not* vectorized). Frontend button in the chat header (single-entity only).
 - **Context awareness:** `context_status` tool reports approximate context fullness; when trimming occurs a `[CONTEXT NOTICE]` message is injected into context (not persisted to DB).
+- **Human message timestamps:** human messages get a `[YYYY-MM-DD HH:MM UTC]` prefix when rendered into LLM context (`session_helpers.stamp_human_message`) for finer-grained time awareness. Context-only — DB content and vectorized memories stay unstamped. The stamp is a *prefix* so regenerate's `endswith` content matching keeps working.
 
 ## Multi-entity rules
 

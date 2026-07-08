@@ -17,6 +17,29 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+def stamp_human_message(content: str, timestamp: Optional[datetime]) -> str:
+    """
+    Prefix a human message with its timestamp for LLM context.
+
+    Gives the entity finer-grained time awareness than the per-turn
+    [DATE CONTEXT] block (which is date-only). Applied ONLY when rendering
+    messages into the LLM context — the content persisted to the DB and
+    vectorized into memory stays unstamped. The timestamp is a prefix so
+    content-suffix matching (e.g. regenerate's endswith fallback) keeps
+    working.
+
+    Args:
+        content: The human message text
+        timestamp: When the message was sent (UTC, matching Message.created_at)
+
+    Returns:
+        The stamped message, or the original content if timestamp is None
+    """
+    if not timestamp:
+        return content
+    return f"[{timestamp.strftime('%Y-%m-%d %H:%M')} UTC] {content}"
+
+
 def build_memory_queries(
     conversation_context: List[Dict[str, str]],
     current_message: Optional[str],
