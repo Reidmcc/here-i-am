@@ -42,6 +42,11 @@ export const state = {
     streamAbortController: null,
     importAbortController: null,
 
+    // Message-entry height chosen by dragging the divider above the input area.
+    // null = default auto-resize behavior; a number is a user-fixed pixel height
+    // for the message textarea that persists across messages and restarts.
+    messageInputHeight: null,
+
     // Settings
     settings: {
         model: 'claude-sonnet-4-5-20250929',
@@ -281,6 +286,44 @@ export function saveResearcherName(name) {
         state.settings.researcherName = name;
     }
     localStorage.setItem('researcher_name', state.settings.researcherName || '');
+}
+
+const MESSAGE_INPUT_HEIGHT_KEY = 'message_input_height';
+
+/**
+ * Load the user-chosen message-entry height from localStorage into state.
+ * @returns {number|null} The saved height in pixels, or null if unset/invalid
+ */
+export function loadMessageInputHeight() {
+    try {
+        const saved = localStorage.getItem(MESSAGE_INPUT_HEIGHT_KEY);
+        const height = saved !== null ? parseInt(saved, 10) : NaN;
+        state.messageInputHeight = Number.isFinite(height) && height > 0 ? height : null;
+    } catch (e) {
+        console.warn('Failed to load message input height:', e);
+        state.messageInputHeight = null;
+    }
+    return state.messageInputHeight;
+}
+
+/**
+ * Persist the user-chosen message-entry height to localStorage.
+ * Pass null to clear the saved height and restore default auto-resize.
+ * @param {number|null} height - Height in pixels, or null to reset
+ */
+export function saveMessageInputHeight(height) {
+    if (height !== undefined) {
+        state.messageInputHeight = Number.isFinite(height) && height > 0 ? Math.round(height) : null;
+    }
+    try {
+        if (state.messageInputHeight) {
+            localStorage.setItem(MESSAGE_INPUT_HEIGHT_KEY, String(state.messageInputHeight));
+        } else {
+            localStorage.removeItem(MESSAGE_INPUT_HEIGHT_KEY);
+        }
+    } catch (e) {
+        console.warn('Failed to save message input height:', e);
+    }
 }
 
 /**
