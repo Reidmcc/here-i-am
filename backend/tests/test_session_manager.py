@@ -1975,11 +1975,98 @@ class TestAgenticToolLoopMemoryOptimization:
             ):
                 events.append(event)
 
-        # Two build calls: iteration 1 (with attachments) and the lazily-built
-        # base message set for iteration 2 (also with attachments).
+        # Two build calls: iteration 1 and the lazily-built base message set
+        # for iteration 2. The extracted file text is folded into the current
+        # message (matching the DB-persisted rendering) so it survives both
+        # iterations; the files themselves are stripped from the attachments
+        # passed to message building, leaving only (ephemeral) images.
         assert len(build_calls) == 2
         for call in build_calls:
-            assert call["kwargs"].get("attachments") == attachments
+            assert call["kwargs"].get("attachments") == {"images": [], "files": []}
+            current = call["kwargs"].get("current_message")
+            assert "[ATTACHED FILE: notes.txt" in current
+            assert "the attached file body" in current
+            assert "Summarize the attached file" in current
+
+    @pytest.mark.asyncio
+    async def test_file_attachment_context_matches_db_rendering(self, db_session, sample_conversation):
+        """Live context for a text-file attachment message must equal the
+        stamped rendering of the DB-persisted content.
+
+        Regression test: previously the live context stored only the stamped
+        user text while the DB row (and thus a reloaded session) carried the
+        [ATTACHED FILE] blocks, so every reload of such a conversation busted
+        the prompt cache from that message onward.
+        """
+        from app.services.session_helpers import stamp_human_message
+        from app.services.attachment_service import build_persistable_content
+
+        manager = SessionManager()
+        sent_at = datetime(2026, 1, 15, 12, 30, 0)
+        user_message = "Summarize the attached file"
+        attachments = {
+            "images": [],
+            "files": [{
+                "filename": "notes.txt",
+                "content": "the attached file body",
+                "content_type": "text",
+                "media_type": "text/plain",
+            }],
+        }
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.memory_token_limit = 40000
+            mock_settings.context_token_limit = 150000
+            mock_settings.tool_use_max_iterations = 10
+            mock_settings.use_memory_in_context = False
+
+            mock_llm.build_messages_with_memories = MagicMock(
+                return_value=[{"role": "user", "content": "msg"}]
+            )
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            async def mock_stream(messages, **kwargs):
+                yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                yield {"type": "token", "content": "Response"}
+                yield {
+                    "type": "done",
+                    "content": "Response",
+                    "stop_reason": "end_turn",
+                    "content_blocks": [{"type": "text", "text": "Response"}],
+                    "model": "claude-sonnet-4-5-20250929",
+                    "usage": {},
+                }
+
+            mock_llm.send_message_stream = mock_stream
+
+            session = manager.create_session(sample_conversation.id)
+
+            async for _ in manager.process_message_stream(
+                session,
+                user_message,
+                db_session,
+                attachments=attachments,
+                user_message_timestamp=sent_at,
+            ):
+                pass
+
+        # This is exactly what load_session_from_db renders for the persisted
+        # row (routes/chat.py stores build_persistable_content(...) with
+        # created_at == sent_at, and the load stamps it).
+        expected = stamp_human_message(
+            build_persistable_content(user_message, attachments), sent_at
+        )
+        user_msgs = [
+            m for m in session.conversation_context
+            if m["role"] == "user" and isinstance(m["content"], str)
+        ]
+        assert user_msgs[-1]["content"] == expected
 
     @pytest.mark.asyncio
     async def test_tool_exchanges_accumulated_correctly(self, db_session, sample_conversation):
