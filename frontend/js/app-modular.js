@@ -148,6 +148,9 @@ const api = window.api;
 const DEFAULT_MESSAGE_INPUT_MAX_HEIGHT = 200;
 // Smallest height the divider can shrink the message textarea to.
 const MESSAGE_INPUT_MIN_HEIGHT = 44;
+// Minimum slice of the conversation area kept visible so the end of the most
+// recent message is never hidden behind an enlarged message-entry section.
+const MIN_MESSAGES_VISIBLE_HEIGHT = 60;
 
 /**
  * Main Application Class
@@ -732,16 +735,49 @@ class App {
         if (!input) return;
 
         if (state.messageInputHeight) {
-            // User fixed the entry height via the divider — keep it, and allow
-            // internal scrolling for drafts taller than the chosen height.
-            input.style.maxHeight = state.messageInputHeight + 'px';
-            input.style.height = state.messageInputHeight + 'px';
+            // User fixed the entry height via the divider — keep it, but never
+            // let it grow past the space the chat area can spare, so the end of
+            // the most recent message stays visible. The stored value is left
+            // untouched so a larger window can restore the full chosen height.
+            const height = Math.min(state.messageInputHeight, this.getMaxMessageInputHeight());
+            input.style.maxHeight = height + 'px';
+            input.style.height = height + 'px';
         } else {
             // Default behavior: grow with content up to the CSS-defined cap.
             input.style.maxHeight = '';
             input.style.height = 'auto';
             input.style.height = Math.min(input.scrollHeight, DEFAULT_MESSAGE_INPUT_MAX_HEIGHT) + 'px';
         }
+    }
+
+    /**
+     * Largest height the message textarea may take while keeping at least a
+     * sliver of the conversation content visible (so the bottom of the latest
+     * message can never be covered by the entry section). Derived from the live
+     * layout, so it adapts to window size and the memories panel.
+     */
+    getMaxMessageInputHeight() {
+        const input = this.elements.messageInput;
+        const chatArea = document.querySelector('.chat-area');
+        const inputArea = document.querySelector('.input-area');
+        const messages = this.elements.messagesContainer || document.querySelector('.messages-container');
+        if (!input || !chatArea || !inputArea || !messages) {
+            return Math.max(DEFAULT_MESSAGE_INPUT_MAX_HEIGHT, Math.round(window.innerHeight * 0.6));
+        }
+
+        const chatRect = chatArea.getBoundingClientRect();
+        const messagesRect = messages.getBoundingClientRect();
+        // Chrome above the conversation area (header, memories panel).
+        const topUsed = messagesRect.top - chatRect.top;
+        // Fixed parts of the input area other than the textarea itself
+        // (padding, attachment preview, meta row, and the resizer handle).
+        const inputExtras = inputArea.getBoundingClientRect().height - input.getBoundingClientRect().height;
+        const resizerH = this.elements.inputResizer
+            ? this.elements.inputResizer.getBoundingClientRect().height
+            : 0;
+
+        const available = chatRect.height - topUsed - resizerH - inputExtras - MIN_MESSAGES_VISIBLE_HEIGHT;
+        return Math.max(MESSAGE_INPUT_MIN_HEIGHT, Math.floor(available));
     }
 
     /**
@@ -757,15 +793,12 @@ class App {
         let startHeight = 0;
 
         const onPointerMove = (e) => {
-            // Dragging up (smaller clientY) increases the height.
+            // Dragging up (smaller clientY) increases the height, but never
+            // beyond the space that keeps the last message visible.
             const delta = startY - e.clientY;
-            const maxHeight = Math.max(
-                DEFAULT_MESSAGE_INPUT_MAX_HEIGHT,
-                Math.round(window.innerHeight * 0.7)
-            );
             const newHeight = Math.min(
                 Math.max(startHeight + delta, MESSAGE_INPUT_MIN_HEIGHT),
-                maxHeight
+                this.getMaxMessageInputHeight()
             );
             state.messageInputHeight = newHeight;
             this.resizeMessageInput();
@@ -795,6 +828,12 @@ class App {
             } catch (_) { /* ignore */ }
             window.addEventListener('pointermove', onPointerMove);
             window.addEventListener('pointerup', onPointerUp);
+        });
+
+        // Re-clamp the fixed height when the window (and thus available space)
+        // shrinks, so an enlarged entry section can't start covering messages.
+        window.addEventListener('resize', () => {
+            if (state.messageInputHeight) this.resizeMessageInput();
         });
     }
 
