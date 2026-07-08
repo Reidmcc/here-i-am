@@ -31,6 +31,7 @@ from app.services.conversation_session import ConversationSession, MemoryEntry
 from app.services.session_helpers import (
     build_memory_queries,
     calculate_significance,
+    stamp_human_message,
     ensure_role_balance,
     get_message_content_text,
     build_memory_block_text,
@@ -395,12 +396,15 @@ class SessionManager:
 
             # Now add the message itself
             if msg.role == MessageRole.HUMAN:
+                # Timestamp human messages for finer-grained time awareness
+                # (context-only; DB content stays unstamped)
+                stamped_content = stamp_human_message(msg.content, msg.created_at)
                 # For multi-entity conversations, label human messages
                 if is_multi_entity:
-                    labeled_content = f"[Human]: {msg.content}"
+                    labeled_content = f"[Human]: {stamped_content}"
                     session.conversation_context.append({"role": "user", "content": labeled_content})
                 else:
-                    session.conversation_context.append({"role": "user", "content": msg.content})
+                    session.conversation_context.append({"role": "user", "content": stamped_content})
             elif msg.role == MessageRole.ASSISTANT:
                 # For multi-entity conversations, label assistant messages with speaker entity
                 if is_multi_entity and msg.speaker_entity_id:
@@ -476,6 +480,7 @@ class SessionManager:
         session: ConversationSession,
         user_message: str,
         db: AsyncSession,
+        user_message_timestamp: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """
         Process a user message through the full pipeline.
@@ -706,6 +711,15 @@ class SessionManager:
             else:
                 logger.info(f"[MEMORY] Memory retrieval skipped: entity_id={session.entity_id}")
 
+        # Timestamp the current message for LLM context (memory queries above
+        # used the raw text; the DB row persisted by the route stays unstamped).
+        # The route passes the same timestamp it sets as the DB row's
+        # created_at, so a session reload re-renders the identical prefix
+        # (prompt-cache stable across conversation switches).
+        stamped_user_message = stamp_human_message(
+            user_message, user_message_timestamp or datetime.utcnow()
+        )
+
         # Step 4: Apply token limits before building API messages
         # Trim memories if over limit (FIFO - oldest retrieved first)
         trimmed_memory_ids = session.trim_memories_to_limit(
@@ -717,7 +731,7 @@ class SessionManager:
         trimmed_context_count = session.trim_context_to_limit(
             max_tokens=settings.context_token_limit,
             count_tokens_fn=llm_service.count_tokens,
-            current_message=user_message,
+            current_message=stamped_user_message,
         )
 
         # Step 5: Build API messages with conversation-first caching
@@ -740,7 +754,7 @@ class SessionManager:
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
-            current_message=user_message,
+            current_message=stamped_user_message,
             model=session.model,
             conversation_start_date=session.conversation_start_date,
             enable_caching=True,
@@ -775,7 +789,7 @@ class SessionManager:
         )
 
         # Step 7: Update conversation context and cache state
-        session.add_exchange(user_message, response["content"])
+        session.add_exchange(stamped_user_message, response["content"])
 
         # Advance the cache breakpoint over the full history. Next turn this
         # writes only the new tail to the cache while reading the existing
@@ -815,6 +829,7 @@ class SessionManager:
         db: AsyncSession,
         tool_schemas: Optional[List[Dict[str, Any]]] = None,
         attachments: Optional[Dict[str, Any]] = None,
+        user_message_timestamp: Optional[datetime] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Process a user message through the full pipeline with streaming response.
@@ -829,6 +844,12 @@ class SessionManager:
         Attachments (images and files) are processed and included in the current
         message for multimodal models. Attachments are ephemeral - they are not
         stored in conversation history or memories.
+
+        user_message_timestamp is the timestamp stamped onto the current
+        message in LLM context (defaults to now). Routes pass the same value
+        they set as the persisted row's created_at, and regeneration passes
+        the original message's created_at, so live and reloaded sessions
+        render identical prefixes (prompt-cache stable across reloads).
 
         Yields events:
         - {"type": "memories", "new_memories": [...], "total_in_context": int}
@@ -1087,11 +1108,20 @@ class SessionManager:
                 count_tokens_fn=llm_service.count_tokens,
             )
 
+        # Timestamp the current message for LLM context (memory queries above
+        # used the raw text; the DB row persisted by the route stays unstamped).
+        # Stamped once here so the API call and the context history match.
+        stamped_user_message = None
+        if user_message is not None:
+            stamped_user_message = stamp_human_message(
+                user_message, user_message_timestamp or datetime.utcnow()
+            )
+
         # Trim conversation context if over limit (FIFO - oldest messages first)
         trimmed_context_count = session.trim_context_to_limit(
             max_tokens=settings.context_token_limit,
             count_tokens_fn=llm_service.count_tokens,
-            current_message=user_message,
+            current_message=stamped_user_message or "",
         )
 
         # Tell the entity when trimming removed messages, so context loss is
@@ -1170,7 +1200,7 @@ class SessionManager:
         messages = llm_service.build_messages_with_memories(
             memories=memories_for_injection,
             conversation_context=session.conversation_context,
-            current_message=user_message,
+            current_message=stamped_user_message,
             model=session.model,
             conversation_start_date=session.conversation_start_date,
             enable_caching=True,
@@ -1219,7 +1249,7 @@ class SessionManager:
                     base_messages_no_memories = llm_service.build_messages_with_memories(
                         memories=[],  # No memories for subsequent iterations
                         conversation_context=session.conversation_context,
-                        current_message=user_message,
+                        current_message=stamped_user_message,
                         model=session.model,
                         conversation_start_date=session.conversation_start_date,
                         enable_caching=True,
@@ -1299,7 +1329,7 @@ class SessionManager:
                         # Update conversation context and cache state
                         # Include tool exchanges so they're persisted in conversation history
                         session.add_exchange(
-                            user_message,
+                            stamped_user_message,
                             full_content,
                             tool_exchanges=tool_exchanges if tool_exchanges else None,
                         )
@@ -1410,7 +1440,7 @@ class SessionManager:
         # If we've exhausted iterations, yield what we have
         logger.warning(f"[TOOLS] Max iterations ({max_iterations}) reached")
         session.add_exchange(
-            user_message,
+            stamped_user_message,
             full_content,
             tool_exchanges=tool_exchanges if tool_exchanges else None,
         )

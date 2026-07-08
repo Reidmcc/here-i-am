@@ -8,13 +8,44 @@ Split from session_manager.py to reduce file size and improve maintainability.
 """
 
 from typing import Callable, Dict, List, Optional, Any, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def stamp_human_message(content: str, timestamp: Optional[datetime]) -> str:
+    """
+    Prefix a human message with its timestamp for LLM context.
+
+    Gives the entity finer-grained time awareness than the per-turn
+    [DATE CONTEXT] block (which is date-only). Applied ONLY when rendering
+    messages into the LLM context — the content persisted to the DB and
+    vectorized into memory stays unstamped. The timestamp is a prefix so
+    content-suffix matching (e.g. regenerate's endswith fallback) keeps
+    working.
+
+    Timestamps are rendered in the server's local timezone (from the OS /
+    TZ env var, via datetime.astimezone with no argument — no config knob).
+    Naive datetimes are treated as UTC, matching Message.created_at and
+    datetime.utcnow().
+
+    Args:
+        content: The human message text
+        timestamp: When the message was sent (naive UTC or tz-aware)
+
+    Returns:
+        The stamped message, or the original content if timestamp is None
+    """
+    if not timestamp:
+        return content
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    local_ts = timestamp.astimezone()
+    return f"[{local_ts.strftime('%Y-%m-%d %H:%M %Z')}] {content}"
 
 
 def build_memory_queries(

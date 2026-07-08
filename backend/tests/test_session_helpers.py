@@ -10,6 +10,9 @@ Tests cover:
 - add_cache_control_to_tool_result: Cache control insertion
 """
 
+import os
+import time
+
 import pytest
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
@@ -23,7 +26,45 @@ from app.services.session_helpers import (
     add_cache_control_to_tool_result,
     estimate_prompt_tokens,
     total_prompt_tokens_from_usage,
+    stamp_human_message,
 )
+
+
+# ============================================================
+# Tests for stamp_human_message
+# ============================================================
+
+class TestStampHumanMessage:
+    """Tests for timestamping human messages in LLM context."""
+
+    @pytest.fixture
+    def chicago_tz(self):
+        """Force a known local timezone so the UTC->local conversion is deterministic."""
+        if not hasattr(time, "tzset"):
+            pytest.skip("time.tzset not available on this platform")
+        old_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "America/Chicago"
+        time.tzset()
+        yield
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        time.tzset()
+
+    def test_naive_utc_converted_to_local_time(self, chicago_tz):
+        # Naive datetimes are treated as UTC (matching Message.created_at);
+        # July 8 14:32 UTC is 09:32 CDT
+        ts = datetime(2026, 7, 8, 14, 32, 45)
+        assert stamp_human_message("Hello", ts) == "[2026-07-08 09:32 CDT] Hello"
+
+    def test_timestamp_is_prefix_so_suffix_matching_survives(self):
+        # Regenerate matches context entries via endswith(original content)
+        ts = datetime(2026, 7, 8, 14, 32)
+        assert stamp_human_message("Hello", ts).endswith("Hello")
+
+    def test_none_timestamp_returns_content_unchanged(self):
+        assert stamp_human_message("Hello", None) == "Hello"
 
 
 # ============================================================
