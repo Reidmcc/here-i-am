@@ -295,16 +295,24 @@ class ConversationSession:
         
         return (True, is_new_retrieval)
     
-    def get_in_context_memory_count(self) -> int:
+    def get_in_context_memory_ids(self) -> Set[str]:
         """
-        Get the count of memories currently in context.
-        
+        Get the set of memory IDs currently in context.
+
         Works with both legacy and new memory systems.
         """
         if self.use_memory_in_context:
-            return len(self.memory_tracker.get_in_context_memory_ids(len(self.conversation_context)))
+            return self.memory_tracker.get_in_context_memory_ids(len(self.conversation_context))
         else:
-            return len(self.in_context_ids)
+            return set(self.in_context_ids)
+
+    def get_in_context_memory_count(self) -> int:
+        """
+        Get the count of memories currently in context.
+
+        Works with both legacy and new memory systems.
+        """
+        return len(self.get_in_context_memory_ids())
 
     # ===== Shared methods (work with both systems) =====
 

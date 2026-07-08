@@ -41,19 +41,39 @@ MIN_ID_PREFIX_LENGTH = 6
 # Track entity context for memory queries (set by session manager before tool execution)
 _current_entity_id: Optional[str] = None
 _current_conversation_id: Optional[str] = None
+# The active ConversationSession, used to exclude memories already in context
+# from memory_query results. Optional so the tools still work without a session.
+_current_session = None
 
 
-def set_memory_tool_context(entity_id: str, conversation_id: str) -> None:
-    """Set the entity and conversation context for memory tool execution."""
-    global _current_entity_id, _current_conversation_id
+def set_memory_tool_context(entity_id: str, conversation_id: str, session=None) -> None:
+    """Set the entity, conversation, and session context for memory tool execution."""
+    global _current_entity_id, _current_conversation_id, _current_session
     _current_entity_id = entity_id
     _current_conversation_id = conversation_id
+    _current_session = session
     logger.debug(f"Memory tools: context set to entity_id='{entity_id}', conversation_id='{conversation_id}'")
 
 
 def get_memory_tool_context() -> tuple[Optional[str], Optional[str]]:
     """Get the current entity and conversation context for tool execution."""
     return _current_entity_id, _current_conversation_id
+
+
+def get_in_context_memory_ids() -> set:
+    """
+    Get the set of memory IDs currently in the active session's context.
+
+    Returns an empty set if no session is set (e.g. the tool is invoked
+    outside a live conversation), which leaves memory_query unfiltered.
+    """
+    if _current_session is None:
+        return set()
+    try:
+        return _current_session.get_in_context_memory_ids()
+    except Exception as e:
+        logger.warning(f"Could not read in-context memory IDs from session: {e}")
+        return set()
 
 
 def _role_display(role: str) -> str:
@@ -123,8 +143,10 @@ async def _memory_query(query: str, num_results: int = 5) -> str:
     which happens based on conversation context and is ranked by significance.
 
     Deliberate recall returns memories purely by semantic similarity.
-    It also updates retrieval tracking so your intentional attention
-    influences what surfaces automatically in future conversations.
+    Memories already present in the current conversation context are
+    excluded, so results are things you cannot already see. It also updates
+    retrieval tracking so your intentional attention influences what
+    surfaces automatically in future conversations.
 
     Args:
         query: The text to search for. Can be a concept, phrase, question,
@@ -145,6 +167,11 @@ async def _memory_query(query: str, num_results: int = 5) -> str:
     # Clamp num_results to reasonable range
     num_results = max(1, min(10, num_results))
 
+    # Exclude memories already in the conversation context. Surfacing a memory
+    # the entity can already see adds no information, so filter it at the search
+    # level (search backfills excluded slots with the next-best candidates).
+    in_context_ids = get_in_context_memory_ids()
+
     try:
         # Fetch more candidates than requested so archived-conversation and
         # released-memory filtering below does not silently shrink the result set.
@@ -152,7 +179,7 @@ async def _memory_query(query: str, num_results: int = 5) -> str:
             query=query,
             top_k=num_results * 2,
             exclude_conversation_id=conversation_id,  # Exclude current conversation
-            exclude_ids=None,  # Include all memories
+            exclude_ids=in_context_ids,  # Exclude memories already in context
             entity_id=entity_id,
             use_cache=True,
             # Deliberate queries are short, semantically sparse strings, so they
@@ -409,8 +436,10 @@ def register_memory_tools(tool_service: ToolService) -> None:
             "topic, or phrase—unlike automatic memory retrieval which happens based "
             "on conversation context. Returns memories ranked purely by semantic "
             "similarity to your query, each with a short memory ID usable with "
-            "memory_mark and memory_release. Querying updates retrieval tracking, "
-            "so deliberate attention influences future automatic recall."
+            "memory_mark and memory_release. Memories already in the current "
+            "conversation context are excluded, so results are things not already "
+            "in view. Querying updates retrieval tracking, so deliberate attention "
+            "influences future automatic recall."
         ),
         input_schema={
             "type": "object",
