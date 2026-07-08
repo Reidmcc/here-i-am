@@ -57,6 +57,23 @@ export function setCallbacks(cbs) {
 }
 
 /**
+ * Reset the message textarea height after sending. Honors a height the user
+ * fixed by dragging the divider (state.messageInputHeight) so it does not reset
+ * on the next message; otherwise collapses back to auto-resize.
+ */
+function resetInputHeight() {
+    const input = elements.messageInput;
+    if (!input) return;
+    if (state.messageInputHeight) {
+        input.style.maxHeight = state.messageInputHeight + 'px';
+        input.style.height = state.messageInputHeight + 'px';
+    } else {
+        input.style.maxHeight = '';
+        input.style.height = 'auto';
+    }
+}
+
+/**
  * Get the stream abort controller
  * @returns {AbortController|null}
  */
@@ -139,7 +156,7 @@ export async function sendMessage(skipEntityModal = false) {
         state.pendingMessageContent = content;
         state.pendingMessageAttachments = attachments;
         elements.messageInput.value = '';
-        elements.messageInput.style.height = 'auto';
+        resetInputHeight();
         clearAttachments();
 
         // Add user message visually immediately
@@ -157,7 +174,7 @@ export async function sendMessage(skipEntityModal = false) {
     // Standard single-entity flow
     beginStreaming();
     elements.messageInput.value = '';
-    elements.messageInput.style.height = 'auto';
+    resetInputHeight();
     clearAttachments();
 
     // Add user message

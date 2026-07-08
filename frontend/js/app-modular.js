@@ -4,7 +4,7 @@
  */
 
 // Import modules
-import { state, resetMemoryState, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName, loadEnterInsertsNewline, getValidSavedEntityModel, LEGACY_ENTITY_PROMPTS_KEY } from './modules/state.js';
+import { state, resetMemoryState, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName, loadEnterInsertsNewline, loadMessageInputHeight, saveMessageInputHeight, getValidSavedEntityModel, LEGACY_ENTITY_PROMPTS_KEY } from './modules/state.js';
 import { showToast, showLoading, setToastContainer, escapeHtml, renderMarkdown, truncateText, stripMarkdown } from './modules/utils.js';
 import { loadTheme, getCurrentTheme, setTheme } from './modules/theme.js';
 import { setElements as setModalElements, showModal, hideModal, closeActiveModal, isModalOpen, closeAllDropdowns } from './modules/modals.js';
@@ -144,6 +144,11 @@ import {
 // Reference to global API client
 const api = window.api;
 
+// Default auto-resize cap for the message textarea (matches the CSS max-height).
+const DEFAULT_MESSAGE_INPUT_MAX_HEIGHT = 200;
+// Smallest height the divider can shrink the message textarea to.
+const MESSAGE_INPUT_MIN_HEIGHT = 44;
+
 /**
  * Main Application Class
  * Coordinates all modules and handles initialization
@@ -180,6 +185,7 @@ class App {
 
             // Chat input
             messageInput: document.getElementById('message-input'),
+            inputResizer: document.getElementById('input-resizer'),
             sendBtn: document.getElementById('send-btn'),
             stopBtn: document.getElementById('stop-btn'),
             continueBtn: document.getElementById('continue-btn'),
@@ -429,6 +435,9 @@ class App {
         });
         this.elements.messageInput?.addEventListener('input', () => this.handleInputChange());
 
+        // Draggable divider to resize the message-entry area
+        this.setupInputResizer();
+
         // Stop generation
         this.elements.stopBtn?.addEventListener('click', () => stopGeneration());
 
@@ -588,6 +597,10 @@ class App {
         }
         loadEnterInsertsNewline();
 
+        // Restore the user's chosen message-entry height (divider position)
+        loadMessageInputHeight();
+        this.resizeMessageInput();
+
         // Load chat config (available models)
         await this.loadChatConfig();
 
@@ -705,11 +718,84 @@ class App {
             this.elements.sendBtn.disabled = state.isLoading || (!hasContent && !hasAttachmentsFlag);
         }
 
-        // Auto-resize textarea
-        if (this.elements.messageInput) {
-            this.elements.messageInput.style.height = 'auto';
-            this.elements.messageInput.style.height = Math.min(this.elements.messageInput.scrollHeight, 200) + 'px';
+        // Auto-resize textarea (or hold the user-chosen height from the divider)
+        this.resizeMessageInput();
+    }
+
+    /**
+     * Size the message textarea. When the user has dragged the divider to fix a
+     * height, hold that height; otherwise auto-grow with content up to the
+     * default cap.
+     */
+    resizeMessageInput() {
+        const input = this.elements.messageInput;
+        if (!input) return;
+
+        if (state.messageInputHeight) {
+            // User fixed the entry height via the divider — keep it, and allow
+            // internal scrolling for drafts taller than the chosen height.
+            input.style.maxHeight = state.messageInputHeight + 'px';
+            input.style.height = state.messageInputHeight + 'px';
+        } else {
+            // Default behavior: grow with content up to the CSS-defined cap.
+            input.style.maxHeight = '';
+            input.style.height = 'auto';
+            input.style.height = Math.min(input.scrollHeight, DEFAULT_MESSAGE_INPUT_MAX_HEIGHT) + 'px';
         }
+    }
+
+    /**
+     * Wire the draggable divider that resizes the message-entry area.
+     * Dragging up enlarges the textarea; the chosen height persists.
+     */
+    setupInputResizer() {
+        const resizer = this.elements.inputResizer;
+        const input = this.elements.messageInput;
+        if (!resizer || !input) return;
+
+        let startY = 0;
+        let startHeight = 0;
+
+        const onPointerMove = (e) => {
+            // Dragging up (smaller clientY) increases the height.
+            const delta = startY - e.clientY;
+            const maxHeight = Math.max(
+                DEFAULT_MESSAGE_INPUT_MAX_HEIGHT,
+                Math.round(window.innerHeight * 0.7)
+            );
+            const newHeight = Math.min(
+                Math.max(startHeight + delta, MESSAGE_INPUT_MIN_HEIGHT),
+                maxHeight
+            );
+            state.messageInputHeight = newHeight;
+            this.resizeMessageInput();
+        };
+
+        const onPointerUp = (e) => {
+            resizer.classList.remove('dragging');
+            document.body.classList.remove('resizing-input');
+            window.removeEventListener('pointermove', onPointerMove);
+            window.removeEventListener('pointerup', onPointerUp);
+            try {
+                resizer.releasePointerCapture(e.pointerId);
+            } catch (_) { /* ignore */ }
+            // Persist the final height so it survives sends and restarts.
+            saveMessageInputHeight(state.messageInputHeight);
+        };
+
+        resizer.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            startY = e.clientY;
+            // Start from the current rendered height so the drag feels anchored.
+            startHeight = state.messageInputHeight || input.getBoundingClientRect().height;
+            resizer.classList.add('dragging');
+            document.body.classList.add('resizing-input');
+            try {
+                resizer.setPointerCapture(e.pointerId);
+            } catch (_) { /* ignore */ }
+            window.addEventListener('pointermove', onPointerMove);
+            window.addEventListener('pointerup', onPointerUp);
+        });
     }
 
     /**

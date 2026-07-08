@@ -530,6 +530,7 @@ html, body {
 /* Messages Container */
 .messages-container {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding: 24px;
 }
@@ -1034,10 +1035,45 @@ h4.md-header {
 }
 
 /* Input Area */
+/* Draggable divider between the conversation content and the message entry */
+.input-resizer {
+    flex: 0 0 auto;
+    height: 8px;
+    cursor: ns-resize;
+    background-color: var(--bg-secondary);
+    border-top: 1px solid var(--border-color);
+    position: relative;
+    touch-action: none;
+    user-select: none;
+}
+
+.input-resizer::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 40px;
+    height: 3px;
+    border-radius: 2px;
+    background-color: var(--border-color);
+    transition: background-color 0.15s;
+}
+
+.input-resizer:hover::before,
+.input-resizer.dragging::before {
+    background-color: var(--accent);
+}
+
+/* While dragging the divider, suppress text selection across the app */
+body.resizing-input {
+    cursor: ns-resize;
+    user-select: none;
+}
+
 .input-area {
     padding: 16px 24px;
     background-color: var(--bg-secondary);
-    border-top: 1px solid var(--border-color);
 }
 
 .input-container {
