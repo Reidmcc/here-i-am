@@ -791,6 +791,7 @@ class App {
 
         let startY = 0;
         let startHeight = 0;
+        let wasAtBottom = true;
 
         const onPointerMove = (e) => {
             // Dragging up (smaller clientY) increases the height, but never
@@ -802,6 +803,10 @@ class App {
             );
             state.messageInputHeight = newHeight;
             this.resizeMessageInput();
+            // Growing the entry section shrinks the conversation area from the
+            // bottom up. If the latest message was in view, keep it pinned so
+            // the entry section never rises over the end of the conversation.
+            if (wasAtBottom) scrollToBottom();
         };
 
         const onPointerUp = (e) => {
@@ -819,6 +824,7 @@ class App {
         resizer.addEventListener('pointerdown', (e) => {
             e.preventDefault();
             startY = e.clientY;
+            wasAtBottom = isNearBottom();
             // Start from the current rendered height so the drag feels anchored.
             startHeight = state.messageInputHeight || input.getBoundingClientRect().height;
             resizer.classList.add('dragging');
@@ -833,7 +839,10 @@ class App {
         // Re-clamp the fixed height when the window (and thus available space)
         // shrinks, so an enlarged entry section can't start covering messages.
         window.addEventListener('resize', () => {
-            if (state.messageInputHeight) this.resizeMessageInput();
+            if (!state.messageInputHeight) return;
+            const atBottom = isNearBottom();
+            this.resizeMessageInput();
+            if (atBottom) scrollToBottom();
         });
     }
 
