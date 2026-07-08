@@ -583,7 +583,7 @@ class TestSessionManager:
         assert len(session.conversation_context) == 2  # User + assistant
         # Human messages carry a context-only timestamp prefix
         assert re.fullmatch(
-            r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\] Hello",
+            r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\]]+\] Hello",
             session.conversation_context[0]["content"],
         )
         assert session.conversation_context[1]["content"] == "Hi there!"

@@ -8,7 +8,7 @@ Split from session_manager.py to reduce file size and improve maintainability.
 """
 
 from typing import Callable, Dict, List, Optional, Any, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
 
@@ -28,16 +28,24 @@ def stamp_human_message(content: str, timestamp: Optional[datetime]) -> str:
     content-suffix matching (e.g. regenerate's endswith fallback) keeps
     working.
 
+    Timestamps are rendered in the server's local timezone (from the OS /
+    TZ env var, via datetime.astimezone with no argument — no config knob).
+    Naive datetimes are treated as UTC, matching Message.created_at and
+    datetime.utcnow().
+
     Args:
         content: The human message text
-        timestamp: When the message was sent (UTC, matching Message.created_at)
+        timestamp: When the message was sent (naive UTC or tz-aware)
 
     Returns:
         The stamped message, or the original content if timestamp is None
     """
     if not timestamp:
         return content
-    return f"[{timestamp.strftime('%Y-%m-%d %H:%M')} UTC] {content}"
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    local_ts = timestamp.astimezone()
+    return f"[{local_ts.strftime('%Y-%m-%d %H:%M %Z')}] {content}"
 
 
 def build_memory_queries(
