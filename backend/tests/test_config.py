@@ -223,3 +223,27 @@ class TestSettings:
 
         assert settings.reflection_seed_count == 7
         assert settings.reflection_exclude_recent_conversations == 0
+
+    def test_settings_recent_reflections_defaults(self):
+        """Recent-reflections-on-first-turn feature is off by default."""
+        settings = Settings(
+            anthropic_api_key="test-key",
+            _env_file=None,
+        )
+
+        assert settings.recent_reflections_enabled is False
+        assert settings.recent_reflections_count == 3
+
+    def test_settings_recent_reflections_env_vars(self):
+        """Recent-reflections knobs are settable via environment variables."""
+        import os
+        with patch.dict(os.environ, {
+            "RECENT_REFLECTIONS_ENABLED": "true",
+            "RECENT_REFLECTIONS_COUNT": "5",
+        }):
+            settings = Settings(
+                anthropic_api_key="test-key",
+                _env_file=None,
+            )
+            assert settings.recent_reflections_enabled is True
+            assert settings.recent_reflections_count == 5

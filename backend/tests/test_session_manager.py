@@ -645,6 +645,7 @@ class TestSessionManager:
             mock_settings.initial_retrieval_top_k = 5
             mock_settings.retrieval_top_k = 5
             mock_settings.use_memory_in_context = False
+            mock_settings.recent_reflections_enabled = False
 
             session = manager.create_session(sample_conversation.id)
             result = await manager.process_message(session, "Hello", db_session)
@@ -705,6 +706,7 @@ class TestSessionManager:
             mock_settings.initial_retrieval_top_k = 5
             mock_settings.retrieval_top_k = 5
             mock_settings.use_memory_in_context = False
+            mock_settings.recent_reflections_enabled = False
 
             session = manager.create_session(sample_conversation.id)
 
@@ -2803,3 +2805,238 @@ class TestToolIterationCaching:
         assert third_call_second_tool_result["role"] == "user"
         last_block = third_call_second_tool_result["content"][-1]
         assert last_block.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
+
+
+class TestRecentReflectionsInjection:
+    """First-turn injection of the most recent memory_save reflections."""
+
+    @staticmethod
+    def _reflection_dict(mem_id, created_at="2026-01-02T00:00:00", content=None):
+        return {
+            "id": mem_id,
+            "conversation_id": "reflection-source-conv",
+            "role": "reflection",
+            "content": content or f"Reflection {mem_id}",
+            "created_at": created_at,
+            "times_retrieved": 0,
+            "last_retrieved_at": None,
+            "memory_status": None,
+        }
+
+    @staticmethod
+    def _configure_settings(mock_settings, enabled=True, count=3, use_memory_in_context=False):
+        mock_settings.default_model = "claude-sonnet-4-5-20250929"
+        mock_settings.default_temperature = 1.0
+        mock_settings.default_max_tokens = 64000
+        mock_settings.memory_token_limit = 40000
+        mock_settings.context_token_limit = 150000
+        mock_settings.significance_half_life_days = 60
+        mock_settings.recency_boost_strength = 1.0
+        mock_settings.significance_floor = 0.01
+        mock_settings.retrieval_candidate_multiplier = 2
+        mock_settings.initial_retrieval_top_k = 5
+        mock_settings.retrieval_top_k = 5
+        mock_settings.memory_role_balance_enabled = False
+        mock_settings.tool_use_max_iterations = 10
+        mock_settings.use_memory_in_context = use_memory_in_context
+        mock_settings.recent_reflections_enabled = enabled
+        mock_settings.recent_reflections_count = count
+
+    @staticmethod
+    def _configure_llm(mock_llm):
+        mock_llm.build_messages_with_memories.return_value = [
+            {"role": "user", "content": "Hello"}
+        ]
+        mock_llm.send_message = AsyncMock(return_value={
+            "content": "Hi!",
+            "model": "claude-sonnet-4-5-20250929",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "stop_reason": "end_turn",
+        })
+        mock_llm.count_tokens = MagicMock(return_value=10)
+
+    @pytest.mark.asyncio
+    async def test_first_turn_injects_recent_reflections(self, db_session, sample_conversation):
+        """On the first turn, recent reflections are injected alongside semantic results."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.search_memories = AsyncMock(return_value=[])
+            mock_memory.update_retrieval_count = AsyncMock()
+            # Newest first, as the real get_recent_reflections returns them
+            mock_memory.get_recent_reflections = AsyncMock(return_value=[
+                self._reflection_dict("refl-new", created_at="2026-01-02T00:00:00"),
+                self._reflection_dict("refl-old", created_at="2026-01-01T00:00:00"),
+            ])
+            self._configure_llm(mock_llm)
+            self._configure_settings(mock_settings, enabled=True, count=2)
+
+            session = manager.create_session(sample_conversation.id)
+            result = await manager.process_message(session, "Hello", db_session)
+
+            # Both reflections were injected and reported as retrieved
+            retrieved_ids = [m["id"] for m in result["new_memories_retrieved"]]
+            assert set(retrieved_ids) == {"refl-new", "refl-old"}
+            assert result["total_memories_in_context"] == 2
+
+            # Selected purely by recency, so tagged with the dedicated source
+            assert session.session_memories["refl-new"].source == "recent_reflection"
+            assert session.session_memories["refl-new"].score == 0.0
+
+            # Retrieval tracking updated (feeds significance / reload re-insertion)
+            assert mock_memory.update_retrieval_count.call_count == 2
+
+            # The fetch excluded the current conversation and was recency-limited
+            call_kwargs = mock_memory.get_recent_reflections.call_args.kwargs
+            assert call_kwargs["limit"] == 2
+            assert call_kwargs["exclude_conversation_id"] == str(sample_conversation.id)
+
+    @pytest.mark.asyncio
+    async def test_turns_after_first_are_unaffected(self, db_session, sample_conversation):
+        """Recent reflections are only pulled on the first turn."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.search_memories = AsyncMock(return_value=[])
+            mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.get_recent_reflections = AsyncMock(return_value=[
+                self._reflection_dict("refl-1"),
+            ])
+            self._configure_llm(mock_llm)
+            self._configure_settings(mock_settings, enabled=True, count=1)
+
+            session = manager.create_session(sample_conversation.id)
+
+            await manager.process_message(session, "First", db_session)
+            assert mock_memory.get_recent_reflections.call_count == 1
+
+            await manager.process_message(session, "Second", db_session)
+            # Not called again after the first turn
+            assert mock_memory.get_recent_reflections.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_disabled_by_default_setting(self, db_session, sample_conversation):
+        """With recent_reflections_enabled=False, no reflection fetch happens."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.search_memories = AsyncMock(return_value=[])
+            mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.get_recent_reflections = AsyncMock(return_value=[])
+            self._configure_llm(mock_llm)
+            self._configure_settings(mock_settings, enabled=False)
+
+            session = manager.create_session(sample_conversation.id)
+            result = await manager.process_message(session, "Hello", db_session)
+
+            mock_memory.get_recent_reflections.assert_not_called()
+            assert result["new_memories_retrieved"] == []
+
+    @pytest.mark.asyncio
+    async def test_deduplicates_against_semantic_retrieval(self, db_session, sample_conversation):
+        """A reflection that also surfaced semantically is excluded, not injected twice."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            # Semantic retrieval returns the reflection itself
+            mock_memory.search_memories = AsyncMock(return_value=[
+                {"id": "refl-dup", "score": 0.9, "conversation_id": "reflection-source-conv",
+                 "created_at": "2026-01-01", "role": "reflection", "last_retrieved_at": None}
+            ])
+            mock_memory.get_full_memory_content = AsyncMock(
+                return_value=self._reflection_dict("refl-dup", created_at="2026-01-01T00:00:00")
+            )
+            mock_memory.update_retrieval_count = AsyncMock()
+            # Simulate the fetch returning the duplicate anyway (belt-and-braces:
+            # the SQL-level exclude_ids filter is tested in test_memory_service)
+            mock_memory.get_recent_reflections = AsyncMock(return_value=[
+                self._reflection_dict("refl-dup", created_at="2026-01-01T00:00:00"),
+            ])
+            self._configure_llm(mock_llm)
+            self._configure_settings(mock_settings, enabled=True, count=1)
+
+            session = manager.create_session(sample_conversation.id)
+            result = await manager.process_message(session, "Hello", db_session)
+
+            # The semantically retrieved duplicate is passed as an exclusion
+            call_kwargs = mock_memory.get_recent_reflections.call_args.kwargs
+            assert "refl-dup" in call_kwargs["exclude_ids"]
+
+            # Injected exactly once, retrieval count updated exactly once
+            retrieved_ids = [m["id"] for m in result["new_memories_retrieved"]]
+            assert retrieved_ids == ["refl-dup"]
+            assert result["total_memories_in_context"] == 1
+            assert mock_memory.update_retrieval_count.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_first_turn_inserts_reflections_into_context(
+        self, db_session, sample_conversation
+    ):
+        """Streaming path with memory-in-context: reflections become context messages."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.search_memories = AsyncMock(return_value=[])
+            mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.get_recent_reflections = AsyncMock(return_value=[
+                self._reflection_dict("refl-new", created_at="2026-01-02T00:00:00"),
+                self._reflection_dict("refl-old", created_at="2026-01-01T00:00:00"),
+            ])
+            self._configure_settings(
+                mock_settings, enabled=True, count=2, use_memory_in_context=True
+            )
+            mock_llm.build_messages_with_memories.return_value = [
+                {"role": "user", "content": "Hello"}
+            ]
+            mock_llm.count_tokens = MagicMock(return_value=10)
+
+            async def mock_stream(*args, **kwargs):
+                yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                yield {
+                    "type": "done",
+                    "content": "Hi!",
+                    "model": "claude-sonnet-4-5-20250929",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                    "stop_reason": "end_turn",
+                    "content_blocks": [{"type": "text", "text": "Hi!"}],
+                }
+
+            mock_llm.send_message_stream = mock_stream
+
+            session = manager.create_session(sample_conversation.id)
+            events = []
+            async for event in manager.process_message_stream(session, "Hello", db_session):
+                events.append(event)
+
+            # The memories event reports both injected reflections
+            memories_event = next(e for e in events if e["type"] == "memories")
+            assert {m["id"] for m in memories_event["new_memories"]} == {"refl-new", "refl-old"}
+
+            # Reflections were inserted as memory context messages,
+            # oldest first so the newest sits closest to the current message
+            memory_messages = [
+                m for m in session.conversation_context if m.get("is_memory")
+            ]
+            assert len(memory_messages) == 2
+            assert "Reflection refl-old" in memory_messages[0]["content"]
+            assert "Reflection refl-new" in memory_messages[1]["content"]

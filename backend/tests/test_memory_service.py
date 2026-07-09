@@ -1022,3 +1022,204 @@ class TestMemoryServiceConversationIdNormalization:
 
             # Should be filtered out by the Python fallback
             assert len(results) == 0
+
+
+class TestGetRecentReflections:
+    """Recency-only reflection fetch backing first-turn injection."""
+
+    async def _create_reflection(
+        self,
+        db,
+        conversation_id,
+        entity_id="test-memories",
+        created_at=None,
+        memory_status=None,
+        content="A reflection",
+    ):
+        message = Message(
+            id=str(uuid.uuid4()),
+            conversation_id=conversation_id,
+            role=MessageRole.REFLECTION,
+            content=content,
+            speaker_entity_id=entity_id,
+            memory_status=memory_status,
+        )
+        if created_at is not None:
+            message.created_at = created_at
+        db.add(message)
+        await db.commit()
+        await db.refresh(message)
+        return message
+
+    async def _create_conversation(self, db, entity_id="test-memories", is_archived=False):
+        from app.models import Conversation
+
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Source Conversation",
+            entity_id=entity_id,
+            is_archived=is_archived,
+        )
+        db.add(conversation)
+        await db.commit()
+        return conversation
+
+    @pytest.mark.asyncio
+    async def test_returns_most_recent_first(self, db_session):
+        conv = await self._create_conversation(db_session)
+        oldest = await self._create_reflection(
+            db_session, conv.id, created_at=datetime(2026, 1, 1), content="oldest"
+        )
+        newest = await self._create_reflection(
+            db_session, conv.id, created_at=datetime(2026, 3, 1), content="newest"
+        )
+        middle = await self._create_reflection(
+            db_session, conv.id, created_at=datetime(2026, 2, 1), content="middle"
+        )
+
+        service = MemoryService()
+        results = await service.get_recent_reflections(
+            db_session, entity_id="test-memories", limit=10
+        )
+
+        assert [r["id"] for r in results] == [newest.id, middle.id, oldest.id]
+        assert results[0]["role"] == "reflection"
+        assert results[0]["content"] == "newest"
+
+    @pytest.mark.asyncio
+    async def test_respects_limit(self, db_session):
+        conv = await self._create_conversation(db_session)
+        for i in range(5):
+            await self._create_reflection(
+                db_session, conv.id, created_at=datetime(2026, 1, i + 1)
+            )
+
+        service = MemoryService()
+        results = await service.get_recent_reflections(
+            db_session, entity_id="test-memories", limit=2
+        )
+        assert len(results) == 2
+
+    @pytest.mark.asyncio
+    async def test_zero_or_negative_limit_returns_empty(self, db_session):
+        conv = await self._create_conversation(db_session)
+        await self._create_reflection(db_session, conv.id)
+
+        service = MemoryService()
+        assert await service.get_recent_reflections(db_session, entity_id="test-memories", limit=0) == []
+        assert await service.get_recent_reflections(db_session, entity_id="test-memories", limit=-1) == []
+
+    @pytest.mark.asyncio
+    async def test_excludes_released_reflections(self, db_session):
+        conv = await self._create_conversation(db_session)
+        kept = await self._create_reflection(db_session, conv.id)
+        await self._create_reflection(db_session, conv.id, memory_status="released")
+        pinned = await self._create_reflection(db_session, conv.id, memory_status="pinned")
+
+        service = MemoryService()
+        results = await service.get_recent_reflections(
+            db_session, entity_id="test-memories", limit=10
+        )
+        assert {r["id"] for r in results} == {kept.id, pinned.id}
+
+    @pytest.mark.asyncio
+    async def test_excludes_archived_conversations(self, db_session):
+        active_conv = await self._create_conversation(db_session)
+        archived_conv = await self._create_conversation(db_session, is_archived=True)
+        kept = await self._create_reflection(db_session, active_conv.id)
+        await self._create_reflection(db_session, archived_conv.id)
+
+        service = MemoryService()
+        results = await service.get_recent_reflections(
+            db_session, entity_id="test-memories", limit=10
+        )
+        assert [r["id"] for r in results] == [kept.id]
+
+    @pytest.mark.asyncio
+    async def test_excludes_current_conversation(self, db_session):
+        other_conv = await self._create_conversation(db_session)
+        current_conv = await self._create_conversation(db_session)
+        kept = await self._create_reflection(db_session, other_conv.id)
+        await self._create_reflection(db_session, current_conv.id)
+
+        service = MemoryService()
+        results = await service.get_recent_reflections(
+            db_session,
+            entity_id="test-memories",
+            limit=10,
+            exclude_conversation_id=current_conv.id,
+        )
+        assert [r["id"] for r in results] == [kept.id]
+
+    @pytest.mark.asyncio
+    async def test_excludes_ids_for_deduplication(self, db_session):
+        conv = await self._create_conversation(db_session)
+        excluded = await self._create_reflection(
+            db_session, conv.id, created_at=datetime(2026, 2, 1)
+        )
+        kept = await self._create_reflection(
+            db_session, conv.id, created_at=datetime(2026, 1, 1)
+        )
+
+        service = MemoryService()
+        results = await service.get_recent_reflections(
+            db_session,
+            entity_id="test-memories",
+            limit=10,
+            exclude_ids={excluded.id},
+        )
+        assert [r["id"] for r in results] == [kept.id]
+
+    @pytest.mark.asyncio
+    async def test_filters_by_speaker_entity(self, db_session):
+        conv = await self._create_conversation(db_session)
+        mine = await self._create_reflection(db_session, conv.id, entity_id="test-memories")
+        await self._create_reflection(db_session, conv.id, entity_id="other-entity")
+
+        service = MemoryService()
+        results = await service.get_recent_reflections(
+            db_session, entity_id="test-memories", limit=10
+        )
+        assert [r["id"] for r in results] == [mine.id]
+
+    @pytest.mark.asyncio
+    async def test_ignores_non_reflection_messages(self, db_session):
+        conv = await self._create_conversation(db_session)
+        chat_message = Message(
+            id=str(uuid.uuid4()),
+            conversation_id=conv.id,
+            role=MessageRole.ASSISTANT,
+            content="normal chat",
+            speaker_entity_id="test-memories",
+        )
+        db_session.add(chat_message)
+        await db_session.commit()
+        reflection = await self._create_reflection(db_session, conv.id)
+
+        service = MemoryService()
+        results = await service.get_recent_reflections(
+            db_session, entity_id="test-memories", limit=10
+        )
+        assert [r["id"] for r in results] == [reflection.id]
+
+    @pytest.mark.asyncio
+    async def test_result_shape_matches_full_memory_content(self, db_session):
+        conv = await self._create_conversation(db_session)
+        reflection = await self._create_reflection(db_session, conv.id)
+
+        service = MemoryService()
+        results = await service.get_recent_reflections(
+            db_session, entity_id="test-memories", limit=1
+        )
+        assert len(results) == 1
+        assert set(results[0].keys()) == {
+            "id",
+            "conversation_id",
+            "role",
+            "content",
+            "created_at",
+            "times_retrieved",
+            "last_retrieved_at",
+            "memory_status",
+        }
+        assert results[0]["conversation_id"] == str(conv.id)

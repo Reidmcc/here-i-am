@@ -6,7 +6,7 @@ from pinecone import Pinecone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, or_
 from app.config import settings
-from app.models import Message, ConversationMemoryLink, Conversation, ConversationEntity
+from app.models import Message, MessageRole, ConversationMemoryLink, Conversation, ConversationEntity
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -326,6 +326,97 @@ class MemoryService:
         except Exception as e:
             logger.error(f"Error searching memories: {e}")
             return []
+
+    async def get_recent_reflections(
+        self,
+        db: AsyncSession,
+        entity_id: Optional[str] = None,
+        limit: Optional[int] = None,
+        exclude_conversation_id: Optional[str] = None,
+        exclude_ids: Optional[Set[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get the most recently created reflection memories, purely by recency.
+
+        Backs the first-turn recent-reflections feature
+        (settings.recent_reflections_enabled). Unlike search_memories this
+        never touches Pinecone: selection is by created_at alone, regardless
+        of semantic content.
+
+        Excludes released reflections, reflections from archived
+        conversations, the conversation in exclude_conversation_id
+        (reflections are never retrievable in the conversation where they
+        were saved), and any IDs in exclude_ids (deduplication against
+        semantically retrieved memories, which reflections remain eligible
+        for).
+
+        Args:
+            db: Database session
+            entity_id: The entity whose reflections to fetch (reflections are
+                attributed via Message.speaker_entity_id). If None, uses the
+                default entity.
+            limit: Max reflections to return (defaults to
+                settings.recent_reflections_count)
+            exclude_conversation_id: Conversation ID to exclude
+            exclude_ids: Set of memory IDs to exclude
+
+        Returns:
+            List of memory dicts (same shape as get_full_memory_content),
+            most recent first.
+        """
+        if limit is None:
+            limit = settings.recent_reflections_count
+        if limit <= 0:
+            return []
+
+        # Reflections always carry the saving entity's index name in
+        # speaker_entity_id (memory_save requires entity context), so scope
+        # by that rather than by conversation ownership — it is also correct
+        # for multi-entity conversations.
+        if entity_id is None:
+            default_entity = settings.get_default_entity()
+            entity_id = default_entity.index_name if default_entity else None
+        if entity_id is None:
+            return []
+
+        query = (
+            select(Message)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(
+                Message.role == MessageRole.REFLECTION,
+                Message.speaker_entity_id == entity_id,
+                # NULL status is a normal memory; only "released" is excluded
+                or_(Message.memory_status.is_(None), Message.memory_status != "released"),
+                Conversation.is_archived == False,
+            )
+        )
+        if exclude_conversation_id:
+            query = query.where(Message.conversation_id != str(exclude_conversation_id))
+        if exclude_ids:
+            query = query.where(Message.id.not_in([str(mid) for mid in exclude_ids]))
+
+        query = query.order_by(Message.created_at.desc()).limit(limit)
+
+        result = await db.execute(query)
+        messages = result.scalars().all()
+
+        reflections = [
+            {
+                "id": str(m.id),
+                "conversation_id": str(m.conversation_id),
+                "role": m.role.value,
+                "content": m.content,
+                "created_at": m.created_at.isoformat(),
+                "times_retrieved": m.times_retrieved,
+                "last_retrieved_at": m.last_retrieved_at.isoformat() if m.last_retrieved_at else None,
+                "memory_status": m.memory_status,
+            }
+            for m in messages
+        ]
+        logger.info(
+            f"[MEMORY] Recent reflections: found {len(reflections)} for entity={entity_id} (limit={limit})"
+        )
+        return reflections
 
     async def get_full_memory_content(
         self,

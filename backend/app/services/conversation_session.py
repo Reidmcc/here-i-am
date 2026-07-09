@@ -40,7 +40,7 @@ class MemoryEntry:
     combined_score: float = 0.0  # Combined score used for ranking
     days_since_creation: float = 0.0  # Age of the memory in days
     days_since_retrieval: float = 0.0  # Days since last retrieval (None if never retrieved)
-    source: str = "unknown"  # Which query retrieved this memory: "user", "assistant", or "both"
+    source: str = "unknown"  # What retrieved this memory: "user"/"assistant"/"both" (semantic queries) or "recent_reflection" (first-turn recency injection)
 
 
 @dataclass

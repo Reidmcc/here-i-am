@@ -351,6 +351,17 @@ class Settings(BaseSettings):
     # When False, memories are selected purely by combined score (similarity × significance)
     memory_role_balance_enabled: bool = True
 
+    # Recent reflections on the first turn
+    # When True, the most recently created reflection memories (self-authored
+    # via the memory_save tool) are pulled into context on the first turn of a
+    # conversation, in addition to semantic retrieval. Selection is purely by
+    # recency — no semantic ranking — and deduplicated against semantically
+    # retrieved memories (reflections stay eligible for semantic retrieval).
+    # Turns after the first are unaffected.
+    recent_reflections_enabled: bool = False
+    # How many of the most recent reflections to pull in on the first turn
+    recent_reflections_count: int = 3
+
     # Reflection mode
     reflection_seed_count: int = 7
     reflection_exclude_recent_conversations: int = 0
