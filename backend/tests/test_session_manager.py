@@ -3101,6 +3101,120 @@ class TestRecentReflectionsInjection:
             # The semantic one is not double-counted
             assert mock_memory.update_retrieval_count.call_count == 3
 
+    @staticmethod
+    async def _create_multi_entity_conversation(db, spoken_entity_ids):
+        """Multi-entity conversation with one human turn and one assistant
+        response per entity in spoken_entity_ids (in order)."""
+        conv = Conversation(
+            id=str(uuid.uuid4()),
+            title="Multi-entity test",
+            conversation_type=ConversationType.MULTI_ENTITY,
+            entity_id="multi-entity",
+            llm_model_used="claude-sonnet-4-5-20250929",
+        )
+        db.add(conv)
+        db.add(Message(
+            id=str(uuid.uuid4()),
+            conversation_id=conv.id,
+            role=MessageRole.HUMAN,
+            content="Hello everyone",
+        ))
+        for eid in spoken_entity_ids:
+            db.add(Message(
+                id=str(uuid.uuid4()),
+                conversation_id=conv.id,
+                role=MessageRole.ASSISTANT,
+                content=f"Response from {eid}",
+                speaker_entity_id=eid,
+            ))
+        await db.commit()
+        return conv
+
+    @staticmethod
+    def _make_multi_entity_session(manager, conv, responding_entity_id, label):
+        """Session state as chat.py sets it up for a responding entity,
+        with the prior exchange already in context (as a reload would build)."""
+        session = manager.create_session(conv.id, entity_id=responding_entity_id)
+        session.is_multi_entity = True
+        session.entity_labels = {"entity-a": "Alpha", "entity-b": "Beta"}
+        session.responding_entity_label = label
+        session.conversation_context.append(
+            {"role": "user", "content": "[Human]: Hello everyone"}
+        )
+        session.conversation_context.append(
+            {"role": "assistant", "content": "[Alpha]: Response from entity-a"}
+        )
+        session.last_cached_context_length = 2
+        return session
+
+    @pytest.mark.asyncio
+    async def test_multi_entity_first_response_gets_own_reflections(self, db_session):
+        """In a multi-entity conversation, an entity responding for the first
+        time gets its recent reflections even though the conversation already
+        has turns from other participants — and the fetch is scoped to it."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.search_memories = AsyncMock(return_value=[])
+            mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.get_recent_reflections = AsyncMock(return_value=[
+                self._reflection_dict("refl-b"),
+            ])
+            self._configure_llm(mock_llm)
+            self._configure_settings(mock_settings, enabled=True, count=1)
+
+            # Entity A has already spoken; entity B responds for the first time
+            conv = await self._create_multi_entity_conversation(
+                db_session, spoken_entity_ids=["entity-a"]
+            )
+            session = self._make_multi_entity_session(manager, conv, "entity-b", "Beta")
+            result = await manager.process_message(session, "Over to you, Beta", db_session)
+
+            # B's reflections were injected despite the existing conversation turns
+            retrieved_ids = [m["id"] for m in result["new_memories_retrieved"]]
+            assert retrieved_ids == ["refl-b"]
+            assert session.session_memories["refl-b"].source == "recent_reflection"
+
+            # The fetch was scoped to the responding entity only — B never
+            # sees another participant's reflections
+            call_kwargs = mock_memory.get_recent_reflections.call_args.kwargs
+            assert call_kwargs["entity_id"] == "entity-b"
+            mock_memory.update_retrieval_count.assert_called_once()
+            assert mock_memory.update_retrieval_count.call_args.kwargs["entity_id"] == "entity-b"
+
+    @pytest.mark.asyncio
+    async def test_multi_entity_entity_that_already_spoke_gets_none(self, db_session):
+        """An entity that already responded in the conversation doesn't get
+        recent reflections again, regardless of other participants' turns."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.search_memories = AsyncMock(return_value=[])
+            mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.get_recent_reflections = AsyncMock(return_value=[
+                self._reflection_dict("refl-b"),
+            ])
+            self._configure_llm(mock_llm)
+            self._configure_settings(mock_settings, enabled=True, count=1)
+
+            # Both entities have already spoken; entity B responds again
+            conv = await self._create_multi_entity_conversation(
+                db_session, spoken_entity_ids=["entity-a", "entity-b"]
+            )
+            session = self._make_multi_entity_session(manager, conv, "entity-b", "Beta")
+            result = await manager.process_message(session, "Anything else?", db_session)
+
+            mock_memory.get_recent_reflections.assert_not_called()
+            assert result["new_memories_retrieved"] == []
+
     def test_first_turn_detection_ignores_context_seeds(self):
         """Notes, memory, and notice messages don't count as conversation."""
         session = ConversationSession(conversation_id="conv-1")

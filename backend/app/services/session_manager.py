@@ -476,6 +476,42 @@ class SessionManager:
 
         return session
 
+    async def _is_entity_first_turn(
+        self, session: ConversationSession, db: AsyncSession
+    ) -> bool:
+        """
+        True when the responding entity has not yet spoken in this
+        conversation. Gates recent-reflection injection
+        (settings.recent_reflections_enabled).
+
+        Single-entity conversations: the conversation's first turn — no
+        conversational messages in context. Non-conversational seeds (the
+        notes message, memory insertions, context notices) don't count, and
+        the check runs before this turn's memory insertions mutate the
+        context.
+
+        Multi-entity conversations: per-entity — each participant gets its
+        own recent reflections the first time *it* responds, however deep
+        into the conversation that happens. Checked against the DB (any
+        persisted assistant message with this speaker_entity_id) rather than
+        the live context, because the session is rebuilt on every entity
+        switch and context trimming could drop an entity's early messages
+        and make a mid-conversation turn look like a first turn.
+        """
+        if not session.is_multi_entity:
+            return not session.has_conversational_messages()
+
+        result = await db.execute(
+            select(Message.id)
+            .where(
+                Message.conversation_id == session.conversation_id,
+                Message.role == MessageRole.ASSISTANT,
+                Message.speaker_entity_id == session.entity_id,
+            )
+            .limit(1)
+        )
+        return result.first() is None
+
     async def _inject_recent_reflections(
         self,
         session: ConversationSession,
@@ -485,8 +521,12 @@ class SessionManager:
         use_in_context_insertion: bool,
     ) -> None:
         """
-        Pull the most recently created reflections into context on the first
-        turn of a conversation (settings.recent_reflections_enabled).
+        Pull the most recently created reflections into context on the
+        responding entity's first turn of a conversation
+        (settings.recent_reflections_enabled). Only the responding entity's
+        own reflections are fetched (speaker_entity_id scoping in
+        get_recent_reflections), so in multi-entity conversations
+        participants never see each other's reflections.
 
         Selection is purely by recency — no semantic ranking. Reflections that
         already surfaced via this turn's semantic retrieval (they stay eligible
@@ -652,13 +692,18 @@ class SessionManager:
             is_first_retrieval = len(session.retrieved_ids) == 0
             top_k = settings.initial_retrieval_top_k if is_first_retrieval else settings.retrieval_top_k
 
-            # First turn of the conversation: no conversational messages in
-            # context yet. Non-conversational seeds (the notes message that
-            # load_session_from_db prepends, memory insertions, context
-            # notices) don't count. Checked before any memory insertion
+            # The responding entity's first turn: single-entity means the
+            # conversation's first turn (no conversational messages in
+            # context yet); multi-entity means the first turn *this entity*
+            # speaks, so each participant gets its own recent reflections
+            # when it first responds. Checked before any memory insertion
             # mutates the context, and used only to gate recent-reflection
-            # injection below — turns after the first are unaffected.
-            is_first_turn = not session.has_conversational_messages()
+            # injection below (skip the check — it can hit the DB — when the
+            # feature is off); later turns are unaffected.
+            is_first_turn = (
+                settings.recent_reflections_enabled
+                and await self._is_entity_first_turn(session, db)
+            )
 
             # Fetch 10 candidates per query, then combine and re-rank by significance
             fetch_k_per_query = 10
@@ -839,7 +884,7 @@ class SessionManager:
                         use_in_context_insertion=False,
                     )
                 else:
-                    logger.info("[MEMORY] Recent reflections: skipped (not the first turn)")
+                    logger.info("[MEMORY] Recent reflections: skipped (not the responding entity's first turn)")
 
             # Log memory retrieval summary
             if new_memories:
@@ -1063,13 +1108,18 @@ class SessionManager:
             is_first_retrieval = len(session.retrieved_ids) == 0
             top_k = settings.initial_retrieval_top_k if is_first_retrieval else settings.retrieval_top_k
 
-            # First turn of the conversation: no conversational messages in
-            # context yet. Non-conversational seeds (the notes message that
-            # load_session_from_db prepends, memory insertions, context
-            # notices) don't count. Checked before any memory insertion
+            # The responding entity's first turn: single-entity means the
+            # conversation's first turn (no conversational messages in
+            # context yet); multi-entity means the first turn *this entity*
+            # speaks, so each participant gets its own recent reflections
+            # when it first responds. Checked before any memory insertion
             # mutates the context, and used only to gate recent-reflection
-            # injection below — turns after the first are unaffected.
-            is_first_turn = not session.has_conversational_messages()
+            # injection below (skip the check — it can hit the DB — when the
+            # feature is off); later turns are unaffected.
+            is_first_turn = (
+                settings.recent_reflections_enabled
+                and await self._is_entity_first_turn(session, db)
+            )
 
             # Fetch 10 candidates per query, then combine and re-rank by significance
             fetch_k_per_query = 10
@@ -1251,7 +1301,7 @@ class SessionManager:
                         use_in_context_insertion=session.use_memory_in_context,
                     )
                 else:
-                    logger.info("[MEMORY] Recent reflections: skipped (not the first turn)")
+                    logger.info("[MEMORY] Recent reflections: skipped (not the responding entity's first turn)")
 
             # Log memory retrieval summary
             if new_memories:
