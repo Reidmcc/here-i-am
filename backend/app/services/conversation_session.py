@@ -40,7 +40,7 @@ class MemoryEntry:
     combined_score: float = 0.0  # Combined score used for ranking
     days_since_creation: float = 0.0  # Age of the memory in days
     days_since_retrieval: float = 0.0  # Days since last retrieval (None if never retrieved)
-    source: str = "unknown"  # Which query retrieved this memory: "user", "assistant", or "both"
+    source: str = "unknown"  # What retrieved this memory: "user"/"assistant"/"both" (semantic queries) or "recent_reflection" (first-turn recency injection)
 
 
 @dataclass
@@ -315,6 +315,22 @@ class ConversationSession:
         return len(self.get_in_context_memory_ids())
 
     # ===== Shared methods (work with both systems) =====
+
+    def has_conversational_messages(self) -> bool:
+        """
+        True if the context contains any actual conversational message
+        (human/assistant exchange or tool exchange).
+
+        Context seeds that are not part of the back-and-forth — the entity's
+        notes message (is_notes), memory insertions (is_memory), and context
+        notices (is_context_notice) — don't count. A session freshly loaded
+        for a brand-new conversation contains the notes message, so a plain
+        length check cannot detect the first turn.
+        """
+        return any(
+            not (msg.get("is_notes") or msg.get("is_memory") or msg.get("is_context_notice"))
+            for msg in self.conversation_context
+        )
 
     def add_exchange(
         self,

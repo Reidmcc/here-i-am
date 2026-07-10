@@ -476,6 +476,139 @@ class SessionManager:
 
         return session
 
+    async def _inject_recent_reflections(
+        self,
+        session: ConversationSession,
+        db: AsyncSession,
+        new_memories: List[MemoryEntry],
+        truly_new_memory_ids: Set[str],
+        use_in_context_insertion: bool,
+    ) -> None:
+        """
+        Pull the most recently created reflections into context on the first
+        turn of a conversation (settings.recent_reflections_enabled).
+
+        Selection is purely by recency — no semantic ranking. Reflections that
+        already surfaced via this turn's semantic retrieval (they stay eligible
+        for it) or are otherwise in context are excluded, and the freed slots
+        are backfilled with the next-most-recent reflections so the entity
+        always receives settings.recent_reflections_count of them when that
+        many eligible reflections exist. Injected reflections are appended to
+        new_memories/truly_new_memory_ids in place so they flow through the
+        normal response/event payloads.
+        """
+        requested = settings.recent_reflections_count
+
+        # Dedupe against memories already in context (e.g. re-inserted on a
+        # session reload) and against this turn's semantic retrievals. The
+        # exclusion happens inside get_recent_reflections' SQL query *before*
+        # its LIMIT, so deduplicated slots are backfilled by the
+        # next-most-recent reflections — the entity still gets the full count
+        # when enough reflections exist.
+        exclude_ids = session.get_in_context_memory_ids() | {m.id for m in new_memories}
+
+        logger.info(
+            f"[MEMORY] Recent reflections: first turn — fetching up to {requested} "
+            f"most recent reflections (entity={session.entity_id}, "
+            f"{len(exclude_ids)} ids excluded for dedup)"
+        )
+
+        now = datetime.utcnow()
+        injected = 0
+        # Normally a single pass: the SQL query excludes duplicates and
+        # backfills within its LIMIT. Extra passes only trigger if a fetched
+        # reflection is skipped at the session level (defensive dedup), in
+        # which case the shortfall is re-fetched with the skipped ids excluded.
+        while injected < requested:
+            shortfall = requested - injected
+            reflections = await memory_service.get_recent_reflections(
+                db,
+                entity_id=session.entity_id,
+                limit=shortfall,
+                exclude_conversation_id=session.conversation_id,
+                exclude_ids=exclude_ids,
+            )
+            if not reflections:
+                break
+
+            # Guard against a fetch that ignored the exclusions (would spin forever)
+            fresh = [r for r in reflections if r["id"] not in exclude_ids]
+            if not fresh:
+                break
+            exclude_ids |= {r["id"] for r in fresh}
+
+            # get_recent_reflections returns newest first; inject oldest first
+            # so the most recent reflection sits closest to the current message
+            for mem_data in reversed(fresh):
+                significance = _calculate_significance(
+                    mem_data["times_retrieved"],
+                    mem_data["created_at"],
+                    mem_data["last_retrieved_at"],
+                    memory_status=mem_data.get("memory_status"),
+                )
+
+                created_at = mem_data["created_at"]
+                if isinstance(created_at, str):
+                    created_at = datetime.fromisoformat(created_at)
+                days_since_creation = (now - created_at).total_seconds() / 86400
+
+                last_retrieved_at = mem_data["last_retrieved_at"]
+                if last_retrieved_at:
+                    if isinstance(last_retrieved_at, str):
+                        last_retrieved_at = datetime.fromisoformat(last_retrieved_at)
+                    days_since_retrieval = (now - last_retrieved_at).total_seconds() / 86400
+                else:
+                    days_since_retrieval = -1  # Never retrieved
+
+                memory = MemoryEntry(
+                    id=mem_data["id"],
+                    conversation_id=mem_data["conversation_id"],
+                    role=mem_data["role"],
+                    content=mem_data["content"],
+                    created_at=mem_data["created_at"],
+                    times_retrieved=mem_data["times_retrieved"],
+                    score=0.0,  # Selected by recency, not similarity
+                    significance=significance,
+                    combined_score=0.0,
+                    days_since_creation=days_since_creation,
+                    days_since_retrieval=days_since_retrieval,
+                    source="recent_reflection",
+                )
+
+                if use_in_context_insertion:
+                    added, is_new_retrieval = session.insert_memory_into_context(memory)
+                else:
+                    added, is_new_retrieval = session.add_memory(memory)
+                if added:
+                    injected += 1
+                    new_memories.append(memory)
+                    recency_str = f"{days_since_retrieval:.1f}" if days_since_retrieval >= 0 else "never"
+                    logger.info(
+                        f"[MEMORY]   [RECENT REFLECTION] id={memory.id[:8]}... "
+                        f"age_days={days_since_creation:.1f} recency_days={recency_str} "
+                        f"times_retrieved={memory.times_retrieved} significance={significance:.3f}"
+                    )
+                    if is_new_retrieval:
+                        truly_new_memory_ids.add(memory.id)
+                        await memory_service.update_retrieval_count(
+                            memory.id,
+                            session.conversation_id,
+                            db,
+                            entity_id=session.entity_id,
+                        )
+                else:
+                    logger.info(
+                        f"[MEMORY]   [RECENT REFLECTION SKIPPED - ALREADY IN CONTEXT] id={memory.id[:8]}..."
+                    )
+
+        if injected < requested:
+            logger.info(
+                f"[MEMORY] Recent reflections: injected {injected} of {requested} requested "
+                f"(no more eligible reflections available)"
+            )
+        else:
+            logger.info(f"[MEMORY] Recent reflections: injected {injected} of {requested} requested")
+
     async def process_message(
         self,
         session: ConversationSession,
@@ -518,6 +651,14 @@ class SessionManager:
             # Use higher limit for first retrieval in a conversation
             is_first_retrieval = len(session.retrieved_ids) == 0
             top_k = settings.initial_retrieval_top_k if is_first_retrieval else settings.retrieval_top_k
+
+            # First turn of the conversation: no conversational messages in
+            # context yet. Non-conversational seeds (the notes message that
+            # load_session_from_db prepends, memory insertions, context
+            # notices) don't count. Checked before any memory insertion
+            # mutates the context, and used only to gate recent-reflection
+            # injection below — turns after the first are unaffected.
+            is_first_turn = not session.has_conversational_messages()
 
             # Fetch 10 candidates per query, then combine and re-rank by significance
             fetch_k_per_query = 10
@@ -684,6 +825,21 @@ class SessionManager:
                     skipped_in_context += 1
                     recency_str = f"{memory.days_since_retrieval:.1f}" if memory.days_since_retrieval >= 0 else "never"
                     logger.info(f"[MEMORY]   [ALREADY IN CONTEXT] combined={memory.combined_score:.3f} similarity={memory.score:.3f} significance={memory.significance:.3f} times_retrieved={memory.times_retrieved} age_days={memory.days_since_creation:.1f} recency_days={recency_str} source={memory.source}")
+
+            # On the first turn only, additionally pull in the most recently
+            # created reflections (purely recency-based, deduplicated against
+            # the semantic retrievals above with recency backfill)
+            if settings.recent_reflections_enabled:
+                if is_first_turn:
+                    await self._inject_recent_reflections(
+                        session,
+                        db,
+                        new_memories,
+                        truly_new_memory_ids,
+                        use_in_context_insertion=False,
+                    )
+                else:
+                    logger.info("[MEMORY] Recent reflections: skipped (not the first turn)")
 
             # Log memory retrieval summary
             if new_memories:
@@ -907,6 +1063,14 @@ class SessionManager:
             is_first_retrieval = len(session.retrieved_ids) == 0
             top_k = settings.initial_retrieval_top_k if is_first_retrieval else settings.retrieval_top_k
 
+            # First turn of the conversation: no conversational messages in
+            # context yet. Non-conversational seeds (the notes message that
+            # load_session_from_db prepends, memory insertions, context
+            # notices) don't count. Checked before any memory insertion
+            # mutates the context, and used only to gate recent-reflection
+            # injection below — turns after the first are unaffected.
+            is_first_turn = not session.has_conversational_messages()
+
             # Fetch 10 candidates per query, then combine and re-rank by significance
             fetch_k_per_query = 10
 
@@ -1073,6 +1237,21 @@ class SessionManager:
                     skipped_in_context += 1
                     recency_str = f"{memory.days_since_retrieval:.1f}" if memory.days_since_retrieval >= 0 else "never"
                     logger.info(f"[MEMORY]   [ALREADY IN CONTEXT] combined={memory.combined_score:.3f} similarity={memory.score:.3f} significance={memory.significance:.3f} times_retrieved={memory.times_retrieved} age_days={memory.days_since_creation:.1f} recency_days={recency_str} source={memory.source}")
+
+            # On the first turn only, additionally pull in the most recently
+            # created reflections (purely recency-based, deduplicated against
+            # the semantic retrievals above with recency backfill)
+            if settings.recent_reflections_enabled:
+                if is_first_turn:
+                    await self._inject_recent_reflections(
+                        session,
+                        db,
+                        new_memories,
+                        truly_new_memory_ids,
+                        use_in_context_insertion=session.use_memory_in_context,
+                    )
+                else:
+                    logger.info("[MEMORY] Recent reflections: skipped (not the first turn)")
 
             # Log memory retrieval summary
             if new_memories:

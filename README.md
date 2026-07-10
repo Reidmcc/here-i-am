@@ -206,6 +206,8 @@ python run.py
 | `SIMILARITY_THRESHOLD` | Minimum similarity for automatic retrieval | No (default: 0.4) |
 | `QUERY_SIMILARITY_THRESHOLD` | Minimum similarity for deliberate `memory_query` searches | No (default: 0.2) |
 | `SIGNIFICANCE_HALF_LIFE_DAYS` | Days for a memory's significance to halve | No (default: 60) |
+| `RECENT_REFLECTIONS_ENABLED` | Pull the most recent `memory_save` reflections into context on a conversation's first turn (recency-only, deduplicated against semantic retrieval with backfill) | No (default: false) |
+| `RECENT_REFLECTIONS_COUNT` | How many recent reflections to pull in on the first turn | No (default: 3) |
 
 **Attachments:**
 
