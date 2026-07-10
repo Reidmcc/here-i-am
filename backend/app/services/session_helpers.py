@@ -91,6 +91,7 @@ def calculate_significance(
     created_at: Optional[datetime],
     last_retrieved_at: Optional[datetime],
     memory_status: Optional[str] = None,
+    role: Optional[str] = None,
 ) -> float:
     """
     Calculate memory significance based on retrieval patterns.
@@ -103,6 +104,9 @@ def calculate_significance(
 
     Pinned memories (memory_status == "pinned") are exempt from age decay:
     their half_life_modifier stays at 1.0 regardless of age.
+
+    Memories the entity saved via memory_save (role == "reflection") have their
+    significance multiplied by settings.reflection_significance_multiplier.
     """
     now = datetime.utcnow()
 
@@ -133,6 +137,11 @@ def calculate_significance(
     # without letting it dominate. The +1 base ensures never-retrieved memories
     # can still compete based on recency and age factors.
     significance = (1 + 0.1 * times_retrieved) * recency_factor * half_life_modifier
+
+    # Boost self-authored memories (saved via the memory_save tool)
+    if role == "reflection":
+        significance *= settings.reflection_significance_multiplier
+
     return significance
 
 

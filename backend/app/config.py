@@ -345,6 +345,10 @@ class Settings(BaseSettings):
     recency_boost_strength: float = 1.2
     significance_floor: float = 0.25
     significance_half_life_days: int = 60  # Significance halves every N days since memory creation
+    # Memories saved by the entity via the memory_save tool (reflections) have
+    # their significance multiplied by this factor, giving self-authored
+    # memories extra weight in retrieval re-ranking. Set to 1.0 to disable.
+    reflection_significance_multiplier: float = 1.5
 
     # Role balance in memory retrieval
     # When True, ensures selected memories include at least one human and one assistant message
