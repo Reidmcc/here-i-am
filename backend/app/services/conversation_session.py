@@ -316,6 +316,22 @@ class ConversationSession:
 
     # ===== Shared methods (work with both systems) =====
 
+    def has_conversational_messages(self) -> bool:
+        """
+        True if the context contains any actual conversational message
+        (human/assistant exchange or tool exchange).
+
+        Context seeds that are not part of the back-and-forth — the entity's
+        notes message (is_notes), memory insertions (is_memory), and context
+        notices (is_context_notice) — don't count. A session freshly loaded
+        for a brand-new conversation contains the notes message, so a plain
+        length check cannot detect the first turn.
+        """
+        return any(
+            not (msg.get("is_notes") or msg.get("is_memory") or msg.get("is_context_notice"))
+            for msg in self.conversation_context
+        )
+
     def add_exchange(
         self,
         human_message: Optional[str],

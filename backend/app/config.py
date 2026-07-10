@@ -356,7 +356,8 @@ class Settings(BaseSettings):
     # via the memory_save tool) are pulled into context on the first turn of a
     # conversation, in addition to semantic retrieval. Selection is purely by
     # recency — no semantic ranking — and deduplicated against semantically
-    # retrieved memories (reflections stay eligible for semantic retrieval).
+    # retrieved memories (reflections stay eligible for semantic retrieval),
+    # with deduplicated slots backfilled by the next-most-recent reflections.
     # Turns after the first are unaffected.
     recent_reflections_enabled: bool = False
     # How many of the most recent reflections to pull in on the first turn

@@ -2876,6 +2876,15 @@ class TestRecentReflectionsInjection:
             self._configure_settings(mock_settings, enabled=True, count=2)
 
             session = manager.create_session(sample_conversation.id)
+            # Regression: load_session_from_db prepends the entity's notes as
+            # a context message before any conversation exists. That seed must
+            # not defeat first-turn detection.
+            session.conversation_context.append({
+                "role": "user",
+                "content": "[ENTITY NOTES]\nSome notes\n[/ENTITY NOTES]",
+                "is_notes": True,
+            })
+            session.last_cached_context_length = 1
             result = await manager.process_message(session, "Hello", db_session)
 
             # Both reflections were injected and reported as retrieved
@@ -3040,3 +3049,73 @@ class TestRecentReflectionsInjection:
             assert len(memory_messages) == 2
             assert "Reflection refl-old" in memory_messages[0]["content"]
             assert "Reflection refl-new" in memory_messages[1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_deduplicated_slots_are_backfilled(self, db_session, sample_conversation):
+        """Slots freed by dedup are backfilled: the AI always gets N recent reflections."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            # Semantic retrieval surfaces the most recent reflection itself
+            mock_memory.search_memories = AsyncMock(return_value=[
+                {"id": "refl-newest", "score": 0.9, "conversation_id": "reflection-source-conv",
+                 "created_at": "2026-01-03", "role": "reflection", "last_retrieved_at": None}
+            ])
+            mock_memory.get_full_memory_content = AsyncMock(
+                return_value=self._reflection_dict("refl-newest", created_at="2026-01-03T00:00:00")
+            )
+            mock_memory.update_retrieval_count = AsyncMock()
+
+            # Emulate the real SQL behavior: exclusion applies before LIMIT,
+            # so excluded reflections are backfilled by the next-most-recent
+            all_reflections = [
+                self._reflection_dict("refl-newest", created_at="2026-01-03T00:00:00"),
+                self._reflection_dict("refl-middle", created_at="2026-01-02T00:00:00"),
+                self._reflection_dict("refl-oldest", created_at="2026-01-01T00:00:00"),
+            ]
+
+            async def fake_get_recent(db, entity_id=None, limit=None,
+                                      exclude_conversation_id=None, exclude_ids=None):
+                exclude_ids = exclude_ids or set()
+                eligible = [r for r in all_reflections if r["id"] not in exclude_ids]
+                return eligible[:limit]
+
+            mock_memory.get_recent_reflections = AsyncMock(side_effect=fake_get_recent)
+            self._configure_llm(mock_llm)
+            self._configure_settings(mock_settings, enabled=True, count=2)
+
+            session = manager.create_session(sample_conversation.id)
+            result = await manager.process_message(session, "Hello", db_session)
+
+            # refl-newest came in semantically; its recent-reflection slot was
+            # backfilled so two OTHER recent reflections were still injected
+            retrieved_ids = {m["id"] for m in result["new_memories_retrieved"]}
+            assert retrieved_ids == {"refl-newest", "refl-middle", "refl-oldest"}
+            assert result["total_memories_in_context"] == 3
+            assert session.session_memories["refl-middle"].source == "recent_reflection"
+            assert session.session_memories["refl-oldest"].source == "recent_reflection"
+            # The semantic one is not double-counted
+            assert mock_memory.update_retrieval_count.call_count == 3
+
+    def test_first_turn_detection_ignores_context_seeds(self):
+        """Notes, memory, and notice messages don't count as conversation."""
+        session = ConversationSession(conversation_id="conv-1")
+        assert session.has_conversational_messages() is False
+
+        session.conversation_context.append(
+            {"role": "user", "content": "[ENTITY NOTES]...", "is_notes": True}
+        )
+        session.conversation_context.append(
+            {"role": "user", "content": "[MEMORY abc123 ...]", "is_memory": True}
+        )
+        session.conversation_context.append(
+            {"role": "user", "content": "[CONTEXT NOTICE] ...", "is_context_notice": True}
+        )
+        assert session.has_conversational_messages() is False
+
+        session.conversation_context.append({"role": "user", "content": "Hello"})
+        assert session.has_conversational_messages() is True
