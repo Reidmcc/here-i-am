@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any, AsyncIterator, Set, Union
+from typing import Optional, List, Dict, Any, AsyncIterator, Union
 from datetime import datetime
 from anthropic import AsyncAnthropic
 from app.config import settings
@@ -403,16 +403,13 @@ class AnthropicService:
             logger.exception(f"[TOOLS] Stream error: {e}")
             yield {"type": "error", "error": str(e)}
 
-    def build_messages_with_memories(
+    def build_messages(
         self,
-        memories: List[Dict[str, Any]],
         conversation_context: List[Dict[str, str]],
         current_message: Optional[str],
         conversation_start_date: Optional[datetime] = None,
         enable_caching: bool = True,
-        new_memory_ids: Optional[Set[str]] = None,
         # Caching parameters
-        cached_memories: Optional[List[Dict[str, Any]]] = None,
         cached_context: Optional[List[Dict[str, str]]] = None,
         new_context: Optional[List[Dict[str, str]]] = None,
         # Multi-entity conversation parameters
@@ -436,11 +433,12 @@ class AnthropicService:
         2. Assistant: cached history msg 2
         ...
         N. Last cached history msg*       <- cache breakpoint (cache_control here)
-        N+1. New history messages (added since the breakpoint was last advanced;
-             sent uncached this turn, cached from the next turn onward)
+        N+1. New history messages (added since the breakpoint was last advanced,
+             e.g. memory insertions and context notices; sent uncached this
+             turn, cached from the next turn onward)
         ...
-        M-1. User: [/CONVERSATION HISTORY] + [MEMORIES] + memories block + [/MEMORIES]
-        M. User: [CURRENT USER MESSAGE] + date context + entity notes + current message
+        M. User: [/CONVERSATION HISTORY] + [CURRENT USER MESSAGE] + date context
+           + entity notes + current message
 
         If current_message is None (multi-entity continuation), the entity is prompted
         to continue the conversation without a new human message.
@@ -449,11 +447,10 @@ class AnthropicService:
         explaining the conversation structure and participant labels.
 
         Cache hits occur when cached conversation history is identical to previous call.
-        Memories are placed after conversation history so new retrievals don't invalidate
-        the conversation cache.
+        Retrieved memories are embedded in the conversation context as messages, so
+        new retrievals extend the history instead of invalidating the cache.
         """
         messages = []
-        new_memory_ids = new_memory_ids or set()
 
         # Use cached_context if provided, otherwise use all context as cached
         if cached_context is None:
@@ -575,36 +572,8 @@ class AnthropicService:
                         content = "[CONVERSATION HISTORY]\n" + multi_entity_header + "\n" + content
                     messages.append({"role": msg["role"], "content": content})
 
-        # STEP 3: Build the memories block text (after conversation history)
-        # Memories go after conversation so new retrievals don't invalidate conversation cache
-        all_memories = memories  # Already combined and sorted by caller
-        memory_block_text = ""
-        if all_memories:
-            memory_block_text = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
-            for mem in all_memories:
-                # Map memory role to display label
-                mem_role = mem.get("role", "")
-                if mem_role == "human":
-                    role_display = user_label
-                elif mem_role == "assistant":
-                    role_display = assistant_label
-                elif mem_role == "reflection":
-                    role_display = "a reflection you saved"
-                else:
-                    role_display = mem_role if mem_role else "unknown"
-                # Short ID lets the entity reference this memory in memory_mark/memory_release
-                short_id = str(mem.get("id", ""))[:8]
-                id_part = f"{short_id} " if short_id else ""
-                memory_block_text += f"Memory {id_part}from {role_display} (from {mem['created_at']}):\n"
-                memory_block_text += f'"{mem["content"]}"\n\n'
-            memory_block_text += "[/MEMORIES]"
-
-        memory_block_tokens = self.count_tokens(memory_block_text) if memory_block_text else 0
-        logger.info(f"[CACHE] Total memories: {len(all_memories)}, {memory_block_tokens} tokens")
-
-        # STEP 4: Build the final user message combining:
+        # STEP 3: Build the final user message combining:
         # - End of conversation history marker
-        # - Memories block
         # - Date context
         # - Entity notes (index.md)
         # - Current user message
@@ -614,10 +583,6 @@ class AnthropicService:
         # End conversation history marker (if there was any history)
         if has_conversation:
             final_parts.append("[/CONVERSATION HISTORY]")
-
-        # Memories block
-        if memory_block_text:
-            final_parts.append(memory_block_text)
 
         # Current message section marker
         final_parts.append("[CURRENT USER MESSAGE]")

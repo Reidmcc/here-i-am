@@ -6,7 +6,6 @@ Tests cover:
 - calculate_significance: Memory significance calculation
 - ensure_role_balance: Memory role balance in retrieval
 - get_message_content_text: Content text extraction from messages
-- build_memory_block_text: Memory block text formatting
 - add_cache_control_to_tool_result: Cache control insertion
 """
 
@@ -22,7 +21,6 @@ from app.services.session_helpers import (
     calculate_significance,
     ensure_role_balance,
     get_message_content_text,
-    build_memory_block_text,
     add_cache_control_to_tool_result,
     estimate_prompt_tokens,
     total_prompt_tokens_from_usage,
@@ -414,39 +412,6 @@ class TestGetMessageContentText:
         result = get_message_content_text(blocks)
         assert "plain string" in result
         assert "42" in result
-
-
-# ============================================================
-# Tests for build_memory_block_text
-# ============================================================
-
-class TestBuildMemoryBlockText:
-    """Tests for building memory block text."""
-
-    def test_empty_memories(self):
-        """Should return empty string for no memories."""
-        assert build_memory_block_text([]) == ""
-
-    def test_single_memory(self):
-        """Should format single memory correctly."""
-        memories = [
-            {"content": "I like Python", "created_at": "2024-01-01", "role": "human"},
-        ]
-        result = build_memory_block_text(memories)
-        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in result
-        assert "I like Python" in result
-        assert "2024-01-01" in result
-        assert "[/MEMORIES]" in result
-
-    def test_multiple_memories(self):
-        """Should format multiple memories."""
-        memories = [
-            {"content": "Memory 1", "created_at": "2024-01-01", "role": "human"},
-            {"content": "Memory 2", "created_at": "2024-01-02", "role": "assistant"},
-        ]
-        result = build_memory_block_text(memories)
-        assert "Memory 1" in result
-        assert "Memory 2" in result
 
 
 # ============================================================

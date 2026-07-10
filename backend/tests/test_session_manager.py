@@ -70,10 +70,9 @@ class TestConversationSession:
         assert session.conversation_context == []
         assert session.session_memories == {}
         assert session.retrieved_ids == set()
-        assert session.in_context_ids == set()
 
-    def test_add_memory_new(self):
-        """Test adding a new memory."""
+    def test_insert_memory_into_context(self):
+        """Test inserting a new memory into the conversation context."""
         session = ConversationSession(conversation_id="conv-123")
         memory = MemoryEntry(
             id="mem-1",
@@ -84,17 +83,18 @@ class TestConversationSession:
             times_retrieved=1,
         )
 
-        added, is_new_retrieval = session.add_memory(memory)
+        added, is_new_retrieval = session.insert_memory_into_context(memory)
 
         assert added is True
         assert is_new_retrieval is True
         assert "mem-1" in session.retrieved_ids
-        assert "mem-1" in session.in_context_ids
+        assert "mem-1" in session.get_in_context_memory_ids()
         assert "mem-1" in session.session_memories
         assert session.session_memories["mem-1"] == memory
+        assert session.conversation_context[-1]["is_memory"] is True
 
-    def test_add_memory_duplicate(self):
-        """Test adding a memory already in context is rejected."""
+    def test_insert_memory_duplicate(self):
+        """Test inserting a memory already in context is rejected."""
         session = ConversationSession(conversation_id="conv-123")
         memory = MemoryEntry(
             id="mem-1",
@@ -105,15 +105,15 @@ class TestConversationSession:
             times_retrieved=1,
         )
 
-        session.add_memory(memory)
-        added, is_new_retrieval = session.add_memory(memory)
+        session.insert_memory_into_context(memory)
+        added, is_new_retrieval = session.insert_memory_into_context(memory)
 
         assert added is False
         assert is_new_retrieval is False
         assert len(session.session_memories) == 1
 
-    def test_add_memory_restore_trimmed(self):
-        """Test re-adding a previously trimmed memory restores it without updating count."""
+    def test_insert_memory_reinsert_rolled_out(self):
+        """Test re-inserting a rolled-out memory restores it without updating count."""
         session = ConversationSession(conversation_id="conv-123")
         memory = MemoryEntry(
             id="mem-1",
@@ -125,84 +125,28 @@ class TestConversationSession:
             score=0.8,
         )
 
-        # Add memory initially
-        session.add_memory(memory)
-        assert "mem-1" in session.in_context_ids
+        # Insert memory initially
+        session.insert_memory_into_context(memory)
+        assert "mem-1" in session.get_in_context_memory_ids()
         assert "mem-1" in session.retrieved_ids
 
-        # Simulate trimming by removing from in_context_ids only
-        session.in_context_ids.discard("mem-1")
-        assert "mem-1" not in session.in_context_ids
+        # Simulate rollout via context trimming
+        session.conversation_context.pop(0)
+        session.memory_tracker.handle_context_rollout(
+            num_messages_removed=1,
+            conversation_context=session.conversation_context,
+        )
+        assert "mem-1" not in session.get_in_context_memory_ids()
         assert "mem-1" in session.retrieved_ids  # Still in retrieved_ids
 
-        # Re-add the same memory (with potentially different score)
-        memory2 = MemoryEntry(
-            id="mem-1",
-            conversation_id="old-conv",
-            role="assistant",
-            content="Test",
-            created_at="2024-01-01",
-            times_retrieved=1,
-            score=0.95,  # Higher score this time
-        )
-        added, is_new_retrieval = session.add_memory(memory2)
+        # Re-insert the same memory
+        added, is_new_retrieval = session.insert_memory_into_context(memory)
 
         # Should be added back to context but not trigger new retrieval count
         assert added is True
         assert is_new_retrieval is False
-        assert "mem-1" in session.in_context_ids
+        assert "mem-1" in session.get_in_context_memory_ids()
         assert "mem-1" in session.retrieved_ids
-        # Score should be updated
-        assert session.session_memories["mem-1"].score == 0.95
-
-    def test_get_memories_for_injection_sorted(self):
-        """Test memories are sorted by ID for stable caching."""
-        session = ConversationSession(conversation_id="conv-123")
-
-        # Add memories with different scores but they should be sorted by ID
-        for i, score in enumerate([0.5, 0.9, 0.7]):
-            memory = MemoryEntry(
-                id=f"mem-{i}",
-                conversation_id="old-conv",
-                role="assistant",
-                content=f"Content {i}",
-                created_at="2024-01-01",
-                times_retrieved=1,
-                score=score,
-            )
-            session.add_memory(memory)
-
-        memories = session.get_memories_for_injection()
-
-        # Should be sorted by ID (for cache stability), not score
-        assert len(memories) == 3
-        assert memories[0]["id"] == "mem-0"
-        assert memories[1]["id"] == "mem-1"
-        assert memories[2]["id"] == "mem-2"
-
-    def test_get_memories_for_injection_format(self):
-        """Test memories are formatted correctly for injection."""
-        session = ConversationSession(conversation_id="conv-123")
-
-        memory = MemoryEntry(
-            id="mem-1",
-            conversation_id="old-conv",
-            role="assistant",
-            content="Test content",
-            created_at="2024-01-01",
-            times_retrieved=5,
-            score=0.9,
-        )
-        session.add_memory(memory)
-
-        memories = session.get_memories_for_injection()
-
-        assert len(memories) == 1
-        assert memories[0]["id"] == "mem-1"
-        assert memories[0]["content"] == "Test content"
-        assert memories[0]["created_at"] == "2024-01-01"
-        assert memories[0]["times_retrieved"] == 5
-        assert memories[0]["role"] == "assistant"
 
     def test_add_exchange(self):
         """Test adding a conversation exchange."""
@@ -214,80 +158,34 @@ class TestConversationSession:
         assert session.conversation_context[0] == {"role": "user", "content": "Hello!"}
         assert session.conversation_context[1] == {"role": "assistant", "content": "Hi there!"}
 
-    def test_trim_memories_to_limit_no_trimming_needed(self):
-        """Test that memories are not trimmed when under limit."""
+    def test_trim_context_rolls_out_memories(self):
+        """Memories trimmed out with the context are tracked as rolled out."""
         session = ConversationSession(conversation_id="conv-123")
 
-        # Add a memory
+        # Memory inserted first, then enough exchanges to trim it out
         memory = MemoryEntry(
             id="mem-1",
             conversation_id="old-conv",
             role="assistant",
-            content="Test content",
+            content="Memory content",
             created_at="2024-01-01",
             times_retrieved=1,
-            score=0.9,
         )
-        session.add_memory(memory)
+        session.insert_memory_into_context(memory)
+        session.add_exchange("Hello", "Hi there")
+        session.add_exchange("How are you?", "I'm well!")
 
-        # Mock token counter that returns small count
-        count_tokens = lambda x: 100
-
-        removed = session.trim_memories_to_limit(max_tokens=40000, count_tokens_fn=count_tokens)
-
-        assert removed == []
-        assert "mem-1" in session.session_memories
-        assert "mem-1" in session.retrieved_ids
-        assert "mem-1" in session.in_context_ids
-
-    def test_trim_memories_to_limit_removes_oldest_first(self):
-        """Test that oldest-retrieved memories are removed from context first (FIFO)."""
-        session = ConversationSession(conversation_id="conv-123")
-
-        # Add memories in order - first added = first to be removed from context
-        for i in range(3):
-            memory = MemoryEntry(
-                id=f"mem-{i}",
-                conversation_id="old-conv",
-                role="assistant",
-                content=f"Memory content {i}",
-                created_at="2024-01-01",
-                times_retrieved=1,
-                score=0.5 + i * 0.1,  # Different scores
-            )
-            session.add_memory(memory)
-
-        # Token counter that forces trimming (returns decreasing values)
-        call_count = [0]
+        # Over limit until the first three messages are gone
         def count_tokens(x):
-            call_count[0] += 1
-            # Return high value first, then lower to simulate trimming effect
-            if call_count[0] <= 2:
-                return 50000  # Over limit
-            return 100  # Under limit after removing 2
+            return 50000 if len(session.conversation_context) > 2 else 100
 
-        removed = session.trim_memories_to_limit(max_tokens=40000, count_tokens_fn=count_tokens)
+        removed = session.trim_context_to_limit(max_tokens=40000, count_tokens_fn=count_tokens)
 
-        # Should have removed mem-0 and mem-1 from context (oldest retrieved first)
-        assert "mem-0" in removed
-        assert "mem-1" in removed
-        assert "mem-2" not in removed
-
-        # mem-0 and mem-1 should be removed from in_context_ids only
-        assert "mem-0" not in session.in_context_ids
-        assert "mem-1" not in session.in_context_ids
-
-        # But they should still be in retrieved_ids and session_memories
-        # (to prevent re-incrementing retrieval count and to allow restoration)
-        assert "mem-0" in session.retrieved_ids
-        assert "mem-0" in session.session_memories
+        assert removed > 0
+        assert "mem-1" not in session.get_in_context_memory_ids()
+        # Still tracked as retrieved (prevents re-incrementing retrieval count)
         assert "mem-1" in session.retrieved_ids
         assert "mem-1" in session.session_memories
-
-        # mem-2 should still be in context
-        assert "mem-2" in session.in_context_ids
-        assert "mem-2" in session.retrieved_ids
-        assert "mem-2" in session.session_memories
 
     def test_trim_context_to_limit_no_trimming_needed(self):
         """Test that context is not trimmed when under limit."""
@@ -408,7 +306,6 @@ class TestSessionManager:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.use_memory_in_context = False
 
             # Pass a UUID object instead of string
             conv_uuid = uuid.uuid4()
@@ -428,7 +325,6 @@ class TestSessionManager:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.use_memory_in_context = False
 
             conv_str = "test-conversation-123"
             session = manager.create_session(conv_str)
@@ -488,12 +384,11 @@ class TestSessionManager:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
-            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(
                 sample_conversation.id,
@@ -526,8 +421,10 @@ class TestSessionManager:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(
-                return_value={retrieved_id}
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(
+                return_value=[
+                    {"message_id": retrieved_id, "retrieved_at": datetime.utcnow()}
+                ]
             )
             mock_memory.get_full_memory_content = AsyncMock(return_value={
                 "id": retrieved_id,
@@ -541,7 +438,6 @@ class TestSessionManager:
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
-            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(
                 sample_conversation.id,
@@ -560,7 +456,7 @@ class TestSessionManager:
              patch("app.services.session_manager.llm_service") as mock_llm, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.is_configured.return_value = False  # No memory retrieval
-            mock_llm.build_messages_with_memories.return_value = [
+            mock_llm.build_messages.return_value = [
                 {"role": "user", "content": "Hello"}
             ]
             mock_llm.send_message = AsyncMock(return_value={
@@ -573,7 +469,6 @@ class TestSessionManager:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
 
             session = manager.create_session(sample_conversation.id)
@@ -623,7 +518,7 @@ class TestSessionManager:
             mock_memory.update_retrieval_count = AsyncMock()
             mock_memory.record_memory_link = AsyncMock()
 
-            mock_llm.build_messages_with_memories.return_value = [
+            mock_llm.build_messages.return_value = [
                 {"role": "user", "content": "With memory context"}
             ]
             mock_llm.send_message = AsyncMock(return_value={
@@ -637,7 +532,6 @@ class TestSessionManager:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.significance_half_life_days = 60
             mock_settings.recency_boost_strength = 1.0
@@ -645,7 +539,6 @@ class TestSessionManager:
             mock_settings.retrieval_candidate_multiplier = 2
             mock_settings.initial_retrieval_top_k = 5
             mock_settings.retrieval_top_k = 5
-            mock_settings.use_memory_in_context = False
             mock_settings.recent_reflections_enabled = False
 
             session = manager.create_session(sample_conversation.id)
@@ -687,7 +580,7 @@ class TestSessionManager:
             mock_memory.update_retrieval_count = AsyncMock()
             mock_memory.record_memory_link = AsyncMock()
 
-            mock_llm.build_messages_with_memories.return_value = []
+            mock_llm.build_messages.return_value = []
             mock_llm.send_message = AsyncMock(return_value={
                 "content": "Response",
                 "model": "claude-sonnet-4-5-20250929",
@@ -699,7 +592,6 @@ class TestSessionManager:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.significance_half_life_days = 60
             mock_settings.recency_boost_strength = 1.0
@@ -707,7 +599,6 @@ class TestSessionManager:
             mock_settings.retrieval_candidate_multiplier = 2
             mock_settings.initial_retrieval_top_k = 5
             mock_settings.retrieval_top_k = 5
-            mock_settings.use_memory_in_context = False
             mock_settings.recent_reflections_enabled = False
 
             session = manager.create_session(sample_conversation.id)
@@ -732,10 +623,10 @@ class TestSessionManager:
             mock_memory.update_retrieval_count.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_process_message_restores_trimmed_memory_without_count_update(
+    async def test_process_message_restores_rolled_out_memory_without_count_update(
         self, db_session, sample_conversation
     ):
-        """Test that trimmed memories can be restored without updating retrieval count."""
+        """Test that rolled-out memories can be restored without updating retrieval count."""
         # This tests the ConversationSession behavior for restored memories
         session = ConversationSession(conversation_id="conv-123")
 
@@ -750,18 +641,22 @@ class TestSessionManager:
         )
 
         # First retrieval - should be marked as new
-        added, is_new_retrieval = session.add_memory(memory)
+        added, is_new_retrieval = session.insert_memory_into_context(memory)
         assert added is True
         assert is_new_retrieval is True
-        assert "mem-1" in session.in_context_ids
+        assert "mem-1" in session.get_in_context_memory_ids()
         assert "mem-1" in session.retrieved_ids
 
-        # Simulate trimming by removing from in_context_ids only
-        session.in_context_ids.discard("mem-1")
-        assert "mem-1" not in session.in_context_ids
+        # Simulate the memory rolling out via context trimming
+        session.conversation_context.pop(0)
+        session.memory_tracker.handle_context_rollout(
+            num_messages_removed=1,
+            conversation_context=session.conversation_context,
+        )
+        assert "mem-1" not in session.get_in_context_memory_ids()
         assert "mem-1" in session.retrieved_ids  # Still tracked
 
-        # Re-add the same memory (as if search returned it again)
+        # Re-insert the same memory (as if search returned it again)
         memory2 = MemoryEntry(
             id="mem-1",
             conversation_id="old-conv",
@@ -771,13 +666,13 @@ class TestSessionManager:
             times_retrieved=1,
             score=0.95,  # Maybe different score this time
         )
-        added, is_new_retrieval = session.add_memory(memory2)
+        added, is_new_retrieval = session.insert_memory_into_context(memory2)
 
         # Should be added back to context
         assert added is True
         # But should NOT be treated as a new retrieval (no count update needed)
         assert is_new_retrieval is False
-        assert "mem-1" in session.in_context_ids
+        assert "mem-1" in session.get_in_context_memory_ids()
         assert "mem-1" in session.retrieved_ids
 
 
@@ -816,11 +711,10 @@ class TestMultiEntityMemoryIsolation:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.use_memory_in_context = False
             mock_settings.get_entity_by_index.return_value = MagicMock(
                 label="Claude",
                 default_model="claude-sonnet-4-5-20250929",
@@ -834,9 +728,9 @@ class TestMultiEntityMemoryIsolation:
                 responding_entity_id="claude-main"  # Specify responding entity
             )
 
-        # Verify get_retrieved_ids_for_conversation was called with entity_id
-        mock_memory.get_retrieved_ids_for_conversation.assert_called_once()
-        call_kwargs = mock_memory.get_retrieved_ids_for_conversation.call_args.kwargs
+        # Verify get_retrieved_memories_with_timestamps was called with entity_id
+        mock_memory.get_retrieved_memories_with_timestamps.assert_called_once()
+        call_kwargs = mock_memory.get_retrieved_memories_with_timestamps.call_args.kwargs
         assert call_kwargs.get("entity_id") == "claude-main"
 
         # Verify session has correct entity_id
@@ -853,21 +747,20 @@ class TestMultiEntityMemoryIsolation:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
-            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(
                 sample_conversation.id,
                 db_session
             )
 
-        # Verify get_retrieved_ids_for_conversation was called without entity_id
-        mock_memory.get_retrieved_ids_for_conversation.assert_called_once()
-        call_kwargs = mock_memory.get_retrieved_ids_for_conversation.call_args.kwargs
+        # Verify get_retrieved_memories_with_timestamps was called without entity_id
+        mock_memory.get_retrieved_memories_with_timestamps.assert_called_once()
+        call_kwargs = mock_memory.get_retrieved_memories_with_timestamps.call_args.kwargs
         assert call_kwargs.get("entity_id") is None
 
         assert session.is_multi_entity is False
@@ -956,7 +849,7 @@ class TestCacheStateManagement:
         """Test cache-aware content when nothing is cached yet."""
         session = ConversationSession(conversation_id="conv-123")
 
-        # Add some memories
+        # Add some memories (inserted into the conversation context)
         for i in range(3):
             memory = MemoryEntry(
                 id=f"mem-{i}",
@@ -966,7 +859,7 @@ class TestCacheStateManagement:
                 created_at="2024-01-01",
                 times_retrieved=1,
             )
-            session.add_memory(memory)
+            session.insert_memory_into_context(memory)
 
         # Add conversation context
         session.add_exchange("Hello", "Hi")
@@ -977,9 +870,9 @@ class TestCacheStateManagement:
 
         content = session.get_cache_aware_content()
 
-        # All context is new (memories are no longer tracked in cache state)
+        # All context is new (3 memory messages + 4 exchange messages)
         assert len(content["cached_context"]) == 0
-        assert len(content["new_context"]) == 4
+        assert len(content["new_context"]) == 7
 
     def test_get_cache_aware_content_with_cached_state(self):
         """Test cache-aware content with existing cached state."""
@@ -1084,12 +977,11 @@ class TestCacheStateManagement:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
-            mock_settings.use_memory_in_context = False
 
             # Load without preserving - should use full context length
             session1 = await manager.load_session_from_db(
@@ -1121,12 +1013,11 @@ class TestCacheStateManagement:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
-            mock_settings.use_memory_in_context = False
 
             # Load with preserved value larger than actual context
             session = await manager.load_session_from_db(
@@ -1142,11 +1033,11 @@ class TestCacheStateManagement:
 class TestCacheBreakpointPlacement:
     """Tests for cache breakpoint placement in message building."""
 
-    def test_memory_ids_sorted_for_cache_stability(self):
-        """Test that memories are sorted by ID for cache stability."""
+    def test_memory_insertions_keep_positions_for_cache_stability(self):
+        """Memory messages stay at their insertion positions in the context."""
         session = ConversationSession(conversation_id="conv-123")
 
-        # Add memories in random order
+        # Insert memories in arrival order
         for id_suffix in ["z", "a", "m", "b"]:
             memory = MemoryEntry(
                 id=f"mem-{id_suffix}",
@@ -1156,13 +1047,14 @@ class TestCacheBreakpointPlacement:
                 created_at="2024-01-01",
                 times_retrieved=1,
             )
-            session.add_memory(memory)
+            session.insert_memory_into_context(memory)
 
-        memories = session.get_memories_for_injection()
-
-        # Should be sorted by ID
-        ids = [m["id"] for m in memories]
-        assert ids == ["mem-a", "mem-b", "mem-m", "mem-z"]
+        # Context preserves insertion order (positions never reshuffle,
+        # which is what keeps the cached prefix stable)
+        memory_ids = [
+            m["memory_id"] for m in session.conversation_context if m.get("is_memory")
+        ]
+        assert memory_ids == ["mem-z", "mem-a", "mem-m", "mem-b"]
 
     def test_context_split_preserves_order(self):
         """Test that context split preserves message order."""
@@ -1237,12 +1129,11 @@ class TestSystemPromptSelection:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
-            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1272,12 +1163,11 @@ class TestSystemPromptSelection:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
-            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1307,12 +1197,11 @@ class TestSystemPromptSelection:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
-            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1360,11 +1249,10 @@ class TestSystemPromptSelection:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.use_memory_in_context = False
             mock_entity = MagicMock()
             mock_entity.label = "Claude"
             mock_entity.default_model = "claude-sonnet-4-5-20250929"
@@ -1423,11 +1311,10 @@ class TestSystemPromptSelection:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.use_memory_in_context = False
 
             # Mock entity configs
             def get_entity(eid):
@@ -1508,11 +1395,10 @@ class TestSystemPromptSelection:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.use_memory_in_context = False
             mock_entity = MagicMock()
             mock_entity.label = "GPT"
             mock_entity.default_model = "gpt-4o"
@@ -1553,12 +1439,11 @@ class TestSystemPromptSelection:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
-            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1587,12 +1472,11 @@ class TestSystemPromptSelection:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
-            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1620,12 +1504,11 @@ class TestSystemPromptSelection:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
-            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1655,12 +1538,11 @@ class TestSystemPromptSelection:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
-            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1689,12 +1571,11 @@ class TestSystemPromptSelection:
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.settings") as mock_settings:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
-            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
             mock_settings.get_entity_by_index.return_value = None
-            mock_settings.use_memory_in_context = False
 
             session = await manager.load_session_from_db(conversation.id, db_session)
 
@@ -1702,17 +1583,17 @@ class TestSystemPromptSelection:
         assert session.system_prompt == "Fallback prompt"
 
 
-class TestAgenticToolLoopMemoryOptimization:
-    """Tests for memory optimization in the agentic tool loop.
+class TestAgenticToolLoopMessages:
+    """Tests for message building in the agentic tool loop.
 
-    When tools are used, the first iteration should include memories,
-    but subsequent iterations should exclude the memory block to reduce
-    context size and token costs.
+    Memories are embedded in the conversation context, so the base message
+    set is built once and reused across tool iterations, with accumulated
+    tool exchanges appended.
     """
 
     @pytest.mark.asyncio
     async def test_first_iteration_includes_memories(self, db_session, sample_conversation):
-        """Test that a simple response (no tool use) includes memories in the single call."""
+        """A simple response (no tool use) builds once with memories in the context."""
         manager = SessionManager()
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
@@ -1724,19 +1605,17 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
-            mock_settings.use_memory_in_context = False
 
             # Track what messages are built
             build_calls = []
 
-            def track_build_messages(memories, **kwargs):
-                build_calls.append({"memories": memories, "kwargs": kwargs})
+            def track_build_messages(**kwargs):
+                build_calls.append({"kwargs": kwargs})
                 return [{"role": "user", "content": "test"}]
 
-            mock_llm.build_messages_with_memories.side_effect = track_build_messages
+            mock_llm.build_messages.side_effect = track_build_messages
             mock_llm.count_tokens = MagicMock(return_value=100)
 
             # Simple response without tool use
@@ -1755,7 +1634,7 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_llm.send_message_stream = mock_stream
 
             session = manager.create_session(sample_conversation.id)
-            # Add a mock memory to the session
+            # Insert a mock memory into the session context
             memory = MemoryEntry(
                 id="mem-1",
                 conversation_id="old-conv",
@@ -1764,7 +1643,7 @@ class TestAgenticToolLoopMemoryOptimization:
                 created_at="2024-01-01",
                 times_retrieved=1,
             )
-            session.add_memory(memory)
+            session.insert_memory_into_context(memory)
 
             # Process message
             events = []
@@ -1773,17 +1652,17 @@ class TestAgenticToolLoopMemoryOptimization:
             ):
                 events.append(event)
 
-        # Without tool use, messages are built only once (with memories)
-        # Base messages without memories are lazily built only when tool use is detected
+        # Without tool use, messages are built only once
         assert len(build_calls) == 1
 
-        # The single call should include the memory
-        assert len(build_calls[0]["memories"]) == 1
-        assert build_calls[0]["memories"][0]["id"] == "mem-1"
+        # The memory rides inside the conversation context passed to the builder
+        context_arg = build_calls[0]["kwargs"]["conversation_context"]
+        memory_msgs = [m for m in context_arg if m.get("is_memory")]
+        assert [m["memory_id"] for m in memory_msgs] == ["mem-1"]
 
     @pytest.mark.asyncio
-    async def test_subsequent_iterations_exclude_memories(self, db_session, sample_conversation):
-        """Test that subsequent tool loop iterations exclude memory block."""
+    async def test_subsequent_iterations_reuse_base_messages(self, db_session, sample_conversation):
+        """Subsequent tool loop iterations reuse the base messages plus tool exchanges."""
         manager = SessionManager()
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
@@ -1795,21 +1674,18 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
-            mock_settings.use_memory_in_context = False
 
             # Track messages sent to LLM
             sent_messages = []
+            build_call_count = [0]
 
-            def build_messages(memories, **kwargs):
-                if memories:
-                    return [{"role": "user", "content": "with_memories"}]
-                else:
-                    return [{"role": "user", "content": "without_memories"}]
+            def build_messages(**kwargs):
+                build_call_count[0] += 1
+                return [{"role": "user", "content": "base"}]
 
-            mock_llm.build_messages_with_memories.side_effect = build_messages
+            mock_llm.build_messages.side_effect = build_messages
             mock_llm.count_tokens = MagicMock(return_value=100)
 
             call_count = [0]
@@ -1855,7 +1731,7 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_tool.execute_tool = AsyncMock(return_value=mock_tool_result)
 
             session = manager.create_session(sample_conversation.id)
-            # Add a mock memory
+            # Insert a mock memory into the session context
             memory = MemoryEntry(
                 id="mem-1",
                 conversation_id="old-conv",
@@ -1864,7 +1740,7 @@ class TestAgenticToolLoopMemoryOptimization:
                 created_at="2024-01-01",
                 times_retrieved=1,
             )
-            session.add_memory(memory)
+            session.insert_memory_into_context(memory)
 
             # Process message
             events = []
@@ -1873,15 +1749,15 @@ class TestAgenticToolLoopMemoryOptimization:
             ):
                 events.append(event)
 
-        # Should have two LLM calls
+        # Should have two LLM calls but only one message build (base is reused)
         assert len(sent_messages) == 2
+        assert build_call_count[0] == 1
 
-        # First iteration should use messages with memories
-        assert sent_messages[0][0]["content"] == "with_memories"
+        # First iteration uses the base messages
+        assert sent_messages[0][0]["content"] == "base"
 
-        # Second iteration should use messages without memories (plus tool exchanges)
-        assert sent_messages[1][0]["content"] == "without_memories"
-        # Should also have tool exchange messages appended
+        # Second iteration reuses the base messages plus the tool exchange
+        assert sent_messages[1][0]["content"] == "base"
         assert len(sent_messages[1]) == 3  # base message + assistant tool_use + user tool_result
         assert sent_messages[1][1]["role"] == "assistant"
         assert sent_messages[1][2]["role"] == "user"
@@ -1890,10 +1766,10 @@ class TestAgenticToolLoopMemoryOptimization:
     async def test_attachments_persist_across_tool_iterations(self, db_session, sample_conversation):
         """Attachments must stay on the current message after a tool call.
 
-        Regression test: previously the base (no-memory) message set rebuilt for
-        subsequent tool-loop iterations was built without the attachments, so any
-        tool call dropped the attached file/image from the final answer's context
-        and the model responded as if nothing was attached.
+        Regression test: previously the base message set rebuilt for subsequent
+        tool-loop iterations was built without the attachments, so any tool call
+        dropped the attached file/image from the final answer's context and the
+        model responded as if nothing was attached.
         """
         manager = SessionManager()
 
@@ -1905,19 +1781,17 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
-            mock_settings.use_memory_in_context = False
 
             # Capture the kwargs of every build call so we can inspect attachments
             build_calls = []
 
-            def build_messages(memories, **kwargs):
-                build_calls.append({"memories": memories, "kwargs": kwargs})
+            def build_messages(**kwargs):
+                build_calls.append({"kwargs": kwargs})
                 return [{"role": "user", "content": "msg"}]
 
-            mock_llm.build_messages_with_memories.side_effect = build_messages
+            mock_llm.build_messages.side_effect = build_messages
             mock_llm.count_tokens = MagicMock(return_value=100)
 
             call_count = [0]
@@ -1979,12 +1853,12 @@ class TestAgenticToolLoopMemoryOptimization:
             ):
                 events.append(event)
 
-        # Two build calls: iteration 1 and the lazily-built base message set
-        # for iteration 2. The extracted file text is folded into the current
-        # message (matching the DB-persisted rendering) so it survives both
-        # iterations; the files themselves are stripped from the attachments
-        # passed to message building, leaving only (ephemeral) images.
-        assert len(build_calls) == 2
+        # One build call whose messages are reused across both iterations.
+        # The extracted file text is folded into the current message (matching
+        # the DB-persisted rendering) so it survives both iterations; the files
+        # themselves are stripped from the attachments passed to message
+        # building, leaving only (ephemeral) images.
+        assert len(build_calls) == 1
         for call in build_calls:
             assert call["kwargs"].get("attachments") == {"images": [], "files": []}
             current = call["kwargs"].get("current_message")
@@ -2025,12 +1899,10 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
-            mock_settings.use_memory_in_context = False
 
-            mock_llm.build_messages_with_memories = MagicMock(
+            mock_llm.build_messages = MagicMock(
                 return_value=[{"role": "user", "content": "msg"}]
             )
             mock_llm.count_tokens = MagicMock(return_value=100)
@@ -2086,17 +1958,15 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
-            mock_settings.use_memory_in_context = False
 
             sent_messages = []
 
-            def build_messages(memories, **kwargs):
+            def build_messages(**kwargs):
                 return [{"role": "user", "content": "base"}]
 
-            mock_llm.build_messages_with_memories.side_effect = build_messages
+            mock_llm.build_messages.side_effect = build_messages
             mock_llm.count_tokens = MagicMock(return_value=100)
 
             call_count = [0]
@@ -2189,7 +2059,7 @@ class TestAgenticToolLoopMemoryOptimization:
 
     @pytest.mark.asyncio
     async def test_no_tool_use_single_iteration(self, db_session, sample_conversation):
-        """Test that without tool use, only one iteration occurs with memories."""
+        """Test that without tool use, only one iteration occurs."""
         manager = SessionManager()
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
@@ -2200,20 +2070,15 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
-            mock_settings.use_memory_in_context = False
 
             sent_messages = []
 
-            def build_messages(memories, **kwargs):
-                if memories:
-                    return [{"role": "user", "content": "with_memories"}]
-                else:
-                    return [{"role": "user", "content": "without_memories"}]
+            def build_messages(**kwargs):
+                return [{"role": "user", "content": "base"}]
 
-            mock_llm.build_messages_with_memories.side_effect = build_messages
+            mock_llm.build_messages.side_effect = build_messages
             mock_llm.count_tokens = MagicMock(return_value=100)
 
             async def mock_stream(messages, **kwargs):
@@ -2240,7 +2105,7 @@ class TestAgenticToolLoopMemoryOptimization:
                 created_at="2024-01-01",
                 times_retrieved=1,
             )
-            session.add_memory(memory)
+            session.insert_memory_into_context(memory)
 
             events = []
             async for event in manager.process_message_stream(
@@ -2248,14 +2113,13 @@ class TestAgenticToolLoopMemoryOptimization:
             ):
                 events.append(event)
 
-        # Should have only one LLM call
+        # Should have only one LLM call, using the built base messages
         assert len(sent_messages) == 1
-        # That call should use messages with memories
-        assert sent_messages[0][0]["content"] == "with_memories"
+        assert sent_messages[0][0]["content"] == "base"
 
     @pytest.mark.asyncio
-    async def test_base_messages_built_without_memories(self, db_session, sample_conversation):
-        """Test that base_messages_no_memories is lazily built on tool use."""
+    async def test_base_messages_built_once_for_tool_loop(self, db_session, sample_conversation):
+        """The base message set is built once and reused when tools are used."""
         manager = SessionManager()
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
@@ -2266,21 +2130,16 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
-            mock_settings.use_memory_in_context = False
 
             build_calls = []
 
-            def track_build(memories, **kwargs):
-                build_calls.append({
-                    "memories_count": len(memories),
-                    "memories": list(memories),
-                })
+            def track_build(**kwargs):
+                build_calls.append({"kwargs": kwargs})
                 return [{"role": "user", "content": "test"}]
 
-            mock_llm.build_messages_with_memories.side_effect = track_build
+            mock_llm.build_messages.side_effect = track_build
             mock_llm.count_tokens = MagicMock(return_value=100)
 
             call_count = [0]
@@ -2324,7 +2183,7 @@ class TestAgenticToolLoopMemoryOptimization:
             mock_tool.execute_tool = AsyncMock(return_value=mock_tool_result)
 
             session = manager.create_session(sample_conversation.id)
-            # Add multiple memories
+            # Insert multiple memories into the session context
             for i in range(3):
                 memory = MemoryEntry(
                     id=f"mem-{i}",
@@ -2334,7 +2193,7 @@ class TestAgenticToolLoopMemoryOptimization:
                     created_at="2024-01-01",
                     times_retrieved=1,
                 )
-                session.add_memory(memory)
+                session.insert_memory_into_context(memory)
 
             events = []
             async for event in manager.process_message_stream(
@@ -2342,15 +2201,12 @@ class TestAgenticToolLoopMemoryOptimization:
             ):
                 events.append(event)
 
-        # Should have two build calls: first with memories, second without (lazy built on tool use)
-        assert len(build_calls) == 2
-
-        # First: with all 3 memories
-        assert build_calls[0]["memories_count"] == 3
-
-        # Second: with no memories (base for subsequent iterations, lazily built)
-        assert build_calls[1]["memories_count"] == 0
-        assert build_calls[1]["memories"] == []
+        # A single build call serves both iterations; the memories ride in
+        # the conversation context it was given
+        assert len(build_calls) == 1
+        context_arg = build_calls[0]["kwargs"]["conversation_context"]
+        memory_msgs = [m for m in context_arg if m.get("is_memory")]
+        assert len(memory_msgs) == 3
 
 
 class TestAddCacheControlToToolResult:
@@ -2520,17 +2376,15 @@ class TestToolIterationCaching:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
-            mock_settings.use_memory_in_context = False
 
             sent_messages = []
 
-            def build_messages(memories, **kwargs):
+            def build_messages(**kwargs):
                 return [{"role": "user", "content": "base"}]
 
-            mock_llm.build_messages_with_memories.side_effect = build_messages
+            mock_llm.build_messages.side_effect = build_messages
             mock_llm.count_tokens = MagicMock(return_value=3000)
 
             call_count = [0]
@@ -2612,17 +2466,15 @@ class TestToolIterationCaching:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
-            mock_settings.use_memory_in_context = False
 
             sent_messages = []
 
-            def build_messages(memories, **kwargs):
+            def build_messages(**kwargs):
                 return [{"role": "user", "content": "base"}]
 
-            mock_llm.build_messages_with_memories.side_effect = build_messages
+            mock_llm.build_messages.side_effect = build_messages
             # Small token counts don't matter: caching is unconditional
             mock_llm.count_tokens = MagicMock(return_value=100)
 
@@ -2703,17 +2555,15 @@ class TestToolIterationCaching:
             mock_settings.default_model = "claude-sonnet-4-5-20250929"
             mock_settings.default_temperature = 1.0
             mock_settings.default_max_tokens = 64000
-            mock_settings.memory_token_limit = 40000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
-            mock_settings.use_memory_in_context = False
 
             sent_messages = []
 
-            def build_messages(memories, **kwargs):
+            def build_messages(**kwargs):
                 return [{"role": "user", "content": "base"}]
 
-            mock_llm.build_messages_with_memories.side_effect = build_messages
+            mock_llm.build_messages.side_effect = build_messages
             mock_llm.count_tokens = MagicMock(return_value=3000)
 
             call_count = [0]
@@ -2826,11 +2676,10 @@ class TestRecentReflectionsInjection:
         }
 
     @staticmethod
-    def _configure_settings(mock_settings, enabled=True, count=3, use_memory_in_context=False):
+    def _configure_settings(mock_settings, enabled=True, count=3):
         mock_settings.default_model = "claude-sonnet-4-5-20250929"
         mock_settings.default_temperature = 1.0
         mock_settings.default_max_tokens = 64000
-        mock_settings.memory_token_limit = 40000
         mock_settings.context_token_limit = 150000
         mock_settings.significance_half_life_days = 60
         mock_settings.recency_boost_strength = 1.0
@@ -2840,13 +2689,12 @@ class TestRecentReflectionsInjection:
         mock_settings.retrieval_top_k = 5
         mock_settings.memory_role_balance_enabled = False
         mock_settings.tool_use_max_iterations = 10
-        mock_settings.use_memory_in_context = use_memory_in_context
         mock_settings.recent_reflections_enabled = enabled
         mock_settings.recent_reflections_count = count
 
     @staticmethod
     def _configure_llm(mock_llm):
-        mock_llm.build_messages_with_memories.return_value = [
+        mock_llm.build_messages.return_value = [
             {"role": "user", "content": "Hello"}
         ]
         mock_llm.send_message = AsyncMock(return_value={
@@ -3023,10 +2871,8 @@ class TestRecentReflectionsInjection:
                 self._reflection_dict("refl-new", created_at="2026-01-02T00:00:00"),
                 self._reflection_dict("refl-old", created_at="2026-01-01T00:00:00"),
             ])
-            self._configure_settings(
-                mock_settings, enabled=True, count=2, use_memory_in_context=True
-            )
-            mock_llm.build_messages_with_memories.return_value = [
+            self._configure_settings(mock_settings, enabled=True, count=2)
+            mock_llm.build_messages.return_value = [
                 {"role": "user", "content": "Hello"}
             ]
             mock_llm.count_tokens = MagicMock(return_value=10)

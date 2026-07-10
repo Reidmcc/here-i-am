@@ -300,31 +300,6 @@ def estimate_prompt_tokens(
     return count_tokens_fn(text) if text else 0
 
 
-def build_memory_block_text(
-    memories: List[Dict[str, Any]],
-    conversation_start_date: Optional[datetime] = None,
-) -> str:
-    """
-    Build the memory block text for token counting purposes.
-
-    This matches the format used in anthropic_service.build_messages_with_memories
-    where memories are placed after conversation history.
-    
-    NOTE: This function is used by the legacy memory block system and will be
-    deprecated when memory-context-integration is complete.
-    """
-    if not memories:
-        return ""
-
-    memory_block = "[MEMORIES FROM PREVIOUS CONVERSATIONS]\n\n"
-    for mem in memories:
-        memory_block += f"Memory (from {mem['created_at']}):\n"
-        memory_block += f'"{mem["content"]}"\n\n'
-    memory_block += "[/MEMORIES]"
-
-    return memory_block
-
-
 def add_cache_control_to_tool_result(user_msg: Dict[str, Any]) -> Dict[str, Any]:
     """
     Add cache_control to the last tool_result block in a user message.
@@ -332,9 +307,8 @@ def add_cache_control_to_tool_result(user_msg: Dict[str, Any]) -> Dict[str, Any]
     This enables Anthropic's prompt caching between tool iterations: the
     breakpoint sits on the latest tool_result every iteration, so each API
     call writes only the newest exchange and reads the rest of the prefix
-    from cache. The 1h TTL matters because with memory-in-context
-    (USE_MEMORY_IN_CONTEXT=true) tool exchanges can survive into the next
-    turn, which is human-paced and may exceed the 5-minute TTL.
+    from cache. The 1h TTL matters because tool exchanges survive into the
+    next turn, which is human-paced and may exceed the 5-minute TTL.
 
     Args:
         user_msg: The user message containing tool_result content blocks
@@ -369,5 +343,4 @@ _build_memory_queries = build_memory_queries
 _calculate_significance = calculate_significance
 _ensure_role_balance = ensure_role_balance
 _get_message_content_text = get_message_content_text
-_build_memory_block_text = build_memory_block_text
 _add_cache_control_to_tool_result = add_cache_control_to_tool_result

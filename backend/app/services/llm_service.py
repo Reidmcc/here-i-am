@@ -418,9 +418,8 @@ class LLMService:
         else:
             yield {"type": "error", "error": f"Unsupported provider: {provider}"}
 
-    def build_messages_with_memories(
+    def build_messages(
         self,
-        memories: List[Dict[str, Any]],
         conversation_context: List[Dict[str, str]],
         current_message: Optional[str],
         model: Optional[str] = None,
@@ -441,7 +440,7 @@ class LLMService:
         provider_hint: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Build the message list for API call with memory injection.
+        Build the message list for the API call.
 
         Uses the appropriate service based on model/provider.
         When enable_caching=True and using Anthropic, adds cache_control markers
@@ -449,9 +448,11 @@ class LLMService:
 
         Cache structure (conversation-first):
         1. Cached conversation history (with cache breakpoint at end)
-        2. New conversation history (uncached)
-        3. Memories (after conversation, so retrievals don't invalidate cache)
-        4. Current user message (with optional attachments for multimodal)
+        2. New conversation history (uncached; includes memory insertions)
+        3. Current user message (with optional attachments for multimodal)
+
+        Retrieved memories are embedded in the conversation context as messages,
+        so new retrievals extend the history instead of invalidating the cache.
 
         For cache hits, the cached_context must be IDENTICAL to the previous call.
 
@@ -463,7 +464,6 @@ class LLMService:
         history or memories. The AI's response becomes the persisted context.
 
         Args:
-            memories: List of memory dicts to inject
             conversation_context: Previous messages in conversation
             current_message: The current user message (None for multi-entity continuation)
             model: Model ID (used to determine provider)
@@ -491,8 +491,7 @@ class LLMService:
             provider = ModelProvider.ANTHROPIC
         use_caching = enable_caching and provider == ModelProvider.ANTHROPIC
 
-        return anthropic_service.build_messages_with_memories(
-            memories=memories,
+        return anthropic_service.build_messages(
             conversation_context=conversation_context,
             current_message=current_message,
             conversation_start_date=conversation_start_date,

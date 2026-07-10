@@ -67,11 +67,8 @@ async def _context_status() -> str:
         memories_in_context = session.get_in_context_memory_count()
 
         # Memories that were retrieved this conversation but are no longer in context
-        if session.use_memory_in_context:
-            in_context_ids = session.memory_tracker.get_in_context_memory_ids(message_count)
-            rolled_out_memories = len(session.memory_tracker.retrieved_ids - in_context_ids)
-        else:
-            rolled_out_memories = len(session.retrieved_ids - session.in_context_ids)
+        in_context_ids = session.memory_tracker.get_in_context_memory_ids(message_count)
+        rolled_out_memories = len(session.memory_tracker.retrieved_ids - in_context_ids)
 
         lines = [
             "[CONTEXT STATUS]",

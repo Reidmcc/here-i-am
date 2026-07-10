@@ -278,27 +278,6 @@ def mock_pinecone_index():
 
 
 @pytest.fixture
-def sample_memories():
-    """Create sample memory data for injection."""
-    return [
-        {
-            "id": "mem-1",
-            "content": "I remember you mentioned enjoying programming.",
-            "created_at": "2024-01-01",
-            "times_retrieved": 3,
-            "role": "assistant",
-        },
-        {
-            "id": "mem-2",
-            "content": "We discussed AI ethics last time.",
-            "created_at": "2024-01-02",
-            "times_retrieved": 1,
-            "role": "human",
-        },
-    ]
-
-
-@pytest.fixture
 def sample_conversation_context():
     """Create sample conversation context."""
     return [

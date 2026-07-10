@@ -165,19 +165,18 @@ class TestAnthropicService:
         assert call_kwargs["temperature"] == 0.5
         assert call_kwargs["max_tokens"] == 2000
 
-    def test_build_messages_with_memories_no_memories(self, mock_encoder):
-        """Test building messages without memories but with conversation context."""
+    def test_build_messages_with_context(self, mock_encoder):
+        """Test building messages with conversation context."""
         service = AnthropicService()
         service._encoder = mock_encoder
 
-        memories = []
         context = [
             {"role": "user", "content": "Hi"},
             {"role": "assistant", "content": "Hello!"},
         ]
         current = "How are you?"
 
-        messages = service.build_messages_with_memories(memories, context, current)
+        messages = service.build_messages(context, current)
 
         # Conversation-first structure:
         # 1. user: [CONVERSATION HISTORY] + Hi
@@ -197,20 +196,19 @@ class TestAnthropicService:
         assert "[DATE CONTEXT]" in messages[2]["content"]
         assert "How are you?" in messages[2]["content"]
 
-    def test_build_messages_with_memories_no_memories_no_caching(self, mock_encoder):
-        """Test building messages without memories and caching disabled."""
+    def test_build_messages_no_caching(self, mock_encoder):
+        """Test building messages with caching disabled."""
         service = AnthropicService()
         service._encoder = mock_encoder
 
-        memories = []
         context = [
             {"role": "user", "content": "Hi"},
             {"role": "assistant", "content": "Hello!"},
         ]
         current = "How are you?"
 
-        messages = service.build_messages_with_memories(
-            memories, context, current, enable_caching=False
+        messages = service.build_messages(
+            context, current, enable_caching=False
         )
 
         # Conversation-first structure (same as with caching):
@@ -240,8 +238,8 @@ class TestAnthropicService:
             }],
         }
 
-        messages = service.build_messages_with_memories(
-            [], [], None, attachments=attachments
+        messages = service.build_messages(
+            [], None, attachments=attachments
         )
 
         # Final user message carries the file content under the normal
@@ -265,8 +263,8 @@ class TestAnthropicService:
             {"role": "assistant", "content": "Hello!"},
         ]
 
-        messages = service.build_messages_with_memories(
-            [], context, None,
+        messages = service.build_messages(
+            context, None,
             cached_context=context, new_context=[],
             attachments={"images": [], "files": []},
         )
@@ -278,89 +276,38 @@ class TestAnthropicService:
         )
         assert "[CONTINUATION]" in joined
 
-    def test_build_messages_with_memories(self, sample_memories, mock_encoder):
-        """Test building messages with memories."""
+    def test_build_messages_memory_messages_in_context(self, mock_encoder):
+        """Memory messages embedded in the context flow through like any other message."""
         service = AnthropicService()
         service._encoder = mock_encoder
 
-        context = []
-        current = "What do you remember?"
+        context = [
+            {
+                "role": "user",
+                "content": "[MEMORY mem-1 from 2024-01-01 - originally from you]\nI remember you mentioned enjoying programming.\n[/MEMORY]",
+                "is_memory": True,
+                "memory_id": "mem-1",
+            },
+            {"role": "user", "content": "Hello!"},
+            {"role": "assistant", "content": "Hi there!"},
+        ]
 
-        messages = service.build_messages_with_memories(sample_memories, context, current)
+        messages = service.build_messages(context, "Tell me more.")
 
-        # Conversation-first structure with no context (memories only):
-        # Single user message with: [CONVERSATION HISTORY] + [/CONVERSATION HISTORY] + [MEMORIES] + date + current
-        assert len(messages) == 1
-
-        # Single message should contain memories in the final block
-        assert messages[0]["role"] == "user"
-        content = messages[0]["content"]
-        if isinstance(content, list):
-            content = content[0]["text"]
-        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in content
-        assert "I remember you mentioned enjoying programming" in content
-        assert "[/MEMORIES]" in content
-        assert "[DATE CONTEXT]" in content
-        assert "What do you remember?" in content
-
-    def test_build_messages_with_memories_and_context(
-        self, sample_memories, sample_conversation_context, mock_encoder
-    ):
-        """Test building messages with both memories and context."""
-        service = AnthropicService()
-        service._encoder = mock_encoder
-
-        current = "Tell me more."
-
-        messages = service.build_messages_with_memories(
-            sample_memories,
-            sample_conversation_context,
-            current
-        )
-
-        # Conversation-first structure with memories and context:
-        # 1. user: [CONVERSATION HISTORY] + Hello!
-        # 2. assistant: Hi there!
-        # 3. user: [/CONVERSATION HISTORY] + [MEMORIES] + memories + [/MEMORIES] + date + current
-        assert len(messages) == 3
-
-        # First message: conversation history start
+        # Memory message is part of the conversation history
         assert messages[0]["role"] == "user"
         assert "[CONVERSATION HISTORY]" in messages[0]["content"]
-        assert "Hello!" in messages[0]["content"]
+        assert "[MEMORY mem-1" in messages[0]["content"]
+        assert "enjoying programming" in messages[0]["content"]
 
-        # Second message: assistant response from history
-        assert messages[1]["role"] == "assistant"
-        assert "Hi there!" in messages[1]["content"]
-
-        # Third message: combined final message
-        assert messages[2]["role"] == "user"
-        final_content = messages[2]["content"]
+        # Final message has no memory block, just the current message framing
+        final_content = messages[-1]["content"]
         assert "[/CONVERSATION HISTORY]" in final_content
-        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in final_content
-        assert "I remember you mentioned enjoying programming" in final_content
+        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" not in final_content
         assert "[DATE CONTEXT]" in final_content
         assert "Tell me more." in final_content
 
-    def test_build_messages_memory_format(self, sample_memories, mock_encoder):
-        """Test that memories are formatted correctly."""
-        service = AnthropicService()
-        service._encoder = mock_encoder
-
-        messages = service.build_messages_with_memories(sample_memories, [], "Test")
-
-        # With no context, single message contains everything
-        memory_content = messages[0]["content"]
-        if isinstance(memory_content, list):
-            memory_content = memory_content[0]["text"]
-
-        # Check formatting - memories include short ID (for memory_mark/memory_release)
-        # and role; times_retrieved was removed for cache stability
-        assert "Memory mem-1 from assistant (from 2024-01-01):" in memory_content
-        assert '"I remember you mentioned enjoying programming."' in memory_content
-        assert "Memory mem-2 from user (from 2024-01-02):" in memory_content
-
-    def test_build_messages_caching_structure(self, sample_memories):
+    def test_build_messages_caching_structure(self):
         """Test that cache_control markers are added correctly on conversation history."""
         service = AnthropicService()
 
@@ -380,8 +327,8 @@ class TestAnthropicService:
             {"role": "assistant", "content": "Hi " * 100},
         ]
 
-        messages = service.build_messages_with_memories(
-            sample_memories, [], "Test",
+        messages = service.build_messages(
+            [], "Test",
             cached_context=cached_context,
             new_context=[],
         )
@@ -394,40 +341,6 @@ class TestAnthropicService:
         assert last_cached_msg["content"][0]["type"] == "text"
         assert "cache_control" in last_cached_msg["content"][0]
         assert last_cached_msg["content"][0]["cache_control"]["type"] == "ephemeral"
-
-    def test_build_messages_all_memories_consolidated(self):
-        """Test that all memories (old and new) are consolidated into one block."""
-        service = AnthropicService()
-
-        # Mock encoder and cache
-        mock_encoder = MagicMock()
-        mock_encoder.encode.return_value = list(range(1500))
-        service._encoder = mock_encoder
-
-        mock_cache = MagicMock()
-        mock_cache.get_token_count.return_value = None
-        service._cache_service = mock_cache
-
-        memories = [
-            {"id": "old-1", "content": "Old memory", "created_at": "2024-01-01"},
-            {"id": "new-1", "content": "New memory", "created_at": "2024-01-02"},
-        ]
-        new_memory_ids = {"new-1"}
-
-        messages = service.build_messages_with_memories(
-            memories, [], "Test", new_memory_ids=new_memory_ids
-        )
-
-        # All memories should be in the final message (conversation-first structure)
-        final_content = messages[-1]["content"]
-        if isinstance(final_content, list):
-            final_content = final_content[0]["text"]
-        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in final_content
-        assert "Old memory" in final_content
-        assert "New memory" in final_content
-        assert "[/MEMORIES]" in final_content
-        assert "[DATE CONTEXT]" in final_content
-        assert "Test" in final_content
 
 
 class TestCacheBreakpointPlacement:
@@ -451,8 +364,8 @@ class TestCacheBreakpointPlacement:
             {"role": "assistant", "content": "Hi " * 100},
         ]
 
-        messages = service.build_messages_with_memories(
-            [], [], "Test",
+        messages = service.build_messages(
+            [], "Test",
             cached_context=cached_context,
             new_context=[],
         )
@@ -480,8 +393,8 @@ class TestCacheBreakpointPlacement:
             {"role": "assistant", "content": "Short reply"},
         ]
 
-        messages = service.build_messages_with_memories(
-            [], [], "Test",
+        messages = service.build_messages(
+            [], "Test",
             cached_context=cached_context,
             new_context=[],
         )
@@ -511,8 +424,7 @@ class TestCacheBreakpointPlacement:
             {"role": "assistant", "content": "Second assistant response " * 50},
         ]
 
-        messages = service.build_messages_with_memories(
-            memories=[],
+        messages = service.build_messages(
             conversation_context=[],
             current_message="Test",
             cached_context=cached_context,
@@ -547,8 +459,7 @@ class TestCacheBreakpointPlacement:
             {"role": "assistant", "content": "New response"},
         ]
 
-        messages = service.build_messages_with_memories(
-            memories=[],
+        messages = service.build_messages(
             conversation_context=[],
             current_message="Test",
             cached_context=cached_context,
@@ -575,30 +486,20 @@ class TestCacheBreakpointPlacement:
         mock_cache.get_token_count.return_value = None
         service._cache_service = mock_cache
 
-        memories = [
-            {"id": "mem-1", "content": "Memory 1 " * 50, "created_at": "2024-01-01"},
-            {"id": "mem-2", "content": "Memory 2 " * 50, "created_at": "2024-01-02"},
-        ]
         cached_context = [
             {"role": "user", "content": "Hello " * 50},
             {"role": "assistant", "content": "Hi " * 50},
         ]
 
-        from datetime import datetime
-        with patch.object(service, 'build_messages_with_memories') as original:
-            original.side_effect = lambda *args, **kwargs: AnthropicService.build_messages_with_memories(service, *args, **kwargs)
-
         # Build messages twice with identical inputs
-        messages1 = service.build_messages_with_memories(
-            memories=memories,
+        messages1 = service.build_messages(
             conversation_context=[],
             current_message="Test",
             cached_context=cached_context,
             new_context=[],
         )
 
-        messages2 = service.build_messages_with_memories(
-            memories=memories,
+        messages2 = service.build_messages(
             conversation_context=[],
             current_message="Test",
             cached_context=cached_context,
@@ -637,8 +538,7 @@ class TestCacheBreakpointPlacement:
         ]
 
         # Build messages twice
-        messages1 = service.build_messages_with_memories(
-            memories=[],
+        messages1 = service.build_messages(
             conversation_context=[],
             current_message="Test",
             cached_context=cached_context,
@@ -648,8 +548,7 @@ class TestCacheBreakpointPlacement:
             responding_entity_label="Claude",
         )
 
-        messages2 = service.build_messages_with_memories(
-            memories=[],
+        messages2 = service.build_messages(
             conversation_context=[],
             current_message="Test",
             cached_context=cached_context,
@@ -684,8 +583,7 @@ class TestCacheBreakpointPlacement:
         ]
 
         # Build for Claude
-        messages_claude = service.build_messages_with_memories(
-            memories=[],
+        messages_claude = service.build_messages(
             conversation_context=[],
             current_message="Test",
             cached_context=cached_context,
@@ -696,8 +594,7 @@ class TestCacheBreakpointPlacement:
         )
 
         # Build for GPT
-        messages_gpt = service.build_messages_with_memories(
-            memories=[],
+        messages_gpt = service.build_messages(
             conversation_context=[],
             current_message="Test",
             cached_context=cached_context,
@@ -720,8 +617,8 @@ class TestCacheBreakpointPlacement:
 class TestTwoBreakpointCachingStrategy:
     """Tests for the conversation-first caching strategy."""
 
-    def test_conversation_history_cached_not_memories(self):
-        """Test that conversation history is cached, not memories."""
+    def test_new_memory_messages_not_cached(self):
+        """Newly inserted memory messages ride in new_context without cache_control."""
         service = AnthropicService()
 
         mock_encoder = MagicMock()
@@ -732,34 +629,37 @@ class TestTwoBreakpointCachingStrategy:
         mock_cache.get_token_count.return_value = None
         service._cache_service = mock_cache
 
-        memories = [
-            {"id": "mem-1", "content": "Memory " * 200, "created_at": "2024-01-01"},
-        ]
         cached_context = [
             {"role": "user", "content": "Question " * 100},
             {"role": "assistant", "content": "Answer " * 100},
         ]
+        new_context = [
+            {
+                "role": "user",
+                "content": "[MEMORY mem-1 from 2024-01-01 - originally from you]\nMemory content\n[/MEMORY]",
+                "is_memory": True,
+                "memory_id": "mem-1",
+            },
+        ]
 
-        messages = service.build_messages_with_memories(
-            memories=memories,
+        messages = service.build_messages(
             conversation_context=[],
             current_message="Test",
             cached_context=cached_context,
-            new_context=[],
+            new_context=new_context,
         )
 
-        # Last cached context message should have cache_control (not memory block)
-        # Structure: context[0], context[1] with cache_control, final with memories
+        # Cache breakpoint stays on the last cached history message
         last_cached = messages[1]
         assert last_cached["role"] == "assistant"
         assert isinstance(last_cached["content"], list)
         assert last_cached["content"][0]["cache_control"]["type"] == "ephemeral"
 
-        # Final message should contain memories (not cached)
-        final_msg = messages[2]
-        assert final_msg["role"] == "user"
-        assert isinstance(final_msg["content"], str)
-        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in final_msg["content"]
+        # Memory message follows uncached, as a plain string
+        memory_msg = messages[2]
+        assert memory_msg["role"] == "user"
+        assert isinstance(memory_msg["content"], str)
+        assert "[MEMORY mem-1" in memory_msg["content"]
 
     def test_breakpoint_2_last_cached_context_has_cache_control(self):
         """Test breakpoint 2: last cached context message has cache_control."""
@@ -778,8 +678,7 @@ class TestTwoBreakpointCachingStrategy:
             {"role": "assistant", "content": "Answer " * 100},
         ]
 
-        messages = service.build_messages_with_memories(
-            memories=[],
+        messages = service.build_messages(
             conversation_context=[],
             current_message="Test",
             cached_context=cached_context,
@@ -793,7 +692,7 @@ class TestTwoBreakpointCachingStrategy:
         assert isinstance(last_cached["content"], list)
         assert last_cached["content"][0]["cache_control"]["type"] == "ephemeral"
 
-    def test_conversation_first_structure_with_memories_and_context(self):
+    def test_conversation_first_structure_with_context(self):
         """Test conversation-first structure with single cache breakpoint."""
         service = AnthropicService()
 
@@ -805,16 +704,12 @@ class TestTwoBreakpointCachingStrategy:
         mock_cache.get_token_count.return_value = None
         service._cache_service = mock_cache
 
-        memories = [
-            {"id": "mem-1", "content": "Memory " * 200, "created_at": "2024-01-01"},
-        ]
         cached_context = [
             {"role": "user", "content": "Question " * 100},
             {"role": "assistant", "content": "Answer " * 100},
         ]
 
-        messages = service.build_messages_with_memories(
-            memories=memories,
+        messages = service.build_messages(
             conversation_context=[],
             current_message="Test",
             cached_context=cached_context,
@@ -824,7 +719,7 @@ class TestTwoBreakpointCachingStrategy:
         # Structure should be (3 messages for proper alternation):
         # 0: cached context[0] with [CONVERSATION HISTORY] marker
         # 1: cached context[1] with cache_control (cache breakpoint)
-        # 2: combined: [/CONVERSATION HISTORY] + memories + [CURRENT USER MESSAGE] + date + current message
+        # 2: combined: [/CONVERSATION HISTORY] + [CURRENT USER MESSAGE] + date + current message
 
         assert len(messages) == 3
 
@@ -841,8 +736,6 @@ class TestTwoBreakpointCachingStrategy:
         # Combined final message (maintains proper user/assistant alternation)
         assert messages[2]["role"] == "user"
         assert "[/CONVERSATION HISTORY]" in messages[2]["content"]
-        assert "[MEMORIES FROM PREVIOUS CONVERSATIONS]" in messages[2]["content"]
-        assert "Memory " in messages[2]["content"]
         assert "[CURRENT USER MESSAGE]" in messages[2]["content"]
         assert "[DATE CONTEXT]" in messages[2]["content"]
         assert "Test" in messages[2]["content"]
@@ -868,8 +761,7 @@ class TestTwoBreakpointCachingStrategy:
             {"role": "assistant", "content": "New answer"},
         ]
 
-        messages = service.build_messages_with_memories(
-            memories=[],
+        messages = service.build_messages(
             conversation_context=[],
             current_message="Current",
             cached_context=cached_context,

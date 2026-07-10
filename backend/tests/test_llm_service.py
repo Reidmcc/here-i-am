@@ -273,25 +273,23 @@ class TestLLMService:
             with pytest.raises(ValueError, match="not configured"):
                 await service.send_message(messages, model="claude-sonnet-4-5-20250929")
 
-    def test_build_messages_with_memories(self, sample_memories, sample_conversation_context):
-        """Test build_messages_with_memories delegates to anthropic_service."""
+    def test_build_messages(self, sample_conversation_context):
+        """Test build_messages delegates to anthropic_service."""
         service = LLMService()
 
         with patch("app.services.llm_service.anthropic_service") as mock_anthropic:
-            mock_anthropic.build_messages_with_memories.return_value = [
-                {"role": "user", "content": "Memory block"},
+            mock_anthropic.build_messages.return_value = [
+                {"role": "user", "content": "Built message"},
             ]
 
-            result = service.build_messages_with_memories(
-                sample_memories,
+            result = service.build_messages(
                 sample_conversation_context,
                 "Current message",
             )
 
             # Verify the call was made with the required parameters
-            mock_anthropic.build_messages_with_memories.assert_called_once()
-            call_kwargs = mock_anthropic.build_messages_with_memories.call_args.kwargs
-            assert call_kwargs["memories"] == sample_memories
+            mock_anthropic.build_messages.assert_called_once()
+            call_kwargs = mock_anthropic.build_messages.call_args.kwargs
             assert call_kwargs["conversation_context"] == sample_conversation_context
             assert call_kwargs["current_message"] == "Current message"
 
