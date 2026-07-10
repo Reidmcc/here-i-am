@@ -621,6 +621,7 @@ class TestSessionManager:
                 "last_retrieved_at": None,
             })
             mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
 
             mock_llm.build_messages_with_memories.return_value = [
                 {"role": "user", "content": "With memory context"}
@@ -684,6 +685,7 @@ class TestSessionManager:
                 "last_retrieved_at": None,
             })
             mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
 
             mock_llm.build_messages_with_memories.return_value = []
             mock_llm.send_message = AsyncMock(return_value={
@@ -2867,6 +2869,7 @@ class TestRecentReflectionsInjection:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.search_memories = AsyncMock(return_value=[])
             mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
             # Newest first, as the real get_recent_reflections returns them
             mock_memory.get_recent_reflections = AsyncMock(return_value=[
                 self._reflection_dict("refl-new", created_at="2026-01-02T00:00:00"),
@@ -2896,8 +2899,11 @@ class TestRecentReflectionsInjection:
             assert session.session_memories["refl-new"].source == "recent_reflection"
             assert session.session_memories["refl-new"].score == 0.0
 
-            # Retrieval tracking updated (feeds significance / reload re-insertion)
-            assert mock_memory.update_retrieval_count.call_count == 2
+            # Link-only tracking: the ConversationMemoryLink is recorded (feeds
+            # reload re-insertion/dedup) but times_retrieved is NOT incremented —
+            # that counter is reserved for semantic recall
+            assert mock_memory.record_memory_link.call_count == 2
+            mock_memory.update_retrieval_count.assert_not_called()
 
             # The fetch excluded the current conversation and was recency-limited
             call_kwargs = mock_memory.get_recent_reflections.call_args.kwargs
@@ -2916,6 +2922,7 @@ class TestRecentReflectionsInjection:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.search_memories = AsyncMock(return_value=[])
             mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
             mock_memory.get_recent_reflections = AsyncMock(return_value=[
                 self._reflection_dict("refl-1"),
             ])
@@ -2943,6 +2950,7 @@ class TestRecentReflectionsInjection:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.search_memories = AsyncMock(return_value=[])
             mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
             mock_memory.get_recent_reflections = AsyncMock(return_value=[])
             self._configure_llm(mock_llm)
             self._configure_settings(mock_settings, enabled=False)
@@ -2972,6 +2980,7 @@ class TestRecentReflectionsInjection:
                 return_value=self._reflection_dict("refl-dup", created_at="2026-01-01T00:00:00")
             )
             mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
             # Simulate the fetch returning the duplicate anyway (belt-and-braces:
             # the SQL-level exclude_ids filter is tested in test_memory_service)
             mock_memory.get_recent_reflections = AsyncMock(return_value=[
@@ -2987,11 +2996,13 @@ class TestRecentReflectionsInjection:
             call_kwargs = mock_memory.get_recent_reflections.call_args.kwargs
             assert "refl-dup" in call_kwargs["exclude_ids"]
 
-            # Injected exactly once, retrieval count updated exactly once
+            # Injected exactly once via the semantic path, which is the only
+            # one that counts as a retrieval
             retrieved_ids = [m["id"] for m in result["new_memories_retrieved"]]
             assert retrieved_ids == ["refl-dup"]
             assert result["total_memories_in_context"] == 1
             assert mock_memory.update_retrieval_count.call_count == 1
+            mock_memory.record_memory_link.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stream_first_turn_inserts_reflections_into_context(
@@ -3007,6 +3018,7 @@ class TestRecentReflectionsInjection:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.search_memories = AsyncMock(return_value=[])
             mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
             mock_memory.get_recent_reflections = AsyncMock(return_value=[
                 self._reflection_dict("refl-new", created_at="2026-01-02T00:00:00"),
                 self._reflection_dict("refl-old", created_at="2026-01-01T00:00:00"),
@@ -3069,6 +3081,7 @@ class TestRecentReflectionsInjection:
                 return_value=self._reflection_dict("refl-newest", created_at="2026-01-03T00:00:00")
             )
             mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
 
             # Emulate the real SQL behavior: exclusion applies before LIMIT,
             # so excluded reflections are backfilled by the next-most-recent
@@ -3098,8 +3111,10 @@ class TestRecentReflectionsInjection:
             assert result["total_memories_in_context"] == 3
             assert session.session_memories["refl-middle"].source == "recent_reflection"
             assert session.session_memories["refl-oldest"].source == "recent_reflection"
-            # The semantic one is not double-counted
-            assert mock_memory.update_retrieval_count.call_count == 3
+            # Only the semantic retrieval counts toward times_retrieved; the
+            # two recency-injected reflections get link-only tracking
+            assert mock_memory.update_retrieval_count.call_count == 1
+            assert mock_memory.record_memory_link.call_count == 2
 
     @staticmethod
     async def _create_multi_entity_conversation(db, spoken_entity_ids):
@@ -3161,6 +3176,7 @@ class TestRecentReflectionsInjection:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.search_memories = AsyncMock(return_value=[])
             mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
             mock_memory.get_recent_reflections = AsyncMock(return_value=[
                 self._reflection_dict("refl-b"),
             ])
@@ -3183,8 +3199,9 @@ class TestRecentReflectionsInjection:
             # sees another participant's reflections
             call_kwargs = mock_memory.get_recent_reflections.call_args.kwargs
             assert call_kwargs["entity_id"] == "entity-b"
-            mock_memory.update_retrieval_count.assert_called_once()
-            assert mock_memory.update_retrieval_count.call_args.kwargs["entity_id"] == "entity-b"
+            mock_memory.record_memory_link.assert_called_once()
+            assert mock_memory.record_memory_link.call_args.kwargs["entity_id"] == "entity-b"
+            mock_memory.update_retrieval_count.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_multi_entity_entity_that_already_spoke_gets_none(self, db_session):
@@ -3199,6 +3216,7 @@ class TestRecentReflectionsInjection:
             mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_memory.search_memories = AsyncMock(return_value=[])
             mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
             mock_memory.get_recent_reflections = AsyncMock(return_value=[
                 self._reflection_dict("refl-b"),
             ])

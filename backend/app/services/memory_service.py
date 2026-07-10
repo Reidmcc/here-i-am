@@ -537,6 +537,41 @@ class MemoryService:
             await db.rollback()
             return False
 
+    async def record_memory_link(
+        self,
+        message_id: str,
+        conversation_id: str,
+        db: AsyncSession,
+        entity_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Create a ConversationMemoryLink WITHOUT touching retrieval tracking.
+
+        Used for recency-based injections (recent reflections on the first
+        turn): the link keeps session-reload re-insertion and deduplication
+        working, but times_retrieved / last_retrieved_at stay reserved for
+        semantic recall so recency injections don't inflate significance.
+
+        Args:
+            message_id: The message/memory ID
+            conversation_id: The conversation the memory was injected into
+            db: Database session
+            entity_id: Entity scoping for multi-entity conversation isolation
+        """
+        try:
+            link = ConversationMemoryLink(
+                conversation_id=conversation_id,
+                message_id=message_id,
+                entity_id=entity_id,
+            )
+            db.add(link)
+            await db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error recording memory link: {e}")
+            await db.rollback()
+            return False
+
     async def get_retrieved_ids_for_conversation(
         self,
         conversation_id: str,
