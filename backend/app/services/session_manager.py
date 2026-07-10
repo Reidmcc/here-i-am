@@ -630,7 +630,10 @@ class SessionManager:
                     )
                     if is_new_retrieval:
                         truly_new_memory_ids.add(memory.id)
-                        await memory_service.update_retrieval_count(
+                        # Record the link only — times_retrieved/last_retrieved_at
+                        # are reserved for semantic recall, and a recency-based
+                        # injection must not inflate them
+                        await memory_service.record_memory_link(
                             memory.id,
                             session.conversation_id,
                             db,

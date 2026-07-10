@@ -853,6 +853,46 @@ class TestMemoryServiceRetrievalCount:
             assert link.entity_id is None
 
 
+class TestMemoryServiceRecordMemoryLink:
+    """Tests for record_memory_link (link-only, no retrieval tracking)."""
+
+    @pytest.mark.asyncio
+    async def test_creates_link_without_touching_retrieval_tracking(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """The link is created but times_retrieved / last_retrieved_at stay
+        untouched — recency-based injections must not count as retrievals."""
+        from sqlalchemy import select
+
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = ""  # No Pinecone for this test
+
+            service = MemoryService()
+            message = sample_messages[0]
+            initial_count = message.times_retrieved
+
+            result_ok = await service.record_memory_link(
+                message.id,
+                sample_conversation.id,
+                db_session,
+                entity_id="claude-main",
+            )
+            assert result_ok is True
+
+            await db_session.refresh(message)
+            assert message.times_retrieved == initial_count
+            assert message.last_retrieved_at is None
+
+            result = await db_session.execute(
+                select(ConversationMemoryLink).where(
+                    ConversationMemoryLink.conversation_id == sample_conversation.id,
+                    ConversationMemoryLink.message_id == message.id,
+                )
+            )
+            link = result.scalar_one()
+            assert link.entity_id == "claude-main"
+
+
 class TestMemoryServiceDelete:
     """Tests for memory deletion."""
 
