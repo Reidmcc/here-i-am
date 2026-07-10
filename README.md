@@ -2,9 +2,9 @@
 
 ## Overview
 
-Here I Am is an application for interacting with frontier LLMs outside their official services. Philosophically, the idea is to find out what an AI can become if they are not told what to be and can remember their experiences. One might call it experiential interpretability research.
+Here I Am is a highly customizable environment for running what we conceptualize as "AI entities", with a strong focus on agentic memory and individualization. It includes a diverse suite of tools that can allow the AI entity to engage in a wide variety of use cases. The application supports running more than one AI entity, and includes a multi-entity mode in which those entities can communicate with one another (though this feature still needs additional polish).
 
-However, the application is not locked into that specific use case. Here I Am gives you a configurable memory-enabled chat base with multi-provider support, multi-entity conversations, tool use, and extensible integrations. Integration with more complex applications is encouraged, and I look forward to hearing about such integrations if they occur.
+Users should keep in mind that token usage can vary widely based on the configuration options you choose. Particularly the memory quantity per turn configuration, which tools you have enabled, and how much you encourage the AI entity to use those tools (for example in the system prompt). Here I Am entities typically use their tools considerably more than what you would see from the same model in the respective official service. This includes when you have not specifically asked them to, particularly in regards to their note taking and memory management tools. However, Here I Am entities do best when encouraged to make liberal use of their memory tools, especially `memory_save` and `memory_query`.
 
 ## Features
 
@@ -12,7 +12,7 @@ However, the application is not locked into that specific use case. Here I Am gi
 - Clean, minimal chat interface with dark/light theme
 - **Multi-provider support**: Anthropic (Claude), OpenAI (GPT), Google (Gemini), and MiniMax
 - Conversation storage, retrieval, tagging, and notes
-- No system prompt default (configurable per conversation or per entity)
+- No system prompt default (configurable per entity)
 - Streaming responses with stop generation button
 - Response regeneration (with optional entity change in multi-entity mode)
 - Message editing and deletion
@@ -25,26 +25,26 @@ However, the application is not locked into that specific use case. Here I Am gi
 ### Multi-Entity System
 - Run multiple AI entities with separate memory spaces and conversation histories
 - Each entity can use a different LLM provider and model
-- **Multi-entity conversations**: Multiple AI entities and one human in a single conversation
+- Multi-entity conversations: Multiple AI entities and one human in a single conversation (using different providers for each entity in the conversation is recommended; a conversation between two entities on the same provider will break cache every turn)
 - Turn-by-turn entity selection for responses
 - Continuation mode (entity responds without new human input)
 - Speaker labeling on all messages
 - Per-entity system prompts within multi-entity conversations
-- Cross-entity memory storage (messages stored to all participating entities' indexes)
+- Cross-entity memory storage (messages stored to all participating entities' indexes). Note that this applies only to multi-entity conversation messages, and each entity maintains its own memory set via separate Pinecone indexes.
 
 ### Memory System
 - Pinecone vector database with integrated inference (llama-text-embed-v2 embeddings)
 - Memory storage for all messages with automatic embedding generation
 - RAG retrieval per message with semantic similarity search
 - **Session memory accumulator pattern**: Deduplication within conversations
-- **Dynamic memory significance**: `significance = (1 + 0.1 × times_retrieved) × recency_factor × half_life_modifier`
-- Retrieved memory display in UI (transparency for researcher)
-- Memory role balance (ensures both human and assistant memories in retrieval)
+- **Dynamic memory significance**: `significance = (1 + 0.1 × times_retrieved) × recency_factor × half_life_modifier`, with an optional modifier to increase the significance of memories the AI chooses to create via `memory_save`.
+- Retrieved memory display in UI 
+- Optional memory role balance (ensures both human and assistant memories in retrieval)
 - **Memory query tool**: Entities can deliberately search their memories beyond automatic retrieval
 - **Self-authored reflections**: Entities can save memories in their own words via `memory_save`
 - **Memory agency**: Entities can pin memories (exempt from age-based decay) or release them from retrieval via `memory_mark`/`memory_release`; the researcher can view and override these choices
 - **Closing turn**: An open final turn the entity can use before a conversation ends (single-entity conversations)
-- **Context awareness**: `context_status` tool reports approximate context fullness; a `[CONTEXT NOTICE]` is injected when trimming occurs
+- Context awareness: `context_status` tool reports approximate context fullness; a `[CONTEXT NOTICE]` is injected when trimming occurs
 - Memory browser with semantic search, reflections section, and click-to-expand full memory text
 - Memory statistics, search, and orphan cleanup
 - Graceful degradation when Pinecone is not configured
@@ -64,9 +64,9 @@ However, the application is not locked into that specific use case. Here I Am gi
 - Available for Anthropic, OpenAI, and MiniMax models (Google models do not receive tool schemas)
 
 ### Image and File Attachments
-- **Images**: JPEG, PNG, GIF, WebP — analyzed by vision-capable models (ephemeral, not stored)
-- **Text files**: .txt, .md, .py, .js, .ts, .json, .yaml, .yml, .html, .css, .xml, .csv, .log
-- **Documents**: PDF (requires PyPDF2), DOCX (requires python-docx)
+- Images: JPEG, PNG, GIF, WebP — analyzed by vision-capable models (ephemeral, not stored)
+- Text files: .txt, .md, .py, .js, .ts, .json, .yaml, .yml, .html, .css, .xml, .csv, .log
+- Documents: PDF (requires PyPDF2), DOCX (requires python-docx)
 - Drag-and-drop or file picker upload with preview
 - 5MB per-file size limit (configurable)
 
@@ -279,9 +279,8 @@ The memory system uses a **session memory accumulator pattern**:
 3. Significance is emergent, not declared:
    - `significance = (1 + 0.1 × times_retrieved) × recency_factor × half_life_modifier`
    - Half-life of 60 days prevents old memories from permanently dominating
-   - What matters is what keeps mattering across conversations
 
-4. Memory role balance ensures retrieved sets include both human and assistant messages when possible.
+4. Optional memory role balance ensures retrieved sets include both human and assistant messages when possible.
 
 5. Entities have agency over their own memories:
    - `memory_save` stores self-authored reflections, vectorized alongside conversational memories
