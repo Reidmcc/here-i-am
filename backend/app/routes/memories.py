@@ -65,6 +65,7 @@ def calculate_significance(
     created_at: datetime,
     last_retrieved_at: Optional[datetime],
     memory_status: Optional[str] = None,
+    role: Optional[str] = None,
 ) -> float:
     """
     Calculate dynamic significance based on retrieval patterns.
@@ -76,6 +77,8 @@ def calculate_significance(
     - recency_factor: Boost based on how recently retrieved (decays over time)
     - half_life_modifier: Decay based on memory age (halves every N days);
       pinned memories (memory_status == "pinned") are exempt from age decay
+    - role: memories saved via memory_save (role == "reflection") are multiplied
+      by settings.reflection_significance_multiplier
     """
     now = datetime.utcnow()
 
@@ -96,6 +99,10 @@ def calculate_significance(
     # Calculate significance (0.1 weight on times_retrieved to prevent retrieval
     # count from dominating; +1 base so never-retrieved memories aren't zeroed out)
     significance = (1 + 0.1 * times_retrieved) * recency_factor * half_life_modifier
+
+    # Boost self-authored memories (saved via the memory_save tool)
+    if role == "reflection":
+        significance *= settings.reflection_significance_multiplier
 
     # Apply floor
     return max(significance, settings.significance_floor)
@@ -144,6 +151,7 @@ async def list_memories(
             msg.created_at,
             msg.last_retrieved_at,
             msg.memory_status,
+            msg.role.value,
         )
         memories.append({
             "id": msg.id,
@@ -248,6 +256,7 @@ async def search_memories(
                 datetime.fromisoformat(full_data["created_at"]),
                 datetime.fromisoformat(full_data["last_retrieved_at"]) if full_data["last_retrieved_at"] else None,
                 full_data.get("memory_status"),
+                full_data.get("role"),
             )
             item = {
                 **full_data,
@@ -338,7 +347,9 @@ async def get_memory_stats(
 
     memories_with_sig = []
     for msg in messages:
-        sig = calculate_significance(msg.times_retrieved, msg.created_at, msg.last_retrieved_at)
+        sig = calculate_significance(
+            msg.times_retrieved, msg.created_at, msg.last_retrieved_at, role=msg.role.value
+        )
         memories_with_sig.append({
             "id": msg.id,
             "content_preview": msg.content[:100],
@@ -522,7 +533,7 @@ async def list_memory_overrides(
             times_retrieved=msg.times_retrieved,
             last_retrieved_at=msg.last_retrieved_at,
             significance=calculate_significance(
-                msg.times_retrieved, msg.created_at, msg.last_retrieved_at, msg.memory_status
+                msg.times_retrieved, msg.created_at, msg.last_retrieved_at, msg.memory_status, msg.role.value
             ),
             memory_status=msg.memory_status,
         )
@@ -579,6 +590,7 @@ async def get_memory(
         message.created_at,
         message.last_retrieved_at,
         message.memory_status,
+        message.role.value,
     )
 
     return MemoryResponse(

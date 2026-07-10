@@ -88,12 +88,15 @@ Significance (`session_helpers.calculate_significance`, also `routes/memories.py
 
 ```
 significance = max(
-    (1 + 0.1 * times_retrieved) * recency_factor * half_life_modifier,
+    (1 + 0.1 * times_retrieved) * recency_factor * half_life_modifier * reflection_multiplier,
     significance_floor   # 0.25
 )
-recency_factor    = 1.0 + min(1 / max(days_since_retrieval, 1), recency_boost_strength=1.2)
-half_life_modifier = 0.5 ** (days_since_creation / 60)
+recency_factor        = 1.0 + min(1 / max(days_since_retrieval, 1), recency_boost_strength=1.2)
+half_life_modifier    = 0.5 ** (days_since_creation / 60)
+reflection_multiplier = reflection_significance_multiplier (=1.5) if role == "reflection" else 1.0
 ```
+
+- **Reflection boost:** memories the entity saved via `memory_save` (`role="reflection"`) get their significance multiplied by `reflection_significance_multiplier` (default 1.5, configurable). Set to 1.0 to disable.
 
 - **Re-ranking:** retrieve `top_k * retrieval_candidate_multiplier` (=2x) candidates, sort by `similarity * (1 + significance)`, keep top_k.
 - **Session accumulator:** `ConversationSession.session_memories` + `retrieved_ids` deduplicate within a conversation. Already-in-context memories are dropped without backfill (no quality dilution).

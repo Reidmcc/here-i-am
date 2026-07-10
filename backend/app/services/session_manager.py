@@ -585,6 +585,7 @@ class SessionManager:
                     mem_data["created_at"],
                     mem_data["last_retrieved_at"],
                     memory_status=mem_data.get("memory_status"),
+                    role=mem_data.get("role"),
                 )
 
                 created_at = mem_data["created_at"]
@@ -786,6 +787,7 @@ class SessionManager:
                         mem_data["created_at"],
                         mem_data["last_retrieved_at"],
                         memory_status=mem_data.get("memory_status"),
+                        role=mem_data.get("role"),
                     )
                     # Combined score: similarity boosted by significance
                     # Memories with higher significance get priority among similar matches
@@ -1201,6 +1203,7 @@ class SessionManager:
                         mem_data["created_at"],
                         mem_data["last_retrieved_at"],
                         memory_status=mem_data.get("memory_status"),
+                        role=mem_data.get("role"),
                     )
                     # Combined score: similarity boosted by significance
                     combined_score = candidate["score"] * (1 + significance)

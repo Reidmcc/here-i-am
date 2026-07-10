@@ -50,6 +50,7 @@ def mock_settings():
         mock.significance_half_life_days = 60
         mock.recency_boost_strength = 1.2
         mock.significance_floor = 0.25
+        mock.reflection_significance_multiplier = 1.5
         mock.retrieval_candidate_multiplier = 2
         mock.query_similarity_threshold = 0.2
         yield mock
@@ -244,6 +245,40 @@ class TestSignificanceCalculation:
 
         # New memory should have higher significance
         assert sig_new > sig_old
+
+    def test_significance_reflection_multiplier(self, mock_settings):
+        """Reflections (memory_save) get their significance multiplied."""
+        now = datetime.utcnow()
+        created_at = now - timedelta(days=10)
+
+        sig_normal = calculate_significance(
+            times_retrieved=5,
+            created_at=created_at,
+            last_retrieved_at=now - timedelta(days=2),
+        )
+        sig_reflection = calculate_significance(
+            times_retrieved=5,
+            created_at=created_at,
+            last_retrieved_at=now - timedelta(days=2),
+            role="reflection",
+        )
+
+        assert sig_reflection == pytest.approx(sig_normal * 1.5, abs=0.001)
+
+    def test_significance_reflection_multiplier_respects_floor(self, mock_settings):
+        """The floor still applies after the reflection multiplier."""
+        now = datetime.utcnow()
+        # Very old memory whose boosted significance is still below the floor
+        created_at = now - timedelta(days=600)
+
+        sig = calculate_significance(
+            times_retrieved=0,
+            created_at=created_at,
+            last_retrieved_at=None,
+            role="reflection",
+        )
+
+        assert sig == pytest.approx(0.25, abs=0.001)
 
 
 class TestListMemories:

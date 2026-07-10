@@ -229,6 +229,41 @@ class TestCalculateSignificance:
         )
         assert sig_recent > sig_older
 
+    def test_reflection_role_gets_significance_multiplier(self):
+        """Memories saved via memory_save (role='reflection') are boosted."""
+        from app.config import settings
+        now = datetime.utcnow()
+        sig_normal = calculate_significance(
+            times_retrieved=0,
+            created_at=now,
+            last_retrieved_at=None,
+        )
+        sig_reflection = calculate_significance(
+            times_retrieved=0,
+            created_at=now,
+            last_retrieved_at=None,
+            role="reflection",
+        )
+        assert sig_reflection == pytest.approx(
+            sig_normal * settings.reflection_significance_multiplier, abs=0.01
+        )
+
+    def test_non_reflection_role_not_boosted(self):
+        """Human/assistant memories are unaffected by the reflection multiplier."""
+        now = datetime.utcnow()
+        sig_default = calculate_significance(
+            times_retrieved=2,
+            created_at=now,
+            last_retrieved_at=None,
+        )
+        sig_human = calculate_significance(
+            times_retrieved=2,
+            created_at=now,
+            last_retrieved_at=None,
+            role="human",
+        )
+        assert sig_human == pytest.approx(sig_default, abs=0.001)
+
 
 # ============================================================
 # Tests for ensure_role_balance
