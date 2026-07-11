@@ -224,12 +224,20 @@ async def _memory_query(query: str, num_results: int = 5) -> str:
                         continue
 
                     # Update retrieval tracking (times_retrieved and last_retrieved_at)
-                    # This makes deliberate attention influence future automatic recall
+                    # This makes deliberate attention influence future automatic recall.
+                    # create_link=False: ConversationMemoryLink drives session-reload
+                    # re-insertion of memories into the conversation context, but
+                    # memory_query results are never context memories — they live in
+                    # the persisted tool_result. Linking them would make a reload
+                    # inject [MEMORY] messages mid-history that the live (cached)
+                    # context never contained, busting the prompt cache and
+                    # duplicating content the entity already saw in the tool result.
                     await memory_service.update_retrieval_count(
                         message_id=candidate["id"],
                         conversation_id=conversation_id or "deliberate-recall",
                         db=db,
                         entity_id=entity_id,
+                        create_link=False,
                     )
 
                     # Calculate age for display

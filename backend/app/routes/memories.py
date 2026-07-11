@@ -492,6 +492,42 @@ async def cleanup_orphaned_records(
     return CleanupResponse(**result)
 
 
+class QueryLinkCleanupRequest(BaseModel):
+    dry_run: bool = True
+
+
+class QueryLinkCleanupResponse(BaseModel):
+    dry_run: bool
+    conversations_with_query_results: int
+    links_matched: int
+    links_deleted: int
+
+
+@router.post("/query-links/cleanup", response_model=QueryLinkCleanupResponse)
+async def cleanup_query_links(
+    data: Optional[QueryLinkCleanupRequest] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    One-time cleanup of stale ConversationMemoryLinks created by memory_query.
+
+    memory_query no longer records links (its results are not context
+    memories), but links from before that fix make session reload inject the
+    query results into the rebuilt context mid-history, duplicating them and
+    busting the prompt cache. This scans persisted memory_query tool results
+    for memory-ID markers and deletes the matching links.
+
+    The body is optional: a bare POST (or {}) runs in dry_run mode, which
+    only reports what would be deleted. Send {"dry_run": false} to actually
+    delete the links. SQL-only — works without Pinecone configured.
+    """
+    result = await memory_service.cleanup_memory_query_links(
+        db=db,
+        dry_run=data.dry_run if data is not None else True,
+    )
+    return QueryLinkCleanupResponse(**result)
+
+
 class MemoryStatusUpdate(BaseModel):
     # "pinned", "released", or null to clear the override
     status: Optional[str] = None

@@ -25,6 +25,7 @@ from app.services.session_helpers import (
     estimate_prompt_tokens,
     total_prompt_tokens_from_usage,
     stamp_human_message,
+    make_link_timestamper,
 )
 
 
@@ -540,3 +541,36 @@ class TestEstimatePromptTokens:
 
     def test_empty_messages(self):
         assert estimate_prompt_tokens([], lambda t: len(t)) == 0
+
+
+class TestMakeLinkTimestamper:
+    """Tests for make_link_timestamper (memory-link reload-position anchoring)."""
+
+    def test_anchors_strictly_before_send_timestamp(self):
+        """All produced timestamps must sort before the human message row's
+        created_at, so session reload re-inserts the memories before it
+        (matching the live insertion position)."""
+        sent_at = datetime(2026, 7, 10, 20, 30, 0)
+        next_link_time = make_link_timestamper(sent_at)
+
+        first = next_link_time()
+        assert first == sent_at - timedelta(milliseconds=1)
+        assert first < sent_at
+
+    def test_strictly_increasing_preserves_insertion_order(self):
+        """Reload sorts links by retrieved_at, so per-turn timestamps must be
+        strictly increasing to reproduce the live insertion order."""
+        sent_at = datetime(2026, 7, 10, 20, 30, 0)
+        next_link_time = make_link_timestamper(sent_at)
+
+        stamps = [next_link_time() for _ in range(5)]
+        assert stamps == sorted(stamps)
+        assert len(set(stamps)) == 5
+        # Even a long turn's worth of links stays before the send timestamp
+        assert all(s < sent_at for s in stamps)
+
+    def test_none_timestamp_yields_none(self):
+        """Without a send timestamp, callers fall back to wall-clock defaults."""
+        next_link_time = make_link_timestamper(None)
+        assert next_link_time() is None
+        assert next_link_time() is None

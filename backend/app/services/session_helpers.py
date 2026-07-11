@@ -8,7 +8,8 @@ Split from session_manager.py to reduce file size and improve maintainability.
 """
 
 from typing import Callable, Dict, List, Optional, Any, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import itertools
 import json
 import logging
 
@@ -335,6 +336,42 @@ def add_cache_control_to_tool_result(user_msg: Dict[str, Any]) -> Dict[str, Any]
         result["content"] = content_copy
 
     return result
+
+
+def make_link_timestamper(
+    user_message_timestamp: Optional[datetime],
+) -> Callable[[], Optional[datetime]]:
+    """
+    Build a callable producing ConversationMemoryLink.retrieved_at values for
+    one turn's memory insertions.
+
+    Session reload (load_session_from_db) interleaves memories with messages
+    by comparing link.retrieved_at against Message.created_at, so the link
+    timestamp determines where a memory lands in the rebuilt context. Live,
+    memories are inserted *before* the turn's human message, but retrieval
+    runs after the route captures the send timestamp used as the human row's
+    created_at — a wall-clock retrieved_at would place them *after* it on
+    reload, diverging from the context the prompt cache was built on.
+
+    Anchoring the links 1ms before the send timestamp (with a strictly
+    increasing microsecond per link to preserve insertion order) makes the
+    rebuilt context put these memories exactly where the live context had
+    them. The 1ms offset cannot reach back past the previous turn's rows:
+    those were committed at least a human round trip earlier.
+
+    When no send timestamp is available, returns None values so callers fall
+    back to wall-clock defaults (previous behavior).
+    """
+    if user_message_timestamp is None:
+        return lambda: None
+
+    anchor = user_message_timestamp - timedelta(milliseconds=1)
+    counter = itertools.count()
+
+    def next_link_time() -> Optional[datetime]:
+        return anchor + timedelta(microseconds=next(counter))
+
+    return next_link_time
 
 
 # Backward compatibility aliases (with underscore prefix matching old names)
