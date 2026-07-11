@@ -852,6 +852,76 @@ class TestMemoryServiceRetrievalCount:
             link = result.scalar_one()
             assert link.entity_id is None
 
+    @pytest.mark.asyncio
+    async def test_update_retrieval_count_create_link_false_skips_link(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """create_link=False (memory_query) bumps retrieval tracking but must
+        NOT record a ConversationMemoryLink — a link would make session reload
+        re-insert the memory into the rebuilt context even though it was never
+        a context message live, breaking prompt-cache stability."""
+        from sqlalchemy import select
+
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = ""  # No Pinecone for this test
+
+            service = MemoryService()
+            message = sample_messages[0]
+            initial_count = message.times_retrieved
+
+            result_ok = await service.update_retrieval_count(
+                message.id,
+                sample_conversation.id,
+                db_session,
+                create_link=False,
+            )
+            assert result_ok is True
+
+            await db_session.refresh(message)
+            assert message.times_retrieved == initial_count + 1
+            assert message.last_retrieved_at is not None
+
+            result = await db_session.execute(
+                select(ConversationMemoryLink).where(
+                    ConversationMemoryLink.conversation_id == sample_conversation.id,
+                    ConversationMemoryLink.message_id == message.id,
+                )
+            )
+            assert result.scalar_one_or_none() is None
+
+    @pytest.mark.asyncio
+    async def test_update_retrieval_count_stores_link_retrieved_at(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """An explicit link_retrieved_at is stored on the link, so session
+        reload interleaves the memory at the live insertion position (just
+        before the human message row that triggered it)."""
+        from datetime import datetime, timedelta
+        from sqlalchemy import select
+
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = ""
+
+            service = MemoryService()
+            message = sample_messages[0]
+            anchored = datetime.utcnow() - timedelta(milliseconds=1)
+
+            await service.update_retrieval_count(
+                message.id,
+                sample_conversation.id,
+                db_session,
+                link_retrieved_at=anchored,
+            )
+
+            result = await db_session.execute(
+                select(ConversationMemoryLink).where(
+                    ConversationMemoryLink.conversation_id == sample_conversation.id,
+                    ConversationMemoryLink.message_id == message.id,
+                )
+            )
+            link = result.scalar_one()
+            assert link.retrieved_at == anchored
+
 
 class TestMemoryServiceRecordMemoryLink:
     """Tests for record_memory_link (link-only, no retrieval tracking)."""
@@ -891,6 +961,39 @@ class TestMemoryServiceRecordMemoryLink:
             )
             link = result.scalar_one()
             assert link.entity_id == "claude-main"
+
+    @pytest.mark.asyncio
+    async def test_record_memory_link_stores_retrieved_at(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """An explicit retrieved_at is stored on the link (reload-position
+        anchoring, same as update_retrieval_count.link_retrieved_at)."""
+        from datetime import datetime, timedelta
+        from sqlalchemy import select
+
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = ""
+
+            service = MemoryService()
+            message = sample_messages[0]
+            anchored = datetime.utcnow() - timedelta(milliseconds=1)
+
+            result_ok = await service.record_memory_link(
+                message.id,
+                sample_conversation.id,
+                db_session,
+                retrieved_at=anchored,
+            )
+            assert result_ok is True
+
+            result = await db_session.execute(
+                select(ConversationMemoryLink).where(
+                    ConversationMemoryLink.conversation_id == sample_conversation.id,
+                    ConversationMemoryLink.message_id == message.id,
+                )
+            )
+            link = result.scalar_one()
+            assert link.retrieved_at == anchored
 
 
 class TestMemoryServiceDelete:

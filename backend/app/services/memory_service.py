@@ -478,13 +478,15 @@ class MemoryService:
         conversation_id: str,
         db: AsyncSession,
         entity_id: Optional[str] = None,
+        create_link: bool = True,
+        link_retrieved_at: Optional[datetime] = None,
     ) -> bool:
         """
         Update retrieval count for a memory.
 
         - Increments times_retrieved in SQL database
         - Updates last_retrieved_at timestamp
-        - Creates ConversationMemoryLink for tracking
+        - Creates ConversationMemoryLink for tracking (unless create_link=False)
         - Updates Pinecone metadata
 
         Args:
@@ -492,6 +494,20 @@ class MemoryService:
             conversation_id: The conversation this retrieval is for
             db: Database session
             entity_id: The Pinecone index name. If None, uses default entity.
+            create_link: Whether to record a ConversationMemoryLink. The link
+                drives session-reload re-insertion of the memory into the
+                conversation context, so it must only be created for memories
+                actually inserted as context messages. memory_query passes
+                False: its results live inside the persisted tool_result
+                blocks, and re-inserting them on reload would both duplicate
+                them and change the rebuilt context mid-history, breaking
+                prompt-cache stability.
+            link_retrieved_at: Timestamp to store on the link. Session-reload
+                re-insertion interleaves memories with messages by this value,
+                so callers pass a timestamp anchored just before the turn's
+                human message row (see session_helpers.make_link_timestamper)
+                to reproduce the live insertion position (memories precede the
+                message that triggered them). Defaults to now.
         """
         try:
             # Update SQL record
@@ -506,12 +522,14 @@ class MemoryService:
 
             # Create link record for deduplication tracking
             # Include entity_id for multi-entity conversation isolation
-            link = ConversationMemoryLink(
-                conversation_id=conversation_id,
-                message_id=message_id,
-                entity_id=entity_id,
-            )
-            db.add(link)
+            if create_link:
+                link = ConversationMemoryLink(
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                    entity_id=entity_id,
+                    retrieved_at=link_retrieved_at or datetime.utcnow(),
+                )
+                db.add(link)
             await db.commit()
 
             # Update Pinecone metadata (get current count and increment)
@@ -543,6 +561,7 @@ class MemoryService:
         conversation_id: str,
         db: AsyncSession,
         entity_id: Optional[str] = None,
+        retrieved_at: Optional[datetime] = None,
     ) -> bool:
         """
         Create a ConversationMemoryLink WITHOUT touching retrieval tracking.
@@ -557,12 +576,15 @@ class MemoryService:
             conversation_id: The conversation the memory was injected into
             db: Database session
             entity_id: Entity scoping for multi-entity conversation isolation
+            retrieved_at: Timestamp to store on the link (see
+                update_retrieval_count.link_retrieved_at). Defaults to now.
         """
         try:
             link = ConversationMemoryLink(
                 conversation_id=conversation_id,
                 message_id=message_id,
                 entity_id=entity_id,
+                retrieved_at=retrieved_at or datetime.utcnow(),
             )
             db.add(link)
             await db.commit()

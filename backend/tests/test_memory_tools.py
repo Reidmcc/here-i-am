@@ -334,12 +334,17 @@ class TestMemoryQueryRetrievalTracking:
             
             await _memory_query("test")
             
-            # Verify update_retrieval_count was called
+            # Verify update_retrieval_count was called. create_link=False:
+            # query results are not context memories, so no
+            # ConversationMemoryLink may be recorded (a link would make
+            # session reload inject them into the rebuilt context,
+            # duplicating the tool result and busting the prompt cache).
             mock_service.update_retrieval_count.assert_called_once_with(
                 message_id="mem-1",
                 conversation_id="test-conversation",
                 db=mock_db_session,
                 entity_id="test-entity",
+                create_link=False,
             )
 
     @pytest.mark.asyncio

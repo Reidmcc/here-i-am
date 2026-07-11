@@ -12,7 +12,7 @@ The data structures (ConversationSession, MemoryEntry) are now in
 conversation_session.py. Helper functions are in session_helpers.py.
 """
 
-from typing import Dict, List, Set, Optional, Any, AsyncIterator
+from typing import Callable, Dict, List, Set, Optional, Any, AsyncIterator
 from datetime import datetime
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +36,7 @@ from app.services.session_helpers import (
     ensure_role_balance,
     get_message_content_text,
     add_cache_control_to_tool_result,
+    make_link_timestamper,
     estimate_prompt_tokens,
     total_prompt_tokens_from_usage,
     # Backward compatibility aliases (with underscore prefix)
@@ -481,6 +482,7 @@ class SessionManager:
         db: AsyncSession,
         new_memories: List[MemoryEntry],
         truly_new_memory_ids: Set[str],
+        next_link_time: Optional[Callable[[], Optional[datetime]]] = None,
     ) -> None:
         """
         Pull the most recently created reflections into context on the
@@ -592,12 +594,16 @@ class SessionManager:
                         truly_new_memory_ids.add(memory.id)
                         # Record the link only — times_retrieved/last_retrieved_at
                         # are reserved for semantic recall, and a recency-based
-                        # injection must not inflate them
+                        # injection must not inflate them. The link timestamp
+                        # continues the turn's anchored sequence so reload
+                        # re-insertion preserves the live ordering (reflections
+                        # after this turn's semantic retrievals).
                         await memory_service.record_memory_link(
                             memory.id,
                             session.conversation_id,
                             db,
                             entity_id=session.entity_id,
+                            retrieved_at=next_link_time() if next_link_time else None,
                         )
                 else:
                     logger.info(
@@ -796,6 +802,10 @@ class SessionManager:
             # Step 3: Process top candidates
             # Memories already in context will be skipped without backfilling from
             # lower-ranked candidates. This preserves the integrity of the top-k selection.
+            # Link timestamps are anchored just before the human message row so a
+            # session reload re-inserts these memories at the live position
+            # (before the message that triggered them) — prompt-cache stable.
+            next_link_time = make_link_timestamper(user_message_timestamp)
             skipped_in_context = 0
             for item in top_candidates:
                 candidate = item["candidate"]
@@ -829,6 +839,7 @@ class SessionManager:
                             session.conversation_id,
                             db,
                             entity_id=session.entity_id,
+                            link_retrieved_at=next_link_time(),
                         )
                 else:
                     skipped_in_context += 1
@@ -845,6 +856,7 @@ class SessionManager:
                         db,
                         new_memories,
                         truly_new_memory_ids,
+                        next_link_time,
                     )
                 else:
                     logger.info("[MEMORY] Recent reflections: skipped (not the responding entity's first turn)")
@@ -1202,6 +1214,10 @@ class SessionManager:
             # Step 3: Process top candidates
             # Memories already in context will be skipped without backfilling from
             # lower-ranked candidates. This preserves the integrity of the top-k selection.
+            # Link timestamps are anchored just before the human message row so a
+            # session reload re-inserts these memories at the live position
+            # (before the message that triggered them) — prompt-cache stable.
+            next_link_time = make_link_timestamper(user_message_timestamp)
             skipped_in_context = 0
             for item in top_candidates:
                 candidate = item["candidate"]
@@ -1235,6 +1251,7 @@ class SessionManager:
                             session.conversation_id,
                             db,
                             entity_id=session.entity_id,
+                            link_retrieved_at=next_link_time(),
                         )
                 else:
                     skipped_in_context += 1
@@ -1251,6 +1268,7 @@ class SessionManager:
                         db,
                         new_memories,
                         truly_new_memory_ids,
+                        next_link_time,
                     )
                 else:
                     logger.info("[MEMORY] Recent reflections: skipped (not the responding entity's first turn)")

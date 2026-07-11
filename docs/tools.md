@@ -13,7 +13,7 @@ Enabled by default.
 
 Require Pinecone (`PINECONE_API_KEY` + `PINECONE_INDEXES`).
 
-- `memory_query` — deliberately search the entity's memories by chosen text. Returns results ranked by pure semantic similarity (no significance re-ranking), excludes the current conversation as well as memories already in the conversation context, and updates retrieval tracking so deliberate attention influences future automatic recall.
+- `memory_query` — deliberately search the entity's memories by chosen text. Returns results ranked by pure semantic similarity (no significance re-ranking), excludes the current conversation as well as memories already in the conversation context, and updates retrieval tracking (`times_retrieved`/`last_retrieved_at`) so deliberate attention influences future automatic recall. Results are delivered in the tool result only — they are not inserted into the conversation context as memory messages, and no `ConversationMemoryLink` is recorded, so session reloads rebuild the exact context the prompt cache was built on.
 - `memory_save` — save a self-authored reflection: a conclusion, synthesis, or anything the entity wants to remember, in its own words. Stored and retrieved like any other memory, attributed as a reflection.
 - `memory_mark` — pin a memory so it is exempt from age-based significance decay (or unpin with `undo=true`). Accepts memory ID prefixes of 6+ characters.
 - `memory_release` — remove a memory from all retrieval without deleting it (reversible with `undo=true`; the researcher can also view and restore released memories).

@@ -4,7 +4,7 @@ Unit tests for SessionManager.
 import re
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 
 from app.services.session_manager import SessionManager, ConversationSession, MemoryEntry, _add_cache_control_to_tool_result
@@ -554,6 +554,70 @@ class TestSessionManager:
 
         # Update count should have been called
         mock_memory.update_retrieval_count.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_memory_link_anchored_before_user_message_timestamp(
+        self, db_session, sample_conversation
+    ):
+        """Memory links must be timestamped just before the turn's send
+        timestamp (= the human row's created_at), so a session reload
+        re-inserts the memories before the human message — the position the
+        live context (and therefore the prompt cache) was built with."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.search_memories = AsyncMock(return_value=[
+                {"id": "mem-1", "score": 0.9, "conversation_id": "old-conv", "created_at": "2024-01-01", "last_retrieved_at": None}
+            ])
+            mock_memory.get_full_memory_content = AsyncMock(return_value={
+                "id": "mem-1",
+                "conversation_id": "old-conv",
+                "role": "assistant",
+                "content": "Memory",
+                "created_at": "2024-01-01",
+                "times_retrieved": 1,
+                "last_retrieved_at": None,
+            })
+            mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
+
+            mock_llm.build_messages.return_value = []
+            mock_llm.send_message = AsyncMock(return_value={
+                "content": "Response",
+                "model": "claude-sonnet-4-5-20250929",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "stop_reason": "end_turn",
+            })
+            mock_llm.count_tokens = MagicMock(return_value=50)
+
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.context_token_limit = 150000
+            mock_settings.significance_half_life_days = 60
+            mock_settings.recency_boost_strength = 1.0
+            mock_settings.significance_floor = 0.01
+            mock_settings.retrieval_candidate_multiplier = 2
+            mock_settings.initial_retrieval_top_k = 5
+            mock_settings.retrieval_top_k = 5
+            mock_settings.recent_reflections_enabled = False
+
+            session = manager.create_session(sample_conversation.id)
+            sent_at = datetime.utcnow()
+            await manager.process_message(
+                session, "Hello", db_session, user_message_timestamp=sent_at
+            )
+
+            call_kwargs = mock_memory.update_retrieval_count.call_args.kwargs
+            link_retrieved_at = call_kwargs["link_retrieved_at"]
+            assert link_retrieved_at is not None
+            assert link_retrieved_at < sent_at
+            # Anchored 1ms back, not some arbitrary wall-clock time
+            assert (sent_at - link_retrieved_at) <= timedelta(milliseconds=1)
 
     @pytest.mark.asyncio
     async def test_process_message_deduplicates_memories(self, db_session, sample_conversation):
