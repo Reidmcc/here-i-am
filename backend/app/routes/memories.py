@@ -505,7 +505,7 @@ class QueryLinkCleanupResponse(BaseModel):
 
 @router.post("/query-links/cleanup", response_model=QueryLinkCleanupResponse)
 async def cleanup_query_links(
-    data: QueryLinkCleanupRequest,
+    data: Optional[QueryLinkCleanupRequest] = None,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -517,13 +517,13 @@ async def cleanup_query_links(
     busting the prompt cache. This scans persisted memory_query tool results
     for memory-ID markers and deletes the matching links.
 
-    By default runs in dry_run mode which only reports what would be deleted.
-    Set dry_run=false to actually delete the links. SQL-only — works without
-    Pinecone configured.
+    The body is optional: a bare POST (or {}) runs in dry_run mode, which
+    only reports what would be deleted. Send {"dry_run": false} to actually
+    delete the links. SQL-only — works without Pinecone configured.
     """
     result = await memory_service.cleanup_memory_query_links(
         db=db,
-        dry_run=data.dry_run,
+        dry_run=data.dry_run if data is not None else True,
     )
     return QueryLinkCleanupResponse(**result)
 

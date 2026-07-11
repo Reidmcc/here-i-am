@@ -40,7 +40,7 @@ The listing below covers the REST endpoints by resource.
 - `PUT /api/memories/{id}/status` — override a memory's pinned/released status (researcher emergency option)
 - `GET /api/memories/orphans` — list orphaned memory records
 - `POST /api/memories/orphans/cleanup` — clean up orphaned records
-- `POST /api/memories/query-links/cleanup` — one-time removal of stale memory-links recorded by `memory_query` before it stopped creating them (they bust prompt caching on session reload); `{"dry_run": true}` by default
+- `POST /api/memories/query-links/cleanup` — one-time removal of stale memory-links recorded by `memory_query` before it stopped creating them (they bust prompt caching on session reload); body optional, a bare POST is a dry run — send `{"dry_run": false}` to delete
 - `DELETE /api/memories/{id}` — delete memory
 - `GET /api/memories/status/health` — health check
 

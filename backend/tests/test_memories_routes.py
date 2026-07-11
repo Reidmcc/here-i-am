@@ -848,6 +848,18 @@ class TestQueryLinkCleanup:
         assert call_kwargs["dry_run"] is True
 
     @pytest.mark.asyncio
+    async def test_no_body_defaults_to_dry_run(self, async_client, mock_memory_service):
+        """A bare POST with no body at all (curl -X POST ...) must work and
+        default to dry_run=True."""
+        response = await async_client.post("/api/memories/query-links/cleanup")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dry_run"] is True
+        call_kwargs = mock_memory_service.cleanup_memory_query_links.call_args.kwargs
+        assert call_kwargs["dry_run"] is True
+
+    @pytest.mark.asyncio
     async def test_actual_cleanup(self, async_client, mock_memory_service):
         """dry_run=false is passed through and results are surfaced."""
         mock_memory_service.cleanup_memory_query_links.return_value = {
