@@ -76,7 +76,7 @@ Reference docs live in `docs/`: `tools.md` (tool catalog — update when adding/
 5. **Tool exchange messages** (`MessageRole.TOOL_USE`/`TOOL_RESULT`) store JSON in `Message.content`. Use `Message.content_blocks` to parse.
 6. **Image attachments are ephemeral** (not stored, not vectorized). Text/PDF/DOCX are extracted, persisted in message content as `[ATTACHED FILE: ...]` blocks, but not vectorized. The live session context stores the same `[ATTACHED FILE]` rendering as the DB row (`session_manager.process_message_stream` folds the file text into the message before stamping), so a session reload rebuilds an identical message and prompt caching survives — don't reintroduce a live/persisted divergence here.
 7. **Archived conversations** (`is_archived=True`) are excluded from memory retrieval, not just hidden from the UI. Imported conversations (`is_imported=True`) are hidden from the list but their messages *are* vectorized.
-8. **Memory injection ordering:** conversation history first (with the cache breakpoint on the last cached message), memories *after*. Changing memories doesn't bust the conversation cache. See `anthropic_service.py`.
+8. **Memory-in-context:** retrieved memories are inserted into the conversation context as `is_memory` user messages (tracked by position in `ConversationSession.memory_tracker`) and land *after* the cache breakpoint, so new retrievals extend the cached history instead of busting it. They roll out with normal context trimming. See `memory_context.py` and `anthropic_service.build_messages`.
 9. **Token counting uses tiktoken GPT-4 encoding** — approximate for Claude. For display/budgeting only. Context trimming and `context_status` calibrate the estimate against the provider-reported prompt usage of the session's last request (`ConversationSession.token_calibration_ratio`); persisted assistant messages store the provider's exact `output_tokens` when it maps 1:1 to the content (tiktoken fallback for tool-loop responses).
 10. **Messages are written at different times:** human before the API call, assistant after. Mid-call failures leave partial history.
 11. **MiniMax** uses `https://api.minimax.io/anthropic` (Anthropic-compatible). Routed through `AnthropicService` with `provider_hint="minimax"`; prompt caching disabled.
@@ -127,9 +127,9 @@ Everything lives in `backend/app/config.py` (`Settings`). Highlights:
 - `ANTHROPIC_API_KEY` is the only strictly required key. `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `MINIMAX_API_KEY` enable their providers.
 - `GITHUB_REPOS` — JSON array of `{owner, repo, label, token, protected_branches?, capabilities?, local_clone_path?, ...}`.
 - Default-on flags: `TOOLS_ENABLED`, `NOTES_ENABLED`, `ATTACHMENTS_ENABLED`, `MEMORY_ROLE_BALANCE_ENABLED`.
-- Default-off flags: `GITHUB_TOOLS_ENABLED`, `CODEBASE_NAVIGATOR_ENABLED`, `MOLTBOOK_ENABLED`, `XTTS_ENABLED`, `STYLETTS2_ENABLED`, `WHISPER_ENABLED`, `USE_MEMORY_IN_CONTEXT`.
+- Default-off flags: `GITHUB_TOOLS_ENABLED`, `CODEBASE_NAVIGATOR_ENABLED`, `MOLTBOOK_ENABLED`, `XTTS_ENABLED`, `STYLETTS2_ENABLED`, `WHISPER_ENABLED`.
 - TTS priority when multiple are enabled: StyleTTS 2 > XTTS > ElevenLabs.
-- Token budgets: `context_token_limit=175000` (history), `memory_token_limit=10000` (memory block — kept small to limit cache-miss cost).
+- Token budget: `context_token_limit=175000` (conversation history; retrieved memories are part of the history).
 - Default models: `claude-sonnet-4-5-20250929`, `gpt-5.1`, `gemini-2.5-flash`, `MiniMax-M2.5`. Model names are passed straight to provider APIs, so new models work without code changes.
 
 ## Adding things

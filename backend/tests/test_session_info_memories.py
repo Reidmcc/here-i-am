@@ -150,11 +150,10 @@ async def test_build_skips_memories_from_archived_source_conversations(db_sessio
 
 
 @pytest.mark.asyncio
-async def test_session_info_returns_memories_in_memory_in_context_mode(async_client):
-    """Regression: memory-in-context mode tracks in-context memories via the
-    memory_tracker, not session.in_context_ids. The session-info endpoint must
-    read the right source, otherwise the panel blanks after switching away and
-    back from a single-entity conversation.
+async def test_session_info_returns_in_context_memories(async_client):
+    """Regression: in-context memories are tracked via the memory_tracker.
+    The session-info endpoint must read from it, otherwise the panel blanks
+    after switching away and back from a single-entity conversation.
     """
     conversation_id = str(uuid.uuid4())
     session = session_manager.create_session(
@@ -162,7 +161,6 @@ async def test_session_info_returns_memories_in_memory_in_context_mode(async_cli
         model="claude-sonnet-4-5-20250929",
         entity_id="test-entity",
     )
-    session.use_memory_in_context = True
 
     memory = MemoryEntry(
         id=str(uuid.uuid4()),
@@ -175,8 +173,6 @@ async def test_session_info_returns_memories_in_memory_in_context_mode(async_cli
     )
     inserted, _ = session.insert_memory_into_context(memory)
     assert inserted
-    # The legacy set stays empty in this mode - the bug was reading from it.
-    assert session.in_context_ids == set()
 
     try:
         response = await async_client.get(f"/api/chat/session/{conversation_id}")

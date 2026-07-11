@@ -201,7 +201,6 @@ python run.py
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `MEMORY_ROLE_BALANCE_ENABLED` | Balance human/assistant memories in retrieval | No (default: true) |
-| `USE_MEMORY_IN_CONTEXT` | Insert memories into conversation context | No (default: true) |
 | `RETRIEVAL_TOP_K` | Memories retrieved per message | No (default: 5) |
 | `SIMILARITY_THRESHOLD` | Minimum similarity for automatic retrieval | No (default: 0.4) |
 | `QUERY_SIMILARITY_THRESHOLD` | Minimum similarity for deliberate `memory_query` searches | No (default: 0.2) |

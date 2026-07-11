@@ -35,7 +35,6 @@ from app.services.session_helpers import (
     stamp_human_message,
     ensure_role_balance,
     get_message_content_text,
-    build_memory_block_text,
     add_cache_control_to_tool_result,
     estimate_prompt_tokens,
     total_prompt_tokens_from_usage,
@@ -44,7 +43,6 @@ from app.services.session_helpers import (
     _calculate_significance,
     _ensure_role_balance,
     _get_message_content_text,
-    _build_memory_block_text,
     _add_cache_control_to_tool_result,
 )
 from app.services.memory_context import format_memory_as_context_message
@@ -95,7 +93,6 @@ class SessionManager:
             system_prompt=system_prompt,
             entity_id=entity_id,
             conversation_start_date=conversation_start_date,
-            use_memory_in_context=settings.use_memory_in_context,
             provider_hint=provider_hint,
         )
         self._sessions[conversation_id] = session
@@ -272,83 +269,50 @@ class SessionManager:
                 db, entity_id=entity_id
             )
 
-        # For memory-in-context mode, we need to interleave messages with memories
-        # based on retrieval timestamps. Get memories with timestamps first.
-        memories_with_timestamps = []
-        if session.use_memory_in_context:
-            memories_with_timestamps = await memory_service.get_retrieved_memories_with_timestamps(
-                conversation_id, db, entity_id=entity_id if is_multi_entity else None
-            )
+        # Memories are re-inserted into the rebuilt context at their original
+        # positions, interleaved with messages by retrieval timestamp.
+        memories_with_timestamps = await memory_service.get_retrieved_memories_with_timestamps(
+            conversation_id, db, entity_id=entity_id if is_multi_entity else None
+        )
 
         # Build a mapping of message_id -> memory data for quick lookup
         memory_data_by_id: Dict[str, Optional[Dict]] = {}
         retrieved_ids = set()
         skipped_archived = 0
 
-        if memories_with_timestamps:
-            for mem_info in memories_with_timestamps:
-                mem_id = mem_info["message_id"]
-                mem_data = await memory_service.get_full_memory_content(mem_id, db)
-                if mem_data:
-                    if mem_data["conversation_id"] in archived_source_ids:
-                        skipped_archived += 1
-                        continue
-                    # Memories released since first retrieval are not re-injected
-                    if mem_data.get("memory_status") == "released":
-                        continue
-                    retrieved_ids.add(mem_id)
-                    str_id = mem_data["id"]
-                    memory_data_by_id[str_id] = {
-                        "data": mem_data,
-                        "retrieved_at": mem_info["retrieved_at"],
-                    }
-                    session.session_memories[str_id] = MemoryEntry(
-                        id=str_id,
-                        conversation_id=mem_data["conversation_id"],
-                        role=mem_data["role"],
-                        content=mem_data["content"],
-                        created_at=mem_data["created_at"],
-                        times_retrieved=mem_data["times_retrieved"],
-                    )
-                    session.in_context_ids.add(str_id)
+        for mem_info in memories_with_timestamps:
+            mem_id = mem_info["message_id"]
+            mem_data = await memory_service.get_full_memory_content(mem_id, db)
+            if mem_data:
+                if mem_data["conversation_id"] in archived_source_ids:
+                    skipped_archived += 1
+                    continue
+                # Memories released since first retrieval are not re-injected
+                if mem_data.get("memory_status") == "released":
+                    continue
+                retrieved_ids.add(mem_id)
+                str_id = mem_data["id"]
+                memory_data_by_id[str_id] = {
+                    "data": mem_data,
+                    "retrieved_at": mem_info["retrieved_at"],
+                }
+                session.session_memories[str_id] = MemoryEntry(
+                    id=str_id,
+                    conversation_id=mem_data["conversation_id"],
+                    role=mem_data["role"],
+                    content=mem_data["content"],
+                    created_at=mem_data["created_at"],
+                    times_retrieved=mem_data["times_retrieved"],
+                )
 
-            session.retrieved_ids = retrieved_ids
+        session.retrieved_ids = retrieved_ids
 
-            # Sort memories by retrieved_at for insertion
-            sorted_memory_entries = sorted(
-                memory_data_by_id.items(),
-                key=lambda x: x[1]["retrieved_at"]
-            )
-            memory_queue = list(sorted_memory_entries)  # List of (mem_id, {data, retrieved_at})
-        else:
-            # Non-memory-in-context mode: just load retrieved IDs for deduplication
-            all_retrieved_ids = await memory_service.get_retrieved_ids_for_conversation(
-                conversation_id, db, entity_id=entity_id if is_multi_entity else None
-            )
-
-            # Load full memory content for already-retrieved memories
-            for mem_id in all_retrieved_ids:
-                mem_data = await memory_service.get_full_memory_content(mem_id, db)
-                if mem_data:
-                    if mem_data["conversation_id"] in archived_source_ids:
-                        skipped_archived += 1
-                        continue
-                    # Memories released since first retrieval are not re-injected
-                    if mem_data.get("memory_status") == "released":
-                        continue
-                    retrieved_ids.add(mem_id)
-                    str_id = mem_data["id"]
-                    session.session_memories[str_id] = MemoryEntry(
-                        id=str_id,
-                        conversation_id=mem_data["conversation_id"],
-                        role=mem_data["role"],
-                        content=mem_data["content"],
-                        created_at=mem_data["created_at"],
-                        times_retrieved=mem_data["times_retrieved"],
-                    )
-                    session.in_context_ids.add(str_id)
-            session.retrieved_ids = retrieved_ids
-            memory_queue = []
+        # Sort memories by retrieved_at for insertion
+        sorted_memory_entries = sorted(
+            memory_data_by_id.items(),
+            key=lambda x: x[1]["retrieved_at"]
+        )
+        memory_queue = list(sorted_memory_entries)  # List of (mem_id, {data, retrieved_at})
 
         if skipped_archived:
             logger.info(
@@ -371,8 +335,7 @@ class SessionManager:
         # Build conversation context, interleaving memories at their original positions
         memory_insert_count = 0
         for msg in messages:
-            # In memory-in-context mode, insert any memories that were retrieved
-            # BEFORE this message was created
+            # Insert any memories that were retrieved BEFORE this message was created
             while memory_queue:
                 mem_id, mem_info = memory_queue[0]
                 if mem_info["retrieved_at"] <= msg.created_at:
@@ -518,7 +481,6 @@ class SessionManager:
         db: AsyncSession,
         new_memories: List[MemoryEntry],
         truly_new_memory_ids: Set[str],
-        use_in_context_insertion: bool,
     ) -> None:
         """
         Pull the most recently created reflections into context on the
@@ -616,10 +578,7 @@ class SessionManager:
                     source="recent_reflection",
                 )
 
-                if use_in_context_insertion:
-                    added, is_new_retrieval = session.insert_memory_into_context(memory)
-                else:
-                    added, is_new_retrieval = session.add_memory(memory)
+                added, is_new_retrieval = session.insert_memory_into_context(memory)
                 if added:
                     injected += 1
                     new_memories.append(memory)
@@ -857,11 +816,11 @@ class SessionManager:
                     source=item["source"],
                 )
 
-                added, is_new_retrieval = session.add_memory(memory)
+                added, is_new_retrieval = session.insert_memory_into_context(memory)
                 if added:
                     new_memories.append(memory)
                     # Track truly new memories separately for cache stability
-                    # Restored memories (trimmed then re-retrieved) should be treated as "old"
+                    # Restored memories (rolled out then re-retrieved) should be treated as "old"
                     if is_new_retrieval:
                         truly_new_memory_ids.add(memory.id)
                         # Update retrieval tracking only for truly new retrievals
@@ -886,7 +845,6 @@ class SessionManager:
                         db,
                         new_memories,
                         truly_new_memory_ids,
-                        use_in_context_insertion=False,
                     )
                 else:
                     logger.info("[MEMORY] Recent reflections: skipped (not the responding entity's first turn)")
@@ -928,13 +886,8 @@ class SessionManager:
         )
 
         # Step 4: Apply token limits before building API messages
-        # Trim memories if over limit (FIFO - oldest retrieved first)
-        trimmed_memory_ids = session.trim_memories_to_limit(
-            max_tokens=settings.memory_token_limit,
-            count_tokens_fn=llm_service.count_tokens,
-        )
-
-        # Trim conversation context if over limit (FIFO - oldest messages first)
+        # Memories live inside the conversation context, so trimming the
+        # context (FIFO - oldest messages first) covers them too.
         trimmed_context_count = session.trim_context_to_limit(
             max_tokens=settings.context_token_limit,
             count_tokens_fn=llm_service.count_tokens,
@@ -943,12 +896,9 @@ class SessionManager:
 
         # Step 5: Build API messages with conversation-first caching
         # Cache breakpoint: end of cached conversation history
-        # Memories are placed after history (don't invalidate cache)
-        memories_for_injection = session.get_memories_for_injection()
         cache_content = session.get_cache_aware_content()
 
-        # Debug logging for memory injection
-        logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
+        logger.info(f"[MEMORY] {session.get_in_context_memory_count()} memories embedded in conversation history")
         # Log cached context breakdown by role
         cached_ctx = cache_content['cached_context']
         new_ctx = cache_content['new_context']
@@ -958,8 +908,7 @@ class SessionManager:
         new_asst = sum(1 for m in new_ctx if m.get('role') == 'assistant')
         logger.info(f"[CACHE] Context: {len(cached_ctx)} cached msgs ({cached_user} user, {cached_asst} assistant), {len(new_ctx)} new msgs ({new_user} user, {new_asst} assistant)")
 
-        messages = llm_service.build_messages_with_memories(
-            memories=memories_for_injection,
+        messages = llm_service.build_messages(
             conversation_context=session.conversation_context,
             current_message=stamped_user_message,
             model=session.model,
@@ -1024,8 +973,9 @@ class SessionManager:
                 }
                 for m in new_memories
             ],
-            "total_memories_in_context": len(session.in_context_ids),
-            "trimmed_memory_ids": trimmed_memory_ids,
+            "total_memories_in_context": session.get_in_context_memory_count(),
+            # Memories are trimmed with the context now; kept for API shape stability
+            "trimmed_memory_ids": [],
             "trimmed_context_messages": trimmed_context_count,
         }
 
@@ -1272,14 +1222,11 @@ class SessionManager:
                     source=item["source"],
                 )
 
-                if session.use_memory_in_context:
-                    added, is_new_retrieval = session.insert_memory_into_context(memory)
-                else:
-                    added, is_new_retrieval = session.add_memory(memory)
+                added, is_new_retrieval = session.insert_memory_into_context(memory)
                 if added:
                     new_memories.append(memory)
                     # Track truly new memories separately for cache stability
-                    # Restored memories (trimmed then re-retrieved) should be treated as "old"
+                    # Restored memories (rolled out then re-retrieved) should be treated as "old"
                     if is_new_retrieval:
                         truly_new_memory_ids.add(memory.id)
                         # Only update retrieval count for truly new retrievals
@@ -1304,7 +1251,6 @@ class SessionManager:
                         db,
                         new_memories,
                         truly_new_memory_ids,
-                        use_in_context_insertion=session.use_memory_in_context,
                     )
                 else:
                     logger.info("[MEMORY] Recent reflections: skipped (not the responding entity's first turn)")
@@ -1336,16 +1282,9 @@ class SessionManager:
             else:
                 logger.info(f"[MEMORY] Memory retrieval skipped: entity_id={session.entity_id}")
 
-# Step 3: Apply token limits before building API messages
-# With memory-in-context, memory trimming is handled by context trimming
-        if session.use_memory_in_context:
-            trimmed_memory_ids = []  # Memories are part of context, trimmed there
-        else:
-            # Trim memories if over limit (FIFO - oldest retrieved first)
-            trimmed_memory_ids = session.trim_memories_to_limit(
-                max_tokens=settings.memory_token_limit,
-                count_tokens_fn=llm_service.count_tokens,
-            )
+        # Step 3: Apply token limits before building API messages
+        # Memories live inside the conversation context, so context trimming
+        # below covers them too.
 
         # Fold extracted text-file content into the message using the same
         # rendering the route persists to the DB (build_persistable_content),
@@ -1411,26 +1350,17 @@ class SessionManager:
                 for m in new_memories
             ],
             "total_in_context": session.get_in_context_memory_count(),
-            "trimmed_memory_ids": trimmed_memory_ids,
+            # Memories are trimmed with the context now; kept for event shape stability
+            "trimmed_memory_ids": [],
             "trimmed_context_messages": trimmed_context_count,
         }
 
         # Step 4: Build API messages with conversation-first caching
         # Cache breakpoint: end of cached conversation history
-        # With memory-in-context, memories are already in conversation_context
-        if session.use_memory_in_context:
-            memories_for_injection = []  # Empty - memories are in context
-        else:
-            memories_for_injection = session.get_memories_for_injection()
-
+        # Memories are already embedded in conversation_context
         cache_content = session.get_cache_aware_content()
 
-        # Debug logging for memory injection
-        if session.use_memory_in_context:
-            in_context_count = session.get_in_context_memory_count()
-            logger.info(f"[MEMORY] Memory-in-context mode: {in_context_count} memories embedded in conversation history")
-        else:
-            logger.info(f"[MEMORY] Injecting {len(memories_for_injection)} memories into context (in_context_ids: {len(session.in_context_ids)}, session_memories: {len(session.session_memories)})")
+        logger.info(f"[MEMORY] {session.get_in_context_memory_count()} memories embedded in conversation history")
 
         # Log cached context breakdown by role
         cached_ctx = cache_content['cached_context']
@@ -1450,8 +1380,7 @@ class SessionManager:
             if images or files:
                 logger.info(f"[ATTACHMENTS] Processing {len(images)} images, {len(files)} files")
 
-        messages = llm_service.build_messages_with_memories(
-            memories=memories_for_injection,
+        messages = llm_service.build_messages(
             conversation_context=session.conversation_context,
             current_message=stamped_user_message,
             model=session.model,
@@ -1467,16 +1396,11 @@ class SessionManager:
             provider_hint=session.provider_hint,
         )
 
-        # Build messages WITHOUT memories for subsequent tool iterations (memory optimization)
-        # This reduces context size on iterations after the first
-        # Lazy initialization - only built when tool use is detected
-        base_messages_no_memories = None
-
         # Step 5: Stream LLM response with caching enabled
         # This includes a tool use loop if tools are provided
         full_content = ""
         accumulated_tool_uses = []  # Track all tool uses across iterations
-        tool_exchanges = []  # Track tool exchanges for rebuilding messages without memories
+        tool_exchanges = []  # Track tool exchanges for rebuilding messages between iterations
         # Single moving cache breakpoint (like conversation history caching):
         # it sits on the latest tool_result every iteration, so each iteration
         # incrementally writes only the newest exchange while reading the rest
@@ -1492,40 +1416,16 @@ class SessionManager:
             stop_reason = None
 
             # Build working messages for this iteration
-            # First iteration: include memories for full context
-            # Subsequent iterations: use base messages without memories (memory optimization)
+            # First iteration: the base messages as built above
+            # Subsequent iterations: base messages + accumulated tool exchanges
             if iteration == 1:
-                working_messages = list(messages)  # Include memories
+                working_messages = list(messages)
             else:
-                # Lazy build base messages without memories (only when tool use actually happens)
-                if base_messages_no_memories is None:
-                    base_messages_no_memories = llm_service.build_messages_with_memories(
-                        memories=[],  # No memories for subsequent iterations
-                        conversation_context=session.conversation_context,
-                        current_message=stamped_user_message,
-                        model=session.model,
-                        conversation_start_date=session.conversation_start_date,
-                        enable_caching=True,
-                        cached_context=cache_content["cached_context"],
-                        new_context=cache_content["new_context"],
-                        is_multi_entity=session.is_multi_entity,
-                        entity_labels=session.entity_labels,
-                        responding_entity_label=session.responding_entity_label,
-                        user_display_name=session.user_display_name,
-                        # Keep image attachments on the current message so they
-                        # survive across tool-use iterations. Without this, any
-                        # tool call drops the attachment from the final answer's
-                        # context and the model responds as if nothing was
-                        # attached. (File text travels in stamped_user_message.)
-                        attachments=llm_attachments,
-                        provider_hint=session.provider_hint,
-                    )
-
-                # Rebuild from base (no memories) + accumulated tool exchanges
+                # Rebuild from base + accumulated tool exchanges
                 # Single moving cache breakpoint: cache_control goes on the
                 # latest tool_result, so each iteration writes only the newest
                 # exchange and reads everything before it from cache.
-                working_messages = list(base_messages_no_memories)
+                working_messages = list(messages)
                 for i, exchange in enumerate(tool_exchanges):
                     working_messages.append(exchange["assistant"])
                     if i == len(tool_exchanges) - 1:
@@ -1533,7 +1433,7 @@ class SessionManager:
                     else:
                         user_msg = exchange["user"]
                     working_messages.append(user_msg)
-                logger.info(f"[TOOLS] Iteration {iteration}: Using messages without memory block ({len(working_messages)} messages, {len(tool_exchanges)} tool exchanges, breakpoint on latest tool_result)")
+                logger.info(f"[TOOLS] Iteration {iteration}: {len(working_messages)} messages, {len(tool_exchanges)} tool exchanges, breakpoint on latest tool_result")
 
             async for event in llm_service.send_message_stream(
                 messages=working_messages,

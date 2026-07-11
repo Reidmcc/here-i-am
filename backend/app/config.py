@@ -312,12 +312,6 @@ class Settings(BaseSettings):
     # Enable DOCX text extraction (requires python-docx)
     attachment_docx_enabled: bool = True
 
-    # Memory System settings
-    # When True, memories are inserted directly into conversation context as user messages
-    # (better cacheability - memories only paid for once per conversation)
-    # When False (default), memories are rendered as a separate block each turn (legacy behavior)
-    use_memory_in_context: bool = True
-
     # Multiple Pinecone indexes (JSON array of objects with index_name, label, description, llm_provider, default_model)
     # Example: '[{"index_name": "claude", "label": "Claude", "description": "Primary AI entity", "llm_provider": "anthropic", "default_model": "claude-sonnet-4-5-20250929"}]'
     pinecone_indexes: str = ""
@@ -436,8 +430,7 @@ class Settings(BaseSettings):
     # OpenAI max context varies by model. For most GPT 5.x models, it's 272,000. For GPT 5.1 Chat and the older models it's 128,000
     # Leave some room between your setting and the actual max; token counting client-side is approximate
     # The maximum is for all inbound tokens, memory and conversation history token counts are combined
-    context_token_limit: int = 175000  # Conversation history cap
-    memory_token_limit: int = 10000    # Memory block cap (kept small to reduce cache miss cost)
+    context_token_limit: int = 175000  # Conversation history cap (memories are part of the history)
 
     class Config:
         env_file = ".env"

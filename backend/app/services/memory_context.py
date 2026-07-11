@@ -1,16 +1,12 @@
 """
 Memory Context Integration Module
 
-This module provides the new memory tracking system where memories are inserted
-directly into conversation history rather than being rendered as a separate block.
+Memories are inserted directly into conversation history rather than being
+rendered as a separate block. This improves cacheability (memories are paid
+for once per conversation instead of re-rendered each turn) and creates a
+more integrated experience.
 
-This approach improves cacheability (memories are paid for once per conversation
-instead of re-rendered each turn) and creates a more integrated experience.
-
-Usage:
-    The functions and class in this module are designed to work alongside the 
-    existing ConversationSession. During migration, ConversationSession will 
-    be updated to use these new tracking mechanisms.
+ConversationSession uses these tracking mechanisms for all memory handling.
 """
 
 from typing import Dict, List, Set, Optional, Any, Tuple
@@ -67,11 +63,10 @@ def format_memory_as_context_message(
 class MemoryContextTracker:
     """
     Tracks memories that have been inserted into conversation context.
-    
-    This replaces the old in_context_ids/memory block approach with position-based
-    tracking. Memories are inserted into conversation_context as regular messages,
-    and we track their positions to know which are still present after context rolling.
-    
+
+    Memories are inserted into conversation_context as regular messages, and we
+    track their positions to know which are still present after context rolling.
+
     Attributes:
         retrieved_ids: All memory IDs that have been retrieved this conversation
                       (retrieval count has been incremented). Never cleared.

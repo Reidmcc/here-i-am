@@ -1216,18 +1216,10 @@ async def get_session_info(
     if not session:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    # Get memories currently in context (not all retrieved, just those in context).
-    # The two memory systems track "in context" differently: the legacy memory
-    # block uses session.in_context_ids, while memory-in-context mode embeds
-    # memories in the conversation and tracks their positions in memory_tracker.
-    # Reading only in_context_ids returns an empty list in memory-in-context mode,
-    # which blanks the "Retrieved Memories" panel after switching conversations.
-    if session.use_memory_in_context:
-        in_context_ids = session.memory_tracker.get_in_context_memory_ids(
-            len(session.conversation_context)
-        )
-    else:
-        in_context_ids = session.in_context_ids
+    # Get memories currently in context (not all retrieved, just those in
+    # context). Memories are embedded in the conversation context and tracked
+    # by position in memory_tracker; rolled-out ones are excluded here.
+    in_context_ids = session.get_in_context_memory_ids()
     in_context_memories = [
         session.session_memories[mid]
         for mid in in_context_ids

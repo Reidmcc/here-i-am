@@ -15,7 +15,6 @@ import logging
 from app.config import settings
 from app.services.session_helpers import (
     get_message_content_text,
-    build_memory_block_text,
 )
 from app.services.memory_context import (
     MemoryContextTracker,
@@ -51,16 +50,7 @@ class ConversationSession:
     Maintains the conversation context (message history) and tracks memories
     that have been retrieved during this conversation.
 
-    Memory System (Transitioning):
-    The memory system is being reworked from a "memory block" approach to
-    "memory-in-context" approach. During transition, both systems coexist:
-    
-    Legacy (memory block):
-    - in_context_ids: Set of memory IDs in the memory block
-    - get_memories_for_injection(): Returns memories for block construction
-    - trim_memories_to_limit(): Trims memory block to token limit
-    
-    New (memory-in-context):
+    Memory system (memory-in-context):
     - memory_tracker: MemoryContextTracker for position-based tracking
     - insert_memory_into_context(): Inserts memory as context message
     - Memory messages have is_memory=True flag
@@ -92,16 +82,8 @@ class ConversationSession:
     # All IDs that have had retrieval count updated in this conversation (never remove)
     retrieved_ids: Set[str] = field(default_factory=set)
 
-    # ===== Legacy memory block tracking (to be deprecated) =====
-    # IDs currently in the memory block (can be trimmed and restored)
-    in_context_ids: Set[str] = field(default_factory=set)
-
-    # ===== New memory-in-context tracking =====
-    # Position-based memory tracker for the new system
+    # Position-based memory tracker (memories live inside conversation_context)
     memory_tracker: MemoryContextTracker = field(default_factory=MemoryContextTracker)
-    
-    # Flag to enable new memory system (set to True to use memory-in-context)
-    use_memory_in_context: bool = False
 
     # Cache tracking for conversation history (single breakpoint).
     # Advanced to the full context length after every exchange, so each turn's
@@ -138,111 +120,10 @@ class ConversationSession:
         ratio = self.last_prompt_actual_tokens / self.last_prompt_estimated_tokens
         return max(0.5, min(2.0, ratio))
 
-    # ===== Legacy memory block methods (to be deprecated) =====
-    
-    def add_memory(self, memory: MemoryEntry) -> Tuple[bool, bool]:
-        """
-        Add a memory to the session (legacy memory block system).
-
-        Returns tuple of (added_to_session, is_new_retrieval):
-        - (True, True): New memory added, retrieval count should be updated
-        - (True, False): Previously trimmed memory restored, don't update count
-        - (False, False): Memory already in context, no action needed
-        """
-        # If already in context, nothing to do
-        if memory.id in self.in_context_ids:
-            return (False, False)
-
-        # If previously retrieved but trimmed, restore to context without updating count
-        if memory.id in self.retrieved_ids:
-            self.in_context_ids.add(memory.id)
-            # Update the memory entry with new score
-            if memory.id in self.session_memories:
-                self.session_memories[memory.id].score = memory.score
-            return (True, False)
-
-        # New memory - add to all tracking structures
-        self.retrieved_ids.add(memory.id)
-        self.in_context_ids.add(memory.id)
-        self.session_memories[memory.id] = memory
-        return (True, True)
-
-    def get_memories_for_injection(self) -> List[Dict[str, Any]]:
-        """Get memories formatted for API injection (legacy memory block system)."""
-        # Only include memories that are in context
-        memories = [
-            self.session_memories[mid]
-            for mid in self.in_context_ids
-            if mid in self.session_memories
-        ]
-        # Sort by ID for stable ordering (improves Anthropic cache hit rate)
-        memories.sort(key=lambda m: m.id)
-
-        return [
-            {
-                "id": m.id,
-                "content": m.content,
-                "created_at": m.created_at,
-                "times_retrieved": m.times_retrieved,
-                "role": m.role,
-            }
-            for m in memories
-        ]
-
-    def trim_memories_to_limit(
-        self,
-        max_tokens: int,
-        count_tokens_fn: Callable[[str], int],
-    ) -> List[str]:
-        """
-        Trim oldest-retrieved memories until the memory block fits within token limit.
-        (Legacy memory block system - not needed when use_memory_in_context=True)
-
-        Memories are removed from in_context_ids in FIFO order (first retrieved = first removed).
-        They remain in retrieved_ids and session_memories so they can be restored without
-        incrementing retrieval count if they become relevant again.
-
-        Args:
-            max_tokens: Maximum token count for memory block
-            count_tokens_fn: Function to count tokens in a string
-
-        Returns:
-            List of memory IDs that were removed from context
-        """
-        removed_ids = []
-
-        # Build ordered list of in-context IDs based on session_memories insertion order
-        # (which reflects retrieval order)
-        ordered_in_context = [
-            mid for mid in self.session_memories.keys()
-            if mid in self.in_context_ids
-        ]
-
-        while ordered_in_context:
-            # Get memories for injection and calculate current token count
-            memories_for_injection = self.get_memories_for_injection()
-            memory_block_text = build_memory_block_text(
-                memories_for_injection,
-                conversation_start_date=self.conversation_start_date,
-            )
-            current_tokens = count_tokens_fn(memory_block_text)
-
-            if current_tokens <= max_tokens:
-                break
-
-            # Remove the oldest in-context memory (first in ordered list)
-            oldest_id = ordered_in_context.pop(0)
-            self.in_context_ids.discard(oldest_id)
-            removed_ids.append(oldest_id)
-
-        return removed_ids
-
-    # ===== New memory-in-context methods =====
-    
     def insert_memory_into_context(self, memory: MemoryEntry) -> Tuple[bool, bool]:
         """
-        Insert a memory into the conversation context (new memory-in-context system).
-        
+        Insert a memory into the conversation context.
+
         The memory is formatted as a user message and inserted at the current end
         of the conversation context. Its position is tracked so we know if it gets
         rolled out when context is trimmed.
@@ -286,8 +167,7 @@ class ConversationSession:
         
         # Also store in session_memories for reference
         self.session_memories[memory.id] = memory
-        
-        # Keep retrieved_ids in sync (for compatibility)
+
         if is_new_retrieval:
             self.retrieved_ids.add(memory.id)
         
@@ -296,25 +176,12 @@ class ConversationSession:
         return (True, is_new_retrieval)
     
     def get_in_context_memory_ids(self) -> Set[str]:
-        """
-        Get the set of memory IDs currently in context.
-
-        Works with both legacy and new memory systems.
-        """
-        if self.use_memory_in_context:
-            return self.memory_tracker.get_in_context_memory_ids(len(self.conversation_context))
-        else:
-            return set(self.in_context_ids)
+        """Get the set of memory IDs currently in context (not rolled out)."""
+        return self.memory_tracker.get_in_context_memory_ids(len(self.conversation_context))
 
     def get_in_context_memory_count(self) -> int:
-        """
-        Get the count of memories currently in context.
-
-        Works with both legacy and new memory systems.
-        """
+        """Get the count of memories currently in context."""
         return len(self.get_in_context_memory_ids())
-
-    # ===== Shared methods (work with both systems) =====
 
     def has_conversational_messages(self) -> bool:
         """
@@ -427,7 +294,7 @@ class ConversationSession:
         Trim oldest messages from conversation context until it fits within token limit.
 
         Messages are removed in FIFO order (oldest = first removed).
-        When using memory-in-context, this also updates memory tracking for rolled-out memories.
+        Memory tracking is updated for any memories that roll out with them.
 
         Args:
             max_tokens: Maximum token count for conversation context
@@ -484,13 +351,12 @@ class ConversationSession:
                     f"cache breakpoint {old_cache_len}->{self.last_cached_context_length}"
                 )
 
-            # If using memory-in-context, update memory tracking for rolled-out memories
-            if self.use_memory_in_context:
-                rolled_out = self.memory_tracker.handle_context_rollout(
-                    num_messages_removed=removed_count,
-                    conversation_context=self.conversation_context,
-                )
-                if rolled_out:
-                    logger.info(f"[MEMORY] Context trimming rolled out {len(rolled_out)} memories")
+            # Update memory tracking for rolled-out memories
+            rolled_out = self.memory_tracker.handle_context_rollout(
+                num_messages_removed=removed_count,
+                conversation_context=self.conversation_context,
+            )
+            if rolled_out:
+                logger.info(f"[MEMORY] Context trimming rolled out {len(rolled_out)} memories")
 
         return removed_count

@@ -3,9 +3,8 @@ Tests for conversation_session.py - ConversationSession and MemoryEntry dataclas
 
 Tests cover:
 - MemoryEntry: Dataclass initialization
-- ConversationSession: Legacy memory system (add_memory, get_memories_for_injection, trim_memories_to_limit)
-- ConversationSession: New memory-in-context system (insert_memory_into_context, get_in_context_memory_count)
-- ConversationSession: Shared methods (add_exchange, get_cache_aware_content,
+- ConversationSession: Memory-in-context system (insert_memory_into_context, get_in_context_memory_count)
+- ConversationSession: Context methods (add_exchange, get_cache_aware_content,
   update_cache_state, trim_context_to_limit)
 """
 
@@ -56,115 +55,11 @@ class TestMemoryEntry:
 
 
 # ============================================================
-# Tests for ConversationSession - Legacy Memory System
-# ============================================================
-
-class TestConversationSessionLegacyMemory:
-    """Tests for the legacy memory block system in ConversationSession."""
-
-    def _make_memory(self, mem_id="mem-1", role="assistant", content="Test"):
-        return MemoryEntry(
-            id=mem_id,
-            conversation_id="conv-1",
-            role=role,
-            content=content,
-            created_at="2024-01-01",
-            times_retrieved=1,
-            score=0.9,
-        )
-
-    def test_add_new_memory(self):
-        """Should add a new memory and return (True, True)."""
-        session = ConversationSession(conversation_id="conv-1")
-        memory = self._make_memory()
-
-        added, is_new = session.add_memory(memory)
-        assert added is True
-        assert is_new is True
-        assert "mem-1" in session.retrieved_ids
-        assert "mem-1" in session.in_context_ids
-        assert "mem-1" in session.session_memories
-
-    def test_add_duplicate_memory(self):
-        """Should not re-add memory already in context."""
-        session = ConversationSession(conversation_id="conv-1")
-        memory = self._make_memory()
-
-        session.add_memory(memory)
-        added, is_new = session.add_memory(memory)
-        assert added is False
-        assert is_new is False
-
-    def test_restore_trimmed_memory(self):
-        """Should restore trimmed memory without new retrieval."""
-        session = ConversationSession(conversation_id="conv-1")
-        memory = self._make_memory()
-
-        # Add, then simulate trimming
-        session.add_memory(memory)
-        session.in_context_ids.discard("mem-1")
-
-        # Re-add (restore)
-        added, is_new = session.add_memory(memory)
-        assert added is True
-        assert is_new is False  # Not a new retrieval
-        assert "mem-1" in session.in_context_ids
-
-    def test_get_memories_for_injection_empty(self):
-        """Should return empty list when no memories."""
-        session = ConversationSession(conversation_id="conv-1")
-        assert session.get_memories_for_injection() == []
-
-    def test_get_memories_for_injection_sorted(self):
-        """Should return memories sorted by ID for cache stability."""
-        session = ConversationSession(conversation_id="conv-1")
-        session.add_memory(self._make_memory("mem-b", content="B"))
-        session.add_memory(self._make_memory("mem-a", content="A"))
-
-        memories = session.get_memories_for_injection()
-        assert len(memories) == 2
-        assert memories[0]["id"] == "mem-a"
-        assert memories[1]["id"] == "mem-b"
-
-    def test_get_memories_excludes_trimmed(self):
-        """Should exclude trimmed memories from injection."""
-        session = ConversationSession(conversation_id="conv-1")
-        session.add_memory(self._make_memory("mem-1"))
-        session.add_memory(self._make_memory("mem-2"))
-        session.in_context_ids.discard("mem-1")
-
-        memories = session.get_memories_for_injection()
-        assert len(memories) == 1
-        assert memories[0]["id"] == "mem-2"
-
-    def test_trim_memories_to_limit(self):
-        """Should trim oldest memories when over token limit."""
-        session = ConversationSession(conversation_id="conv-1")
-        session.add_memory(self._make_memory("mem-1", content="First memory"))
-        session.add_memory(self._make_memory("mem-2", content="Second memory"))
-        session.add_memory(self._make_memory("mem-3", content="Third memory"))
-
-        # Mock token counter that returns a high count initially
-        call_count = [0]
-        def mock_count(text):
-            call_count[0] += 1
-            # Return high on first call, lower after removing memories
-            if "mem-1" in str(session.in_context_ids) and "mem-2" in str(session.in_context_ids) and "mem-3" in str(session.in_context_ids):
-                return 1000  # Over limit
-            return 5  # Under limit
-
-        removed = session.trim_memories_to_limit(max_tokens=50, count_tokens_fn=mock_count)
-        assert len(removed) > 0
-        # First memory should be removed (FIFO order)
-        assert "mem-1" in removed
-
-
-# ============================================================
-# Tests for ConversationSession - New Memory-in-Context System
+# Tests for ConversationSession - Memory-in-Context System
 # ============================================================
 
 class TestConversationSessionMemoryInContext:
-    """Tests for the new memory-in-context system."""
+    """Tests for the memory-in-context system."""
 
     def _make_memory(self, mem_id="mem-1", role="assistant", content="Test"):
         return MemoryEntry(
@@ -179,7 +74,7 @@ class TestConversationSessionMemoryInContext:
 
     def test_insert_new_memory(self):
         """Should insert a new memory into context."""
-        session = ConversationSession(conversation_id="conv-1", use_memory_in_context=True)
+        session = ConversationSession(conversation_id="conv-1")
         session.conversation_context = [
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi"},
@@ -195,7 +90,7 @@ class TestConversationSessionMemoryInContext:
 
     def test_insert_duplicate_memory_skipped(self):
         """Should not insert a memory already in context."""
-        session = ConversationSession(conversation_id="conv-1", use_memory_in_context=True)
+        session = ConversationSession(conversation_id="conv-1")
         session.conversation_context = [
             {"role": "user", "content": "Hello"},
         ]
@@ -206,21 +101,9 @@ class TestConversationSessionMemoryInContext:
         assert inserted is False
         assert is_new is False
 
-    def test_get_in_context_memory_count_legacy(self):
-        """Should count using legacy system when not using memory-in-context."""
-        session = ConversationSession(
-            conversation_id="conv-1",
-            use_memory_in_context=False,
-        )
-        session.in_context_ids = {"mem-1", "mem-2"}
-        assert session.get_in_context_memory_count() == 2
-
-    def test_get_in_context_memory_count_new_system(self):
-        """Should count using tracker when using memory-in-context."""
-        session = ConversationSession(
-            conversation_id="conv-1",
-            use_memory_in_context=True,
-        )
+    def test_get_in_context_memory_count(self):
+        """Should count memories via the position tracker."""
+        session = ConversationSession(conversation_id="conv-1")
         session.conversation_context = [
             {"role": "user", "content": "Hello"},
             {"role": "user", "content": "[MEMORY]...[/MEMORY]", "is_memory": True, "memory_id": "mem-1"},
@@ -234,7 +117,7 @@ class TestConversationSessionMemoryInContext:
 # ============================================================
 
 class TestConversationSessionSharedMethods:
-    """Tests for shared methods that work with both memory systems."""
+    """Tests for the session's context management methods."""
 
     def test_add_exchange_basic(self):
         """Should add human and assistant messages to context."""
