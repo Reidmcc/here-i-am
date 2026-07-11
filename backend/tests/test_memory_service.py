@@ -996,6 +996,183 @@ class TestMemoryServiceRecordMemoryLink:
             assert link.retrieved_at == anchored
 
 
+class TestCleanupMemoryQueryLinks:
+    """Tests for cleanup_memory_query_links (stale memory_query link removal)."""
+
+    @staticmethod
+    def _query_result_text(memory_ids):
+        lines = [f"Found {len(memory_ids)} memories matching: \"test\"", ""]
+        for mem_id in memory_ids:
+            lines.append(
+                f"--- Memory {mem_id[:8]} (You said, 2.0 days ago, similarity: 0.900) ---"
+            )
+            lines.append("Some remembered content")
+            lines.append("")
+        return "\n".join(lines)
+
+    async def _add_query_exchange(
+        self, db_session, conversation_id, tool_use_id, memory_ids,
+        speaker_entity_id=None, tool_name="memory_query",
+    ):
+        """Persist a memory_query tool exchange the way routes/chat.py does."""
+        tool_use = Message(
+            id=str(uuid.uuid4()),
+            conversation_id=conversation_id,
+            role=MessageRole.TOOL_USE,
+            content=Message.serialize_content_blocks([
+                {"type": "tool_use", "id": tool_use_id, "name": tool_name, "input": {"query": "test"}}
+            ]),
+            token_count=10,
+            speaker_entity_id=speaker_entity_id,
+        )
+        tool_result = Message(
+            id=str(uuid.uuid4()),
+            conversation_id=conversation_id,
+            role=MessageRole.TOOL_RESULT,
+            content=Message.serialize_content_blocks([
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": self._query_result_text(memory_ids),
+                    "is_error": False,
+                }
+            ]),
+            token_count=50,
+        )
+        db_session.add(tool_use)
+        db_session.add(tool_result)
+        await db_session.commit()
+
+    async def _add_link(self, db_session, conversation_id, message_id, entity_id=None):
+        link = ConversationMemoryLink(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            entity_id=entity_id,
+        )
+        db_session.add(link)
+        await db_session.commit()
+        return link
+
+    async def _link_message_ids(self, db_session, conversation_id):
+        from sqlalchemy import select
+
+        result = await db_session.execute(
+            select(ConversationMemoryLink.message_id).where(
+                ConversationMemoryLink.conversation_id == conversation_id
+            )
+        )
+        return {str(row[0]) for row in result.fetchall()}
+
+    @pytest.mark.asyncio
+    async def test_dry_run_reports_without_deleting(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = ""
+
+            service = MemoryService()
+            queried = sample_messages[0]
+            await self._add_query_exchange(
+                db_session, sample_conversation.id, "toolu_1", [queried.id]
+            )
+            await self._add_link(db_session, sample_conversation.id, queried.id)
+
+            result = await service.cleanup_memory_query_links(db_session, dry_run=True)
+
+            assert result["dry_run"] is True
+            assert result["conversations_with_query_results"] == 1
+            assert result["links_matched"] == 1
+            assert result["links_deleted"] == 0
+            assert await self._link_message_ids(db_session, sample_conversation.id) == {queried.id}
+
+    @pytest.mark.asyncio
+    async def test_deletes_query_links_keeps_auto_retrieval_links(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """Only links whose memory appears in a memory_query tool result are
+        deleted; links from automatic retrieval (not in any query result)
+        survive."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = ""
+
+            service = MemoryService()
+            queried, auto_retrieved = sample_messages[0], sample_messages[1]
+            await self._add_query_exchange(
+                db_session, sample_conversation.id, "toolu_1", [queried.id]
+            )
+            await self._add_link(db_session, sample_conversation.id, queried.id)
+            await self._add_link(db_session, sample_conversation.id, auto_retrieved.id)
+
+            result = await service.cleanup_memory_query_links(db_session, dry_run=False)
+
+            assert result["links_matched"] == 1
+            assert result["links_deleted"] == 1
+            assert await self._link_message_ids(db_session, sample_conversation.id) == {auto_retrieved.id}
+
+    @pytest.mark.asyncio
+    async def test_multi_entity_scoped_to_querying_entity(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """When the query tool_use carries a speaker_entity_id (multi-entity),
+        only that entity's links are deleted — another participant's link for
+        the same memory survives."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = ""
+
+            service = MemoryService()
+            queried = sample_messages[0]
+            await self._add_query_exchange(
+                db_session, sample_conversation.id, "toolu_1", [queried.id],
+                speaker_entity_id="entity-a",
+            )
+            await self._add_link(
+                db_session, sample_conversation.id, queried.id, entity_id="entity-a"
+            )
+            other_entity_link = await self._add_link(
+                db_session, sample_conversation.id, queried.id, entity_id="entity-b"
+            )
+
+            result = await service.cleanup_memory_query_links(db_session, dry_run=False)
+
+            assert result["links_matched"] == 1
+            assert result["links_deleted"] == 1
+            from sqlalchemy import select
+
+            remaining = await db_session.execute(
+                select(ConversationMemoryLink).where(
+                    ConversationMemoryLink.conversation_id == sample_conversation.id
+                )
+            )
+            remaining_links = remaining.scalars().all()
+            assert len(remaining_links) == 1
+            assert remaining_links[0].entity_id == "entity-b"
+
+    @pytest.mark.asyncio
+    async def test_ignores_other_tools_and_empty_results(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """Non-memory_query tool exchanges and no-match query results produce
+        no deletions, even when result text mentions memory-like markers."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = ""
+
+            service = MemoryService()
+            linked = sample_messages[0]
+            # Another tool's result containing a marker-like string must not count
+            await self._add_query_exchange(
+                db_session, sample_conversation.id, "toolu_other", [linked.id],
+                tool_name="notes_search",
+            )
+            await self._add_link(db_session, sample_conversation.id, linked.id)
+
+            result = await service.cleanup_memory_query_links(db_session, dry_run=False)
+
+            assert result["conversations_with_query_results"] == 0
+            assert result["links_matched"] == 0
+            assert result["links_deleted"] == 0
+            assert await self._link_message_ids(db_session, sample_conversation.id) == {linked.id}
+
+
 class TestMemoryServiceDelete:
     """Tests for memory deletion."""
 

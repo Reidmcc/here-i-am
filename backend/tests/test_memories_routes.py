@@ -74,6 +74,12 @@ def mock_memory_service():
             "errors": [],
             "orphan_ids": [],
         })
+        mock.cleanup_memory_query_links = AsyncMock(return_value={
+            "dry_run": True,
+            "conversations_with_query_results": 0,
+            "links_matched": 0,
+            "links_deleted": 0,
+        })
         yield mock
 
 
@@ -821,3 +827,58 @@ class TestOrphanedRecords:
         data = response.json()
         assert data["dry_run"] is False
         assert data["orphans_deleted"] == 2
+
+
+class TestQueryLinkCleanup:
+    """Tests for the stale memory_query link cleanup endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_dry_run(self, async_client, mock_memory_service):
+        """An empty body must default to dry_run=True."""
+        response = await async_client.post(
+            "/api/memories/query-links/cleanup",
+            json={}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dry_run"] is True
+        assert data["links_deleted"] == 0
+        call_kwargs = mock_memory_service.cleanup_memory_query_links.call_args.kwargs
+        assert call_kwargs["dry_run"] is True
+
+    @pytest.mark.asyncio
+    async def test_actual_cleanup(self, async_client, mock_memory_service):
+        """dry_run=false is passed through and results are surfaced."""
+        mock_memory_service.cleanup_memory_query_links.return_value = {
+            "dry_run": False,
+            "conversations_with_query_results": 2,
+            "links_matched": 7,
+            "links_deleted": 7,
+        }
+
+        response = await async_client.post(
+            "/api/memories/query-links/cleanup",
+            json={"dry_run": False}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dry_run"] is False
+        assert data["conversations_with_query_results"] == 2
+        assert data["links_matched"] == 7
+        assert data["links_deleted"] == 7
+        call_kwargs = mock_memory_service.cleanup_memory_query_links.call_args.kwargs
+        assert call_kwargs["dry_run"] is False
+
+    @pytest.mark.asyncio
+    async def test_works_without_pinecone(self, async_client, mock_memory_service):
+        """The cleanup is SQL-only — no 503 when memory is not configured."""
+        mock_memory_service.is_configured.return_value = False
+
+        response = await async_client.post(
+            "/api/memories/query-links/cleanup",
+            json={}
+        )
+
+        assert response.status_code == 200

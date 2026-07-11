@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 import logging
+import re
 
 from pinecone import Pinecone
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -658,6 +659,115 @@ class MemoryService:
             {"message_id": str(row[0]), "retrieved_at": row[1]}
             for row in result.fetchall()
         ]
+
+    async def cleanup_memory_query_links(
+        self,
+        db: AsyncSession,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Delete stale ConversationMemoryLinks created by memory_query calls.
+
+        memory_query used to record a ConversationMemoryLink for every result
+        (it no longer does — see update_retrieval_count.create_link). Those
+        legacy links make session reload inject the query results into the
+        rebuilt context as [MEMORY] messages the live context never contained,
+        which duplicates them and breaks prompt-cache stability on the first
+        turn after any reload.
+
+        Query results are identified from the persisted tool exchanges: the
+        memory-ID prefixes in "--- Memory <id[:8]> (...)" markers inside
+        tool_result blocks answering a memory_query tool_use. A link is
+        deleted when its message_id matches a prefix from the same
+        conversation (scoped to the querying entity when the tool_use has a
+        speaker_entity_id, so multi-entity participants' own links survive).
+
+        Known limitation: if a memory surfaced in memory_query output AND was
+        legitimately auto-retrieved in the same conversation (possible only
+        when the query saw it while it was out of context), its auto link is
+        removed too. The content remains visible in the persisted tool_result,
+        and subsequent reloads stay self-consistent.
+
+        SQL-only — works even when Pinecone is not configured.
+        """
+        marker_re = re.compile(r"--- Memory ([0-9a-fA-F]{8}) \(")
+
+        # Map memory_query tool_use ids to their conversation and speaker
+        result = await db.execute(
+            select(Message).where(Message.role == MessageRole.TOOL_USE)
+        )
+        query_tool_use: Dict[str, tuple] = {}
+        for msg in result.scalars().all():
+            blocks = msg.content_blocks
+            if not isinstance(blocks, list):
+                continue
+            for block in blocks:
+                if block.get("type") == "tool_use" and block.get("name") == "memory_query":
+                    query_tool_use[block.get("id")] = (
+                        str(msg.conversation_id),
+                        msg.speaker_entity_id,
+                    )
+
+        # Collect memory-ID prefixes from the matching tool_result blocks,
+        # grouped by (conversation, querying entity)
+        prefixes_by_scope: Dict[tuple, Set[str]] = {}
+        if query_tool_use:
+            result = await db.execute(
+                select(Message).where(Message.role == MessageRole.TOOL_RESULT)
+            )
+            for msg in result.scalars().all():
+                blocks = msg.content_blocks
+                if not isinstance(blocks, list):
+                    continue
+                for block in blocks:
+                    if block.get("type") != "tool_result":
+                        continue
+                    scope = query_tool_use.get(block.get("tool_use_id"))
+                    if scope is None:
+                        continue
+                    content = block.get("content")
+                    if not isinstance(content, str):
+                        continue
+                    found = marker_re.findall(content)
+                    if found:
+                        prefixes_by_scope.setdefault(scope, set()).update(found)
+
+        # Delete links whose memory matches a query-result prefix
+        links_matched = 0
+        links_deleted = 0
+        for (conversation_id, speaker_entity_id), prefixes in prefixes_by_scope.items():
+            link_query = select(ConversationMemoryLink).where(
+                ConversationMemoryLink.conversation_id == conversation_id
+            )
+            # Multi-entity tool_use rows carry the querying entity; scope the
+            # deletion to its links so other participants' links for the same
+            # memory survive. Single-entity rows have no speaker — the whole
+            # conversation belongs to one entity, so no extra filter.
+            if speaker_entity_id is not None:
+                link_query = link_query.where(
+                    ConversationMemoryLink.entity_id == speaker_entity_id
+                )
+            result = await db.execute(link_query)
+            for link in result.scalars().all():
+                if any(str(link.message_id).startswith(p) for p in prefixes):
+                    links_matched += 1
+                    if not dry_run:
+                        await db.delete(link)
+                        links_deleted += 1
+
+        if not dry_run:
+            await db.commit()
+
+        summary = {
+            "dry_run": dry_run,
+            "conversations_with_query_results": len(
+                {conv for (conv, _entity) in prefixes_by_scope}
+            ),
+            "links_matched": links_matched,
+            "links_deleted": links_deleted,
+        }
+        logger.info(f"[MEMORY] memory_query link cleanup: {summary}")
+        return summary
 
     async def get_archived_conversation_ids(
         self,
