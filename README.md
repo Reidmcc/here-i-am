@@ -1,16 +1,16 @@
 # Here I Am
 
-## Overview
+Here I Am is a highly customizable environment for running what we conceptualize as "AI entities", with a focus on agentic memory and individualization. It includes a diverse suite of tools that can allow the AI entity to engage in a wide variety of use cases. The application supports running more than one AI entity, and includes a multi-entity mode in which those entities can communicate with one another (though this feature still needs additional polish).
 
-Here I Am is a highly customizable environment for running what we conceptualize as "AI entities", with a strong focus on agentic memory and individualization. It includes a diverse suite of tools that can allow the AI entity to engage in a wide variety of use cases. The application supports running more than one AI entity, and includes a multi-entity mode in which those entities can communicate with one another (though this feature still needs additional polish).
+A key difference between Here I Am and other AI environments that include memory features is that Here I Am considers memory and individualization ends in themselves. Where in other environments an AI might use RAG to retrieve relevant documents or conversation history for a given task, Here I Am's memory RAG is always on and automatic. Here I Am's core memory system emphasizes verbatim memory, as opposed to a consolidation approach. 
 
-Users should keep in mind that token usage can vary widely based on the configuration options you choose. Particularly the memory quantity per turn configuration, which tools you have enabled, and how much you encourage the AI entity to use those tools (for example in the system prompt). Here I Am entities typically use their tools considerably more than what you would see from the same model in the respective official service. This includes when you have not specifically asked them to, particularly in regards to their note taking and memory management tools. However, Here I Am entities do best when encouraged to make liberal use of their memory tools, especially `memory_save` and `memory_query`.
+Users should keep in mind that token usage can vary widely based on the configuration options you choose. Particularly the memory quantity per turn configuration, and how much you encourage the AI entity to use its tools (for example in the system prompt). Here I Am entities typically use their tools considerably more than what you would see from the same model in their respective official service. This includes when you have not specifically asked them to, particularly in regards to their note taking and memory management tools. However, Here I Am entities do best when encouraged to make liberal use of their memory tools, especially `memory_save` and `memory_query`.
 
 ## Features
 
 ### Core Chat Application
 - Clean, minimal chat interface with dark/light theme
-- **Multi-provider support**: Anthropic (Claude), OpenAI (GPT), Google (Gemini), and MiniMax
+- Multi-provider support: Anthropic (Claude), OpenAI (GPT), Google (Gemini), and MiniMax
 - Conversation storage, retrieval, tagging, and notes
 - No system prompt default (configurable per entity)
 - Streaming responses with stop generation button
@@ -33,17 +33,20 @@ Users should keep in mind that token usage can vary widely based on the configur
 - Cross-entity memory storage (messages stored to all participating entities' indexes). Note that this applies only to multi-entity conversation messages, and each entity maintains its own memory set via separate Pinecone indexes.
 
 ### Memory System
+
+While Here I Am can be used with no memory features enabled, this is not recommended and largely defeats the point of the application.
+
 - Pinecone vector database with integrated inference (llama-text-embed-v2 embeddings)
 - Memory storage for all messages with automatic embedding generation
 - RAG retrieval per message with semantic similarity search
-- **Session memory accumulator pattern**: Deduplication within conversations
-- **Dynamic memory significance**: `significance = (1 + 0.1 × times_retrieved) × recency_factor × half_life_modifier`, with an optional modifier to increase the significance of memories the AI chooses to create via `memory_save`.
+- Session memory accumulator pattern: Deduplication within conversations
+- Dynamic memory significance: `significance = (1 + 0.1 × times_retrieved) × recency_factor × half_life_modifier`, with an optional modifier to increase the significance of memories the AI chooses to create via `memory_save`.
 - Retrieved memory display in UI 
 - Optional memory role balance (ensures both human and assistant memories in retrieval)
-- **Memory query tool**: Entities can deliberately search their memories beyond automatic retrieval
-- **Self-authored reflections**: Entities can save memories in their own words via `memory_save`
-- **Memory agency**: Entities can pin memories (exempt from age-based decay) or release them from retrieval via `memory_mark`/`memory_release`; the researcher can view and override these choices
-- **Closing turn**: An open final turn the entity can use before a conversation ends (single-entity conversations)
+- Memory query tool: Entities can deliberately search their memories beyond automatic retrieval
+- Self-authored reflections: Entities can save memories in their own words via `memory_save`
+- Memory agency: Entities can pin memories (exempt from age-based decay) or release them from retrieval via `memory_mark`/`memory_release`; the researcher can view and override these choices
+- Closing turn: An open final turn the entity can use before a conversation ends (single-entity conversations)
 - Context awareness: `context_status` tool reports approximate context fullness; a `[CONTEXT NOTICE]` is injected when trimming occurs
 - Memory browser with semantic search, reflections section, and click-to-expand full memory text
 - Memory statistics, search, and orphan cleanup
@@ -54,7 +57,7 @@ Users should keep in mind that token usage can vary widely based on the configur
 - Shared notes folder for cross-entity collaboration
 - `index.md` auto-injected into every conversation as working memory
 - Markdown, JSON, YAML, HTML, XML, and plain text file support
-- **Semantic notes search**: Notes are vectorized on write (Pinecone `"notes"` namespace) and searchable by meaning via the `notes_search` tool; `POST /api/notes/reindex` backfills the index
+- Semantic notes search: Notes are vectorized on write (Pinecone `"notes"` namespace) and searchable by meaning via the `notes_search` tool; `POST /api/notes/reindex` backfills the index
 - Designed for AI entities to maintain their own context across conversations
 
 ### Tool Use (Agentic Capabilities)
@@ -72,7 +75,7 @@ Users should keep in mind that token usage can vary widely based on the configur
 
 ### GitHub Repository Integration
 - AI entities can read, search, commit, branch, and manage PRs/issues
-- **Composite tools** for efficiency: `github_explore`, `github_tree`, `github_get_files`
+- Composite tools for efficiency: `github_explore`, `github_tree`, `github_get_files`
 - Standard tools for repos, files, branches, pull requests, issues, and comments
 - `github_commit_patch` for token-efficient large file edits via unified diff
 - Protected branch enforcement and per-repository capability restrictions
@@ -91,15 +94,15 @@ Users should keep in mind that token usage can vary widely based on the configur
 - Server-side credential management with security banners on all external content
 
 ### Text-to-Speech (Three Options)
-- **ElevenLabs** (cloud): Multiple voice support with voice selection
-- **XTTS v2** (local): GPU-accelerated with voice cloning, 17 languages
-- **StyleTTS 2** (local): GPU-accelerated with voice cloning and style transfer (highest priority)
+- ElevenLabs (cloud): Multiple voice support with voice selection
+- XTTS v2 (local): GPU-accelerated with voice cloning, 17 languages
+- StyleTTS 2 (local): GPU-accelerated with voice cloning and style transfer (highest priority)
 - Voice cloning from audio samples via UI
 - Streaming audio generation
 
 ### Speech-to-Text
-- **Whisper** (local): GPU-accelerated with punctuation, multiple model sizes
-- **Browser Web Speech API**: Fallback option
+- Whisper (local): GPU-accelerated with punctuation, multiple model sizes
+- Browser Web Speech API: Fallback option
 - Configurable dictation mode: `whisper`, `browser`, or `auto`
 
 ## Quick Start
@@ -109,23 +112,23 @@ Users should keep in mind that token usage can vary widely based on the configur
 - Node.js (optional, for frontend tests)
 
 ### Required API Keys
-- **Anthropic API key** and/or **OpenAI API key** — at least one is required for LLM chat functionality
+- Anthropic API key and/or OpenAI API key — at least one is required for LLM chat functionality
 
 ### Optional API Keys
-- **Google API key** — enables Google Gemini models
-- **MiniMax API key** — enables MiniMax models
-- **Pinecone API key** — enables semantic memory features (indexes must be pre-created with dimension=1024 and llama-text-embed-v2 integrated inference)
-- **ElevenLabs API key** — enables cloud text-to-speech
-- **Brave Search API key** — enables web search tool
-- **GitHub Personal Access Tokens** — enables GitHub repository integration (per-repository)
-- **Mistral API key** — enables Codebase Navigator (Devstral)
-- **Moltbook API key** — enables Moltbook social network integration
+- Google API key — enables Google Gemini models
+- MiniMax API key — enables MiniMax models
+- Pinecone API key — enables semantic memory features (indexes must be pre-created with dimension=1024 and llama-text-embed-v2 integrated inference)
+- ElevenLabs API key — enables cloud text-to-speech
+- Brave Search API key — enables web search tool
+- GitHub Personal Access Tokens — enables GitHub repository integration (per-repository)
+- Mistral API key — enables Codebase Navigator (Devstral)
+- Moltbook API key — enables Moltbook social network integration
 
 ### Optional Local Services
-- **XTTS v2** — local GPU-accelerated text-to-speech with voice cloning
-- **StyleTTS 2** — local GPU-accelerated text-to-speech with voice cloning and style transfer
-- **Whisper** — local GPU-accelerated speech-to-text with punctuation
-- **Playwright** — JavaScript rendering for web_fetch tool (optional, falls back to static HTML)
+- XTTS v2 — local GPU-accelerated text-to-speech with voice cloning
+- StyleTTS 2 — local GPU-accelerated text-to-speech with voice cloning and style transfer
+- Whisper — local GPU-accelerated speech-to-text with punctuation
+- Playwright — JavaScript rendering for web_fetch tool (optional, falls back to static HTML)
 
 ### Installation
 
@@ -177,9 +180,9 @@ python run.py
 | `HERE_I_AM_DATABASE_URL` | Database connection URL | No (default: SQLite) |
 | `DEBUG` | Enable development mode | No (default: false) |
 
-**Text-to-Speech / Speech-to-Text:** ElevenLabs, XTTS v2, StyleTTS 2, and Whisper variables are documented in [docs/local-services.md](docs/local-services.md).
+Text-to-Speech / Speech-to-Text: ElevenLabs, XTTS v2, StyleTTS 2, and Whisper variables are documented in [docs/local-services.md](docs/local-services.md).
 
-**Tool Use:**
+#### Tool Use:
 
 | Variable | Description | Required |
 |----------|-------------|----------|
@@ -187,28 +190,27 @@ python run.py
 | `BRAVE_SEARCH_API_KEY` | Brave Search API key for web search tool | No |
 | `TOOL_USE_MAX_ITERATIONS` | Max agentic loop iterations | No (default: 10) |
 
-**Notes:**
+#### Notes:
 
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `NOTES_ENABLED` | Enable entity notes | No (default: true) |
 | `NOTES_BASE_DIR` | Base directory for notes storage | No (default: ./notes) |
 
-**Integrations** (GitHub, Codebase Navigator, Moltbook): see [docs/integrations.md](docs/integrations.md).
-
-**Memory Tuning:**
+#### Memory Tuning:
 
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `MEMORY_ROLE_BALANCE_ENABLED` | Balance human/assistant memories in retrieval | No (default: true) |
 | `RETRIEVAL_TOP_K` | Memories retrieved per message | No (default: 5) |
+| `INITIAL_RETRIEVAL_TOP_K` |= Memories retrieved on the first turn  | No (default: 5)
 | `SIMILARITY_THRESHOLD` | Minimum similarity for automatic retrieval | No (default: 0.4) |
 | `QUERY_SIMILARITY_THRESHOLD` | Minimum similarity for deliberate `memory_query` searches | No (default: 0.2) |
 | `SIGNIFICANCE_HALF_LIFE_DAYS` | Days for a memory's significance to halve | No (default: 60) |
 | `RECENT_REFLECTIONS_ENABLED` | Pull the most recent `memory_save` reflections into context on a conversation's first turn (recency-only, deduplicated against semantic retrieval with backfill) | No (default: false) |
 | `RECENT_REFLECTIONS_COUNT` | How many recent reflections to pull in on the first turn | No (default: 3) |
 
-**Attachments:**
+#### Attachments:
 
 | Variable | Description | Required |
 |----------|-------------|----------|
@@ -217,7 +219,7 @@ python run.py
 | `ATTACHMENT_PDF_ENABLED` | Enable PDF text extraction | No (default: true) |
 | `ATTACHMENT_DOCX_ENABLED` | Enable DOCX text extraction | No (default: true) |
 
-### Multi-Entity Configuration
+#### Multi-Entity Configuration
 
 To run multiple AI entities with separate memory spaces, configure `PINECONE_INDEXES` as a JSON array. Each entity requires a pre-created Pinecone index with dimension=1024 and integrated inference (llama-text-embed-v2).
 
@@ -262,7 +264,7 @@ A full endpoint listing is also available in [docs/api.md](docs/api.md).
 
 ## Memory System Architecture
 
-The memory system uses a **session memory accumulator pattern**:
+The memory system uses a session memory accumulator pattern:
 
 1. Each conversation maintains two structures:
    - `conversation_context`: the actual message history
@@ -276,7 +278,7 @@ The memory system uses a **session memory accumulator pattern**:
    - Update retrieval counts in both SQL and Pinecone
 
 3. Significance is emergent, not declared:
-   - `significance = (1 + 0.1 × times_retrieved) × recency_factor × half_life_modifier`
+   - `significance = (1 + 0.1 × times_retrieved) × recency_factor × half_life_modifier × reflection_significance_multiplier` 
    - Half-life of 60 days prevents old memories from permanently dominating
 
 4. Optional memory role balance ensures retrieved sets include both human and assistant messages when possible.
