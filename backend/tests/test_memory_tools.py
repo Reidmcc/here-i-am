@@ -156,6 +156,7 @@ class TestMemoryQuerySearch:
         """Memories already in the conversation context are excluded from search."""
         session = MagicMock()
         session.get_in_context_memory_ids.return_value = {"mem-in-ctx-1", "mem-in-ctx-2"}
+        session.get_query_surfaced_memory_ids.return_value = set()
         set_memory_tool_context("test-entity", "test-conversation", session=session)
 
         with patch("app.services.memory_tools.memory_service") as mock_service:
@@ -167,6 +168,31 @@ class TestMemoryQuerySearch:
 
             call_kwargs = mock_service.search_memories.call_args[1]
             assert call_kwargs["exclude_ids"] == {"mem-in-ctx-1", "mem-in-ctx-2"}
+
+        # Reset session so later tests are unaffected
+        set_memory_tool_context("test-entity", "test-conversation")
+
+    @pytest.mark.asyncio
+    async def test_search_excludes_query_surfaced_memories(self):
+        """Memories surfaced by earlier memory_query tool results are excluded."""
+        session = MagicMock()
+        session.get_in_context_memory_ids.return_value = {"mem-in-ctx-1"}
+        session.get_query_surfaced_memory_ids.return_value = {"mem-from-query-1", "mem-from-query-2"}
+        set_memory_tool_context("test-entity", "test-conversation", session=session)
+
+        with patch("app.services.memory_tools.memory_service") as mock_service:
+            mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_service.search_memories = AsyncMock(return_value=[])
+
+            await _memory_query("something")
+
+            call_kwargs = mock_service.search_memories.call_args[1]
+            assert call_kwargs["exclude_ids"] == {
+                "mem-in-ctx-1",
+                "mem-from-query-1",
+                "mem-from-query-2",
+            }
 
         # Reset session so later tests are unaffected
         set_memory_tool_context("test-entity", "test-conversation")
@@ -295,6 +321,110 @@ class TestMemoryQueryFullContentRetrieval:
             # Should still return the valid memory
             assert "Found 1 memories" in result
             assert "Valid memory content" in result
+
+
+class TestMemoryQueryResultDedup:
+    """Tests for deduplication of memories surfaced by memory_query results."""
+
+    @pytest.fixture
+    def mock_db_session(self):
+        """Create a mock database session."""
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        return mock_session
+
+    def _make_service_mock(self, mock_service, search_results):
+        mock_service.is_configured.return_value = True
+        mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
+        mock_service.search_memories = AsyncMock(return_value=search_results)
+
+        async def mock_get_content(msg_id, db):
+            return {
+                "id": msg_id,
+                "conversation_id": "conv-a",
+                "role": "assistant",
+                "content": f"Content of {msg_id}",
+                "created_at": datetime.utcnow().isoformat(),
+                "times_retrieved": 1,
+            }
+
+        mock_service.get_full_memory_content = AsyncMock(side_effect=mock_get_content)
+        mock_service.update_retrieval_count = AsyncMock(return_value=True)
+
+    @pytest.mark.asyncio
+    async def test_second_query_in_same_turn_excludes_first_query_results(self, mock_db_session):
+        """A later memory_query in the same turn must not re-return memories the
+        entity is already looking at in an earlier call's tool result."""
+        set_memory_tool_context("test-entity", "test-conversation")
+
+        with patch("app.services.memory_tools.memory_service") as mock_service, \
+             patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
+            self._make_service_mock(
+                mock_service,
+                [{"id": "mem-turn-1", "score": 0.9, "conversation_id": "conv-a"}],
+            )
+            mock_session_maker.return_value = mock_db_session
+
+            first = await _memory_query("first query")
+            assert "mem-turn" in first
+
+            await _memory_query("second query")
+
+            second_call_kwargs = mock_service.search_memories.call_args[1]
+            assert "mem-turn-1" in second_call_kwargs["exclude_ids"]
+
+        # Reset turn state so later tests are unaffected
+        set_memory_tool_context("test-entity", "test-conversation")
+
+    @pytest.mark.asyncio
+    async def test_consume_last_query_memory_ids_returns_and_clears(self, mock_db_session):
+        """The tool loop consumes the surfaced IDs of the most recent call."""
+        from app.services.memory_tools import consume_last_query_memory_ids
+
+        set_memory_tool_context("test-entity", "test-conversation")
+
+        with patch("app.services.memory_tools.memory_service") as mock_service, \
+             patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
+            self._make_service_mock(
+                mock_service,
+                [
+                    {"id": "mem-a", "score": 0.9, "conversation_id": "conv-a"},
+                    {"id": "mem-b", "score": 0.8, "conversation_id": "conv-a"},
+                ],
+            )
+            mock_session_maker.return_value = mock_db_session
+
+            await _memory_query("a query")
+
+        assert consume_last_query_memory_ids() == ["mem-a", "mem-b"]
+        # Consumed: a second read returns nothing
+        assert consume_last_query_memory_ids() == []
+
+        set_memory_tool_context("test-entity", "test-conversation")
+
+    @pytest.mark.asyncio
+    async def test_set_context_resets_turn_query_state(self, mock_db_session):
+        """A new turn (set_memory_tool_context) clears the turn-level dedup state."""
+        from app.services import memory_tools
+
+        set_memory_tool_context("test-entity", "test-conversation")
+
+        with patch("app.services.memory_tools.memory_service") as mock_service, \
+             patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
+            self._make_service_mock(
+                mock_service,
+                [{"id": "mem-x", "score": 0.9, "conversation_id": "conv-a"}],
+            )
+            mock_session_maker.return_value = mock_db_session
+
+            await _memory_query("a query")
+            assert "mem-x" in memory_tools._turn_query_memory_ids
+            assert memory_tools._last_query_memory_ids == ["mem-x"]
+
+        set_memory_tool_context("test-entity", "test-conversation")
+        assert memory_tools._turn_query_memory_ids == set()
+        assert memory_tools._last_query_memory_ids == []
 
 
 class TestMemoryQueryRetrievalTracking:

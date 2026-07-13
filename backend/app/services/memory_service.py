@@ -595,6 +595,33 @@ class MemoryService:
             await db.rollback()
             return False
 
+    async def resolve_memory_id_prefixes(
+        self,
+        db: AsyncSession,
+        prefixes: List[str],
+    ) -> List[str]:
+        """
+        Resolve short memory ID prefixes (as shown in memory_query output and
+        memory markers) back to full message IDs. Prefixes that match zero or
+        multiple messages are dropped — callers use the result for retrieval
+        deduplication, where a missing ID just means one memory isn't
+        deduplicated rather than an error.
+        """
+        resolved: List[str] = []
+        for prefix in dict.fromkeys(prefixes):  # dedupe, preserve order
+            try:
+                result = await db.execute(
+                    select(Message.id).where(Message.id.like(f"{prefix}%")).limit(2)
+                )
+                matches = result.scalars().all()
+                if len(matches) == 1:
+                    resolved.append(str(matches[0]))
+                elif len(matches) > 1:
+                    logger.debug(f"Memory ID prefix '{prefix}' is ambiguous; skipping for dedup")
+            except Exception as e:
+                logger.warning(f"Error resolving memory ID prefix '{prefix}': {e}")
+        return resolved
+
     async def get_retrieved_ids_for_conversation(
         self,
         conversation_id: str,

@@ -179,6 +179,22 @@ class ConversationSession:
         """Get the set of memory IDs currently in context (not rolled out)."""
         return self.memory_tracker.get_in_context_memory_ids(len(self.conversation_context))
 
+    def get_query_surfaced_memory_ids(self) -> Set[str]:
+        """
+        Get the memory IDs surfaced by memory_query tool results that are
+        still in the conversation context.
+
+        The IDs are stamped onto each memory_query tool_result context
+        message (memory_query_ids) — by the tool loop live, and by parsing
+        the persisted result on session reload. Deriving the set by scanning
+        the context means it shrinks naturally when trimming removes the
+        tool_result message, mirroring how memory_tracker positions roll out.
+        """
+        ids: Set[str] = set()
+        for msg in self.conversation_context:
+            ids.update(msg.get("memory_query_ids") or ())
+        return ids
+
     def get_in_context_memory_count(self) -> int:
         """Get the count of memories currently in context."""
         return len(self.get_in_context_memory_ids())
@@ -237,11 +253,17 @@ class ConversationSession:
                     "is_tool_use": True,
                 })
                 # User's tool_result message (content is a list of tool_result blocks)
-                self.conversation_context.append({
+                tool_result_message = {
                     "role": "user",
                     "content": exchange["user"]["content"],
                     "is_tool_result": True,
-                })
+                }
+                # Memory IDs surfaced by memory_query calls in this exchange,
+                # stamped on the context message so retrieval dedup can see
+                # them for as long as the tool result remains in context.
+                if exchange.get("memory_query_ids"):
+                    tool_result_message["memory_query_ids"] = exchange["memory_query_ids"]
+                self.conversation_context.append(tool_result_message)
 
         # Add the final assistant response (text only)
         if self.is_multi_entity and self.responding_entity_label:
