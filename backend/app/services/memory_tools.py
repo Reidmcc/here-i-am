@@ -44,15 +44,44 @@ _current_conversation_id: Optional[str] = None
 # The active ConversationSession, used to exclude memories already in context
 # from memory_query results. Optional so the tools still work without a session.
 _current_session = None
+# Memory IDs surfaced by memory_query calls in the current turn. Tool results
+# are folded into the conversation context only when the turn's exchange is
+# added at the end of the tool loop, so without this a second memory_query in
+# the same turn could return memories the entity is already looking at in an
+# earlier tool result.
+_turn_query_memory_ids: set = set()
+# IDs surfaced by the most recent memory_query call. The session manager's
+# tool loop consumes these to stamp them onto the tool_result context message
+# (memory_query_ids), which is what makes them visible to context-level dedup
+# on later turns and after a session reload.
+_last_query_memory_ids: list = []
 
 
 def set_memory_tool_context(entity_id: str, conversation_id: str, session=None) -> None:
     """Set the entity, conversation, and session context for memory tool execution."""
     global _current_entity_id, _current_conversation_id, _current_session
+    global _turn_query_memory_ids, _last_query_memory_ids
     _current_entity_id = entity_id
     _current_conversation_id = conversation_id
     _current_session = session
+    # New turn: previous turns' memory_query results are now tracked on their
+    # tool_result context messages, so the turn-level accumulator resets.
+    _turn_query_memory_ids = set()
+    _last_query_memory_ids = []
     logger.debug(f"Memory tools: context set to entity_id='{entity_id}', conversation_id='{conversation_id}'")
+
+
+def consume_last_query_memory_ids() -> list:
+    """
+    Return the memory IDs surfaced by the most recent memory_query call and
+    clear them. Called by the session manager's tool loop right after
+    executing a memory_query, to stamp the IDs onto that call's tool_result
+    context message.
+    """
+    global _last_query_memory_ids
+    ids = _last_query_memory_ids
+    _last_query_memory_ids = []
+    return ids
 
 
 def get_memory_tool_context() -> tuple[Optional[str], Optional[str]]:
@@ -62,18 +91,23 @@ def get_memory_tool_context() -> tuple[Optional[str], Optional[str]]:
 
 def get_in_context_memory_ids() -> set:
     """
-    Get the set of memory IDs currently in the active session's context.
+    Get the set of memory IDs the entity can already see in the conversation:
+    [MEMORY] context insertions, memories surfaced in earlier memory_query
+    tool results that are still in context, and this turn's memory_query
+    results (whose tool results haven't been folded into the context yet).
 
-    Returns an empty set if no session is set (e.g. the tool is invoked
-    outside a live conversation), which leaves memory_query unfiltered.
+    Returns only the turn-level IDs if no session is set (e.g. the tool is
+    invoked outside a live conversation).
     """
+    ids = set(_turn_query_memory_ids)
     if _current_session is None:
-        return set()
+        return ids
     try:
-        return _current_session.get_in_context_memory_ids()
+        ids |= _current_session.get_in_context_memory_ids()
+        ids |= _current_session.get_query_surfaced_memory_ids()
     except Exception as e:
         logger.warning(f"Could not read in-context memory IDs from session: {e}")
-        return set()
+    return ids
 
 
 def _role_display(role: str) -> str:
@@ -263,6 +297,17 @@ async def _memory_query(query: str, num_results: int = 5) -> str:
 
         if not memories:
             return f"No memories found matching: \"{query}\" (candidates existed but content unavailable)"
+
+        # Make these results visible to dedup: later memory_query calls and
+        # automatic retrieval must not re-surface memories the entity can
+        # already see in this tool result. The tool loop consumes
+        # _last_query_memory_ids to stamp them onto the tool_result context
+        # message; _turn_query_memory_ids covers the window before that
+        # message exists (further calls within this same turn).
+        global _last_query_memory_ids
+        surfaced_ids = [mem["id"] for mem in memories]
+        _last_query_memory_ids = list(surfaced_ids)
+        _turn_query_memory_ids.update(surfaced_ids)
 
         # Format results
         lines = [f"Found {len(memories)} memories matching: \"{query}\"", ""]

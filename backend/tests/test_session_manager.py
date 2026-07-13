@@ -2851,6 +2851,58 @@ class TestRecentReflectionsInjection:
             assert mock_memory.get_recent_reflections.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_injected_reflections_deduplicated_from_later_retrieval(
+        self, db_session, sample_conversation
+    ):
+        """Once injected, recent reflections are tracked exactly like
+        automatically retrieved memories: later semantic retrieval skips them
+        (no re-insert, no count update) and they sit in the in-context set
+        that memory_query excludes."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.search_memories = AsyncMock(return_value=[])
+            mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
+            mock_memory.get_recent_reflections = AsyncMock(return_value=[
+                self._reflection_dict("refl-1"),
+            ])
+            self._configure_llm(mock_llm)
+            self._configure_settings(mock_settings, enabled=True, count=1)
+
+            session = manager.create_session(sample_conversation.id)
+
+            await manager.process_message(session, "First", db_session)
+
+            # The injected reflection is tracked like an automatic retrieval:
+            # in the memory tracker (what memory_query's exclusion reads) and
+            # in the session's retrieved set
+            assert "refl-1" in session.get_in_context_memory_ids()
+            assert "refl-1" in session.retrieved_ids
+
+            # Second turn: semantic search now surfaces the same reflection
+            mock_memory.search_memories = AsyncMock(return_value=[
+                {"id": "refl-1", "score": 0.95, "conversation_id": "reflection-source-conv", "created_at": "2026-01-02T00:00:00", "last_retrieved_at": None}
+            ])
+            mock_memory.get_full_memory_content = AsyncMock(
+                return_value=self._reflection_dict("refl-1")
+            )
+
+            result = await manager.process_message(session, "Second", db_session)
+
+            # Skipped as already in context: not re-inserted, not re-reported,
+            # and no retrieval-count update
+            assert result["new_memories_retrieved"] == []
+            assert result["total_memories_in_context"] == 1
+            memory_messages = [m for m in session.conversation_context if m.get("is_memory")]
+            assert len(memory_messages) == 1
+            mock_memory.update_retrieval_count.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_disabled_by_default_setting(self, db_session, sample_conversation):
         """With recent_reflections_enabled=False, no reflection fetch happens."""
         manager = SessionManager()
@@ -3161,3 +3213,218 @@ class TestRecentReflectionsInjection:
 
         session.conversation_context.append({"role": "user", "content": "Hello"})
         assert session.has_conversational_messages() is True
+
+
+class TestMemoryQueryResultDedup:
+    """Tests for dedup of memories surfaced via memory_query tool results."""
+
+    def test_add_exchange_stamps_memory_query_ids_on_tool_result(self):
+        """memory_query_ids on an exchange land on the tool_result context message."""
+        session = ConversationSession(conversation_id="conv-1")
+
+        session.add_exchange(
+            "Query your memory please",
+            "Done.",
+            tool_exchanges=[
+                {
+                    "assistant": {"content": [{"type": "tool_use", "id": "t1", "name": "memory_query", "input": {"query": "x"}}]},
+                    "user": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "--- Memory aaaa1111 (...)"}]},
+                    "memory_query_ids": ["mem-full-id-1", "mem-full-id-2"],
+                },
+                {
+                    "assistant": {"content": [{"type": "tool_use", "id": "t2", "name": "web_search", "input": {"query": "y"}}]},
+                    "user": {"content": [{"type": "tool_result", "tool_use_id": "t2", "content": "results"}]},
+                },
+            ],
+        )
+
+        tool_results = [m for m in session.conversation_context if m.get("is_tool_result")]
+        assert tool_results[0]["memory_query_ids"] == ["mem-full-id-1", "mem-full-id-2"]
+        assert "memory_query_ids" not in tool_results[1]
+
+        assert session.get_query_surfaced_memory_ids() == {"mem-full-id-1", "mem-full-id-2"}
+
+    def test_query_surfaced_ids_shrink_when_tool_result_trims_out(self):
+        """Query-surfaced IDs leave the dedup set when trimming removes the tool result."""
+        session = ConversationSession(conversation_id="conv-1")
+        session.conversation_context.append({
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "..."}],
+            "is_tool_result": True,
+            "memory_query_ids": ["mem-1"],
+        })
+        session.conversation_context.append({"role": "user", "content": "hello"})
+
+        assert session.get_query_surfaced_memory_ids() == {"mem-1"}
+
+        session.conversation_context.pop(0)
+        assert session.get_query_surfaced_memory_ids() == set()
+
+    @pytest.mark.asyncio
+    async def test_automatic_retrieval_skips_query_surfaced_memories(
+        self, db_session, sample_conversation
+    ):
+        """Automatic retrieval must not re-insert a memory the entity already
+        saw in a memory_query tool result (no [MEMORY] duplicate, no count update)."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.search_memories = AsyncMock(return_value=[
+                {"id": "mem-query-1", "score": 0.9, "conversation_id": "old-conv", "created_at": "2024-01-01", "last_retrieved_at": None}
+            ])
+            mock_memory.get_full_memory_content = AsyncMock(return_value={
+                "id": "mem-query-1",
+                "conversation_id": "old-conv",
+                "role": "assistant",
+                "content": "Memory the entity already saw via memory_query",
+                "created_at": "2024-01-01",
+                "times_retrieved": 1,
+                "last_retrieved_at": None,
+            })
+            mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
+
+            mock_llm.build_messages.return_value = []
+            mock_llm.send_message = AsyncMock(return_value={
+                "content": "Response",
+                "model": "claude-sonnet-4-5-20250929",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "stop_reason": "end_turn",
+            })
+            mock_llm.count_tokens = MagicMock(return_value=50)
+
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.context_token_limit = 150000
+            mock_settings.significance_half_life_days = 60
+            mock_settings.recency_boost_strength = 1.0
+            mock_settings.significance_floor = 0.01
+            mock_settings.retrieval_candidate_multiplier = 2
+            mock_settings.initial_retrieval_top_k = 5
+            mock_settings.retrieval_top_k = 5
+            mock_settings.recent_reflections_enabled = False
+
+            session = manager.create_session(sample_conversation.id)
+            # A previous turn's memory_query surfaced this memory
+            session.conversation_context.append({
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "..."}],
+                "is_tool_result": True,
+                "memory_query_ids": ["mem-query-1"],
+            })
+
+            result = await manager.process_message(session, "Hello", db_session)
+
+            assert result["new_memories_retrieved"] == []
+            assert result["total_memories_in_context"] == 0
+            assert not any(m.get("is_memory") for m in session.conversation_context)
+            mock_memory.update_retrieval_count.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_load_session_restores_memory_query_ids(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """Reload re-stamps memory_query tool_result messages with the full IDs
+        resolved from the persisted result's 8-char prefixes."""
+        import json
+
+        surfaced_id = str(uuid.uuid4())
+        prefix = surfaced_id[:8]
+        result_text = (
+            f'Found 1 memories matching: "test"\n\n'
+            f"--- Memory {prefix} (You said, 3.0 days ago, similarity: 0.812) ---\n"
+            f"Some remembered content\n"
+        )
+
+        tool_use_msg = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_USE,
+            content=json.dumps([
+                {"type": "tool_use", "id": "toolu_1", "name": "memory_query", "input": {"query": "test"}}
+            ]),
+        )
+        tool_result_msg = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_RESULT,
+            content=json.dumps([
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": result_text, "is_error": False}
+            ]),
+        )
+        db_session.add_all([tool_use_msg, tool_result_msg])
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
+            mock_memory.resolve_memory_id_prefixes = AsyncMock(return_value=[surfaced_id])
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.notes_enabled = False
+            mock_settings.get_entity_by_index.return_value = None
+
+            session = await manager.load_session_from_db(
+                sample_conversation.id, db_session
+            )
+
+        mock_memory.resolve_memory_id_prefixes.assert_awaited_once()
+        assert mock_memory.resolve_memory_id_prefixes.call_args.args[1] == [prefix]
+
+        tool_results = [m for m in session.conversation_context if m.get("is_tool_result")]
+        assert len(tool_results) == 1
+        assert tool_results[0]["memory_query_ids"] == [surfaced_id]
+        assert session.get_query_surfaced_memory_ids() == {surfaced_id}
+
+    @pytest.mark.asyncio
+    async def test_load_session_ignores_non_memory_query_tool_results(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """Results of other tools are not parsed for memory ID prefixes even if
+        their text happens to contain a matching line."""
+        import json
+
+        tool_use_msg = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_USE,
+            content=json.dumps([
+                {"type": "tool_use", "id": "toolu_2", "name": "web_search", "input": {"query": "x"}}
+            ]),
+        )
+        tool_result_msg = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_RESULT,
+            content=json.dumps([
+                {"type": "tool_result", "tool_use_id": "toolu_2", "content": "--- Memory deadbeef (You said, similarity: 0.9) ---", "is_error": False}
+            ]),
+        )
+        db_session.add_all([tool_use_msg, tool_result_msg])
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
+            mock_memory.resolve_memory_id_prefixes = AsyncMock(return_value=[])
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.notes_enabled = False
+            mock_settings.get_entity_by_index.return_value = None
+
+            session = await manager.load_session_from_db(
+                sample_conversation.id, db_session
+            )
+
+        mock_memory.resolve_memory_id_prefixes.assert_not_awaited()
+        tool_results = [m for m in session.conversation_context if m.get("is_tool_result")]
+        assert all("memory_query_ids" not in m for m in tool_results)

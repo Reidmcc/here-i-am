@@ -1543,3 +1543,58 @@ class TestGetRecentReflections:
             "memory_status",
         }
         assert results[0]["conversation_id"] == str(conv.id)
+
+
+class TestResolveMemoryIdPrefixes:
+    """Prefix→full-ID resolution backing memory_query dedup restoration on reload."""
+
+    async def _create_message(self, db, message_id=None):
+        from app.models import Conversation
+
+        conversation = Conversation(
+            id=str(uuid.uuid4()),
+            title="Source Conversation",
+            entity_id="test-memories",
+        )
+        db.add(conversation)
+        message = Message(
+            id=message_id or str(uuid.uuid4()),
+            conversation_id=conversation.id,
+            role=MessageRole.ASSISTANT,
+            content="A memory",
+        )
+        db.add(message)
+        await db.commit()
+        return message
+
+    @pytest.mark.asyncio
+    async def test_resolves_unique_prefixes(self, db_session):
+        message = await self._create_message(db_session)
+
+        service = MemoryService()
+        resolved = await service.resolve_memory_id_prefixes(
+            db_session, [message.id[:8]]
+        )
+        assert resolved == [message.id]
+
+    @pytest.mark.asyncio
+    async def test_drops_unknown_and_deduplicates(self, db_session):
+        message = await self._create_message(db_session)
+
+        service = MemoryService()
+        resolved = await service.resolve_memory_id_prefixes(
+            db_session, [message.id[:8], "00000000", message.id[:8]]
+        )
+        assert resolved == [message.id]
+
+    @pytest.mark.asyncio
+    async def test_drops_ambiguous_prefixes(self, db_session):
+        shared_prefix = "abcd1234"
+        await self._create_message(db_session, message_id=shared_prefix + "-aaaa")
+        await self._create_message(db_session, message_id=shared_prefix + "-bbbb")
+
+        service = MemoryService()
+        resolved = await service.resolve_memory_id_prefixes(
+            db_session, [shared_prefix]
+        )
+        assert resolved == []

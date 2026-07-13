@@ -15,6 +15,7 @@ conversation_session.py. Helper functions are in session_helpers.py.
 from typing import Callable, Dict, List, Set, Optional, Any, AsyncIterator
 from datetime import datetime
 import logging
+import re
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -22,7 +23,7 @@ from app.models import Conversation, Message, MessageRole, ConversationType, Con
 from app.services import memory_service, llm_service
 from app.services.tool_service import tool_service, ToolResult
 from app.services.notes_tools import set_current_entity_label
-from app.services.memory_tools import set_memory_tool_context
+from app.services.memory_tools import set_memory_tool_context, consume_last_query_memory_ids
 from app.services.context_tools import set_context_tool_session
 from app.config import settings
 
@@ -49,6 +50,12 @@ from app.services.session_helpers import (
 from app.services.memory_context import format_memory_as_context_message
 
 logger = logging.getLogger(__name__)
+
+# Matches the per-memory header line in memory_query tool results, e.g.
+# "--- Memory a1b2c3d4 (You said, 3.2 days ago, similarity: 0.812) ---".
+# Used to rebuild query-result dedup state (memory_query_ids on tool_result
+# context messages) when a session is reloaded from the DB.
+_MEMORY_QUERY_RESULT_ID_RE = re.compile(r"^--- Memory ([0-9a-f]{8}) \(", re.MULTILINE)
 
 class SessionManager:
     """
@@ -335,6 +342,10 @@ class SessionManager:
 
         # Build conversation context, interleaving memories at their original positions
         memory_insert_count = 0
+        # tool_use IDs of memory_query calls, so the matching tool_result
+        # messages can be re-stamped with the memory IDs they surfaced
+        # (query-result dedup state, lost on reload otherwise)
+        memory_query_tool_ids: Set[str] = set()
         for msg in messages:
             # Insert any memories that were retrieved BEFORE this message was created
             while memory_queue:
@@ -381,18 +392,37 @@ class SessionManager:
             elif msg.role == MessageRole.TOOL_USE:
                 # Tool use messages store content blocks as JSON
                 # Reconstruct the proper format for API calls
+                content_blocks = msg.content_blocks  # Uses the property that parses JSON
+                for block in content_blocks or []:
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_use"
+                        and block.get("name") == "memory_query"
+                    ):
+                        memory_query_tool_ids.add(block.get("id"))
                 session.conversation_context.append({
                     "role": "assistant",
-                    "content": msg.content_blocks,  # Uses the property that parses JSON
+                    "content": content_blocks,
                     "is_tool_use": True,
                 })
             elif msg.role == MessageRole.TOOL_RESULT:
                 # Tool result messages store content blocks as JSON
-                session.conversation_context.append({
+                content_blocks = msg.content_blocks  # Uses the property that parses JSON
+                tool_result_message = {
                     "role": "user",
-                    "content": msg.content_blocks,  # Uses the property that parses JSON
+                    "content": content_blocks,
                     "is_tool_result": True,
-                })
+                }
+                # Restore query-result dedup state: re-stamp the memory IDs a
+                # memory_query result surfaced (the live turn stamps them via
+                # the tool loop; only 8-char prefixes survive in the persisted
+                # result, so resolve them back to full IDs).
+                query_memory_ids = await self._extract_memory_query_result_ids(
+                    content_blocks, memory_query_tool_ids, db
+                )
+                if query_memory_ids:
+                    tool_result_message["memory_query_ids"] = query_memory_ids
+                session.conversation_context.append(tool_result_message)
             elif msg.role == MessageRole.REFLECTION:
                 # Self-authored memories (memory_save) are not part of the
                 # conversational back-and-forth; the tool exchange that created
@@ -439,6 +469,40 @@ class SessionManager:
             logger.info(f"[CACHE] Bootstrap context cache length: {session.last_cached_context_length}")
 
         return session
+
+    async def _extract_memory_query_result_ids(
+        self,
+        content_blocks: Any,
+        memory_query_tool_ids: Set[str],
+        db: AsyncSession,
+    ) -> List[str]:
+        """
+        Recover the full memory IDs surfaced by a persisted memory_query
+        tool_result, for re-stamping onto the rebuilt context message
+        (memory_query_ids) on session reload.
+
+        The persisted result carries only 8-char ID prefixes in its
+        "--- Memory xxxxxxxx (..." header lines, so they are resolved back to
+        full IDs against the messages table. Prefixes that no longer resolve
+        uniquely are dropped — dedup degrades gracefully to not excluding
+        that memory.
+        """
+        if not memory_query_tool_ids or not isinstance(content_blocks, list):
+            return []
+
+        prefixes: List[str] = []
+        for block in content_blocks:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            if block.get("tool_use_id") not in memory_query_tool_ids or block.get("is_error"):
+                continue
+            content = block.get("content")
+            if isinstance(content, str):
+                prefixes.extend(_MEMORY_QUERY_RESULT_ID_RE.findall(content))
+
+        if not prefixes:
+            return []
+        return await memory_service.resolve_memory_id_prefixes(db, prefixes)
 
     async def _is_entity_first_turn(
         self, session: ConversationSession, db: AsyncSession
@@ -504,12 +568,17 @@ class SessionManager:
         requested = settings.recent_reflections_count
 
         # Dedupe against memories already in context (e.g. re-inserted on a
-        # session reload) and against this turn's semantic retrievals. The
-        # exclusion happens inside get_recent_reflections' SQL query *before*
-        # its LIMIT, so deduplicated slots are backfilled by the
-        # next-most-recent reflections — the entity still gets the full count
-        # when enough reflections exist.
-        exclude_ids = session.get_in_context_memory_ids() | {m.id for m in new_memories}
+        # session reload), memories visible in memory_query tool results, and
+        # this turn's semantic retrievals. The exclusion happens inside
+        # get_recent_reflections' SQL query *before* its LIMIT, so
+        # deduplicated slots are backfilled by the next-most-recent
+        # reflections — the entity still gets the full count when enough
+        # reflections exist.
+        exclude_ids = (
+            session.get_in_context_memory_ids()
+            | session.get_query_surfaced_memory_ids()
+            | {m.id for m in new_memories}
+        )
 
         logger.info(
             f"[MEMORY] Recent reflections: first turn — fetching up to {requested} "
@@ -807,9 +876,20 @@ class SessionManager:
             # (before the message that triggered them) — prompt-cache stable.
             next_link_time = make_link_timestamper(user_message_timestamp)
             skipped_in_context = 0
+            # Memories the entity can already see in memory_query tool results
+            # are skipped like in-context [MEMORY] messages — no backfill.
+            query_surfaced_ids = session.get_query_surfaced_memory_ids()
             for item in top_candidates:
                 candidate = item["candidate"]
                 mem_data = item["mem_data"]
+
+                if mem_data["id"] in query_surfaced_ids:
+                    skipped_in_context += 1
+                    logger.info(
+                        f"[MEMORY]   [ALREADY IN CONTEXT - memory_query result] "
+                        f"id={mem_data['id'][:8]}... similarity={candidate['score']:.3f}"
+                    )
+                    continue
 
                 memory = MemoryEntry(
                     id=mem_data["id"],
@@ -1219,9 +1299,20 @@ class SessionManager:
             # (before the message that triggered them) — prompt-cache stable.
             next_link_time = make_link_timestamper(user_message_timestamp)
             skipped_in_context = 0
+            # Memories the entity can already see in memory_query tool results
+            # are skipped like in-context [MEMORY] messages — no backfill.
+            query_surfaced_ids = session.get_query_surfaced_memory_ids()
             for item in top_candidates:
                 candidate = item["candidate"]
                 mem_data = item["mem_data"]
+
+                if mem_data["id"] in query_surfaced_ids:
+                    skipped_in_context += 1
+                    logger.info(
+                        f"[MEMORY]   [ALREADY IN CONTEXT - memory_query result] "
+                        f"id={mem_data['id'][:8]}... similarity={candidate['score']:.3f}"
+                    )
+                    continue
 
                 memory = MemoryEntry(
                     id=mem_data["id"],
@@ -1535,6 +1626,10 @@ class SessionManager:
 
                 # Execute tools and collect results
                 tool_results = []
+                # Memory IDs surfaced by memory_query calls in this iteration,
+                # stamped onto the exchange so its tool_result context message
+                # carries them (retrieval dedup + reload restoration)
+                exchange_query_memory_ids: List[str] = []
                 for tool_call in iteration_tool_use:
                     tool_name = tool_call["name"]
                     tool_id = tool_call["id"]
@@ -1554,6 +1649,9 @@ class SessionManager:
                         tool_name=tool_name,
                         tool_input=tool_input,
                     )
+
+                    if tool_name == "memory_query":
+                        exchange_query_memory_ids.extend(consume_last_query_memory_ids())
 
                     # Yield tool result to frontend
                     yield {
@@ -1604,6 +1702,11 @@ class SessionManager:
                     "assistant": assistant_msg,
                     "user": user_msg,
                 }
+                # Kept on the exchange dict (not on user_msg, which goes to the
+                # provider API verbatim); add_exchange moves it onto the
+                # tool_result context message.
+                if exchange_query_memory_ids:
+                    exchange["memory_query_ids"] = exchange_query_memory_ids
                 tool_exchanges.append(exchange)
 
                 # Accumulate any text content from this iteration
