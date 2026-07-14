@@ -241,6 +241,110 @@ class NotesService:
             logger.error(f"Failed to write note '{filename}': {e}")
             return {'success': False, 'error': str(e)}
     
+    def edit_note(
+        self,
+        entity_label: str,
+        filename: str,
+        old_string: str,
+        new_string: str,
+        shared: bool = False,
+        replace_all: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Edit an existing note file by exact string replacement.
+
+        Unlike write_note, this does not require the full file content —
+        only the region being changed. The file must already exist and
+        old_string must match exactly once (or replace_all=True).
+
+        Args:
+            entity_label: The entity's display label (ignored if shared=True)
+            filename: Name of the file to edit
+            old_string: Exact text to replace (must be present in the file)
+            new_string: Replacement text
+            shared: If True, edit in shared folder instead of entity folder
+            replace_all: If True, replace every occurrence of old_string
+
+        Returns:
+            Dict with 'success', 'replacements' (int), 'new_content' (the
+            full post-edit content, for vectorization), and 'error' (if failure)
+        """
+        if not self._validate_file_extension(filename):
+            return {
+                'success': False,
+                'error': f"Invalid file extension. Allowed: .md, .json, .txt, .html, .xml, .yaml, .yml"
+            }
+
+        if not old_string:
+            return {'success': False, 'error': "old_string must not be empty"}
+
+        if old_string == new_string:
+            return {'success': False, 'error': "old_string and new_string are identical - nothing to change"}
+
+        if shared:
+            target_dir = self._get_shared_dir()
+        else:
+            target_dir = self._get_entity_dir(entity_label)
+
+        file_path = target_dir / filename
+
+        # Security: ensure the resolved path is within the target directory
+        try:
+            resolved = file_path.resolve()
+            target_resolved = target_dir.resolve()
+            if not str(resolved).startswith(str(target_resolved)):
+                return {'success': False, 'error': "Invalid file path"}
+        except OSError:
+            return {'success': False, 'error': "Invalid file path"}
+
+        if not file_path.exists():
+            return {
+                'success': False,
+                'error': f"File not found: {filename}. Use notes_write to create a new file."
+            }
+
+        try:
+            content = file_path.read_text(encoding='utf-8')
+        except OSError as e:
+            logger.error(f"Failed to read note '{filename}' for edit: {e}")
+            return {'success': False, 'error': str(e)}
+
+        occurrences = content.count(old_string)
+        if occurrences == 0:
+            return {
+                'success': False,
+                'error': (
+                    f"old_string not found in {filename}. "
+                    "Make sure it matches the file content exactly, including whitespace."
+                )
+            }
+        if occurrences > 1 and not replace_all:
+            return {
+                'success': False,
+                'error': (
+                    f"old_string appears {occurrences} times in {filename}. "
+                    "Provide a longer string that matches uniquely, or set replace_all=true."
+                )
+            }
+
+        if replace_all:
+            new_content = content.replace(old_string, new_string)
+            replacements = occurrences
+        else:
+            new_content = content.replace(old_string, new_string, 1)
+            replacements = 1
+
+        try:
+            file_path.write_text(new_content, encoding='utf-8')
+            logger.info(
+                f"Edited note '{filename}' for entity '{entity_label}' "
+                f"({replacements} replacement(s), {len(new_content)} chars)"
+            )
+            return {'success': True, 'replacements': replacements, 'new_content': new_content}
+        except OSError as e:
+            logger.error(f"Failed to edit note '{filename}': {e}")
+            return {'success': False, 'error': str(e)}
+
     def delete_note(
         self,
         entity_label: str,

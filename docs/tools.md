@@ -22,8 +22,9 @@ Require Pinecone (`PINECONE_API_KEY` + `PINECONE_INDEXES`).
 
 Require `NOTES_ENABLED=true` (the default).
 
-- `notes_read` — read a file from the entity's private notes or the shared folder.
-- `notes_write` — create or update a note file (`.md`, `.json`, `.txt`, `.html`, `.xml`, `.yaml`, `.yml`).
+- `notes_read` — read a file from the entity's private notes or the shared folder. When the file's current content is already visible in the conversation context (the notes seed message, an earlier `notes_read` result, or `notes_write`/`notes_edit` records), returns a short `[NOTE IN CONTEXT]` pointer to that copy instead of repeating the content (disable with `NOTES_READ_DEDUP_ENABLED=false`). Content currency is verified by hashing against disk, so out-of-band file changes fall back to returning the full content.
+- `notes_write` — create a note file or fully replace its content (`.md`, `.json`, `.txt`, `.html`, `.xml`, `.yaml`, `.yml`).
+- `notes_edit` — edit an existing note by exact string replacement (`old_string` → `new_string`), so the entity doesn't re-output unchanged content. `old_string` must match exactly once unless `replace_all=true`.
 - `notes_delete` — delete a note file (except `index.md`).
 - `notes_list` — list note files with size and modification date.
 - `notes_search` — search notes (private and shared) by meaning; returns matching excerpts with filenames. Additionally requires Pinecone.

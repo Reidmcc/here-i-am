@@ -8,13 +8,19 @@ import tempfile
 import shutil
 import os
 
+from app.config import settings as real_settings
+from app.services.conversation_session import ConversationSession
 from app.services.notes_service import NotesService, notes_service
 from app.services.notes_tools import (
     register_notes_tools,
     set_current_entity_label,
     get_current_entity_label,
+    consume_last_note_stamps,
+    note_content_hash,
+    NOTE_IN_CONTEXT_MARKER,
     _notes_read,
     _notes_write,
+    _notes_edit,
     _notes_delete,
     _notes_list,
 )
@@ -412,13 +418,17 @@ class TestNotesTools:
     async def test_notes_read_tool(self, temp_notes_dir):
         """Test notes_read tool function."""
         set_current_entity_label("TestEntity")
-        
+
         # Write first
         await _notes_write("readme.md", "Read me please")
-        
+
+        # New turn: without this, notes_read dedup would return a pointer to
+        # the same-turn notes_write instead of the content
+        set_current_entity_label("TestEntity")
+
         # Then read
         result = await _notes_read("readme.md")
-        
+
         assert result == "Read me please"
 
     @pytest.mark.asyncio
@@ -470,7 +480,10 @@ class TestNotesTools:
         # Write to shared
         result = await _notes_write("shared_file.md", "Shared content", shared=True)
         assert "Created" in result
-        
+
+        # New turn: reset same-turn notes_read dedup state
+        set_current_entity_label("TestEntity")
+
         # Read from shared
         result = await _notes_read("shared_file.md", shared=True)
         assert result == "Shared content"
@@ -579,3 +592,420 @@ class TestNotesSearchThreshold:
         assert len(matches) == 2
         # Fetches extra candidates (top_k = num_results * 2) to survive filtering.
         assert index.search.call_args.kwargs["query"]["top_k"] == 4
+
+
+class TestNotesServiceEdit:
+    """Tests for NotesService.edit_note (exact string replacement)."""
+
+    @pytest.fixture
+    def temp_notes_dir(self):
+        temp_dir = tempfile.mkdtemp()
+        yield temp_dir
+        shutil.rmtree(temp_dir)
+
+    @pytest.fixture
+    def notes_service_with_temp_dir(self, temp_notes_dir):
+        with patch("app.services.notes_service.settings") as mock_settings:
+            mock_settings.notes_base_dir = temp_notes_dir
+            service = NotesService()
+            service._base_dir = None
+            yield service
+
+    def test_edit_note_replaces_string(self, notes_service_with_temp_dir, temp_notes_dir):
+        service = notes_service_with_temp_dir
+        service.write_note("TestEntity", "plan.md", "# Plan\n\nStatus: draft\n")
+
+        result = service.edit_note(
+            "TestEntity", "plan.md", old_string="Status: draft", new_string="Status: final"
+        )
+
+        assert result["success"] is True
+        assert result["replacements"] == 1
+        assert result["new_content"] == "# Plan\n\nStatus: final\n"
+        path = Path(temp_notes_dir) / "TestEntity" / "plan.md"
+        assert path.read_text() == "# Plan\n\nStatus: final\n"
+
+    def test_edit_note_requires_existing_file(self, notes_service_with_temp_dir):
+        result = notes_service_with_temp_dir.edit_note(
+            "TestEntity", "missing.md", old_string="a", new_string="b"
+        )
+        assert result["success"] is False
+        assert "not found" in result["error"].lower()
+        assert "notes_write" in result["error"]
+
+    def test_edit_note_old_string_not_found(self, notes_service_with_temp_dir):
+        service = notes_service_with_temp_dir
+        service.write_note("TestEntity", "plan.md", "some content")
+
+        result = service.edit_note("TestEntity", "plan.md", old_string="absent", new_string="x")
+
+        assert result["success"] is False
+        assert "not found" in result["error"]
+
+    def test_edit_note_ambiguous_without_replace_all(self, notes_service_with_temp_dir, temp_notes_dir):
+        service = notes_service_with_temp_dir
+        service.write_note("TestEntity", "plan.md", "item\nitem\n")
+
+        result = service.edit_note("TestEntity", "plan.md", old_string="item", new_string="thing")
+
+        assert result["success"] is False
+        assert "2 times" in result["error"]
+        assert "replace_all" in result["error"]
+        # File untouched
+        path = Path(temp_notes_dir) / "TestEntity" / "plan.md"
+        assert path.read_text() == "item\nitem\n"
+
+    def test_edit_note_replace_all(self, notes_service_with_temp_dir, temp_notes_dir):
+        service = notes_service_with_temp_dir
+        service.write_note("TestEntity", "plan.md", "item\nitem\n")
+
+        result = service.edit_note(
+            "TestEntity", "plan.md", old_string="item", new_string="thing", replace_all=True
+        )
+
+        assert result["success"] is True
+        assert result["replacements"] == 2
+        path = Path(temp_notes_dir) / "TestEntity" / "plan.md"
+        assert path.read_text() == "thing\nthing\n"
+
+    def test_edit_note_identical_strings_rejected(self, notes_service_with_temp_dir):
+        service = notes_service_with_temp_dir
+        service.write_note("TestEntity", "plan.md", "content")
+
+        result = service.edit_note("TestEntity", "plan.md", old_string="content", new_string="content")
+
+        assert result["success"] is False
+        assert "identical" in result["error"]
+
+    def test_edit_note_empty_old_string_rejected(self, notes_service_with_temp_dir):
+        service = notes_service_with_temp_dir
+        service.write_note("TestEntity", "plan.md", "content")
+
+        result = service.edit_note("TestEntity", "plan.md", old_string="", new_string="x")
+
+        assert result["success"] is False
+        assert "empty" in result["error"]
+
+    def test_edit_note_invalid_extension(self, notes_service_with_temp_dir):
+        result = notes_service_with_temp_dir.edit_note(
+            "TestEntity", "script.py", old_string="a", new_string="b"
+        )
+        assert result["success"] is False
+        assert "extension" in result["error"].lower()
+
+    def test_edit_note_shared(self, notes_service_with_temp_dir, temp_notes_dir):
+        service = notes_service_with_temp_dir
+        service.write_note("TestEntity", "shared.md", "v1", shared=True)
+
+        result = service.edit_note(
+            "TestEntity", "shared.md", old_string="v1", new_string="v2", shared=True
+        )
+
+        assert result["success"] is True
+        path = Path(temp_notes_dir) / "shared" / "shared.md"
+        assert path.read_text() == "v2"
+
+
+class TestNotesEditTool:
+    """Tests for the notes_edit tool executor."""
+
+    @pytest.fixture
+    def temp_notes_dir(self):
+        temp_dir = tempfile.mkdtemp()
+        yield temp_dir
+        shutil.rmtree(temp_dir)
+
+    @pytest.fixture(autouse=True)
+    def setup_notes_service(self, temp_notes_dir):
+        with patch("app.services.notes_service.settings") as mock_settings:
+            mock_settings.notes_base_dir = temp_notes_dir
+            mock_settings.notes_enabled = True
+            notes_service._base_dir = Path(temp_notes_dir)
+            yield
+            notes_service._base_dir = None
+            set_current_entity_label("")
+
+    @pytest.mark.asyncio
+    async def test_notes_edit_tool(self, temp_notes_dir):
+        set_current_entity_label("TestEntity")
+        await _notes_write("plan.md", "Status: draft")
+
+        result = await _notes_edit("plan.md", old_string="draft", new_string="final")
+
+        assert result == "Edited 'plan.md' in your notes (1 replacement)"
+        path = Path(temp_notes_dir) / "TestEntity" / "plan.md"
+        assert path.read_text() == "Status: final"
+
+    @pytest.mark.asyncio
+    async def test_notes_edit_tool_replace_all_plural(self, temp_notes_dir):
+        set_current_entity_label("TestEntity")
+        await _notes_write("plan.md", "a a")
+
+        result = await _notes_edit("plan.md", old_string="a", new_string="b", replace_all=True)
+
+        assert result == "Edited 'plan.md' in your notes (2 replacements)"
+
+    @pytest.mark.asyncio
+    async def test_notes_edit_tool_missing_file(self):
+        set_current_entity_label("TestEntity")
+
+        result = await _notes_edit("missing.md", old_string="a", new_string="b")
+
+        assert result.startswith("Error:")
+
+    @pytest.mark.asyncio
+    async def test_notes_edit_tool_without_entity_context(self):
+        set_current_entity_label("")
+
+        result = await _notes_edit("plan.md", old_string="a", new_string="b")
+
+        assert "Error" in result
+        assert "entity context" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_notes_edit_records_delta_stamp(self, temp_notes_dir):
+        set_current_entity_label("TestEntity")
+        await _notes_write("plan.md", "Status: draft")
+        consume_last_note_stamps()  # discard the write stamp
+
+        await _notes_edit("plan.md", old_string="draft", new_string="final")
+
+        stamps = consume_last_note_stamps()
+        assert stamps == [{
+            "owner": "TestEntity",
+            "filename": "plan.md",
+            "hash": note_content_hash("Status: final"),
+            "source": "edit",
+        }]
+        # Consuming clears the pending stamps
+        assert consume_last_note_stamps() == []
+
+    @pytest.mark.asyncio
+    async def test_notes_write_records_full_stamp(self, temp_notes_dir):
+        set_current_entity_label("TestEntity")
+
+        await _notes_write("plan.md", "Status: draft")
+
+        stamps = consume_last_note_stamps()
+        assert stamps == [{
+            "owner": "TestEntity",
+            "filename": "plan.md",
+            "hash": note_content_hash("Status: draft"),
+            "source": "write",
+        }]
+
+
+class TestNotesReadDedup:
+    """Tests for notes_read returning pointers to in-context note copies."""
+
+    @pytest.fixture
+    def temp_notes_dir(self):
+        temp_dir = tempfile.mkdtemp()
+        yield temp_dir
+        shutil.rmtree(temp_dir)
+
+    @pytest.fixture(autouse=True)
+    def setup_notes_service(self, temp_notes_dir):
+        with patch("app.services.notes_service.settings") as mock_settings:
+            mock_settings.notes_base_dir = temp_notes_dir
+            mock_settings.notes_enabled = True
+            notes_service._base_dir = Path(temp_notes_dir)
+            yield
+            notes_service._base_dir = None
+            set_current_entity_label("")
+
+    def _session_with_stamps(self, stamps, is_multi_entity=False):
+        session = ConversationSession(conversation_id="conv-1", is_multi_entity=is_multi_entity)
+        if stamps:
+            session.conversation_context.append({
+                "role": "user",
+                "content": "[ENTITY NOTES]...",
+                "is_notes": True,
+                "note_stamps": stamps,
+            })
+        return session
+
+    @pytest.mark.asyncio
+    async def test_same_turn_write_then_read_returns_pointer(self, temp_notes_dir):
+        set_current_entity_label("TestEntity")
+        await _notes_write("plan.md", "Status: draft")
+
+        result = await _notes_read("plan.md")
+
+        assert result.startswith(NOTE_IN_CONTEXT_MARKER)
+        assert "notes_write" in result
+
+    @pytest.mark.asyncio
+    async def test_same_turn_read_then_read_returns_pointer(self, temp_notes_dir):
+        set_current_entity_label("TestEntity")
+        await _notes_write("plan.md", "Status: draft")
+        set_current_entity_label("TestEntity")  # new turn
+
+        first = await _notes_read("plan.md")
+        second = await _notes_read("plan.md")
+
+        assert first == "Status: draft"
+        assert second.startswith(NOTE_IN_CONTEXT_MARKER)
+        assert "notes_read" in second
+
+    @pytest.mark.asyncio
+    async def test_seed_stamp_returns_pointer_to_notes_block(self, temp_notes_dir):
+        content = "# My index\n"
+        (Path(temp_notes_dir) / "TestEntity").mkdir(parents=True)
+        (Path(temp_notes_dir) / "TestEntity" / "index.md").write_text(content)
+
+        session = self._session_with_stamps([{
+            "owner": "TestEntity",
+            "filename": "index.md",
+            "hash": note_content_hash(content),
+            "source": "seed",
+        }])
+        set_current_entity_label("TestEntity", session=session)
+
+        result = await _notes_read("index.md")
+
+        assert result.startswith(NOTE_IN_CONTEXT_MARKER)
+        assert "[ENTITY NOTES]" in result
+
+    @pytest.mark.asyncio
+    async def test_stale_seed_stamp_returns_full_content(self, temp_notes_dir):
+        (Path(temp_notes_dir) / "TestEntity").mkdir(parents=True)
+        (Path(temp_notes_dir) / "TestEntity" / "index.md").write_text("changed on disk")
+
+        session = self._session_with_stamps([{
+            "owner": "TestEntity",
+            "filename": "index.md",
+            "hash": note_content_hash("old content"),
+            "source": "seed",
+        }])
+        set_current_entity_label("TestEntity", session=session)
+
+        result = await _notes_read("index.md")
+
+        assert result == "changed on disk"
+
+    @pytest.mark.asyncio
+    async def test_edit_chain_returns_combine_pointer(self, temp_notes_dir):
+        """Seed copy + a later notes_edit: pointer says to combine them."""
+        (Path(temp_notes_dir) / "TestEntity").mkdir(parents=True)
+        (Path(temp_notes_dir) / "TestEntity" / "index.md").write_text("Status: final")
+
+        session = self._session_with_stamps([{
+            "owner": "TestEntity",
+            "filename": "index.md",
+            "hash": note_content_hash("Status: draft"),
+            "source": "seed",
+        }])
+        # A later tool exchange carried the edit's delta stamp
+        session.conversation_context.append({
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "Edited..."}],
+            "is_tool_result": True,
+            "note_stamps": [{
+                "owner": "TestEntity",
+                "filename": "index.md",
+                "hash": note_content_hash("Status: final"),
+                "source": "edit",
+            }],
+        })
+        set_current_entity_label("TestEntity", session=session)
+
+        result = await _notes_read("index.md")
+
+        assert result.startswith(NOTE_IN_CONTEXT_MARKER)
+        assert "notes_edit" in result
+        assert "[ENTITY NOTES]" in result
+
+    @pytest.mark.asyncio
+    async def test_delta_without_full_base_returns_content(self, temp_notes_dir):
+        """An edit stamp whose full base copy was trimmed out: no dedup."""
+        (Path(temp_notes_dir) / "TestEntity").mkdir(parents=True)
+        (Path(temp_notes_dir) / "TestEntity" / "notes.md").write_text("Status: final")
+
+        session = ConversationSession(conversation_id="conv-1")
+        session.conversation_context.append({
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "Edited..."}],
+            "is_tool_result": True,
+            "note_stamps": [{
+                "owner": "TestEntity",
+                "filename": "notes.md",
+                "hash": note_content_hash("Status: final"),
+                "source": "edit",
+            }],
+        })
+        set_current_entity_label("TestEntity", session=session)
+
+        result = await _notes_read("notes.md")
+
+        assert result == "Status: final"
+
+    @pytest.mark.asyncio
+    async def test_dedup_disabled_returns_content(self, temp_notes_dir, monkeypatch):
+        monkeypatch.setattr(real_settings, "notes_read_dedup_enabled", False)
+        set_current_entity_label("TestEntity")
+        await _notes_write("plan.md", "Status: draft")
+
+        result = await _notes_read("plan.md")
+
+        assert result == "Status: draft"
+
+    @pytest.mark.asyncio
+    async def test_owner_scoping_ignores_other_entity_stamps(self, temp_notes_dir):
+        """Another entity's stamp for the same filename must not dedupe ours."""
+        (Path(temp_notes_dir) / "TestEntity").mkdir(parents=True)
+        (Path(temp_notes_dir) / "TestEntity" / "ideas.md").write_text("mine")
+
+        session = self._session_with_stamps([{
+            "owner": "OtherEntity",
+            "filename": "ideas.md",
+            "hash": note_content_hash("mine"),
+            "source": "read",
+        }])
+        set_current_entity_label("TestEntity", session=session)
+
+        result = await _notes_read("ideas.md")
+
+        assert result == "mine"
+
+    @pytest.mark.asyncio
+    async def test_multi_entity_index_points_to_per_turn_block(self, temp_notes_dir):
+        (Path(temp_notes_dir) / "TestEntity").mkdir(parents=True)
+        (Path(temp_notes_dir) / "TestEntity" / "index.md").write_text("# index")
+
+        session = ConversationSession(conversation_id="conv-1", is_multi_entity=True)
+        set_current_entity_label("TestEntity", session=session)
+
+        result = await _notes_read("index.md")
+
+        assert result.startswith(NOTE_IN_CONTEXT_MARKER)
+        assert "[ENTITY NOTES]" in result
+        assert "re-read from disk every turn" in result
+
+    @pytest.mark.asyncio
+    async def test_multi_entity_index_edited_this_turn(self, temp_notes_dir):
+        """After a same-turn edit, the pointer says block + this turn's edits."""
+        (Path(temp_notes_dir) / "TestEntity").mkdir(parents=True)
+        (Path(temp_notes_dir) / "TestEntity" / "index.md").write_text("Status: draft")
+
+        session = ConversationSession(conversation_id="conv-1", is_multi_entity=True)
+        set_current_entity_label("TestEntity", session=session)
+        await _notes_edit("index.md", old_string="draft", new_string="final")
+
+        result = await _notes_read("index.md")
+
+        assert result.startswith(NOTE_IN_CONTEXT_MARKER)
+        assert "notes_edit" in result
+
+    @pytest.mark.asyncio
+    async def test_multi_entity_other_files_not_deduped_without_stamps(self, temp_notes_dir):
+        """Only index files get the per-turn-block treatment in multi-entity."""
+        (Path(temp_notes_dir) / "TestEntity").mkdir(parents=True)
+        (Path(temp_notes_dir) / "TestEntity" / "other.md").write_text("content")
+
+        session = ConversationSession(conversation_id="conv-1", is_multi_entity=True)
+        set_current_entity_label("TestEntity", session=session)
+
+        result = await _notes_read("other.md")
+
+        assert result == "content"

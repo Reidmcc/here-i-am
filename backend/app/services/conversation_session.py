@@ -195,6 +195,27 @@ class ConversationSession:
             ids.update(msg.get("memory_query_ids") or ())
         return ids
 
+    def get_in_context_note_stamps(self) -> Dict[Tuple[str, str], List[Dict[str, Any]]]:
+        """
+        Note-content stamps currently in the conversation context, grouped by
+        (owner, filename) in context order.
+
+        Stamps mark points where a note file's content is visible in context:
+        the notes seed message (source="seed") and notes_read / notes_write /
+        notes_edit tool results (stamped by the tool loop live, rebuilt from
+        the persisted history on session reload). Deriving them by scanning
+        the context means they disappear naturally when trimming rolls their
+        message out — and because trimming only removes from the front, the
+        surviving stamps for a file are always a contiguous suffix of its
+        history, so a notes_edit delta chain is never missing links.
+        """
+        stamps_by_key: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+        for msg in self.conversation_context:
+            for stamp in msg.get("note_stamps") or ():
+                key = (stamp.get("owner"), stamp.get("filename"))
+                stamps_by_key.setdefault(key, []).append(stamp)
+        return stamps_by_key
+
     def get_in_context_memory_count(self) -> int:
         """Get the count of memories currently in context."""
         return len(self.get_in_context_memory_ids())
@@ -263,6 +284,11 @@ class ConversationSession:
                 # them for as long as the tool result remains in context.
                 if exchange.get("memory_query_ids"):
                     tool_result_message["memory_query_ids"] = exchange["memory_query_ids"]
+                # Note-content stamps from notes tool calls in this exchange,
+                # stamped on the context message so notes_read dedup can see
+                # them for as long as the tool result remains in context.
+                if exchange.get("note_stamps"):
+                    tool_result_message["note_stamps"] = exchange["note_stamps"]
                 self.conversation_context.append(tool_result_message)
 
         # Add the final assistant response (text only)
