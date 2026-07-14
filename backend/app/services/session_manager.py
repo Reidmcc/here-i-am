@@ -22,7 +22,13 @@ from sqlalchemy import select
 from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity
 from app.services import memory_service, llm_service
 from app.services.tool_service import tool_service, ToolResult
-from app.services.notes_tools import set_current_entity_label
+from app.services.notes_tools import (
+    set_current_entity_label,
+    consume_last_note_stamps,
+    note_content_hash,
+    NOTE_IN_CONTEXT_MARKER,
+    NOTE_STAMP_TOOL_NAMES,
+)
 from app.services.memory_tools import set_memory_tool_context, consume_last_query_memory_ids
 from app.services.context_tools import set_context_tool_session
 from app.config import settings
@@ -119,10 +125,19 @@ class SessionManager:
         from app.services.notes_service import notes_service
 
         parts: List[str] = []
+        # Stamps recording which note files are fully visible in this message
+        # (notes_read dedup state; see get_in_context_note_stamps)
+        note_stamps: List[Dict[str, Any]] = []
 
         entity_notes = notes_service.get_index_content(entity_label)
         if entity_notes:
             parts.append(f"[ENTITY NOTES]\n{entity_notes}\n[/ENTITY NOTES]")
+            note_stamps.append({
+                "owner": entity_label,
+                "filename": "index.md",
+                "hash": note_content_hash(entity_notes),
+                "source": "seed",
+            })
             logger.info(
                 f"[NOTES] Injected index.md for entity '{entity_label}' into cached history ({len(entity_notes)} chars)"
             )
@@ -130,6 +145,12 @@ class SessionManager:
         shared_notes = notes_service.get_shared_index_content()
         if shared_notes:
             parts.append(f"[SHARED NOTES]\n{shared_notes}\n[/SHARED NOTES]")
+            note_stamps.append({
+                "owner": "shared",
+                "filename": "index.md",
+                "hash": note_content_hash(shared_notes),
+                "source": "seed",
+            })
             logger.info(
                 f"[NOTES] Injected shared index.md into cached history ({len(shared_notes)} chars)"
             )
@@ -141,6 +162,7 @@ class SessionManager:
             "role": "user",
             "content": "\n\n".join(parts),
             "is_notes": True,
+            "note_stamps": note_stamps,
         }
 
     async def load_session_from_db(
@@ -346,6 +368,13 @@ class SessionManager:
         # messages can be re-stamped with the memory IDs they surfaced
         # (query-result dedup state, lost on reload otherwise)
         memory_query_tool_ids: Set[str] = set()
+        # tool_use IDs and inputs of notes tool calls, so the matching
+        # tool_result messages can be re-stamped with note-content stamps
+        # (notes_read dedup state, lost on reload otherwise)
+        note_tool_calls: Dict[str, Dict[str, Any]] = {}
+        # Per-(owner, filename) content reconstructed from the history walk,
+        # for replaying notes_edit records into post-edit hashes
+        note_known_content: Dict[Any, str] = {}
         for msg in messages:
             # Insert any memories that were retrieved BEFORE this message was created
             while memory_queue:
@@ -394,12 +423,25 @@ class SessionManager:
                 # Reconstruct the proper format for API calls
                 content_blocks = msg.content_blocks  # Uses the property that parses JSON
                 for block in content_blocks or []:
-                    if (
-                        isinstance(block, dict)
-                        and block.get("type") == "tool_use"
-                        and block.get("name") == "memory_query"
-                    ):
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    if block.get("name") == "memory_query":
                         memory_query_tool_ids.add(block.get("id"))
+                    elif block.get("name") in NOTE_STAMP_TOOL_NAMES:
+                        # Private-note ownership follows the entity that made
+                        # the call: the responding entity for single-entity
+                        # conversations, the tool_use row's speaker for
+                        # multi-entity ones (None if unresolvable - stamping
+                        # then degrades to skipping that call)
+                        if is_multi_entity:
+                            owner_label = entity_labels.get(msg.speaker_entity_id)
+                        else:
+                            owner_label = responding_entity_label
+                        note_tool_calls[block.get("id")] = {
+                            "name": block.get("name"),
+                            "input": block.get("input") or {},
+                            "owner_label": owner_label,
+                        }
                 session.conversation_context.append({
                     "role": "assistant",
                     "content": content_blocks,
@@ -422,6 +464,13 @@ class SessionManager:
                 )
                 if query_memory_ids:
                     tool_result_message["memory_query_ids"] = query_memory_ids
+                # Restore notes_read dedup state: re-stamp the note content
+                # this result (or its call's input) made visible in context
+                note_stamps = self._extract_note_stamps(
+                    content_blocks, note_tool_calls, note_known_content
+                )
+                if note_stamps:
+                    tool_result_message["note_stamps"] = note_stamps
                 session.conversation_context.append(tool_result_message)
             elif msg.role == MessageRole.REFLECTION:
                 # Self-authored memories (memory_save) are not part of the
@@ -503,6 +552,98 @@ class SessionManager:
         if not prefixes:
             return []
         return await memory_service.resolve_memory_id_prefixes(db, prefixes)
+
+    def _extract_note_stamps(
+        self,
+        content_blocks: Any,
+        note_tool_calls: Dict[str, Dict[str, Any]],
+        note_known_content: Dict[Any, str],
+    ) -> List[Dict[str, Any]]:
+        """
+        Rebuild note-content stamps for a persisted notes tool_result, for
+        re-stamping onto the rebuilt context message (note_stamps) on session
+        reload — the state notes_read dedup runs on.
+
+        notes_read results and notes_write inputs carry the full content, so
+        their hashes are recomputed directly. notes_edit records are replayed
+        against the content reconstructed so far (note_known_content, threaded
+        by the caller across the history walk); an edit whose base content
+        never appeared in the walked history gets no stamp, and drops the
+        file's chain so later edits don't stamp against a wrong base — dedup
+        degrades gracefully to notes_read returning that file in full.
+        """
+        if not isinstance(content_blocks, list):
+            return []
+
+        stamps: List[Dict[str, Any]] = []
+        for block in content_blocks:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            call = note_tool_calls.get(block.get("tool_use_id"))
+            if not call or block.get("is_error"):
+                continue
+            result_content = block.get("content")
+            # Executor-level failures are returned as "Error: ..." strings
+            # with is_error=False, so filter them by prefix too
+            if not isinstance(result_content, str) or result_content.startswith("Error:"):
+                continue
+
+            tool_input = call["input"]
+            filename = tool_input.get("filename")
+            if not filename or not isinstance(filename, str):
+                continue
+            shared = bool(tool_input.get("shared"))
+            owner = "shared" if shared else call.get("owner_label")
+            if not owner:
+                continue
+            key = (owner, filename)
+
+            if call["name"] == "notes_read":
+                if result_content.startswith(NOTE_IN_CONTEXT_MARKER):
+                    # Dedup pointer result - added no note content to context
+                    continue
+                note_known_content[key] = result_content
+                stamps.append({
+                    "owner": owner,
+                    "filename": filename,
+                    "hash": note_content_hash(result_content),
+                    "source": "read",
+                })
+            elif call["name"] == "notes_write":
+                written = tool_input.get("content")
+                if not isinstance(written, str):
+                    continue
+                note_known_content[key] = written
+                stamps.append({
+                    "owner": owner,
+                    "filename": filename,
+                    "hash": note_content_hash(written),
+                    "source": "write",
+                })
+            elif call["name"] == "notes_edit":
+                base = note_known_content.get(key)
+                old_string = tool_input.get("old_string")
+                new_string = tool_input.get("new_string")
+                if (
+                    base is None
+                    or not isinstance(old_string, str)
+                    or not isinstance(new_string, str)
+                    or old_string not in base
+                ):
+                    note_known_content.pop(key, None)
+                    continue
+                if tool_input.get("replace_all"):
+                    new_content = base.replace(old_string, new_string)
+                else:
+                    new_content = base.replace(old_string, new_string, 1)
+                note_known_content[key] = new_content
+                stamps.append({
+                    "owner": owner,
+                    "filename": filename,
+                    "hash": note_content_hash(new_content),
+                    "source": "edit",
+                })
+        return stamps
 
     async def _is_entity_first_turn(
         self, session: ConversationSession, db: AsyncSession
@@ -1124,8 +1265,12 @@ class SessionManager:
             entity_config = settings.get_entity_by_index(session.entity_id)
             if entity_config:
                 entity_label = entity_config.label
+        # Always reset the notes tool context (even to a None label) so a
+        # previous conversation's session/stamps can't leak into this turn.
+        # Passing the session lets notes_read find note content already in
+        # the conversation context (notes_read dedup).
+        set_current_entity_label(entity_label, session=session)
         if entity_label:
-            set_current_entity_label(entity_label)
             logger.debug(f"[NOTES] Set entity label context: {entity_label}")
 
         # Set context for memory query tool. Passing the session lets memory_query
@@ -1630,6 +1775,9 @@ class SessionManager:
                 # stamped onto the exchange so its tool_result context message
                 # carries them (retrieval dedup + reload restoration)
                 exchange_query_memory_ids: List[str] = []
+                # Note-content stamps from notes tool calls in this iteration,
+                # stamped onto the exchange the same way (notes_read dedup)
+                exchange_note_stamps: List[Dict[str, Any]] = []
                 for tool_call in iteration_tool_use:
                     tool_name = tool_call["name"]
                     tool_id = tool_call["id"]
@@ -1652,6 +1800,8 @@ class SessionManager:
 
                     if tool_name == "memory_query":
                         exchange_query_memory_ids.extend(consume_last_query_memory_ids())
+                    elif tool_name in NOTE_STAMP_TOOL_NAMES:
+                        exchange_note_stamps.extend(consume_last_note_stamps())
 
                     # Yield tool result to frontend
                     yield {
@@ -1707,6 +1857,8 @@ class SessionManager:
                 # tool_result context message.
                 if exchange_query_memory_ids:
                     exchange["memory_query_ids"] = exchange_query_memory_ids
+                if exchange_note_stamps:
+                    exchange["note_stamps"] = exchange_note_stamps
                 tool_exchanges.append(exchange)
 
                 # Accumulate any text content from this iteration

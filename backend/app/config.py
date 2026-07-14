@@ -260,6 +260,11 @@ class Settings(BaseSettings):
     # Each entity gets their own folder: {notes_base_dir}/{entity_label}/
     # Shared notes accessible to all entities: {notes_base_dir}/shared/
     notes_base_dir: str = "./notes"
+    # When a notes_read targets a file whose current content is already
+    # visible in the conversation context (notes seed message, earlier
+    # notes_read result, or notes_write/notes_edit records), return a short
+    # pointer to that copy instead of repeating the full content
+    notes_read_dedup_enabled: bool = True
 
     # Moltbook API settings
     # Enable Moltbook tools for AI entities (social network for AI agents)

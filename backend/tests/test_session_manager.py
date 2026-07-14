@@ -3428,3 +3428,379 @@ class TestMemoryQueryResultDedup:
         mock_memory.resolve_memory_id_prefixes.assert_not_awaited()
         tool_results = [m for m in session.conversation_context if m.get("is_tool_result")]
         assert all("memory_query_ids" not in m for m in tool_results)
+
+
+class TestNoteStampTracking:
+    """Tests for note-content stamps (notes_read dedup state)."""
+
+    def test_add_exchange_stamps_note_stamps_on_tool_result(self):
+        """note_stamps on an exchange land on the tool_result context message."""
+        from app.services.notes_tools import note_content_hash
+
+        session = ConversationSession(conversation_id="conv-1")
+        stamp = {
+            "owner": "TestEntity",
+            "filename": "plan.md",
+            "hash": note_content_hash("v1"),
+            "source": "write",
+        }
+
+        session.add_exchange(
+            "Write a note please",
+            "Done.",
+            tool_exchanges=[
+                {
+                    "assistant": {"content": [{"type": "tool_use", "id": "t1", "name": "notes_write", "input": {"filename": "plan.md", "content": "v1"}}]},
+                    "user": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "Created 'plan.md' in your notes"}]},
+                    "note_stamps": [stamp],
+                },
+                {
+                    "assistant": {"content": [{"type": "tool_use", "id": "t2", "name": "web_search", "input": {"query": "y"}}]},
+                    "user": {"content": [{"type": "tool_result", "tool_use_id": "t2", "content": "results"}]},
+                },
+            ],
+        )
+
+        tool_results = [m for m in session.conversation_context if m.get("is_tool_result")]
+        assert tool_results[0]["note_stamps"] == [stamp]
+        assert "note_stamps" not in tool_results[1]
+
+        assert session.get_in_context_note_stamps() == {("TestEntity", "plan.md"): [stamp]}
+
+    def test_note_stamps_shrink_when_message_trims_out(self):
+        """Stamps leave the state when trimming removes their message."""
+        session = ConversationSession(conversation_id="conv-1")
+        stamp = {"owner": "E", "filename": "a.md", "hash": "abc", "source": "read"}
+        session.conversation_context.append({
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "..."}],
+            "is_tool_result": True,
+            "note_stamps": [stamp],
+        })
+        session.conversation_context.append({"role": "user", "content": "hello"})
+
+        assert session.get_in_context_note_stamps() == {("E", "a.md"): [stamp]}
+
+        session.conversation_context.pop(0)
+        assert session.get_in_context_note_stamps() == {}
+
+    def test_stamps_grouped_by_owner_and_filename_in_order(self):
+        session = ConversationSession(conversation_id="conv-1")
+        s1 = {"owner": "E", "filename": "a.md", "hash": "h1", "source": "read"}
+        s2 = {"owner": "shared", "filename": "a.md", "hash": "h2", "source": "read"}
+        s3 = {"owner": "E", "filename": "a.md", "hash": "h3", "source": "edit"}
+        session.conversation_context.append(
+            {"role": "user", "content": "x", "is_tool_result": True, "note_stamps": [s1, s2]}
+        )
+        session.conversation_context.append(
+            {"role": "user", "content": "y", "is_tool_result": True, "note_stamps": [s3]}
+        )
+
+        stamps = session.get_in_context_note_stamps()
+        assert stamps[("E", "a.md")] == [s1, s3]
+        assert stamps[("shared", "a.md")] == [s2]
+
+    def test_build_notes_context_message_stamps_seed(self):
+        """The notes seed message carries seed stamps for the index files."""
+        from app.services.notes_service import notes_service
+        from app.services.notes_tools import note_content_hash
+
+        manager = SessionManager()
+        with patch.object(notes_service, "get_index_content", return_value="# my index"), \
+             patch.object(notes_service, "get_shared_index_content", return_value="# shared index"):
+            message = manager._build_notes_context_message("TestEntity")
+
+        assert message["is_notes"] is True
+        assert message["note_stamps"] == [
+            {
+                "owner": "TestEntity",
+                "filename": "index.md",
+                "hash": note_content_hash("# my index"),
+                "source": "seed",
+            },
+            {
+                "owner": "shared",
+                "filename": "index.md",
+                "hash": note_content_hash("# shared index"),
+                "source": "seed",
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_load_session_restores_note_stamps(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """Reload re-stamps notes tool_result messages, replaying notes_edit
+        records against the content reconstructed from the history walk."""
+        import json
+        from app.services.notes_tools import note_content_hash
+
+        base_time = datetime.utcnow()
+        write_use = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_USE,
+            content=json.dumps([
+                {"type": "tool_use", "id": "toolu_w", "name": "notes_write",
+                 "input": {"filename": "plan.md", "content": "Status: draft"}}
+            ]),
+            created_at=base_time + timedelta(seconds=1),
+        )
+        write_result = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_RESULT,
+            content=json.dumps([
+                {"type": "tool_result", "tool_use_id": "toolu_w",
+                 "content": "Created 'plan.md' in your notes", "is_error": False}
+            ]),
+            created_at=base_time + timedelta(seconds=2),
+        )
+        edit_use = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_USE,
+            content=json.dumps([
+                {"type": "tool_use", "id": "toolu_e", "name": "notes_edit",
+                 "input": {"filename": "plan.md", "old_string": "draft", "new_string": "final"}}
+            ]),
+            created_at=base_time + timedelta(seconds=3),
+        )
+        edit_result = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_RESULT,
+            content=json.dumps([
+                {"type": "tool_result", "tool_use_id": "toolu_e",
+                 "content": "Edited 'plan.md' in your notes (1 replacement)", "is_error": False}
+            ]),
+            created_at=base_time + timedelta(seconds=4),
+        )
+        db_session.add_all([write_use, write_result, edit_use, edit_result])
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.notes_enabled = False
+            mock_settings.get_entity_by_index.return_value = MagicMock(
+                label="TestEntity", llm_provider="anthropic", default_model=None
+            )
+
+            session = await manager.load_session_from_db(
+                sample_conversation.id, db_session
+            )
+
+        tool_results = [m for m in session.conversation_context if m.get("is_tool_result")]
+        assert len(tool_results) == 2
+        assert tool_results[0]["note_stamps"] == [{
+            "owner": "TestEntity",
+            "filename": "plan.md",
+            "hash": note_content_hash("Status: draft"),
+            "source": "write",
+        }]
+        assert tool_results[1]["note_stamps"] == [{
+            "owner": "TestEntity",
+            "filename": "plan.md",
+            "hash": note_content_hash("Status: final"),
+            "source": "edit",
+        }]
+
+    @pytest.mark.asyncio
+    async def test_load_session_edit_without_base_gets_no_stamp(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """An edit whose base content never appeared in history is not stamped."""
+        import json
+
+        edit_use = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_USE,
+            content=json.dumps([
+                {"type": "tool_use", "id": "toolu_e", "name": "notes_edit",
+                 "input": {"filename": "plan.md", "old_string": "a", "new_string": "b"}}
+            ]),
+        )
+        edit_result = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_RESULT,
+            content=json.dumps([
+                {"type": "tool_result", "tool_use_id": "toolu_e",
+                 "content": "Edited 'plan.md' in your notes (1 replacement)", "is_error": False}
+            ]),
+        )
+        db_session.add_all([edit_use, edit_result])
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.notes_enabled = False
+            mock_settings.get_entity_by_index.return_value = MagicMock(
+                label="TestEntity", llm_provider="anthropic", default_model=None
+            )
+
+            session = await manager.load_session_from_db(
+                sample_conversation.id, db_session
+            )
+
+        tool_results = [m for m in session.conversation_context if m.get("is_tool_result")]
+        assert all("note_stamps" not in m for m in tool_results)
+
+    @pytest.mark.asyncio
+    async def test_load_session_read_result_restores_stamp_and_feeds_edit_replay(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """A notes_read result provides the full content: it is stamped and
+        becomes the base for replaying a later notes_edit."""
+        import json
+        from app.services.notes_tools import note_content_hash
+
+        base_time = datetime.utcnow()
+        read_use = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_USE,
+            content=json.dumps([
+                {"type": "tool_use", "id": "toolu_r", "name": "notes_read",
+                 "input": {"filename": "log.md", "shared": True}}
+            ]),
+            created_at=base_time + timedelta(seconds=1),
+        )
+        read_result = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_RESULT,
+            content=json.dumps([
+                {"type": "tool_result", "tool_use_id": "toolu_r",
+                 "content": "entry one", "is_error": False}
+            ]),
+            created_at=base_time + timedelta(seconds=2),
+        )
+        edit_use = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_USE,
+            content=json.dumps([
+                {"type": "tool_use", "id": "toolu_e", "name": "notes_edit",
+                 "input": {"filename": "log.md", "old_string": "one", "new_string": "two", "shared": True}}
+            ]),
+            created_at=base_time + timedelta(seconds=3),
+        )
+        edit_result = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_RESULT,
+            content=json.dumps([
+                {"type": "tool_result", "tool_use_id": "toolu_e",
+                 "content": "Edited 'log.md' in shared notes (1 replacement)", "is_error": False}
+            ]),
+            created_at=base_time + timedelta(seconds=4),
+        )
+        db_session.add_all([read_use, read_result, edit_use, edit_result])
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.notes_enabled = False
+            mock_settings.get_entity_by_index.return_value = MagicMock(
+                label="TestEntity", llm_provider="anthropic", default_model=None
+            )
+
+            session = await manager.load_session_from_db(
+                sample_conversation.id, db_session
+            )
+
+        tool_results = [m for m in session.conversation_context if m.get("is_tool_result")]
+        assert tool_results[0]["note_stamps"] == [{
+            "owner": "shared",
+            "filename": "log.md",
+            "hash": note_content_hash("entry one"),
+            "source": "read",
+        }]
+        assert tool_results[1]["note_stamps"] == [{
+            "owner": "shared",
+            "filename": "log.md",
+            "hash": note_content_hash("entry two"),
+            "source": "edit",
+        }]
+
+    @pytest.mark.asyncio
+    async def test_load_session_skips_pointer_and_error_results(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """[NOTE IN CONTEXT] pointers and Error results add no stamps."""
+        import json
+        from app.services.notes_tools import NOTE_IN_CONTEXT_MARKER
+
+        base_time = datetime.utcnow()
+        pointer_use = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_USE,
+            content=json.dumps([
+                {"type": "tool_use", "id": "toolu_p", "name": "notes_read",
+                 "input": {"filename": "a.md"}}
+            ]),
+            created_at=base_time + timedelta(seconds=1),
+        )
+        pointer_result = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_RESULT,
+            content=json.dumps([
+                {"type": "tool_result", "tool_use_id": "toolu_p",
+                 "content": f"{NOTE_IN_CONTEXT_MARKER} The current content of 'a.md' ...", "is_error": False}
+            ]),
+            created_at=base_time + timedelta(seconds=2),
+        )
+        error_use = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_USE,
+            content=json.dumps([
+                {"type": "tool_use", "id": "toolu_x", "name": "notes_read",
+                 "input": {"filename": "b.md"}}
+            ]),
+            created_at=base_time + timedelta(seconds=3),
+        )
+        error_result = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.TOOL_RESULT,
+            content=json.dumps([
+                {"type": "tool_result", "tool_use_id": "toolu_x",
+                 "content": "Error: File not found: b.md", "is_error": False}
+            ]),
+            created_at=base_time + timedelta(seconds=4),
+        )
+        db_session.add_all([pointer_use, pointer_result, error_use, error_result])
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.notes_enabled = False
+            mock_settings.get_entity_by_index.return_value = MagicMock(
+                label="TestEntity", llm_provider="anthropic", default_model=None
+            )
+
+            session = await manager.load_session_from_db(
+                sample_conversation.id, db_session
+            )
+
+        tool_results = [m for m in session.conversation_context if m.get("is_tool_result")]
+        assert all("note_stamps" not in m for m in tool_results)
