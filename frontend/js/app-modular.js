@@ -92,6 +92,10 @@ import {
     searchMemories,
     checkForOrphans,
     cleanupOrphans,
+    previewRebuildVectors,
+    runRebuildVectors,
+    previewRestoreDatabase,
+    runRestoreDatabase,
     loadMemoryStats,
     loadMemoryList
 } from './modules/memories.js';
@@ -508,6 +512,10 @@ class App {
         });
         document.getElementById('check-orphans-btn')?.addEventListener('click', () => checkForOrphans());
         document.getElementById('cleanup-orphans-btn')?.addEventListener('click', () => cleanupOrphans());
+        document.getElementById('preview-rebuild-vectors-btn')?.addEventListener('click', () => previewRebuildVectors());
+        document.getElementById('run-rebuild-vectors-btn')?.addEventListener('click', () => runRebuildVectors());
+        document.getElementById('preview-restore-db-btn')?.addEventListener('click', () => previewRestoreDatabase());
+        document.getElementById('run-restore-db-btn')?.addEventListener('click', () => runRestoreDatabase());
 
         // Archive modal
         document.getElementById('close-archive')?.addEventListener('click', () => hideModal('archiveModal'));

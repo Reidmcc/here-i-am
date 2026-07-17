@@ -2011,6 +2011,19 @@ body.resizing-input {
     gap: 12px;
 }
 
+.maintenance-actions + .orphan-status {
+    margin-top: 16px;
+}
+
+.maintenance-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    font-size: 0.85em;
+    cursor: pointer;
+}
+
 .orphan-details {
     margin-top: 16px;
     padding: 12px;

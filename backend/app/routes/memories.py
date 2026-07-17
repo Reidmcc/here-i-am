@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.models import Message, MessageRole, Conversation
-from app.services import memory_service
+from app.services import memory_service, vector_rebuild_service
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -526,6 +526,117 @@ async def cleanup_query_links(
         dry_run=data.dry_run if data is not None else True,
     )
     return QueryLinkCleanupResponse(**result)
+
+
+class RebuildVectorsRequest(BaseModel):
+    entity_id: Optional[str] = None  # None rebuilds all configured entities
+    dry_run: bool = True  # Default to dry run for safety
+    wipe_first: bool = False  # Delete existing records before upserting
+    include_imported: bool = True  # Include is_imported conversations
+
+
+class RebuildEntityResult(BaseModel):
+    entity_id: str
+    records_planned: int
+    records_upserted: int
+    wiped: bool
+    errors: List[str]
+
+
+class RebuildVectorsResponse(BaseModel):
+    dry_run: bool
+    wipe_first: bool
+    entities: List[RebuildEntityResult]
+    skipped: dict
+    errors: List[str]
+    total_records_planned: int = 0
+    total_records_upserted: int = 0
+
+
+class RestoreFromVectorsRequest(BaseModel):
+    entity_id: Optional[str] = None  # None scans all configured entities
+    dry_run: bool = True  # Default to dry run for safety
+
+
+class RestoreFromVectorsResponse(BaseModel):
+    dry_run: bool
+    entities_scanned: List[dict]
+    records_scanned: int
+    unique_messages: int
+    conversations_created: int
+    conversations_existing: int
+    messages_created: int
+    messages_existing: int
+    messages_preview_only: int
+    errors: List[str]
+
+
+@router.post("/rebuild-vectors", response_model=RebuildVectorsResponse)
+async def rebuild_vectors(
+    data: RebuildVectorsRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Regenerate the Pinecone vector database from the SQL database.
+
+    Disaster recovery for a lost or corrupted vector store: re-vectorizes
+    every memory-eligible message (human/assistant/reflection) using the same
+    rules as live chat, including multi-entity fan-out, attachment-block
+    stripping, and closing-turn exclusion. Upserts by message ID, so it is
+    safe to run against a partially intact index; set wipe_first=true to
+    clear each targeted index before rebuilding (removes stale records).
+
+    By default runs in dry_run mode which only reports what would be
+    upserted. Set dry_run=false to actually rebuild. Notes have their own
+    rebuild endpoint: POST /api/notes/reindex.
+    """
+    if not memory_service.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Memory system not configured. Set PINECONE_API_KEY in environment."
+        )
+
+    result = await vector_rebuild_service.rebuild_vectors_from_database(
+        db=db,
+        entity_id=data.entity_id,
+        dry_run=data.dry_run,
+        wipe_first=data.wipe_first,
+        include_imported=data.include_imported,
+    )
+    return RebuildVectorsResponse(**result)
+
+
+@router.post("/restore-from-vectors", response_model=RestoreFromVectorsResponse)
+async def restore_from_vectors(
+    data: RestoreFromVectorsRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Reconstruct the SQL database from the Pinecone vector store.
+
+    Last-resort recovery for a lost SQL database: rebuilds conversations and
+    messages from vectorized record metadata. Only vectorized data comes back
+    (message text, roles, timestamps, retrieval counts, multi-entity
+    participation) — titles, tool exchanges, attachment content, memory links,
+    and pinned/released statuses are not recoverable.
+
+    Non-destructive: only rows that don't already exist are created, so it
+    can also fill gaps in a partially intact database. By default runs in
+    dry_run mode which only reports what would be created; set dry_run=false
+    to actually restore.
+    """
+    if not memory_service.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Memory system not configured. Set PINECONE_API_KEY in environment."
+        )
+
+    result = await vector_rebuild_service.restore_database_from_vectors(
+        db=db,
+        entity_id=data.entity_id,
+        dry_run=data.dry_run,
+    )
+    return RestoreFromVectorsResponse(**result)
 
 
 class MemoryStatusUpdate(BaseModel):

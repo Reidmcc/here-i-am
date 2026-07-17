@@ -467,6 +467,41 @@
                         </div>
                     </details>
                 </div>
+
+                <!-- Disaster Recovery Section -->
+                <div class="memory-maintenance">
+                    <details class="maintenance-section">
+                        <summary>Disaster Recovery</summary>
+                        <div class="maintenance-content">
+                            <p class="maintenance-description">
+                                Rebuild the Pinecone vector database from the local database
+                                (guards against vector store loss), or reconstruct the local
+                                database from Pinecone (last resort&mdash;only vectorized message
+                                content comes back). The selected entity filter above applies;
+                                with no entity selected, all entities are processed. Preview
+                                first: it reports what would change without changing anything.
+                            </p>
+                            <div class="orphan-status" id="rebuild-vectors-status">
+                                <span class="orphan-count">Vectors from database: click Preview to plan a rebuild</span>
+                            </div>
+                            <div class="maintenance-actions">
+                                <button id="preview-rebuild-vectors-btn" class="secondary-btn">Preview Vector Rebuild</button>
+                                <button id="run-rebuild-vectors-btn" class="danger-btn" disabled>Rebuild Vectors</button>
+                                <label class="maintenance-checkbox">
+                                    <input type="checkbox" id="rebuild-wipe-first-checkbox">
+                                    Clear index first
+                                </label>
+                            </div>
+                            <div class="orphan-status" id="restore-db-status">
+                                <span class="orphan-count">Database from vectors: click Preview to plan a restore</span>
+                            </div>
+                            <div class="maintenance-actions">
+                                <button id="preview-restore-db-btn" class="secondary-btn">Preview Database Restore</button>
+                                <button id="run-restore-db-btn" class="danger-btn" disabled>Restore Database</button>
+                            </div>
+                        </div>
+                    </details>
+                </div>
             </div>
         </div>
     </div>
