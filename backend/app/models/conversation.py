@@ -38,6 +38,16 @@ class Conversation(Base):
     # Allows different system prompts for each entity in multi-entity conversations
     # or overriding the default system prompt for single-entity conversations
     entity_system_prompts: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # Frozen snapshot of the single-entity notes seed (index.md + shared notes)
+    # captured the first time this conversation's context is materialized.
+    # Shape: { "entity": str|None, "shared": str|None }. NULL means "not yet
+    # captured". The live session builds the position-0 notes message once at
+    # first load; pinning that content here lets every later reload rebuild the
+    # identical message instead of re-reading (possibly since-edited) disk
+    # content, which would diverge from the cached prompt and force a full
+    # cache re-write. Not used for multi-entity conversations (their notes live
+    # in the per-turn message, not a position-0 seed).
+    notes_seed: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     messages: Mapped[List["Message"]] = relationship(
         "Message", back_populates="conversation", cascade="all, delete-orphan"

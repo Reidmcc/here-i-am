@@ -113,7 +113,10 @@ class SessionManager:
         return session
 
     def _build_notes_context_message(
-        self, entity_label: str
+        self,
+        entity_label: str,
+        entity_notes: Optional[str],
+        shared_notes: Optional[str],
     ) -> Optional[Dict[str, Any]]:
         """
         Build a single cached-history context message holding the entity's notes.
@@ -121,15 +124,17 @@ class SessionManager:
         Combines the entity's index.md and any shared notes into one user-role
         message wrapped in [ENTITY NOTES]/[SHARED NOTES] markers. Returns None when
         there are no notes to inject. Marked with is_notes=True for identification.
-        """
-        from app.services.notes_service import notes_service
 
+        The notes content is passed in (from the conversation's frozen
+        notes_seed snapshot) rather than read from disk here, so a reload
+        rebuilds the byte-identical message the live session first cached even
+        after the notes have been edited on disk.
+        """
         parts: List[str] = []
         # Stamps recording which note files are fully visible in this message
         # (notes_read dedup state; see get_in_context_note_stamps)
         note_stamps: List[Dict[str, Any]] = []
 
-        entity_notes = notes_service.get_index_content(entity_label)
         if entity_notes:
             parts.append(f"[ENTITY NOTES]\n{entity_notes}\n[/ENTITY NOTES]")
             note_stamps.append({
@@ -142,7 +147,6 @@ class SessionManager:
                 f"[NOTES] Injected index.md for entity '{entity_label}' into cached history ({len(entity_notes)} chars)"
             )
 
-        shared_notes = notes_service.get_shared_index_content()
         if shared_notes:
             parts.append(f"[SHARED NOTES]\n{shared_notes}\n[/SHARED NOTES]")
             note_stamps.append({
@@ -358,7 +362,34 @@ class SessionManager:
         # position. Multi-entity conversations keep notes in the per-turn message because
         # the responding entity (and thus the relevant notes) changes turn to turn.
         if settings.notes_enabled and responding_entity_label and not is_multi_entity:
-            notes_message = self._build_notes_context_message(responding_entity_label)
+            # Resolve the notes seed content from the conversation's frozen
+            # snapshot. The first time a conversation's context is materialized
+            # the snapshot is empty (None): capture the current disk content and
+            # persist it, so every later reload rebuilds the identical position-0
+            # notes message the live session cached — even after the entity or
+            # researcher edits the notes on disk mid-conversation. (Edits still
+            # reach the entity through the notes tool exchanges in history and
+            # notes_read; only the frozen seed is pinned.)
+            from app.services.notes_service import notes_service
+
+            snapshot = conversation.notes_seed
+            if snapshot is None:
+                entity_notes = notes_service.get_index_content(responding_entity_label)
+                shared_notes = notes_service.get_shared_index_content()
+                conversation.notes_seed = {"entity": entity_notes, "shared": shared_notes}
+                await db.commit()
+                logger.info(
+                    f"[NOTES] Captured notes seed snapshot for conversation "
+                    f"{conversation_id[:8]}... (entity={'yes' if entity_notes else 'no'}, "
+                    f"shared={'yes' if shared_notes else 'no'})"
+                )
+            else:
+                entity_notes = snapshot.get("entity")
+                shared_notes = snapshot.get("shared")
+
+            notes_message = self._build_notes_context_message(
+                responding_entity_label, entity_notes, shared_notes
+            )
             if notes_message:
                 session.conversation_context.append(notes_message)
 
@@ -1723,6 +1754,31 @@ class SessionManager:
                     # If no tool use, this is the final response
                     if stop_reason != "tool_use" or not iteration_tool_use:
                         full_content += iteration_content
+
+                        # Guard against a degenerate empty response: providers
+                        # occasionally return no text and no tool use. Persisting
+                        # it would store a blank assistant message and try to
+                        # vectorize blank content (which Pinecone rejects), and
+                        # would leave a blank turn in history that busts the
+                        # prompt cache on the next reload. Treat it as a soft
+                        # error: do NOT mutate the session (no add_exchange, no
+                        # cache advance) so the warm in-memory session can be
+                        # retried in place without a reload, and surface it to
+                        # the caller. Only fires when the turn produced nothing
+                        # at all — if tools ran, the turn has substance and is
+                        # persisted normally.
+                        if not tool_exchanges and not full_content.strip():
+                            logger.warning(
+                                f"[STREAM] Empty response from provider "
+                                f"(model={session.model}, stop_reason={stop_reason}); "
+                                f"not persisting, session left warm for retry"
+                            )
+                            yield {
+                                "type": "error",
+                                "error": "The model returned an empty response. Please try again.",
+                                "error_type": "empty_response",
+                            }
+                            return
 
                         # Record the provider-reported prompt size against the
                         # local estimate of the same prompt (this iteration's

@@ -182,18 +182,53 @@ export async function sendMessage(skipEntityModal = false) {
     const userMessageEl = addMessage('human', displayContent);
     scrollToBottom();
 
-    // Create streaming message element
+    await streamSingleEntitySend({
+        content,
+        attachments,
+        messageToSend: buildMessageToSend(content),
+        userMessageEl,
+    });
+}
+
+/**
+ * Build the text actually sent to the backend from the user's raw input,
+ * applying the active-Go-game context wrapper when present. Shared by the
+ * initial send and the empty-response edit-&-retry so a retried/edited prompt
+ * gets the identical transformation.
+ */
+function buildMessageToSend(content) {
+    if (content && callbacks.getGoGameContext) {
+        const gameContext = callbacks.getGoGameContext();
+        if (gameContext) {
+            return `[GO GAME STATE]\n${gameContext}\n[/GO GAME STATE]\n\n${content}`;
+        }
+    }
+    return content;
+}
+
+/**
+ * Run one single-entity streaming request and wire up its callbacks.
+ *
+ * Assumes beginStreaming() has already been called (abort controller ready)
+ * and the human message bubble (userMessageEl) is already on screen. Calls
+ * endStreaming() when done.
+ *
+ * Factored out of sendMessage so an "empty response" soft error can retry the
+ * exact same request in place: the backend leaves the in-memory session warm
+ * (the empty turn is never persisted), so re-sending through the normal stream
+ * path reuses the cached prompt prefix instead of forcing a session reload the
+ * way regenerate would.
+ */
+async function streamSingleEntitySend({ content, attachments, messageToSend, userMessageEl }) {
     const streamingMessage = createStreamingMessage('assistant');
     let usageData = null;
 
-    // Inject Go game context if there's an active game
-    let messageToSend = content;
-    if (callbacks.getGoGameContext) {
-        const gameContext = callbacks.getGoGameContext();
-        if (gameContext && content) {
-            messageToSend = `[GO GAME STATE]\n${gameContext}\n[/GO GAME STATE]\n\n${content}`;
-        }
-    }
+    // Retry the identical request, reusing the same human bubble. Re-enters the
+    // streaming UI state (the previous run already called endStreaming()).
+    const retry = () => {
+        beginStreaming();
+        streamSingleEntitySend({ content, attachments, messageToSend, userMessageEl });
+    };
 
     try {
         await api.sendMessageStream(
@@ -265,8 +300,21 @@ export async function sendMessage(skipEntityModal = false) {
                 },
                 onError: (data) => {
                     streamingMessage.element.remove();
-                    addMessage('assistant', `Error: ${data.error}`, { isError: true });
-                    showToast('Failed to send message', 'error');
+                    // An empty response is a soft error: the turn was not
+                    // persisted and the session is still warm, so offer an
+                    // in-place retry (or edit-then-retry) that keeps the prompt
+                    // cache instead of a reload.
+                    if (data.error_type === 'empty_response') {
+                        addEmptyResponseError(data.error, {
+                            onRetry: retry,
+                            onEditRetry: (errorEl) =>
+                                startPromptEditRetry(userMessageEl, content, attachments, errorEl),
+                        });
+                        showToast('Empty response — retry or edit', 'error');
+                    } else {
+                        addMessage('assistant', `Error: ${data.error}`, { isError: true });
+                        showToast('Failed to send message', 'error');
+                    }
                     console.error('Streaming error:', data.error);
                 },
             },
@@ -285,6 +333,67 @@ export async function sendMessage(skipEntityModal = false) {
     } finally {
         endStreaming();
     }
+}
+
+/**
+ * Render an error bubble for the "empty response" soft error, with inline
+ * "Edit & retry" and "Retry" actions. Both reuse the warm session (no reload).
+ */
+function addEmptyResponseError(errorText, { onRetry, onEditRetry }) {
+    const el = addMessage('assistant', `Error: ${errorText}`, { isError: true });
+    const bubble = el.querySelector('.message-bubble');
+    if (bubble) {
+        const actions = document.createElement('div');
+        actions.className = 'error-retry-actions';
+
+        const editBtn = document.createElement('button');
+        editBtn.className = 'retry-btn';
+        editBtn.textContent = 'Edit & retry';
+        // Leave the error bubble in place while editing so the user can still
+        // cancel; the edit's save handler removes it once it re-sends.
+        editBtn.addEventListener('click', () => onEditRetry(el));
+
+        const retryBtn = document.createElement('button');
+        retryBtn.className = 'retry-btn';
+        retryBtn.textContent = 'Retry';
+        retryBtn.addEventListener('click', () => {
+            el.remove();
+            onRetry();
+        });
+
+        actions.appendChild(editBtn);
+        actions.appendChild(retryBtn);
+        bubble.appendChild(actions);
+    }
+    scrollToBottom();
+    return el;
+}
+
+/**
+ * Open an inline editor on the (unpersisted) user prompt after an empty
+ * response, and on save re-send the edited text through the warm session.
+ */
+function startPromptEditRetry(userMessageEl, content, attachments, errorEl) {
+    startEditMessage(userMessageEl, null, content, {
+        saveLabel: 'Save & retry',
+        onSave: async (newContent) => {
+            userMessageEl.classList.remove('editing');
+            const bubble = userMessageEl.querySelector('.message-bubble');
+            if (bubble) {
+                bubble.innerHTML = renderMarkdown(
+                    buildDisplayContentWithAttachments(newContent, attachments)
+                );
+            }
+            if (errorEl) errorEl.remove();
+            beginStreaming();
+            streamSingleEntitySend({
+                content: newContent,
+                attachments,
+                messageToSend: buildMessageToSend(newContent),
+                userMessageEl,
+            });
+        },
+    });
 }
 
 /**
@@ -623,10 +732,16 @@ export async function performRegeneration(messageId, respondingEntityId = null) 
  * @param {string} messageId - The message ID
  * @param {string} currentContent - Current message content
  */
-export function startEditMessage(messageElement, messageId, currentContent) {
+export function startEditMessage(messageElement, messageId, currentContent, options = {}) {
     if (state.isLoading) return;
 
     if (messageElement.classList.contains('editing')) return;
+
+    // options.onSave, when provided, replaces the default persist-and-regenerate
+    // behavior — used by the empty-response "edit & retry" flow, where the
+    // prompt was never persisted (no messageId) and the retry must reuse the
+    // warm session rather than reload via regenerate.
+    const saveLabel = options.saveLabel || 'Save & Regenerate';
 
     messageElement.classList.add('editing');
     const bubble = messageElement.querySelector('.message-bubble');
@@ -637,7 +752,7 @@ export function startEditMessage(messageElement, messageId, currentContent) {
             <textarea class="message-edit-textarea">${escapeHtml(originalContent)}</textarea>
             <div class="message-edit-actions">
                 <button class="message-edit-btn cancel-edit">Cancel</button>
-                <button class="message-edit-btn save-edit primary">Save & Regenerate</button>
+                <button class="message-edit-btn save-edit primary">${escapeHtml(saveLabel)}</button>
             </div>
         </div>
     `;
@@ -666,6 +781,13 @@ export function startEditMessage(messageElement, messageId, currentContent) {
         const newContent = textarea.value.trim();
         if (!newContent) {
             showToast('Message cannot be empty', 'error');
+            return;
+        }
+
+        if (options.onSave) {
+            // Custom save (e.g. edit & retry): always proceed, even if the
+            // text is unchanged — the point is to re-send.
+            await options.onSave(newContent);
             return;
         }
 
