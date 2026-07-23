@@ -3506,9 +3506,9 @@ class TestNoteStampTracking:
         from app.services.notes_tools import note_content_hash
 
         manager = SessionManager()
-        with patch.object(notes_service, "get_index_content", return_value="# my index"), \
-             patch.object(notes_service, "get_shared_index_content", return_value="# shared index"):
-            message = manager._build_notes_context_message("TestEntity")
+        message = manager._build_notes_context_message(
+            "TestEntity", "# my index", "# shared index"
+        )
 
         assert message["is_notes"] is True
         assert message["note_stamps"] == [
@@ -3525,6 +3525,176 @@ class TestNoteStampTracking:
                 "source": "seed",
             },
         ]
+
+    @pytest.mark.asyncio
+    async def test_load_session_captures_and_freezes_notes_seed(
+        self, db_session, sample_conversation
+    ):
+        """
+        The first single-entity load snapshots the current notes into
+        conversation.notes_seed; later loads rebuild the seed message from that
+        frozen snapshot, so editing the notes on disk mid-conversation does not
+        change the position-0 seed (which would bust the prompt cache).
+        """
+        from app.services.notes_service import notes_service
+
+        manager = SessionManager()
+
+        entity = MagicMock()
+        entity.label = "TestEntity"
+        entity.llm_provider = "anthropic"
+        entity.default_model = None
+
+        async def load_with_notes(entity_notes, shared_notes):
+            with patch("app.services.session_manager.memory_service") as mock_memory, \
+                 patch("app.services.session_manager.settings") as mock_settings, \
+                 patch.object(notes_service, "get_index_content",
+                              return_value=entity_notes), \
+                 patch.object(notes_service, "get_shared_index_content",
+                              return_value=shared_notes):
+                mock_memory.is_configured.return_value = False
+                mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+                mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
+                mock_settings.default_model = "claude-sonnet-4-5-20250929"
+                mock_settings.default_temperature = 1.0
+                mock_settings.default_max_tokens = 64000
+                mock_settings.notes_enabled = True
+                mock_settings.get_entity_by_index.return_value = entity
+                return await manager.load_session_from_db(
+                    sample_conversation.id, db_session
+                )
+
+        # First load captures the current disk content as the frozen snapshot.
+        session = await load_with_notes("# index v1", "# shared v1")
+        notes_msgs = [m for m in session.conversation_context if m.get("is_notes")]
+        assert len(notes_msgs) == 1
+        assert "# index v1" in notes_msgs[0]["content"]
+        assert "# shared v1" in notes_msgs[0]["content"]
+
+        await db_session.refresh(sample_conversation)
+        assert sample_conversation.notes_seed == {
+            "entity": "# index v1",
+            "shared": "# shared v1",
+        }
+
+        # A later load, after the notes changed on disk, rebuilds the identical
+        # seed from the snapshot rather than the new disk content.
+        session2 = await load_with_notes("# index v2", "# shared v2")
+        notes_msgs2 = [m for m in session2.conversation_context if m.get("is_notes")]
+        assert len(notes_msgs2) == 1
+        assert notes_msgs2[0]["content"] == notes_msgs[0]["content"]
+        assert "# index v2" not in notes_msgs2[0]["content"]
+
+        await db_session.refresh(sample_conversation)
+        assert sample_conversation.notes_seed == {
+            "entity": "# index v1",
+            "shared": "# shared v1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_stream_empty_response_soft_errors_without_mutating_session(
+        self, db_session, sample_conversation
+    ):
+        """
+        An empty final response (no text, no tool use) yields an
+        empty_response soft error and leaves the session untouched: no exchange
+        is appended and the cache breakpoint does not advance, so the warm
+        session can be retried in place instead of via a reload.
+        """
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.context_token_limit = 150000
+            mock_settings.tool_use_max_iterations = 10
+
+            mock_llm.build_messages.return_value = [{"role": "user", "content": "x"}]
+            mock_llm.count_tokens = MagicMock(return_value=10)
+
+            async def mock_stream(*args, **kwargs):
+                yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                yield {
+                    "type": "done",
+                    "content": "",
+                    "model": "claude-sonnet-4-5-20250929",
+                    "usage": {"input_tokens": 10, "output_tokens": 0},
+                    "stop_reason": "end_turn",
+                    "content_blocks": [],
+                }
+
+            mock_llm.send_message_stream = mock_stream
+
+            session = manager.create_session(sample_conversation.id)
+            before_len = len(session.conversation_context)
+            before_cache = session.last_cached_context_length
+
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Hello", db_session, tool_schemas=[]
+            ):
+                events.append(event)
+
+        error_events = [e for e in events if e.get("type") == "error"]
+        assert len(error_events) == 1
+        assert error_events[0].get("error_type") == "empty_response"
+        assert not any(e.get("type") == "done" for e in events)
+        # Session untouched: no exchange appended, cache breakpoint not advanced.
+        assert len(session.conversation_context) == before_len
+        assert session.last_cached_context_length == before_cache
+
+    @pytest.mark.asyncio
+    async def test_stream_whitespace_only_response_soft_errors(
+        self, db_session, sample_conversation
+    ):
+        """A whitespace-only final response is treated as empty."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.context_token_limit = 150000
+            mock_settings.tool_use_max_iterations = 10
+
+            mock_llm.build_messages.return_value = [{"role": "user", "content": "x"}]
+            mock_llm.count_tokens = MagicMock(return_value=10)
+
+            async def mock_stream(*args, **kwargs):
+                yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                yield {"type": "token", "content": "   \n"}
+                yield {
+                    "type": "done",
+                    "content": "   \n",
+                    "model": "claude-sonnet-4-5-20250929",
+                    "usage": {"input_tokens": 10, "output_tokens": 1},
+                    "stop_reason": "end_turn",
+                    "content_blocks": [{"type": "text", "text": "   \n"}],
+                }
+
+            mock_llm.send_message_stream = mock_stream
+
+            session = manager.create_session(sample_conversation.id)
+            before_len = len(session.conversation_context)
+
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Hello", db_session, tool_schemas=[]
+            ):
+                events.append(event)
+
+        assert any(
+            e.get("type") == "error" and e.get("error_type") == "empty_response"
+            for e in events
+        )
+        assert len(session.conversation_context) == before_len
 
     @pytest.mark.asyncio
     async def test_load_session_restores_note_stamps(

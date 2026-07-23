@@ -595,6 +595,23 @@ html, body {
     border-bottom-left-radius: 4px;
 }
 
+/* Inline retry button on soft-error bubbles (e.g. empty response) */
+.retry-btn {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 6px 14px;
+    font-size: 0.85rem;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background-color: var(--assistant-bg);
+    color: var(--text-color);
+    cursor: pointer;
+}
+
+.retry-btn:hover {
+    background-color: var(--accent-subtle);
+}
+
 /* Self-authored memories saved via the memory_save tool */
 .message.reflection .message-bubble {
     background-color: var(--assistant-bg);

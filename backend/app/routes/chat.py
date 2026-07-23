@@ -746,6 +746,16 @@ async def stream_message(data: ChatRequest):
                 yield f"event: stored\ndata: {json.dumps(stored_data)}\n\n"
 
             except Exception as e:
+                # An exception here can fire after process_message_stream has
+                # already mutated the in-memory session (add_exchange advances
+                # the context and cache breakpoint at the "done" event) but
+                # before/while the turn is persisted — leaving the session ahead
+                # of the DB. Drop it so the next turn reloads cleanly from the
+                # authoritative DB rows instead of building on phantom state.
+                # (The controlled empty-response soft error returns earlier via
+                # the "error" event without mutating the session, so it never
+                # reaches this handler and keeps its warm session for retry.)
+                session_manager.close_session(data.conversation_id)
                 yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(
@@ -1158,6 +1168,10 @@ async def regenerate_response(data: RegenerateRequest):
                 yield f"event: stored\ndata: {json.dumps(stored_data)}\n\n"
 
             except Exception as e:
+                # See the /stream handler: an exception after the session was
+                # mutated but before persistence leaves it ahead of the DB.
+                # Drop it so the next turn reloads cleanly from the DB.
+                session_manager.close_session(conversation_id)
                 yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(

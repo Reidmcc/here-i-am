@@ -193,6 +193,13 @@ async def run_migrations(conn):
             ))
             print("  ✓ Added entity_system_prompts column for per-entity system prompts")
 
+        if 'notes_seed' not in columns:
+            print("Migrating: Adding 'notes_seed' column to conversations table...")
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN notes_seed JSON"
+            ))
+            print("  ✓ Added notes_seed column for frozen single-entity notes seed")
+
 
 async def init_db():
     async with engine.begin() as conn:

@@ -182,10 +182,6 @@ export async function sendMessage(skipEntityModal = false) {
     const userMessageEl = addMessage('human', displayContent);
     scrollToBottom();
 
-    // Create streaming message element
-    const streamingMessage = createStreamingMessage('assistant');
-    let usageData = null;
-
     // Inject Go game context if there's an active game
     let messageToSend = content;
     if (callbacks.getGoGameContext) {
@@ -194,6 +190,33 @@ export async function sendMessage(skipEntityModal = false) {
             messageToSend = `[GO GAME STATE]\n${gameContext}\n[/GO GAME STATE]\n\n${content}`;
         }
     }
+
+    await streamSingleEntitySend({ content, attachments, messageToSend, userMessageEl });
+}
+
+/**
+ * Run one single-entity streaming request and wire up its callbacks.
+ *
+ * Assumes beginStreaming() has already been called (abort controller ready)
+ * and the human message bubble (userMessageEl) is already on screen. Calls
+ * endStreaming() when done.
+ *
+ * Factored out of sendMessage so an "empty response" soft error can retry the
+ * exact same request in place: the backend leaves the in-memory session warm
+ * (the empty turn is never persisted), so re-sending through the normal stream
+ * path reuses the cached prompt prefix instead of forcing a session reload the
+ * way regenerate would.
+ */
+async function streamSingleEntitySend({ content, attachments, messageToSend, userMessageEl }) {
+    const streamingMessage = createStreamingMessage('assistant');
+    let usageData = null;
+
+    // Retry the identical request, reusing the same human bubble. Re-enters the
+    // streaming UI state (the previous run already called endStreaming()).
+    const retry = () => {
+        beginStreaming();
+        streamSingleEntitySend({ content, attachments, messageToSend, userMessageEl });
+    };
 
     try {
         await api.sendMessageStream(
@@ -265,8 +288,17 @@ export async function sendMessage(skipEntityModal = false) {
                 },
                 onError: (data) => {
                     streamingMessage.element.remove();
-                    addMessage('assistant', `Error: ${data.error}`, { isError: true });
-                    showToast('Failed to send message', 'error');
+                    // An empty response is a soft error: the turn was not
+                    // persisted and the session is still warm, so offer an
+                    // in-place retry that keeps the prompt cache instead of a
+                    // reload.
+                    if (data.error_type === 'empty_response') {
+                        addRetryableError(data.error, retry);
+                        showToast('Empty response — you can retry', 'error');
+                    } else {
+                        addMessage('assistant', `Error: ${data.error}`, { isError: true });
+                        showToast('Failed to send message', 'error');
+                    }
                     console.error('Streaming error:', data.error);
                 },
             },
@@ -285,6 +317,27 @@ export async function sendMessage(skipEntityModal = false) {
     } finally {
         endStreaming();
     }
+}
+
+/**
+ * Render an error bubble with an inline Retry button. Used for the "empty
+ * response" soft error, where retrying reuses the warm session.
+ */
+function addRetryableError(errorText, onRetry) {
+    const el = addMessage('assistant', `Error: ${errorText}`, { isError: true });
+    const bubble = el.querySelector('.message-bubble');
+    if (bubble) {
+        const retryBtn = document.createElement('button');
+        retryBtn.className = 'retry-btn';
+        retryBtn.textContent = 'Retry';
+        retryBtn.addEventListener('click', () => {
+            el.remove();
+            onRetry();
+        });
+        bubble.appendChild(retryBtn);
+    }
+    scrollToBottom();
+    return el;
 }
 
 /**
