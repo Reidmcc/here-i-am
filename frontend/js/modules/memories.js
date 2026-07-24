@@ -662,3 +662,231 @@ export async function cleanupOrphans() {
         if (cleanupBtn) cleanupBtn.textContent = 'Clean Up Orphans';
     }
 }
+
+// =========================================================================
+// Disaster Recovery (rebuild vectors from DB / restore DB from vectors)
+// =========================================================================
+
+function rebuildScopeLabel() {
+    return state.selectedEntityId ? `entity "${state.selectedEntityId}"` : 'all entities';
+}
+
+/**
+ * Dry-run a vector rebuild and show what would be upserted
+ */
+export async function previewRebuildVectors() {
+    const statusEl = document.getElementById('rebuild-vectors-status');
+    const previewBtn = document.getElementById('preview-rebuild-vectors-btn');
+    const runBtn = document.getElementById('run-rebuild-vectors-btn');
+    const wipeFirst = document.getElementById('rebuild-wipe-first-checkbox')?.checked || false;
+
+    try {
+        if (previewBtn) {
+            previewBtn.disabled = true;
+            previewBtn.textContent = 'Previewing...';
+        }
+        if (statusEl) statusEl.innerHTML = '<span class="orphan-count">Planning vector rebuild...</span>';
+
+        const result = await api.rebuildVectors(state.selectedEntityId, true, wipeFirst);
+        state._rebuildPreview = result;
+
+        if (result.errors && result.errors.length > 0) {
+            if (statusEl) {
+                statusEl.innerHTML = `<span class="orphan-count orphan-error">${escapeHtml(result.errors.join('; '))}</span>`;
+            }
+            if (runBtn) runBtn.disabled = true;
+            return;
+        }
+
+        const perEntity = result.entities
+            .map(e => `${escapeHtml(e.entity_id)}: ${e.records_planned}`)
+            .join(', ');
+        const skipped = Object.entries(result.skipped || {})
+            .filter(([, count]) => count > 0)
+            .map(([key, count]) => `${key.replace(/_/g, ' ')}: ${count}`)
+            .join(', ');
+        if (statusEl) {
+            statusEl.innerHTML = `
+                <span class="orphan-count ${result.total_records_planned > 0 ? 'orphan-warning' : 'orphan-ok'}">
+                    ${result.total_records_planned} record(s) would be upserted (${perEntity || 'no entities'})
+                </span>
+                ${skipped ? `<span class="orphan-meta">Skipped &mdash; ${escapeHtml(skipped)}</span>` : ''}
+            `;
+        }
+        if (runBtn) runBtn.disabled = result.total_records_planned === 0;
+    } catch (error) {
+        if (statusEl) statusEl.innerHTML = '<span class="orphan-count orphan-error">Error planning vector rebuild</span>';
+        showToast('Failed to preview vector rebuild', 'error');
+        console.error('Failed to preview vector rebuild:', error);
+    } finally {
+        if (previewBtn) {
+            previewBtn.disabled = false;
+            previewBtn.textContent = 'Preview Vector Rebuild';
+        }
+    }
+}
+
+/**
+ * Actually rebuild Pinecone vectors from the SQL database
+ */
+export async function runRebuildVectors() {
+    const preview = state._rebuildPreview;
+    if (!preview || preview.total_records_planned === 0) {
+        showToast('Run a preview first', 'info');
+        return;
+    }
+
+    const wipeFirst = document.getElementById('rebuild-wipe-first-checkbox')?.checked || false;
+    const wipeNote = wipeFirst
+        ? '\n\nThe existing index contents will be DELETED first.'
+        : '\n\nExisting records will be overwritten by message ID (no wipe).';
+    if (!confirm(`Rebuild vectors for ${rebuildScopeLabel()}?\n\n${preview.total_records_planned} record(s) will be re-vectorized in Pinecone.${wipeNote}`)) {
+        return;
+    }
+
+    const statusEl = document.getElementById('rebuild-vectors-status');
+    const previewBtn = document.getElementById('preview-rebuild-vectors-btn');
+    const runBtn = document.getElementById('run-rebuild-vectors-btn');
+
+    try {
+        if (runBtn) {
+            runBtn.disabled = true;
+            runBtn.textContent = 'Rebuilding...';
+        }
+        if (previewBtn) previewBtn.disabled = true;
+        if (statusEl) statusEl.innerHTML = '<span class="orphan-count">Rebuilding vectors (this can take a while)...</span>';
+
+        const result = await api.rebuildVectors(state.selectedEntityId, false, wipeFirst);
+        state._rebuildPreview = null;
+
+        const entityErrors = result.entities.flatMap(e => e.errors || []);
+        const allErrors = [...(result.errors || []), ...entityErrors];
+        if (allErrors.length > 0) {
+            if (statusEl) {
+                statusEl.innerHTML = `<span class="orphan-count orphan-warning">Upserted ${result.total_records_upserted} record(s) with ${allErrors.length} error(s)</span>`;
+            }
+            showToast(`Vector rebuild finished with errors (${allErrors.length})`, 'warning');
+            console.warn('Vector rebuild errors:', allErrors);
+        } else {
+            if (statusEl) {
+                statusEl.innerHTML = `<span class="orphan-count orphan-ok">Rebuilt ${result.total_records_upserted} vector record(s)</span>`;
+            }
+            showToast(`Rebuilt ${result.total_records_upserted} vector records`, 'success');
+        }
+    } catch (error) {
+        if (statusEl) statusEl.innerHTML = '<span class="orphan-count orphan-error">Error rebuilding vectors</span>';
+        showToast('Failed to rebuild vectors', 'error');
+        console.error('Failed to rebuild vectors:', error);
+    } finally {
+        if (previewBtn) previewBtn.disabled = false;
+        if (runBtn) {
+            runBtn.disabled = true;
+            runBtn.textContent = 'Rebuild Vectors';
+        }
+    }
+}
+
+/**
+ * Dry-run a database restore from Pinecone and show what would be created
+ */
+export async function previewRestoreDatabase() {
+    const statusEl = document.getElementById('restore-db-status');
+    const previewBtn = document.getElementById('preview-restore-db-btn');
+    const runBtn = document.getElementById('run-restore-db-btn');
+
+    try {
+        if (previewBtn) {
+            previewBtn.disabled = true;
+            previewBtn.textContent = 'Previewing...';
+        }
+        if (statusEl) statusEl.innerHTML = '<span class="orphan-count">Scanning Pinecone records...</span>';
+
+        const result = await api.restoreFromVectors(state.selectedEntityId, true);
+        state._restorePreview = result;
+
+        if (result.errors && result.errors.length > 0) {
+            if (statusEl) {
+                statusEl.innerHTML = `<span class="orphan-count orphan-error">${escapeHtml(result.errors.join('; '))}</span>`;
+            }
+            if (runBtn) runBtn.disabled = true;
+            return;
+        }
+
+        const toCreate = result.messages_created + result.conversations_created;
+        if (statusEl) {
+            statusEl.innerHTML = `
+                <span class="orphan-count ${toCreate > 0 ? 'orphan-warning' : 'orphan-ok'}">
+                    ${result.conversations_created} conversation(s) and ${result.messages_created} message(s)
+                    would be created from ${result.records_scanned} Pinecone record(s)
+                </span>
+                <span class="orphan-meta">
+                    Already in database: ${result.messages_existing} message(s)
+                    ${result.messages_preview_only > 0 ? ` &middot; ${result.messages_preview_only} recoverable only as 200-char previews` : ''}
+                </span>
+            `;
+        }
+        if (runBtn) runBtn.disabled = toCreate === 0;
+    } catch (error) {
+        if (statusEl) statusEl.innerHTML = '<span class="orphan-count orphan-error">Error planning database restore</span>';
+        showToast('Failed to preview database restore', 'error');
+        console.error('Failed to preview database restore:', error);
+    } finally {
+        if (previewBtn) {
+            previewBtn.disabled = false;
+            previewBtn.textContent = 'Preview Database Restore';
+        }
+    }
+}
+
+/**
+ * Actually restore SQL conversations/messages from Pinecone records
+ */
+export async function runRestoreDatabase() {
+    const preview = state._restorePreview;
+    if (!preview || (preview.messages_created === 0 && preview.conversations_created === 0)) {
+        showToast('Run a preview first', 'info');
+        return;
+    }
+
+    if (!confirm(`Restore database from vectors for ${rebuildScopeLabel()}?\n\n${preview.conversations_created} conversation(s) and ${preview.messages_created} message(s) will be created.\n\nExisting rows are never modified. Only vectorized content is recovered (no titles, tool exchanges, or attachments).`)) {
+        return;
+    }
+
+    const statusEl = document.getElementById('restore-db-status');
+    const previewBtn = document.getElementById('preview-restore-db-btn');
+    const runBtn = document.getElementById('run-restore-db-btn');
+
+    try {
+        if (runBtn) {
+            runBtn.disabled = true;
+            runBtn.textContent = 'Restoring...';
+        }
+        if (previewBtn) previewBtn.disabled = true;
+        if (statusEl) statusEl.innerHTML = '<span class="orphan-count">Restoring database from Pinecone...</span>';
+
+        const result = await api.restoreFromVectors(state.selectedEntityId, false);
+        state._restorePreview = null;
+
+        if (result.errors && result.errors.length > 0) {
+            if (statusEl) {
+                statusEl.innerHTML = `<span class="orphan-count orphan-warning">Created ${result.conversations_created} conversation(s), ${result.messages_created} message(s) with errors</span>`;
+            }
+            showToast(`Restore finished with errors: ${result.errors.join(', ')}`, 'warning');
+        } else {
+            if (statusEl) {
+                statusEl.innerHTML = `<span class="orphan-count orphan-ok">Created ${result.conversations_created} conversation(s) and ${result.messages_created} message(s)</span>`;
+            }
+            showToast(`Restored ${result.messages_created} messages from Pinecone`, 'success');
+        }
+    } catch (error) {
+        if (statusEl) statusEl.innerHTML = '<span class="orphan-count orphan-error">Error restoring database</span>';
+        showToast('Failed to restore database from vectors', 'error');
+        console.error('Failed to restore database:', error);
+    } finally {
+        if (previewBtn) previewBtn.disabled = false;
+        if (runBtn) {
+            runBtn.disabled = true;
+            runBtn.textContent = 'Restore Database';
+        }
+    }
+}

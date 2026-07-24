@@ -500,6 +500,27 @@ class ApiClient {
         });
     }
 
+    async rebuildVectors(entityId = null, dryRun = true, wipeFirst = false) {
+        return this.request('/memories/rebuild-vectors', {
+            method: 'POST',
+            body: {
+                entity_id: entityId,
+                dry_run: dryRun,
+                wipe_first: wipeFirst,
+            },
+        });
+    }
+
+    async restoreFromVectors(entityId = null, dryRun = true) {
+        return this.request('/memories/restore-from-vectors', {
+            method: 'POST',
+            body: {
+                entity_id: entityId,
+                dry_run: dryRun,
+            },
+        });
+    }
+
     // Presets
     async getPresets() {
         return this.request('/config/presets');

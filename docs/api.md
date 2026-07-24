@@ -41,6 +41,8 @@ The listing below covers the REST endpoints by resource.
 - `GET /api/memories/orphans` — list orphaned memory records
 - `POST /api/memories/orphans/cleanup` — clean up orphaned records
 - `POST /api/memories/query-links/cleanup` — one-time removal of stale memory-links recorded by `memory_query` before it stopped creating them (they bust prompt caching on session reload); body optional, a bare POST is a dry run — send `{"dry_run": false}` to delete
+- `POST /api/memories/rebuild-vectors` — regenerate Pinecone indexes from the SQL database (disaster recovery). Body: `entity_id` (null = all entities), `dry_run` (default true), `wipe_first` (default false; clears each targeted index before upserting), `include_imported` (default true). Reproduces live vectorization rules (multi-entity fan-out, attachment stripping, closing-turn exclusion). Notes have their own endpoint: `POST /api/notes/reindex`
+- `POST /api/memories/restore-from-vectors` — reconstruct SQL conversations/messages from Pinecone records (last-resort recovery; only vectorized content comes back — no titles, tool exchanges, attachments, or memory links). Body: `entity_id` (null = all entities, recommended for multi-entity detection), `dry_run` (default true). Non-destructive: existing rows are never modified
 - `DELETE /api/memories/{id}` — delete memory
 - `GET /api/memories/status/health` — health check
 

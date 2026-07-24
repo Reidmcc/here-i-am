@@ -557,6 +557,39 @@ describe('ApiClient', () => {
                 }),
             );
         });
+
+        it('rebuildVectors should POST with correct body', async () => {
+            await api.rebuildVectors('entity-1', false, true);
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/memories/rebuild-vectors',
+                expect.objectContaining({
+                    method: 'POST',
+                    body: JSON.stringify({ entity_id: 'entity-1', dry_run: false, wipe_first: true }),
+                }),
+            );
+        });
+
+        it('rebuildVectors should default to dry run for all entities', async () => {
+            await api.rebuildVectors();
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/memories/rebuild-vectors',
+                expect.objectContaining({
+                    method: 'POST',
+                    body: JSON.stringify({ entity_id: null, dry_run: true, wipe_first: false }),
+                }),
+            );
+        });
+
+        it('restoreFromVectors should POST with correct body', async () => {
+            await api.restoreFromVectors('entity-1', false);
+            expect(global.fetch).toHaveBeenCalledWith(
+                '/api/memories/restore-from-vectors',
+                expect.objectContaining({
+                    method: 'POST',
+                    body: JSON.stringify({ entity_id: 'entity-1', dry_run: false }),
+                }),
+            );
+        });
     });
 
     // ============================================================
