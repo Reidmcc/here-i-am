@@ -10,6 +10,24 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# Anthropic models that reject sampling parameters. Claude Opus 4.7 dropped
+# temperature/top_p/top_k, and every model since (Opus 4.8, Opus 5, Sonnet 5,
+# Fable 5, Mythos 5) does the same — sending temperature returns a 400.
+MODELS_WITHOUT_TEMPERATURE = {
+    "claude-opus-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+}
+
+
+def supports_temperature(model: str) -> bool:
+    """Whether the model accepts a temperature parameter."""
+    return model not in MODELS_WITHOUT_TEMPERATURE
+
+
 def _get_content_text(content: Union[str, List[Dict[str, Any]]]) -> str:
     """
     Extract text representation from content (string or content blocks).
@@ -141,9 +159,12 @@ class AnthropicService:
         api_params = {
             "model": model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "messages": messages,
         }
+
+        # Newer Claude models reject temperature entirely (400)
+        if supports_temperature(model):
+            api_params["temperature"] = temperature
 
         # Add system prompt with caching if provided
         if system_prompt:
@@ -252,9 +273,12 @@ class AnthropicService:
         api_params = {
             "model": model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "messages": messages,
         }
+
+        # Newer Claude models reject temperature entirely (400)
+        if supports_temperature(model):
+            api_params["temperature"] = temperature
 
         # Add system prompt with caching if provided
         if system_prompt:

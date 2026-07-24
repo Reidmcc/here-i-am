@@ -11,6 +11,7 @@ from datetime import datetime
 from enum import Enum
 
 from app.services import anthropic_service, openai_service
+from app.services.anthropic_service import supports_temperature as anthropic_supports_temperature
 from app.services.openai_service import OpenAIService
 from app.services.google_service import google_service, GoogleService
 from app.config import settings
@@ -36,8 +37,9 @@ MODEL_PROVIDER_MAP = {
     "claude-opus-4-7": ModelProvider.ANTHROPIC,
     # Anthropic Claude 4.8 models
     "claude-opus-4-8": ModelProvider.ANTHROPIC,
-    # Anthropic Claude Fable 5 models
+    # Anthropic Claude 5 models
     "claude-fable-5": ModelProvider.ANTHROPIC,
+    "claude-opus-5": ModelProvider.ANTHROPIC,
     # Anthropic Claude 4 models
     "claude-sonnet-4-20250514": ModelProvider.ANTHROPIC,
     "claude-opus-4-20250514": ModelProvider.ANTHROPIC,
@@ -80,6 +82,7 @@ MODEL_PROVIDER_MAP = {
 AVAILABLE_MODELS = {
     ModelProvider.ANTHROPIC: [
         {"id": "claude-fable-5", "name": "Claude Fable 5"},
+        {"id": "claude-opus-5", "name": "Claude Opus 5"},
         {"id": "claude-opus-4-8", "name": "Claude Opus 4.8"},
         {"id": "claude-opus-4-7", "name": "Claude Opus 4.7"},
         {"id": "claude-opus-4-6", "name": "Claude Opus 4.6"},
@@ -186,13 +189,14 @@ class LLMService:
         for provider_info in self.get_available_providers():
             for model in provider_info["models"]:
                 # Check if model supports temperature
-                # All Anthropic and Google models support temperature
-                # OpenAI models check against MODELS_WITHOUT_TEMPERATURE
+                # OpenAI models check against MODELS_WITHOUT_TEMPERATURE; newer
+                # Claude models (Opus 4.7+) reject temperature outright.
+                # All Gemini and MiniMax models support it.
                 if provider_info["id"] == ModelProvider.OPENAI.value:
                     supports_temp = model["id"] not in OpenAIService.MODELS_WITHOUT_TEMPERATURE
                     supports_verbosity = model["id"] in OpenAIService.MODELS_WITH_VERBOSITY
-                elif provider_info["id"] == ModelProvider.GOOGLE.value:
-                    supports_temp = True  # All Gemini models support temperature
+                elif provider_info["id"] == ModelProvider.ANTHROPIC.value:
+                    supports_temp = anthropic_supports_temperature(model["id"])
                     supports_verbosity = False
                 else:
                     supports_temp = True

@@ -20,10 +20,16 @@ class TestModelProviderMapping:
             "claude-opus-4-20250514",
             "claude-opus-4-8",
             "claude-fable-5",
+            "claude-opus-5",
         ]
 
         for model in claude_models:
             assert MODEL_PROVIDER_MAP.get(model) == ModelProvider.ANTHROPIC
+
+    def test_claude_opus_5_is_listed_as_available(self):
+        """Claude Opus 5 should be selectable in the Anthropic model list."""
+        anthropic_ids = [m["id"] for m in AVAILABLE_MODELS[ModelProvider.ANTHROPIC]]
+        assert "claude-opus-5" in anthropic_ids
 
     def test_minimax_models_map_to_minimax(self):
         """Test that MiniMax models map to MiniMax provider."""
@@ -156,6 +162,25 @@ class TestLLMService:
                 assert "name" in model
                 assert "provider" in model
                 assert "provider_name" in model
+
+    def test_get_all_available_models_temperature_support(self):
+        """Newer Claude models are reported as not supporting temperature."""
+        service = LLMService()
+
+        with patch("app.services.llm_service.settings") as mock_settings, \
+             patch("app.services.llm_service.openai_service") as mock_openai, \
+             patch("app.services.llm_service.google_service") as mock_google:
+            mock_settings.anthropic_api_key = "test-key"
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.minimax_api_key = ""
+            mock_openai.is_configured.return_value = False
+            mock_google.is_configured.return_value = False
+
+            models = {m["id"]: m for m in service.get_all_available_models()}
+
+            assert models["claude-opus-5"]["temperature_supported"] is False
+            assert models["claude-fable-5"]["temperature_supported"] is False
+            assert models["claude-sonnet-4-5-20250929"]["temperature_supported"] is True
 
     def test_count_tokens(self):
         """Test count_tokens delegates to anthropic_service."""

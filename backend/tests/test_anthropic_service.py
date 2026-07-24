@@ -4,7 +4,19 @@ Unit tests for AnthropicService.
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
-from app.services.anthropic_service import AnthropicService
+from app.services.anthropic_service import AnthropicService, supports_temperature
+
+
+def _empty_async_iterator():
+    """An async-iterable stream that yields no events."""
+    class _Empty:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    return _Empty()
 
 
 @pytest.fixture
@@ -164,6 +176,87 @@ class TestAnthropicService:
         assert call_kwargs["model"] == "claude-opus-4-20250514"
         assert call_kwargs["temperature"] == 0.5
         assert call_kwargs["max_tokens"] == 2000
+
+    @pytest.mark.asyncio
+    async def test_send_message_omits_temperature_for_opus_5(self, mock_anthropic_client):
+        """Claude Opus 5 rejects sampling params, so temperature must not be sent."""
+        service = AnthropicService()
+        service.client = mock_anthropic_client
+
+        messages = [{"role": "user", "content": "Hello!"}]
+        await service.send_message(messages, model="claude-opus-5", temperature=0.5)
+
+        call_kwargs = mock_anthropic_client.messages.create.call_args.kwargs
+        assert call_kwargs["model"] == "claude-opus-5"
+        assert "temperature" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_message_stream_omits_temperature_for_opus_5(self):
+        """The streaming path applies the same temperature rule as send_message."""
+        service = AnthropicService()
+
+        stream_ctx = MagicMock()
+        stream_ctx.__aenter__ = AsyncMock(return_value=_empty_async_iterator())
+        stream_ctx.__aexit__ = AsyncMock(return_value=False)
+        client = MagicMock()
+        client.messages.stream = MagicMock(return_value=stream_ctx)
+        service.client = client
+
+        messages = [{"role": "user", "content": "Hello!"}]
+        async for _ in service.send_message_stream(
+            messages, model="claude-opus-5", temperature=0.5
+        ):
+            pass
+
+        call_kwargs = client.messages.stream.call_args.kwargs
+        assert call_kwargs["model"] == "claude-opus-5"
+        assert "temperature" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_message_stream_keeps_temperature_for_older_models(self):
+        """Older Claude models still accept temperature."""
+        service = AnthropicService()
+
+        stream_ctx = MagicMock()
+        stream_ctx.__aenter__ = AsyncMock(return_value=_empty_async_iterator())
+        stream_ctx.__aexit__ = AsyncMock(return_value=False)
+        client = MagicMock()
+        client.messages.stream = MagicMock(return_value=stream_ctx)
+        service.client = client
+
+        messages = [{"role": "user", "content": "Hello!"}]
+        async for _ in service.send_message_stream(
+            messages, model="claude-sonnet-4-5-20250929", temperature=0.5
+        ):
+            pass
+
+        call_kwargs = client.messages.stream.call_args.kwargs
+        assert call_kwargs["temperature"] == 0.5
+
+
+class TestSupportsTemperature:
+    """Tests for the temperature capability check."""
+
+    def test_models_that_reject_temperature(self):
+        for model in [
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-sonnet-5",
+            "claude-fable-5",
+            "claude-mythos-5",
+        ]:
+            assert supports_temperature(model) is False
+
+    def test_models_that_accept_temperature(self):
+        for model in [
+            "claude-sonnet-4-5-20250929",
+            "claude-opus-4-5-20251101",
+            "claude-haiku-4-5-20251001",
+            "claude-opus-4-6",
+            "MiniMax-M2.5",
+        ]:
+            assert supports_temperature(model) is True
 
     def test_build_messages_with_context(self, mock_encoder):
         """Test building messages with conversation context."""
