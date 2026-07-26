@@ -369,6 +369,15 @@ class ApiClient {
             case 'token':
                 if (callbacks.onToken) callbacks.onToken(data);
                 break;
+            case 'thinking_start':
+                if (callbacks.onThinkingStart) callbacks.onThinkingStart(data);
+                break;
+            case 'thinking':
+                if (callbacks.onThinking) callbacks.onThinking(data);
+                break;
+            case 'thinking_stop':
+                if (callbacks.onThinkingStop) callbacks.onThinkingStop(data);
+                break;
             case 'tool_start':
                 if (callbacks.onToolStart) callbacks.onToolStart(data);
                 break;

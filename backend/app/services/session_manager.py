@@ -1738,6 +1738,13 @@ class SessionManager:
                         content = " " + content
                     iteration_content += content
                     yield {"type": "token", "content": content}
+                elif event["type"] in ("thinking_start", "thinking", "thinking_stop"):
+                    # Display-only reasoning. Passed straight through on every
+                    # iteration (unlike "start", which is first-iteration only)
+                    # so a tool loop shows reasoning before each step. Never
+                    # accumulated into iteration_content or full_content, so it
+                    # is not persisted, vectorized, or replayed to the model.
+                    yield event
                 elif event["type"] == "tool_use_start":
                     # Yield tool start event to frontend
                     yield {

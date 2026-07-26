@@ -237,6 +237,14 @@ class Settings(BaseSettings):
     # This setting determines which mode the frontend starts in
     dictation_mode: str = "auto"
 
+    # Extended thinking settings
+    # Request summarized reasoning from Anthropic models that support adaptive
+    # thinking (Claude 4.6 and later). Those models think regardless — this
+    # only controls whether the reasoning is returned in a readable form or
+    # streamed as empty thinking blocks. Thinking token usage and billing are
+    # identical either way. Turn off to hide reasoning from the chat UI.
+    thinking_summaries_enabled: bool = True
+
     # Tool Use settings
     # Enable tool use (web search, content fetching) for AI entities
     tools_enabled: bool = True

@@ -28,6 +28,29 @@ def supports_temperature(model: str) -> bool:
     return model not in MODELS_WITHOUT_TEMPERATURE
 
 
+# Anthropic models that accept `thinking: {"type": "adaptive"}`. Older models
+# (Sonnet 4.5, Haiku 4.5, and anything before) only understand the retired
+# `{"type": "enabled", "budget_tokens": N}` form and return a 400 for adaptive,
+# so the parameter must be gated. Matched as prefixes because configured model
+# names may carry a date suffix (claude-sonnet-4-5-20250929). None of these is
+# a prefix of a non-adaptive model, so prefix matching is safe here.
+ADAPTIVE_THINKING_MODEL_PREFIXES = (
+    "claude-opus-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-5",
+    "claude-sonnet-4-6",
+    "claude-fable-5",
+    "claude-mythos-5",
+)
+
+
+def supports_adaptive_thinking(model: str) -> bool:
+    """Whether the model accepts the adaptive thinking parameter."""
+    return model.startswith(ADAPTIVE_THINKING_MODEL_PREFIXES)
+
+
 def _get_content_text(content: Union[str, List[Dict[str, Any]]]) -> str:
     """
     Extract text representation from content (string or content blocks).
@@ -256,10 +279,16 @@ class AnthropicService:
         Yields events with type and data:
         - {"type": "start", "model": str}
         - {"type": "token", "content": str}
+        - {"type": "thinking_start"} - Start of a thinking block
+        - {"type": "thinking", "content": str} - Summarized reasoning delta
+        - {"type": "thinking_stop"} - End of a thinking block
         - {"type": "tool_use_start", "tool_use": dict} - Start of a tool use block
         - {"type": "tool_use_delta", "tool_use_id": str, "input_delta": str} - JSON input delta
         - {"type": "done", "content": str, "content_blocks": list, "tool_use": list|None, "model": str, "usage": dict, "stop_reason": str}
         - {"type": "error", "error": str}
+
+        Thinking events are display-only: the text is never folded into the
+        assistant content, never persisted, and never vectorized.
 
         The usage dict in the "done" event includes cache metrics when caching is enabled:
         - cache_creation_input_tokens: Tokens written to cache
@@ -279,6 +308,22 @@ class AnthropicService:
         # Newer Claude models reject temperature entirely (400)
         if supports_temperature(model):
             api_params["temperature"] = temperature
+
+        # Ask for summarized reasoning. Models from Claude 4.6 onward think
+        # whether or not this is set (on Fable 5 and Opus 5 thinking cannot be
+        # turned off at all), but the default display is "omitted", which
+        # streams thinking blocks with empty text. During a long reasoning
+        # phase that is indistinguishable from a hung connection — no tokens,
+        # no log lines, nothing to render. Opting into summaries makes the
+        # phase observable. Display does not change what the model does or how
+        # it is billed. MiniMax is Anthropic-compatible but does not accept
+        # this parameter, so it is excluded.
+        if (
+            settings.thinking_summaries_enabled
+            and provider != "minimax"
+            and supports_adaptive_thinking(model)
+        ):
+            api_params["thinking"] = {"type": "adaptive", "display": "summarized"}
 
         # Add system prompt with caching if provided
         if system_prompt:
@@ -307,6 +352,7 @@ class AnthropicService:
             tool_use_blocks = []
             current_tool_use = None
             current_tool_input_json = ""
+            in_thinking_block = False
             input_tokens = 0
             output_tokens = 0
             cache_creation_input_tokens = 0
@@ -328,7 +374,14 @@ class AnthropicService:
                     elif event.type == "content_block_start":
                         # Check if this is a tool_use block
                         if hasattr(event.content_block, "type"):
-                            if event.content_block.type == "tool_use":
+                            if event.content_block.type in ("thinking", "redacted_thinking"):
+                                # Thinking blocks are display-only — they are
+                                # never added to content_blocks, so they are
+                                # not persisted, replayed, or vectorized.
+                                in_thinking_block = True
+                                logger.info("[THINKING] Thinking block started")
+                                yield {"type": "thinking_start"}
+                            elif event.content_block.type == "tool_use":
                                 current_tool_use = {
                                     "type": "tool_use",
                                     "id": event.content_block.id,
@@ -351,11 +404,24 @@ class AnthropicService:
                             text = event.delta.text
                             full_content += text
                             yield {"type": "token", "content": text}
+                        elif hasattr(event.delta, "thinking"):
+                            # Summarized reasoning delta. Display-only: not
+                            # accumulated into full_content. Empty when the
+                            # model returns thinking blocks with display
+                            # "omitted", in which case there is nothing to show.
+                            thinking_text = event.delta.thinking
+                            if thinking_text:
+                                yield {"type": "thinking", "content": thinking_text}
                         elif hasattr(event.delta, "partial_json"):
                             # Tool use input JSON delta
                             current_tool_input_json += event.delta.partial_json
+                        # signature_delta and any future delta types are ignored
 
                     elif event.type == "content_block_stop":
+                        if in_thinking_block:
+                            in_thinking_block = False
+                            yield {"type": "thinking_stop"}
+
                         # If we were building a tool use block, finalize it
                         if current_tool_use is not None:
                             try:
@@ -424,8 +490,14 @@ class AnthropicService:
             yield done_event
 
         except Exception as e:
-            logger.exception(f"[TOOLS] Stream error: {e}")
-            yield {"type": "error", "error": str(e)}
+            logger.exception(f"[TOOLS] Stream error: {type(e).__name__}: {e}")
+            # Several transport-level exceptions carry no message at all
+            # (httpx.ReadError wrapping anyio.BrokenResourceError is the common
+            # one — a connection reset mid-stream), which previously surfaced
+            # in the UI as a bare "Error:". Always include the exception type.
+            detail = str(e)
+            error_message = f"{type(e).__name__}: {detail}" if detail else type(e).__name__
+            yield {"type": "error", "error": error_message}
 
     def build_messages(
         self,

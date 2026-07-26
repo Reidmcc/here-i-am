@@ -984,6 +984,38 @@ h4.md-header {
     gap: 8px;
 }
 
+/* Thinking (reasoning) messages — same chrome as tool messages, muted */
+.thinking-message {
+    margin: 8px auto;
+    max-width: 800px;
+    padding: 8px 12px;
+    background-color: var(--bg-tertiary);
+    border-left: 3px solid var(--text-secondary);
+    border-radius: 4px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.thinking-body {
+    margin-top: 6px;
+    max-height: 240px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    line-height: 1.5;
+    font-style: italic;
+    opacity: 0.85;
+}
+
+.thinking-body:empty {
+    display: none;
+}
+
+.thinking-body.thinking-empty {
+    font-style: normal;
+    opacity: 0.6;
+}
+
 .tool-icon {
     font-size: 1rem;
     opacity: 0.8;

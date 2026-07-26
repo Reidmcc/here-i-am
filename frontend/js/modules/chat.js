@@ -6,7 +6,8 @@
 import { state } from './state.js';
 import { showToast, renderMarkdown, escapeHtml } from './utils.js';
 import {
-    addMessage, addToolMessage, createStreamingMessage,
+    addMessage, addToolMessage, addThinkingMessage, resetThinkingMessage,
+    createStreamingMessage,
     removeRegenerateButtons, updateAssistantMessageActions,
     scrollToBottom
 } from './messages.js';
@@ -251,12 +252,22 @@ async function streamSingleEntitySend({ content, attachments, messageToSend, use
                     // Stream has started
                 },
                 onAborted: () => {
+                    resetThinkingMessage();
                     streamingMessage.finalize({ showTimestamp: true, aborted: true });
                 },
                 onToken: (data) => {
                     if (data.content) {
                         streamingMessage.updateContent(data.content);
                     }
+                },
+                onThinkingStart: () => {
+                    addThinkingMessage('start');
+                },
+                onThinking: (data) => {
+                    addThinkingMessage('delta', data);
+                },
+                onThinkingStop: () => {
+                    addThinkingMessage('stop');
                 },
                 onToolStart: (data) => {
                     addToolMessage('start', data.tool_name, data);
@@ -299,6 +310,7 @@ async function streamSingleEntitySend({ content, attachments, messageToSend, use
                     await updateConversationTitleIfNeeded(content);
                 },
                 onError: (data) => {
+                    resetThinkingMessage();
                     streamingMessage.element.remove();
                     // An empty response is a soft error: the turn was not
                     // persisted and the session is still warm, so offer an
@@ -461,6 +473,7 @@ export async function sendMessageWithResponder() {
                     // Stream has started
                 },
                 onAborted: () => {
+                    resetThinkingMessage();
                     streamingMessage.finalize({
                         showTimestamp: true,
                         speakerLabel: responderLabel,
@@ -471,6 +484,15 @@ export async function sendMessageWithResponder() {
                     if (data.content) {
                         streamingMessage.updateContent(data.content);
                     }
+                },
+                onThinkingStart: () => {
+                    addThinkingMessage('start');
+                },
+                onThinking: (data) => {
+                    addThinkingMessage('delta', data);
+                },
+                onThinkingStop: () => {
+                    addThinkingMessage('stop');
                 },
                 onToolStart: (data) => {
                     addToolMessage('start', data.tool_name, data);
@@ -522,6 +544,7 @@ export async function sendMessageWithResponder() {
                     }
                 },
                 onError: (data) => {
+                    resetThinkingMessage();
                     streamingMessage.element.remove();
                     addMessage('assistant', `Error: ${data.error}`, { isError: true });
                     showToast('Failed to send message', 'error');
@@ -660,12 +683,22 @@ export async function performRegeneration(messageId, respondingEntityId = null) 
                     // Stream has started
                 },
                 onAborted: () => {
+                    resetThinkingMessage();
                     streamingMessage.finalize({ showTimestamp: true, aborted: true });
                 },
                 onToken: (data) => {
                     if (data.content) {
                         streamingMessage.updateContent(data.content);
                     }
+                },
+                onThinkingStart: () => {
+                    addThinkingMessage('start');
+                },
+                onThinking: (data) => {
+                    addThinkingMessage('delta', data);
+                },
+                onThinkingStop: () => {
+                    addThinkingMessage('stop');
                 },
                 onToolStart: (data) => {
                     addToolMessage('start', data.tool_name, data);
@@ -702,6 +735,7 @@ export async function performRegeneration(messageId, respondingEntityId = null) 
                     showToast('Response regenerated', 'success');
                 },
                 onError: (data) => {
+                    resetThinkingMessage();
                     streamingMessage.element.remove();
                     addMessage('assistant', `Error: ${data.error}`, { isError: true });
                     showToast('Failed to regenerate response', 'error');
@@ -1041,12 +1075,22 @@ export async function sendClosingTurn() {
                     handleMemoryUpdate(data);
                 },
                 onAborted: () => {
+                    resetThinkingMessage();
                     streamingMessage.finalize({ showTimestamp: true, aborted: true });
                 },
                 onToken: (data) => {
                     if (data.content) {
                         streamingMessage.updateContent(data.content);
                     }
+                },
+                onThinkingStart: () => {
+                    addThinkingMessage('start');
+                },
+                onThinking: (data) => {
+                    addThinkingMessage('delta', data);
+                },
+                onThinkingStop: () => {
+                    addThinkingMessage('stop');
                 },
                 onToolStart: (data) => {
                     addToolMessage('start', data.tool_name, data);
@@ -1066,6 +1110,7 @@ export async function sendClosingTurn() {
                     }
                 },
                 onError: (data) => {
+                    resetThinkingMessage();
                     streamingMessage.element.remove();
                     addMessage('assistant', `Error: ${data.error}`, { isError: true });
                     showToast('Closing turn failed', 'error');
