@@ -594,8 +594,10 @@ async def stream_message(data: ChatRequest):
                         full_content += event.get("content", "")
                         yield f"event: token\ndata: {json.dumps(event)}\n\n"
                     elif event_type in ("thinking_start", "thinking", "thinking_stop"):
-                        # Display-only — deliberately not added to full_content,
-                        # so reasoning is never persisted with the response.
+                        # Display path — deliberately not added to
+                        # full_content, so reasoning does not become part of
+                        # the assistant message text. (Reasoning still reaches
+                        # the model via thinking blocks in content_blocks.)
                         yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "tool_start":
                         yield f"event: tool_start\ndata: {json.dumps(event)}\n\n"
@@ -1066,8 +1068,10 @@ async def regenerate_response(data: RegenerateRequest):
                         full_content += event.get("content", "")
                         yield f"event: token\ndata: {json.dumps(event)}\n\n"
                     elif event_type in ("thinking_start", "thinking", "thinking_stop"):
-                        # Display-only — deliberately not added to full_content,
-                        # so reasoning is never persisted with the response.
+                        # Display path — deliberately not added to
+                        # full_content, so reasoning does not become part of
+                        # the assistant message text. (Reasoning still reaches
+                        # the model via thinking blocks in content_blocks.)
                         yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "tool_start":
                         yield f"event: tool_start\ndata: {json.dumps(event)}\n\n"

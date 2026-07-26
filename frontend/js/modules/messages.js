@@ -229,10 +229,12 @@ let activeThinkingMessage = null;
 /**
  * Render streamed reasoning ("thinking") from the model.
  *
- * Display-only: this content is never persisted with the message, so the
- * element is purely transient chrome. Models from Claude 4.6 onward reason
- * before answering, which can take minutes on a hard turn with no other output
- * on the wire — without this the UI is simply blank for that whole period.
+ * This element is transient chrome: it is not part of the message the backend
+ * stores or re-renders on reload. (The backend does send reasoning back to the
+ * model as thinking blocks, but that is a separate channel from these events.)
+ * Models from Claude 4.6 onward reason before answering, which can take minutes
+ * on a hard turn with no other output on the wire — without this the UI is
+ * simply blank for that whole period.
  *
  * @param {'start'|'delta'|'stop'} phase
  * @param {Object} data - Event payload ({ content } on 'delta')

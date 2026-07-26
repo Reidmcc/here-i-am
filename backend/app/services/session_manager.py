@@ -1739,11 +1739,17 @@ class SessionManager:
                     iteration_content += content
                     yield {"type": "token", "content": content}
                 elif event["type"] in ("thinking_start", "thinking", "thinking_stop"):
-                    # Display-only reasoning. Passed straight through on every
-                    # iteration (unlike "start", which is first-iteration only)
-                    # so a tool loop shows reasoning before each step. Never
-                    # accumulated into iteration_content or full_content, so it
-                    # is not persisted, vectorized, or replayed to the model.
+                    # Reasoning, forwarded for display. Passed straight through
+                    # on every iteration (unlike "start", which is
+                    # first-iteration only) so a tool loop shows reasoning
+                    # before each step. Never accumulated into
+                    # iteration_content or full_content, so it does not reach
+                    # the assistant message text or the vectorized memory.
+                    #
+                    # This is the display path only. Reasoning goes back to the
+                    # model separately, as thinking blocks inside the "done"
+                    # event's content_blocks, which the tool loop echoes
+                    # verbatim — see anthropic_service._stream_attempt.
                     yield event
                 elif event["type"] == "tool_use_start":
                     # Yield tool start event to frontend
