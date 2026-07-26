@@ -876,3 +876,212 @@ class TestTwoBreakpointCachingStrategy:
         assert messages[3]["role"] == "assistant"
         assert isinstance(messages[3]["content"], str)
         assert "New answer" in messages[3]["content"]
+
+
+class TestThinkingBlockCapture:
+    """Thinking blocks must be captured and preserved in stream order so the
+    tool loop can echo them back verbatim (reasoning continuity on
+    adaptive-thinking models like Fable 5, where the signature is the only
+    carrier of the reasoning)."""
+
+    @staticmethod
+    def _stream_client(events):
+        """Build a mock client whose messages.stream yields the given events."""
+        from types import SimpleNamespace
+
+        class _Iter:
+            def __init__(self, items):
+                self._items = list(items)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self._items:
+                    raise StopAsyncIteration
+                return self._items.pop(0)
+
+        stream_ctx = MagicMock()
+        stream_ctx.__aenter__ = AsyncMock(return_value=_Iter(events))
+        stream_ctx.__aexit__ = AsyncMock(return_value=False)
+        client = MagicMock()
+        client.messages.stream = MagicMock(return_value=stream_ctx)
+        return client
+
+    @pytest.mark.asyncio
+    async def test_stream_captures_thinking_text_and_tool_use_in_order(self):
+        from types import SimpleNamespace as NS
+
+        events = [
+            NS(type="message_start", message=NS(usage=NS(
+                input_tokens=10,
+                cache_creation_input_tokens=None,
+                cache_read_input_tokens=None,
+            ))),
+            NS(type="content_block_start", index=0,
+               content_block=NS(type="thinking")),
+            NS(type="content_block_delta", index=0, delta=NS(thinking="step one, ")),
+            NS(type="content_block_delta", index=0, delta=NS(thinking="step two")),
+            NS(type="content_block_delta", index=0, delta=NS(signature="sig-abc")),
+            NS(type="content_block_stop", index=0),
+            NS(type="content_block_start", index=1,
+               content_block=NS(type="text", text="")),
+            NS(type="content_block_delta", index=1, delta=NS(text="Let me check.")),
+            NS(type="content_block_stop", index=1),
+            NS(type="content_block_start", index=2,
+               content_block=NS(type="tool_use", id="toolu_1", name="get_weather")),
+            NS(type="content_block_delta", index=2,
+               delta=NS(partial_json='{"city": "Paris"}')),
+            NS(type="content_block_stop", index=2),
+            NS(type="message_delta", usage=NS(output_tokens=42),
+               delta=NS(stop_reason="tool_use")),
+        ]
+
+        service = AnthropicService()
+        service.client = self._stream_client(events)
+
+        collected = []
+        async for event in service.send_message_stream(
+            [{"role": "user", "content": "Weather in Paris?"}]
+        ):
+            collected.append(event)
+
+        done = collected[-1]
+        assert done["type"] == "done"
+        assert done["content"] == "Let me check."
+        assert done["content_blocks"] == [
+            {"type": "thinking", "thinking": "step one, step two", "signature": "sig-abc"},
+            {"type": "text", "text": "Let me check."},
+            {"type": "tool_use", "id": "toolu_1", "name": "get_weather",
+             "input": {"city": "Paris"}},
+        ]
+        assert done["tool_use"] == [
+            {"type": "tool_use", "id": "toolu_1", "name": "get_weather",
+             "input": {"city": "Paris"}},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_stream_keeps_empty_thinking_with_signature(self):
+        """display: omitted (Fable 5 default) returns empty thinking text; the
+        block must still be kept because the signature carries the reasoning."""
+        from types import SimpleNamespace as NS
+
+        events = [
+            NS(type="content_block_start", index=0,
+               content_block=NS(type="thinking")),
+            NS(type="content_block_delta", index=0, delta=NS(signature="sig-only")),
+            NS(type="content_block_stop", index=0),
+            NS(type="content_block_start", index=1,
+               content_block=NS(type="tool_use", id="toolu_2", name="notes_read")),
+            NS(type="content_block_delta", index=1, delta=NS(partial_json='{}')),
+            NS(type="content_block_stop", index=1),
+            NS(type="message_delta", usage=NS(output_tokens=5),
+               delta=NS(stop_reason="tool_use")),
+        ]
+
+        service = AnthropicService()
+        service.client = self._stream_client(events)
+
+        done = None
+        async for event in service.send_message_stream(
+            [{"role": "user", "content": "Hi"}]
+        ):
+            done = event
+
+        assert done["content_blocks"][0] == {
+            "type": "thinking", "thinking": "", "signature": "sig-only",
+        }
+        assert done["content_blocks"][1]["type"] == "tool_use"
+
+    @pytest.mark.asyncio
+    async def test_stream_drops_fully_empty_thinking_block(self):
+        """A thinking block with neither text nor signature carries nothing
+        and would be rejected on replay; it is dropped."""
+        from types import SimpleNamespace as NS
+
+        events = [
+            NS(type="content_block_start", index=0,
+               content_block=NS(type="thinking")),
+            NS(type="content_block_stop", index=0),
+            NS(type="content_block_start", index=1,
+               content_block=NS(type="text", text="")),
+            NS(type="content_block_delta", index=1, delta=NS(text="Hello")),
+            NS(type="content_block_stop", index=1),
+            NS(type="message_delta", usage=NS(output_tokens=3),
+               delta=NS(stop_reason="end_turn")),
+        ]
+
+        service = AnthropicService()
+        service.client = self._stream_client(events)
+
+        done = None
+        async for event in service.send_message_stream(
+            [{"role": "user", "content": "Hi"}]
+        ):
+            done = event
+
+        assert done["content_blocks"] == [{"type": "text", "text": "Hello"}]
+
+    @pytest.mark.asyncio
+    async def test_stream_captures_redacted_thinking(self):
+        from types import SimpleNamespace as NS
+
+        events = [
+            NS(type="content_block_start", index=0,
+               content_block=NS(type="redacted_thinking", data="opaque-bytes")),
+            NS(type="content_block_stop", index=0),
+            NS(type="content_block_start", index=1,
+               content_block=NS(type="text", text="")),
+            NS(type="content_block_delta", index=1, delta=NS(text="Done.")),
+            NS(type="content_block_stop", index=1),
+            NS(type="message_delta", usage=NS(output_tokens=2),
+               delta=NS(stop_reason="end_turn")),
+        ]
+
+        service = AnthropicService()
+        service.client = self._stream_client(events)
+
+        done = None
+        async for event in service.send_message_stream(
+            [{"role": "user", "content": "Hi"}]
+        ):
+            done = event
+
+        assert done["content_blocks"] == [
+            {"type": "redacted_thinking", "data": "opaque-bytes"},
+            {"type": "text", "text": "Done."},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_send_message_captures_thinking_blocks(self):
+        from types import SimpleNamespace as NS
+
+        response = NS(
+            content=[
+                NS(type="thinking", thinking="reasoning here", signature="sig-1"),
+                NS(type="text", text="Answer"),
+                NS(type="tool_use", id="toolu_3", name="web_search",
+                   input={"query": "x"}),
+            ],
+            model="claude-fable-5",
+            usage=NS(input_tokens=5, output_tokens=7,
+                     cache_creation_input_tokens=None,
+                     cache_read_input_tokens=None),
+            stop_reason="tool_use",
+        )
+        client = MagicMock()
+        client.messages.create = AsyncMock(return_value=response)
+
+        service = AnthropicService()
+        service.client = client
+
+        result = await service.send_message([{"role": "user", "content": "Hi"}])
+
+        assert result["content"] == "Answer"
+        assert result["content_blocks"] == [
+            {"type": "thinking", "thinking": "reasoning here", "signature": "sig-1"},
+            {"type": "text", "text": "Answer"},
+            {"type": "tool_use", "id": "toolu_3", "name": "web_search",
+             "input": {"query": "x"}},
+        ]
+        assert result["tool_use"] == [result["content_blocks"][2]]

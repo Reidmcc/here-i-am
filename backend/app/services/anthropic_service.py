@@ -56,6 +56,9 @@ def _get_content_text(content: Union[str, List[Dict[str, Any]]]) -> str:
                 text_parts.append(f"[Tool result: {result_content}]")
             else:
                 text_parts.append(f"[Tool result: {json.dumps(result_content)}]")
+        # thinking/redacted_thinking blocks are intentionally skipped: their
+        # billed size (signature-reconstructed reasoning) isn't estimable
+        # from the visible text, and the calibration ratio absorbs the drift
 
     return "\n".join(text_parts)
 
@@ -187,19 +190,37 @@ class AnthropicService:
 
         response = await client.messages.create(**api_params)
 
-        # Parse response content blocks
+        # Parse response content blocks, preserving block order. Thinking
+        # blocks are captured so tool-use continuations can echo them back
+        # verbatim: on adaptive-thinking models the signature is the only
+        # carrier of the model's reasoning (the raw chain of thought is
+        # server-side, reconstructed from the signature on replay), so
+        # dropping the block severs reasoning continuity for the rest of
+        # the turn.
         content = ""
         content_blocks = []
         tool_use_blocks = []
 
         for block in response.content:
-            if hasattr(block, "text"):
+            block_type = getattr(block, "type", None)
+            if block_type == "thinking":
+                content_blocks.append({
+                    "type": "thinking",
+                    "thinking": getattr(block, "thinking", "") or "",
+                    "signature": getattr(block, "signature", "") or "",
+                })
+            elif block_type == "redacted_thinking":
+                content_blocks.append({
+                    "type": "redacted_thinking",
+                    "data": getattr(block, "data", "") or "",
+                })
+            elif hasattr(block, "text"):
                 content += block.text
                 content_blocks.append({
                     "type": "text",
                     "text": block.text,
                 })
-            elif block.type == "tool_use":
+            elif block_type == "tool_use":
                 tool_use_block = {
                     "type": "tool_use",
                     "id": block.id,
@@ -303,8 +324,18 @@ class AnthropicService:
             yield {"type": "start", "model": model}
 
             full_content = ""
+            # Ordered content blocks as streamed. Thinking blocks (and their
+            # signatures) are captured so the tool loop can echo the assistant
+            # turn back verbatim: on adaptive-thinking models the signature is
+            # the only carrier of the model's reasoning (the raw chain of
+            # thought stays server-side and is reconstructed from the
+            # signature on replay), so dropping the block severs reasoning
+            # continuity for the rest of the turn. Block order must match the
+            # original response — the API rejects rearranged or partially
+            # dropped thinking sequences.
             content_blocks = []
             tool_use_blocks = []
+            current_block = None  # text/thinking/redacted_thinking block being accumulated
             current_tool_use = None
             current_tool_input_json = ""
             input_tokens = 0
@@ -312,6 +343,25 @@ class AnthropicService:
             cache_creation_input_tokens = 0
             cache_read_input_tokens = 0
             stop_reason = None
+
+            def flush_current_block():
+                """Finalize the in-progress non-tool block into content_blocks."""
+                nonlocal current_block
+                if current_block is None:
+                    return
+                block_type = current_block.get("type")
+                keep = (
+                    (block_type == "text" and current_block.get("text"))
+                    # Keep thinking blocks with a signature even when the
+                    # thinking text is empty (display-omitted models return
+                    # empty text; the signature still carries the reasoning).
+                    or (block_type == "thinking"
+                        and (current_block.get("thinking") or current_block.get("signature")))
+                    or (block_type == "redacted_thinking" and current_block.get("data"))
+                )
+                if keep:
+                    content_blocks.append(current_block)
+                current_block = None
 
             async with client.messages.stream(**api_params) as stream:
                 async for event in stream:
@@ -326,34 +376,64 @@ class AnthropicService:
                                 cache_read_input_tokens = event.message.usage.cache_read_input_tokens
 
                     elif event.type == "content_block_start":
-                        # Check if this is a tool_use block
-                        if hasattr(event.content_block, "type"):
-                            if event.content_block.type == "tool_use":
-                                current_tool_use = {
-                                    "type": "tool_use",
+                        block_type = getattr(event.content_block, "type", None)
+                        # A new block is starting; finalize any non-tool block
+                        # still in progress so stream order is preserved
+                        flush_current_block()
+                        if block_type == "tool_use":
+                            current_tool_use = {
+                                "type": "tool_use",
+                                "id": event.content_block.id,
+                                "name": event.content_block.name,
+                                "input": {},
+                            }
+                            current_tool_input_json = ""
+                            logger.info(f"[TOOLS] Tool use started: {event.content_block.name} (id={event.content_block.id})")
+                            yield {
+                                "type": "tool_use_start",
+                                "tool_use": {
                                     "id": event.content_block.id,
                                     "name": event.content_block.name,
-                                    "input": {},
                                 }
-                                current_tool_input_json = ""
-                                logger.info(f"[TOOLS] Tool use started: {event.content_block.name} (id={event.content_block.id})")
-                                yield {
-                                    "type": "tool_use_start",
-                                    "tool_use": {
-                                        "id": event.content_block.id,
-                                        "name": event.content_block.name,
-                                    }
-                                }
+                            }
+                        elif block_type == "thinking":
+                            current_block = {
+                                "type": "thinking",
+                                "thinking": "",
+                                "signature": "",
+                            }
+                        elif block_type == "redacted_thinking":
+                            # Redacted thinking arrives complete in the start
+                            # event's data field; there are no deltas for it
+                            current_block = {
+                                "type": "redacted_thinking",
+                                "data": getattr(event.content_block, "data", "") or "",
+                            }
+                        elif block_type == "text":
+                            current_block = {"type": "text", "text": ""}
 
                     elif event.type == "content_block_delta":
                         if hasattr(event.delta, "text"):
                             # Regular text delta
                             text = event.delta.text
                             full_content += text
+                            if current_block is None or current_block.get("type") != "text":
+                                # Defensive: provider skipped content_block_start
+                                flush_current_block()
+                                current_block = {"type": "text", "text": ""}
+                            current_block["text"] += text
                             yield {"type": "token", "content": text}
                         elif hasattr(event.delta, "partial_json"):
                             # Tool use input JSON delta
                             current_tool_input_json += event.delta.partial_json
+                        elif hasattr(event.delta, "thinking"):
+                            # Thinking text delta (summarized or raw-empty)
+                            if current_block is not None and current_block.get("type") == "thinking":
+                                current_block["thinking"] += event.delta.thinking
+                        elif hasattr(event.delta, "signature"):
+                            # Thinking signature — must be echoed back unchanged
+                            if current_block is not None and current_block.get("type") == "thinking":
+                                current_block["signature"] += event.delta.signature
 
                     elif event.type == "content_block_stop":
                         # If we were building a tool use block, finalize it
@@ -369,6 +449,8 @@ class AnthropicService:
                             logger.info(f"[TOOLS] Tool use complete: {current_tool_use['name']}")
                             current_tool_use = None
                             current_tool_input_json = ""
+                        else:
+                            flush_current_block()
 
                     elif event.type == "message_delta":
                         if hasattr(event, "usage"):
@@ -376,9 +458,10 @@ class AnthropicService:
                         if hasattr(event.delta, "stop_reason"):
                             stop_reason = event.delta.stop_reason
 
-            # Add text content to content_blocks if we have any
-            if full_content:
-                content_blocks.insert(0, {"type": "text", "text": full_content})
+            # Flush any non-tool block left open by an interrupted stream
+            # (e.g. hitting max_tokens mid-block). Completed blocks were
+            # already appended in stream order at their content_block_stop.
+            flush_current_block()
 
             # Detect truncated tool_use blocks (hit max_tokens mid-tool-use)
             truncated_tool_use = None
