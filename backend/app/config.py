@@ -262,6 +262,13 @@ class Settings(BaseSettings):
     # identical either way. Turn off to hide reasoning from the chat UI.
     thinking_summaries_enabled: bool = True
 
+    # How hard models that expose a thinking/reasoning effort control should
+    # think (low, medium, high, xhigh, max — see services/thinking_effort.py).
+    # This is the fallback: each entity can override it, and the per-entity
+    # value lives in the entity_settings table. Levels above a model's ceiling
+    # are clamped, and models with no effort parameter ignore it entirely.
+    default_thinking_effort: str = "high"
+
     # Tool Use settings
     # Enable tool use (web search, content fetching) for AI entities
     tools_enabled: bool = True

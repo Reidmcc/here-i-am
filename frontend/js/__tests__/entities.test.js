@@ -136,6 +136,40 @@ describe('Entities Module', () => {
 
             expect(state.settings.systemPrompt).toBe('Be Claude');
         });
+
+        it('should populate the thinking effort cache and the backend default', async () => {
+            window.api.listEntities = vi.fn(() => Promise.resolve({
+                entities: [
+                    { index_name: 'entity-1', label: 'Claude', thinking_effort: 'max' },
+                    { index_name: 'entity-2', label: 'GPT', thinking_effort: null },
+                ],
+                default_entity: 'entity-1',
+                default_thinking_effort: 'medium',
+                thinking_effort_levels: ['low', 'medium', 'high'],
+            }));
+
+            await loadEntities();
+
+            expect(state.entityThinkingEfforts['entity-1']).toBe('max');
+            expect(state.entityThinkingEfforts['entity-2']).toBeNull();
+            expect(state.thinkingEffortDefault).toBe('medium');
+            expect(state.thinkingEffortLevels).toEqual(['low', 'medium', 'high']);
+        });
+
+        it('should apply the selected entity\'s effort to settings on load', async () => {
+            state.selectedEntityId = 'entity-1';
+            state.settings.thinkingEffort = 'stale';
+            window.api.listEntities = vi.fn(() => Promise.resolve({
+                entities: [
+                    { index_name: 'entity-1', label: 'Claude', thinking_effort: 'low' },
+                ],
+                default_entity: 'entity-1',
+            }));
+
+            await loadEntities();
+
+            expect(state.settings.thinkingEffort).toBe('low');
+        });
     });
 
     describe('getEntityLabel', () => {
@@ -180,6 +214,30 @@ describe('Entities Module', () => {
             handleEntityChange('entity-1');
 
             expect(mockCallbacks.onEntityChanged).toHaveBeenCalled();
+        });
+
+        it('should swap in the new entity\'s thinking effort', () => {
+            state.entities = [
+                { index_name: 'entity-1', label: 'Claude', llm_provider: 'anthropic' },
+                { index_name: 'entity-2', label: 'GPT', llm_provider: 'openai' },
+            ];
+            state.entityThinkingEfforts = { 'entity-1': 'max', 'entity-2': 'low' };
+            state.settings.thinkingEffort = 'max';
+
+            handleEntityChange('entity-2');
+
+            expect(state.settings.thinkingEffort).toBe('low');
+        });
+
+        it('should fall back to the backend default for an entity with no override', () => {
+            state.entities = [{ index_name: 'entity-2', label: 'GPT', llm_provider: 'openai' }];
+            state.entityThinkingEfforts = {};
+            state.settings.thinkingEffort = 'max';
+
+            handleEntityChange('entity-2');
+
+            // null = "no override", which the backend resolves to its default
+            expect(state.settings.thinkingEffort).toBeNull();
         });
     });
 

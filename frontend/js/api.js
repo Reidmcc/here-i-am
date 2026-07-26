@@ -70,6 +70,15 @@ class ApiClient {
         });
     }
 
+    // Persist how hard this entity's model should think (low, medium, high,
+    // xhigh, max). Pass null to clear it and follow the backend default.
+    async updateEntityThinkingEffort(entityId, thinkingEffort) {
+        return this.request(`/entities/${entityId}/thinking-effort`, {
+            method: 'PUT',
+            body: { thinking_effort: thinkingEffort },
+        });
+    }
+
     // Conversations
     async listConversations(limit = 50, offset = 0, entityId = null) {
         let url = `/conversations/?limit=${limit}&offset=${offset}`;

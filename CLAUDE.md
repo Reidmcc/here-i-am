@@ -116,6 +116,14 @@ reflection_multiplier = reflection_significance_multiplier (=1.5) if role == "re
 - **Context awareness:** `context_status` tool reports approximate context fullness; when trimming occurs a `[CONTEXT NOTICE]` message is injected into context (not persisted to DB).
 - **Human message timestamps:** human messages get a `[YYYY-MM-DD HH:MM <TZ>]` prefix in the server's local timezone (OS/`TZ` env var — no config knob) when rendered into LLM context (`session_helpers.stamp_human_message`) for finer-grained time awareness. Context-only — DB content and vectorized memories stay unstamped (naive UTC in the DB, converted at render time). **Stability contract:** the chat routes capture one timestamp per send and use it both for stamping and as the persisted row's `created_at`, so a session reload (conversation switch, message edit) re-renders the identical prefix and prompt caching survives. The stamp is a *prefix* so regenerate's `endswith` content matching keeps working.
 
+## Thinking effort
+
+One canonical scale — `low`, `medium`, `high`, `xhigh`, `max` (`services/thinking_effort.py`) — translated per provider at the call site: Anthropic `output_config.effort` (sent via `extra_body`, since `output_config` postdates the pinned SDK floor), OpenAI `reasoning_effort` (`xhigh`/`max` collapse onto `high`), Google `thinking_config` (Gemini 3 `thinking_level`, Gemini 2.5 `thinking_budget`, feature-probed on `types.ThinkingConfig.model_fields` because the pinned google-genai floor predates both). Models with no effort control get nothing sent; MiniMax is excluded like adaptive thinking.
+
+- **Per entity, not per conversation:** stored in `EntitySetting.thinking_effort` (NULL = follow `DEFAULT_THINKING_EFFORT`). `SessionManager.refresh_thinking_effort` re-reads it at the start of every turn, so a UI change lands on the next turn and each responder in a multi-entity conversation brings its own level.
+- **Clamped, never dropped:** levels above a model's ceiling step down (`anthropic_service.EFFORT_MODEL_LADDERS` — `xhigh` arrived with Opus 4.7, Opus 4.5 tops out at `high`). Sending a level a model doesn't know is a 400.
+- **Adding a model:** if it takes effort, add its prefix to the right ladder (Anthropic) or set (`OpenAIService.MODELS_WITH_REASONING_EFFORT`, `GoogleService.THINKING_MODEL_PREFIXES`). `llm_service.get_all_available_models()` derives the `thinking_effort_supported` flag the settings UI uses to show/hide the control.
+
 ## Multi-entity rules
 
 When touching the chat flow:
@@ -136,6 +144,7 @@ Everything lives in `backend/app/config.py` (`Settings`). Highlights:
 - Default-off flags: `GITHUB_TOOLS_ENABLED`, `CODEBASE_NAVIGATOR_ENABLED`, `MOLTBOOK_ENABLED`, `XTTS_ENABLED`, `STYLETTS2_ENABLED`, `WHISPER_ENABLED`.
 - TTS priority when multiple are enabled: StyleTTS 2 > XTTS > ElevenLabs.
 - Token budget: `context_token_limit=175000` (conversation history; retrieved memories are part of the history).
+- `DEFAULT_THINKING_EFFORT` (default `high`) — reasoning depth for models that expose one, used when an entity has no override. See "Thinking effort" below.
 - Default models: `claude-sonnet-4-5-20250929`, `gpt-5.1`, `gemini-2.5-flash`, `MiniMax-M2.5`. Model names are passed straight to provider APIs, so new models work without code changes.
 
 ## Adding things

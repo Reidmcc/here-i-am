@@ -8,6 +8,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import EntitySetting
 from app.services import memory_service
+from app.services.thinking_effort import EFFORT_LEVELS, normalize_effort, resolve_effort
 
 router = APIRouter(prefix="/api/entities", tags=["entities"])
 
@@ -21,11 +22,18 @@ class EntityResponse(BaseModel):
     is_default: bool = False
     # Persisted per-entity default system prompt (None means no prompt).
     system_prompt: Optional[str] = None
+    # Persisted per-entity thinking effort (None means "use the global default").
+    thinking_effort: Optional[str] = None
 
 
 class EntityListResponse(BaseModel):
     entities: List[EntityResponse]
     default_entity: Optional[str] = None
+    # The effort an entity gets when it has none of its own, so the UI can
+    # label the "Default" option with the level it actually resolves to.
+    default_thinking_effort: str = "high"
+    # The levels the UI may offer, in ascending order.
+    thinking_effort_levels: List[str] = list(EFFORT_LEVELS)
 
 
 class SystemPromptUpdate(BaseModel):
@@ -38,10 +46,22 @@ class SystemPromptResponse(BaseModel):
     system_prompt: Optional[str] = None
 
 
-async def _load_system_prompts(db: AsyncSession) -> Dict[str, Optional[str]]:
-    """Load all persisted per-entity system prompts, keyed by entity_id."""
+class ThinkingEffortUpdate(BaseModel):
+    # None / empty clears the override, falling back to the global default.
+    thinking_effort: Optional[str] = None
+
+
+class ThinkingEffortResponse(BaseModel):
+    entity_id: str
+    thinking_effort: Optional[str] = None
+    # The level that will actually be sent (the override, or the global default)
+    effective_thinking_effort: str
+
+
+async def _load_entity_settings(db: AsyncSession) -> Dict[str, EntitySetting]:
+    """Load all persisted per-entity settings rows, keyed by entity_id."""
     result = await db.execute(select(EntitySetting))
-    return {row.entity_id: row.system_prompt for row in result.scalars().all()}
+    return {row.entity_id: row for row in result.scalars().all()}
 
 
 @router.get("/", response_model=EntityListResponse)
@@ -51,8 +71,8 @@ async def list_entities(db: AsyncSession = Depends(get_db)):
 
     Each entity corresponds to a separate Pinecone index with its own
     conversation history and memory, and can have its own model provider/model.
-    Each entity also carries its persisted default system prompt so the UI can
-    render it without keeping any client-side copy.
+    Each entity also carries its persisted default system prompt and thinking
+    effort so the UI can render them without keeping any client-side copy.
     """
     entities = settings.get_entities()
     default_entity = settings.get_default_entity()
@@ -62,9 +82,10 @@ async def list_entities(db: AsyncSession = Depends(get_db)):
         return EntityListResponse(
             entities=[],
             default_entity=None,
+            default_thinking_effort=resolve_effort(None),
         )
 
-    system_prompts = await _load_system_prompts(db)
+    entity_settings = await _load_entity_settings(db)
 
     return EntityListResponse(
         entities=[
@@ -75,11 +96,15 @@ async def list_entities(db: AsyncSession = Depends(get_db)):
                 llm_provider=entity.llm_provider,
                 default_model=entity.default_model,
                 is_default=(entity.index_name == default_entity.index_name),
-                system_prompt=system_prompts.get(entity.index_name),
+                system_prompt=getattr(entity_settings.get(entity.index_name), "system_prompt", None),
+                thinking_effort=getattr(entity_settings.get(entity.index_name), "thinking_effort", None),
             )
             for entity in entities
         ],
         default_entity=default_entity.index_name,
+        # Resolved rather than read raw, so the UI is told the level that will
+        # actually be sent even if THINKING_EFFORT is set to something unknown.
+        default_thinking_effort=resolve_effort(None),
     )
 
 
@@ -102,6 +127,7 @@ async def get_entity(entity_id: str, db: AsyncSession = Depends(get_db)):
         default_model=entity.default_model,
         is_default=(entity.index_name == default_entity.index_name),
         system_prompt=setting.system_prompt if setting else None,
+        thinking_effort=setting.thinking_effort if setting else None,
     )
 
 
@@ -136,6 +162,49 @@ async def update_entity_system_prompt(
     await db.commit()
 
     return SystemPromptResponse(entity_id=entity_id, system_prompt=prompt)
+
+
+@router.put("/{entity_id}/thinking-effort", response_model=ThinkingEffortResponse)
+async def update_entity_thinking_effort(
+    entity_id: str,
+    payload: ThinkingEffortUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Set (or clear) how hard this entity's model should think.
+
+    Levels are low, medium, high, xhigh, max. Clearing the value (null/empty)
+    falls the entity back to DEFAULT_THINKING_EFFORT ("high"). Levels above a
+    model's ceiling are clamped at request time, and models with no thinking
+    control ignore the setting — so any level is accepted for any entity.
+    """
+    if not settings.get_entity_by_index(entity_id):
+        raise HTTPException(status_code=404, detail=f"Entity '{entity_id}' not found")
+
+    raw = payload.thinking_effort
+    effort = normalize_effort(raw)
+    # Distinguish "clear it" from "that isn't a level": an unrecognized value
+    # is a client bug worth surfacing, not a silent fallback to the default.
+    if effort is None and isinstance(raw, str) and raw.strip():
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid thinking effort '{raw}'. Expected one of: {', '.join(EFFORT_LEVELS)}",
+        )
+
+    setting = await db.get(EntitySetting, entity_id)
+    if setting is None:
+        setting = EntitySetting(entity_id=entity_id, thinking_effort=effort)
+        db.add(setting)
+    else:
+        setting.thinking_effort = effort
+
+    await db.commit()
+
+    return ThinkingEffortResponse(
+        entity_id=entity_id,
+        thinking_effort=effort,
+        effective_thinking_effort=resolve_effort(effort),
+    )
 
 
 @router.get("/{entity_id}/status")

@@ -130,8 +130,32 @@ async def _migrate_messages_role_enum(conn):
         print("  ✓ Updated messages table to support tool_use and tool_result roles")
 
 
+async def _migrate_entity_settings(conn):
+    """Add per-entity settings columns that postdate the table's creation."""
+    result = await conn.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_settings'"
+    ))
+    if not result.fetchone():
+        # Table doesn't exist yet, will be created by create_all
+        return
+
+    result = await conn.execute(text("PRAGMA table_info(entity_settings)"))
+    columns = [row[1] for row in result.fetchall()]
+
+    if 'thinking_effort' not in columns:
+        print("Migrating: Adding 'thinking_effort' column to entity_settings table...")
+        await conn.execute(text(
+            "ALTER TABLE entity_settings ADD COLUMN thinking_effort VARCHAR(20)"
+        ))
+        print("  ✓ Added thinking_effort column for per-entity thinking effort")
+
+
 async def run_migrations(conn):
     """Run schema migrations for new columns that SQLAlchemy create_all doesn't handle."""
+    # Entity settings migrate independently of the messages table below, which
+    # returns early on a fresh database.
+    await _migrate_entity_settings(conn)
+
     # Check if messages table exists before trying to migrate
     result = await conn.execute(text(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"

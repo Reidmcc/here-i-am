@@ -64,6 +64,11 @@ class ConversationSession:
     conversation_start_date: Optional[datetime] = None  # When the conversation was created
     verbosity: Optional[str] = None  # Verbosity level for gpt-5.1 models (low, medium, high)
     provider_hint: Optional[str] = None  # LLM provider from entity config (e.g., "minimax")
+    # Thinking effort for the responding entity (low..max). None = use the
+    # configured default. Refreshed from the entity's persisted setting at the
+    # start of every turn, so a change in the UI takes effect on the next turn
+    # without reloading the session.
+    thinking_effort: Optional[str] = None
 
     # Multi-entity conversation support
     is_multi_entity: bool = False  # True if this is a multi-entity conversation

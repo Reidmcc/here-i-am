@@ -456,3 +456,145 @@ class TestGetEntityStatus:
 
         response = client.get("/api/entities/nonexistent/status")
         assert response.status_code == 404
+
+
+# ============================================================
+# Tests for PUT /api/entities/{entity_id}/thinking-effort
+# ============================================================
+
+class TestEntityThinkingEffort:
+    """Tests for per-entity thinking effort."""
+
+    @patch("app.routes.entities.settings")
+    async def test_list_includes_thinking_effort_and_default(self, mock_settings, entities_client):
+        """Listing should carry each entity's effort plus the global fallback."""
+        client, session_factory = entities_client
+
+        entities = [
+            _make_entity("claude-test", "Claude", "Primary", "anthropic"),
+            _make_entity("gpt-test", "GPT", "OpenAI", "openai", "gpt-4o"),
+        ]
+        mock_settings.get_entities.return_value = entities
+        mock_settings.get_default_entity.return_value = entities[0]
+
+        async with session_factory() as session:
+            session.add(EntitySetting(entity_id="claude-test", thinking_effort="max"))
+            await session.commit()
+
+        response = await client.get("/api/entities/")
+        data = response.json()
+
+        efforts = {e["index_name"]: e["thinking_effort"] for e in data["entities"]}
+        assert efforts["claude-test"] == "max"
+        # Unset entities report None and fall back to the global default
+        assert efforts["gpt-test"] is None
+        assert data["default_thinking_effort"] == "high"
+        assert data["thinking_effort_levels"] == ["low", "medium", "high", "xhigh", "max"]
+
+    @patch("app.routes.entities.settings")
+    async def test_set_thinking_effort(self, mock_settings, entities_client):
+        """Should persist a new effort level for the entity."""
+        client, session_factory = entities_client
+        mock_settings.get_entity_by_index.return_value = _make_entity("claude-test")
+
+        response = await client.put(
+            "/api/entities/claude-test/thinking-effort",
+            json={"thinking_effort": "xhigh"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "entity_id": "claude-test",
+            "thinking_effort": "xhigh",
+            "effective_thinking_effort": "xhigh",
+        }
+
+        async with session_factory() as session:
+            setting = await session.get(EntitySetting, "claude-test")
+            assert setting.thinking_effort == "xhigh"
+
+    @patch("app.routes.entities.settings")
+    async def test_set_thinking_effort_is_case_insensitive(self, mock_settings, entities_client):
+        """Should normalize case before persisting."""
+        client, session_factory = entities_client
+        mock_settings.get_entity_by_index.return_value = _make_entity("claude-test")
+
+        response = await client.put(
+            "/api/entities/claude-test/thinking-effort",
+            json={"thinking_effort": "  High "},
+        )
+        assert response.status_code == 200
+        assert response.json()["thinking_effort"] == "high"
+
+        async with session_factory() as session:
+            setting = await session.get(EntitySetting, "claude-test")
+            assert setting.thinking_effort == "high"
+
+    @patch("app.routes.entities.settings")
+    async def test_clear_thinking_effort_falls_back_to_default(self, mock_settings, entities_client):
+        """Clearing should NULL the override and report the global default."""
+        client, session_factory = entities_client
+        mock_settings.get_entity_by_index.return_value = _make_entity("claude-test")
+
+        async with session_factory() as session:
+            session.add(EntitySetting(entity_id="claude-test", thinking_effort="low"))
+            await session.commit()
+
+        response = await client.put(
+            "/api/entities/claude-test/thinking-effort",
+            json={"thinking_effort": None},
+        )
+        assert response.status_code == 200
+        assert response.json()["thinking_effort"] is None
+        assert response.json()["effective_thinking_effort"] == "high"
+
+        async with session_factory() as session:
+            setting = await session.get(EntitySetting, "claude-test")
+            assert setting.thinking_effort is None
+
+    @patch("app.routes.entities.settings")
+    async def test_invalid_thinking_effort_rejected(self, mock_settings, entities_client):
+        """An unrecognized level is a client error, not a silent fallback."""
+        client, session_factory = entities_client
+        mock_settings.get_entity_by_index.return_value = _make_entity("claude-test")
+
+        response = await client.put(
+            "/api/entities/claude-test/thinking-effort",
+            json={"thinking_effort": "ludicrous"},
+        )
+        assert response.status_code == 422
+
+        async with session_factory() as session:
+            assert await session.get(EntitySetting, "claude-test") is None
+
+    @patch("app.routes.entities.settings")
+    async def test_thinking_effort_preserves_system_prompt(self, mock_settings, entities_client):
+        """Setting the effort must not disturb the entity's stored prompt."""
+        client, session_factory = entities_client
+        mock_settings.get_entity_by_index.return_value = _make_entity("claude-test")
+
+        async with session_factory() as session:
+            session.add(EntitySetting(entity_id="claude-test", system_prompt="Be Claude"))
+            await session.commit()
+
+        response = await client.put(
+            "/api/entities/claude-test/thinking-effort",
+            json={"thinking_effort": "low"},
+        )
+        assert response.status_code == 200
+
+        async with session_factory() as session:
+            setting = await session.get(EntitySetting, "claude-test")
+            assert setting.system_prompt == "Be Claude"
+            assert setting.thinking_effort == "low"
+
+    @patch("app.routes.entities.settings")
+    async def test_thinking_effort_unknown_entity_returns_404(self, mock_settings, entities_client):
+        """Should 404 for an entity that isn't configured."""
+        client, _ = entities_client
+        mock_settings.get_entity_by_index.return_value = None
+
+        response = await client.put(
+            "/api/entities/nonexistent/thinking-effort",
+            json={"thinking_effort": "high"},
+        )
+        assert response.status_code == 404
