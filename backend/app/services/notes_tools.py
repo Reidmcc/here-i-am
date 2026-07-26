@@ -68,6 +68,20 @@ def get_current_entity_label() -> Optional[str]:
     return _current_entity_label
 
 
+def seed_turn_note_stamps(stamps: List[Dict[str, Any]]) -> None:
+    """
+    Add note-content stamps to the turn-level accumulator.
+
+    Used when an interrupted turn is resumed: stamps from the iterations that
+    already completed are not on a persisted tool_result context message yet
+    (nothing about the turn has been persisted), so without re-seeding them a
+    notes_read in a later iteration of the same turn would return full
+    content that is already in context.
+    """
+    global _turn_note_stamps
+    _turn_note_stamps.extend(stamps)
+
+
 def consume_last_note_stamps() -> List[Dict[str, Any]]:
     """
     Return the note-content stamps recorded by the most recent notes tool call

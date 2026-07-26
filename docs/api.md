@@ -24,7 +24,7 @@ The listing below covers the REST endpoints by resource.
 
 ## Chat
 - `POST /api/chat/send` — send message (with memory retrieval)
-- `POST /api/chat/stream` — send message with SSE streaming (`closing_turn=true` with no message gives the entity an open final turn)
+- `POST /api/chat/stream` — send message with SSE streaming (`closing_turn=true` with no message gives the entity an open final turn; `resume=true` with `resume_turn_id` continues a turn that was interrupted inside the tool loop instead of starting a new one, keeping its completed tool calls — falls back to a normal send when there is nothing resumable). SSE events: `memories`, `start`, `token`, `tool_start`, `tool_result`, `stream_rewind` (discard text back to `checkpoint`; a failed tool-loop iteration is being re-run), `done`, `stored`, `error`
 - `POST /api/chat/quick` — quick chat (no persistence)
 - `POST /api/chat/regenerate` — regenerate AI response (SSE stream)
 - `GET /api/chat/session/{id}` — get session info

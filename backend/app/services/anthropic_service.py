@@ -3,6 +3,7 @@ from datetime import datetime
 from anthropic import AsyncAnthropic
 from app.config import settings
 from app.services.notes_service import notes_service
+from app.services.provider_errors import stream_error_event
 import tiktoken
 import json
 import logging
@@ -425,7 +426,7 @@ class AnthropicService:
 
         except Exception as e:
             logger.exception(f"[TOOLS] Stream error: {e}")
-            yield {"type": "error", "error": str(e)}
+            yield stream_error_event(e)
 
     def build_messages(
         self,

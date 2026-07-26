@@ -264,6 +264,8 @@ class ApiClient {
      * @param {Function} callbacks.onToken - Called for each token
      * @param {Function} callbacks.onToolStart - Called when a tool starts executing
      * @param {Function} callbacks.onToolResult - Called with tool execution result
+     * @param {Function} callbacks.onStreamRewind - Called with {checkpoint} when text
+     *     streamed by a failed tool-loop iteration must be discarded
      * @param {Function} callbacks.onDone - Called when streaming completes
      * @param {Function} callbacks.onStored - Called when messages are stored
      * @param {Function} callbacks.onError - Called on error
@@ -374,6 +376,9 @@ class ApiClient {
                 break;
             case 'tool_result':
                 if (callbacks.onToolResult) callbacks.onToolResult(data);
+                break;
+            case 'stream_rewind':
+                if (callbacks.onStreamRewind) callbacks.onStreamRewind(data);
                 break;
             case 'done':
                 if (callbacks.onDone) callbacks.onDone(data);

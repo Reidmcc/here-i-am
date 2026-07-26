@@ -6,7 +6,7 @@
 import { state } from './state.js';
 import { showToast, renderMarkdown, escapeHtml } from './utils.js';
 import {
-    addMessage, addToolMessage, createStreamingMessage,
+    addMessage, addToolMessage, removeToolMessages, createStreamingMessage,
     removeRegenerateButtons, updateAssistantMessageActions,
     scrollToBottom
 } from './messages.js';
@@ -218,9 +218,23 @@ function buildMessageToSend(content) {
  * (the empty turn is never persisted), so re-sending through the normal stream
  * path reuses the cached prompt prefix instead of forcing a session reload the
  * way regenerate would.
+ *
+ * The same entry point handles resuming a turn interrupted inside the tool
+ * loop: `resume` asks the backend to continue the stashed turn (keeping its
+ * completed tool calls rather than re-running them), and `existingMessage`
+ * continues streaming into the bubble that already holds the partial response.
  */
-async function streamSingleEntitySend({ content, attachments, messageToSend, userMessageEl }) {
-    const streamingMessage = createStreamingMessage('assistant');
+async function streamSingleEntitySend({
+    content,
+    attachments,
+    messageToSend,
+    userMessageEl,
+    existingMessage = null,
+    resume = false,
+    resumeTurnId = null,
+}) {
+    const streamingMessage = existingMessage || createStreamingMessage('assistant');
+    if (existingMessage) existingMessage.unpause();
     let usageData = null;
 
     // Retry the identical request, reusing the same human bubble. Re-enters the
@@ -228,6 +242,22 @@ async function streamSingleEntitySend({ content, attachments, messageToSend, use
     const retry = () => {
         beginStreaming();
         streamSingleEntitySend({ content, attachments, messageToSend, userMessageEl });
+    };
+
+    // Continue an interrupted turn from where it stopped, streaming into the
+    // same bubble so the response reads as one message (which is how it is
+    // persisted: the completed iterations' text is part of the stored reply).
+    const resumeTurn = (turnId) => {
+        beginStreaming();
+        streamSingleEntitySend({
+            content,
+            attachments,
+            messageToSend,
+            userMessageEl,
+            existingMessage: streamingMessage,
+            resume: true,
+            resumeTurnId: turnId,
+        });
     };
 
     try {
@@ -242,6 +272,8 @@ async function streamSingleEntitySend({ content, attachments, messageToSend, use
                 verbosity: state.settings.verbosity,
                 user_display_name: state.settings.researcherName || null,
                 attachments: attachments,
+                resume: resume,
+                resume_turn_id: resumeTurnId,
             },
             {
                 onMemories: (data) => {
@@ -263,6 +295,13 @@ async function streamSingleEntitySend({ content, attachments, messageToSend, use
                 },
                 onToolResult: (data) => {
                     addToolMessage('result', data.tool_name, data);
+                },
+                onStreamRewind: (data) => {
+                    // A tool-loop iteration failed partway through; it is being
+                    // re-run (or abandoned), so drop everything it produced —
+                    // the text, and any tool it announced but never executed.
+                    streamingMessage.rewindTo(data.checkpoint);
+                    removeToolMessages(data.discard_tool_ids);
                 },
                 onDone: async (data) => {
                     streamingMessage.finalize({ showTimestamp: true });
@@ -299,6 +338,19 @@ async function streamSingleEntitySend({ content, attachments, messageToSend, use
                     await updateConversationTitleIfNeeded(content);
                 },
                 onError: (data) => {
+                    // An interrupted tool turn is a soft error: the backend
+                    // stashed the turn with its completed tool calls, so the
+                    // partial response and the tool messages already on screen
+                    // are still good. Keep them and offer to continue.
+                    if (data.error_type === 'interrupted_tool_turn') {
+                        streamingMessage.pause();
+                        addInterruptedTurnError(data, {
+                            onResume: () => resumeTurn(data.turn_id),
+                        });
+                        showToast('Response interrupted — resume to continue', 'error');
+                        console.error('Streaming error:', data.error);
+                        return;
+                    }
                     streamingMessage.element.remove();
                     // An empty response is a soft error: the turn was not
                     // persisted and the session is still warm, so offer an
@@ -333,6 +385,45 @@ async function streamSingleEntitySend({ content, attachments, messageToSend, use
     } finally {
         endStreaming();
     }
+}
+
+/**
+ * Render an error bubble for an interrupted tool turn, with an inline "Resume"
+ * action.
+ *
+ * The backend kept the turn's completed tool iterations, so resuming continues
+ * from the iteration that failed instead of re-running those tools — which
+ * matters for cost and for tools with side effects (notes writes, GitHub
+ * commits). Nothing has been persisted yet; if the user never resumes, the
+ * turn is simply dropped.
+ */
+function addInterruptedTurnError(data, { onResume }) {
+    const calls = data.completed_tool_calls || 0;
+    const kept = calls === 1 ? '1 tool call' : `${calls} tool calls`;
+    const el = addMessage(
+        'assistant',
+        `Error: ${data.error}\n\nThe response was interrupted partway through. ` +
+        `${kept} already completed and will not be re-run — resume to continue from there.`,
+        { isError: true }
+    );
+    const bubble = el.querySelector('.message-bubble');
+    if (bubble) {
+        const actions = document.createElement('div');
+        actions.className = 'error-retry-actions';
+
+        const resumeBtn = document.createElement('button');
+        resumeBtn.className = 'retry-btn';
+        resumeBtn.textContent = 'Resume';
+        resumeBtn.addEventListener('click', () => {
+            el.remove();
+            onResume();
+        });
+
+        actions.appendChild(resumeBtn);
+        bubble.appendChild(actions);
+    }
+    scrollToBottom();
+    return el;
 }
 
 /**
@@ -417,15 +508,11 @@ export async function sendMessageWithResponder() {
     state.pendingResponderId = null;
     state.pendingUserMessageEl = null;
 
-    const abortController = beginStreaming();
+    beginStreaming();
 
     // Get the responding entity's label
     const responderEntity = state.currentConversationEntities.find(e => e.index_name === responderId);
     const responderLabel = responderEntity?.label || responderId;
-
-    // Create streaming message element with speaker label
-    const streamingMessage = createStreamingMessage('assistant', responderLabel);
-    let usageData = null;
 
     // Inject Go game context if there's an active game
     let messageToSend = content;
@@ -435,6 +522,64 @@ export async function sendMessageWithResponder() {
             messageToSend = `[GO GAME STATE]\n${gameContext}\n[/GO GAME STATE]\n\n${content}`;
         }
     }
+
+    await streamMultiEntitySend({
+        content,
+        attachments,
+        messageToSend,
+        responderId,
+        responderLabel,
+        userMessageEl,
+    });
+}
+
+/**
+ * Run one multi-entity streaming request and wire up its callbacks.
+ *
+ * Assumes beginStreaming() has already been called and the human message
+ * bubble (if any) is on screen. Calls endStreaming() when done.
+ *
+ * Factored out of sendMessageWithResponder so a turn interrupted inside the
+ * tool loop can be resumed in place: `resume` asks the backend to continue the
+ * stashed turn (keeping its completed tool calls rather than re-running them),
+ * and `existingMessage` continues streaming into the bubble that already holds
+ * the partial response.
+ */
+async function streamMultiEntitySend({
+    content,
+    attachments,
+    messageToSend,
+    responderId,
+    responderLabel,
+    userMessageEl,
+    existingMessage = null,
+    resume = false,
+    resumeTurnId = null,
+}) {
+    const abortController = getStreamAbortController();
+
+    // Create streaming message element with speaker label
+    const streamingMessage = existingMessage || createStreamingMessage('assistant', responderLabel);
+    if (existingMessage) existingMessage.unpause();
+    let usageData = null;
+
+    // Continue an interrupted turn from where it stopped, streaming into the
+    // same bubble so the response reads as one message (which is how it is
+    // persisted: the completed iterations' text is part of the stored reply).
+    const resumeTurn = (turnId) => {
+        beginStreaming();
+        streamMultiEntitySend({
+            content,
+            attachments,
+            messageToSend,
+            responderId,
+            responderLabel,
+            userMessageEl,
+            existingMessage: streamingMessage,
+            resume: true,
+            resumeTurnId: turnId,
+        });
+    };
 
     try {
         // In multi-entity mode, don't send model - backend uses each entity's configured model
@@ -449,6 +594,8 @@ export async function sendMessageWithResponder() {
             responding_entity_id: responderId,
             user_display_name: state.settings.researcherName || null,
             attachments: attachments,
+            resume: resume,
+            resume_turn_id: resumeTurnId,
         };
 
         await api.sendMessageStream(
@@ -477,6 +624,13 @@ export async function sendMessageWithResponder() {
                 },
                 onToolResult: (data) => {
                     addToolMessage('result', data.tool_name, data);
+                },
+                onStreamRewind: (data) => {
+                    // A tool-loop iteration failed partway through; it is being
+                    // re-run (or abandoned), so drop everything it produced —
+                    // the text, and any tool it announced but never executed.
+                    streamingMessage.rewindTo(data.checkpoint);
+                    removeToolMessages(data.discard_tool_ids);
                 },
                 onDone: async (data) => {
                     streamingMessage.finalize({
@@ -522,6 +676,19 @@ export async function sendMessageWithResponder() {
                     }
                 },
                 onError: (data) => {
+                    // An interrupted tool turn is a soft error: the backend
+                    // stashed the turn with its completed tool calls, so the
+                    // partial response and the tool messages already on screen
+                    // are still good. Keep them and offer to continue.
+                    if (data.error_type === 'interrupted_tool_turn') {
+                        streamingMessage.pause();
+                        addInterruptedTurnError(data, {
+                            onResume: () => resumeTurn(data.turn_id),
+                        });
+                        showToast('Response interrupted — resume to continue', 'error');
+                        console.error('Streaming error:', data.error);
+                        return;
+                    }
                     streamingMessage.element.remove();
                     addMessage('assistant', `Error: ${data.error}`, { isError: true });
                     showToast('Failed to send message', 'error');
@@ -672,6 +839,12 @@ export async function performRegeneration(messageId, respondingEntityId = null) 
                 },
                 onToolResult: (data) => {
                     addToolMessage('result', data.tool_name, data);
+                },
+                onStreamRewind: (data) => {
+                    // A tool-loop iteration failed partway through and is being
+                    // re-run; drop the text and any tool it never executed.
+                    streamingMessage.rewindTo(data.checkpoint);
+                    removeToolMessages(data.discard_tool_ids);
                 },
                 onDone: (data) => {
                     streamingMessage.finalize({ showTimestamp: true });
@@ -1053,6 +1226,12 @@ export async function sendClosingTurn() {
                 },
                 onToolResult: (data) => {
                     addToolMessage('result', data.tool_name, data);
+                },
+                onStreamRewind: (data) => {
+                    // A tool-loop iteration failed partway through and is being
+                    // re-run; drop the text and any tool it never executed.
+                    streamingMessage.rewindTo(data.checkpoint);
+                    removeToolMessages(data.discard_tool_ids);
                 },
                 onDone: (data) => {
                     streamingMessage.finalize({ showTimestamp: true });

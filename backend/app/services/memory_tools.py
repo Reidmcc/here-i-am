@@ -71,6 +71,20 @@ def set_memory_tool_context(entity_id: str, conversation_id: str, session=None) 
     logger.debug(f"Memory tools: context set to entity_id='{entity_id}', conversation_id='{conversation_id}'")
 
 
+def seed_turn_query_memory_ids(memory_ids) -> None:
+    """
+    Add memory IDs to the turn-level memory_query dedup accumulator.
+
+    Used when an interrupted turn is resumed: the memory_query results from
+    the iterations that already completed are not on a persisted tool_result
+    context message yet (nothing about the turn has been persisted), so
+    without re-seeding them a memory_query in a later iteration of the same
+    turn could surface the same memories again.
+    """
+    global _turn_query_memory_ids
+    _turn_query_memory_ids.update(memory_ids)
+
+
 def consume_last_query_memory_ids() -> list:
     """
     Return the memory IDs surfaced by the most recent memory_query call and

@@ -11,6 +11,7 @@ from typing import Dict, List, Set, Optional, Any, Callable, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 import logging
+import uuid
 
 from app.config import settings
 from app.services.session_helpers import (
@@ -40,6 +41,95 @@ class MemoryEntry:
     days_since_creation: float = 0.0  # Age of the memory in days
     days_since_retrieval: float = 0.0  # Days since last retrieval (None if never retrieved)
     source: str = "unknown"  # What retrieved this memory: "user"/"assistant"/"both" (semantic queries) or "recent_reflection" (first-turn recency injection)
+
+
+@dataclass
+class PendingToolTurn:
+    """
+    The work a turn has accumulated inside the agentic tool loop.
+
+    One of these is created at the start of every streaming turn and mutated
+    as the loop progresses, so at any moment it holds the completed tool
+    exchanges, the text streamed so far, and the iteration to run next.
+
+    On a clean finish it is discarded. If the loop dies partway through (a
+    provider error that outlived its retries), it is stashed on the session
+    instead — `session.pending_tool_turn` — so the turn can be resumed from
+    the next iteration rather than restarted. Resuming replays a byte-identical
+    prompt prefix, so it reads from the provider's prompt cache, and it never
+    re-executes tools that already ran (which matters for tools with side
+    effects: notes writes, GitHub commits, Moltbook posts).
+
+    `base_messages` is the fully built API message list for the turn (context
+    + current message). Keeping it means a resume does not re-run memory
+    retrieval or context trimming, both of which would mutate the context the
+    failed attempt was built against and break the cache-stable prefix.
+    """
+    # Identity of the turn, for validating that a resume matches it
+    entity_id: Optional[str]
+    conversation_id: str
+
+    # Everything needed to persist the turn once it finishes. Held here rather
+    # than re-derived from the resuming request, so the rows that land in the
+    # DB describe the prompt the model actually answered:
+    # - raw_user_message: the message as sent (None for continuations)
+    # - persistable_content: raw message plus any [ATTACHED FILE] blocks, the
+    #   exact text of the human row (None for continuations)
+    # - vectorize_user_message: the text to store as a memory, or None when
+    #   the message should not be vectorized (continuations, closing turns,
+    #   attachment-only messages)
+    # - message_sent_at: the send timestamp, which is both the human row's
+    #   created_at and the timestamp prefix stamped into context; the two must
+    #   keep matching or a session reload re-renders a different prefix
+    raw_user_message: Optional[str]
+    stamped_user_message: Optional[str]
+    message_sent_at: datetime
+
+    # Unique id handed to the client with the interruption, and quoted back on
+    # the resume request. Without it a stale "Resume" action left on screen
+    # from an earlier interruption could consume a later, unrelated stashed
+    # turn - and persist that turn's human message under the wrong prompt.
+    turn_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    persistable_content: Optional[str] = None
+    vectorize_user_message: Optional[str] = None
+
+    # The API message list this turn's iterations build on
+    base_messages: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Progress so far
+    tool_exchanges: List[Dict[str, Any]] = field(default_factory=list)
+    accumulated_tool_uses: List[Dict[str, Any]] = field(default_factory=list)
+    full_content: str = ""
+    next_iteration: int = 1
+
+    # Set when the turn is stashed after an interruption
+    stashed_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    last_error_type: Optional[str] = None
+    # Length of the session's conversation context when the turn was stashed.
+    # A resume requires this to still match: if anything else has touched the
+    # context in the meantime, base_messages no longer describes the prefix.
+    context_length_at_stash: int = 0
+    # True once this turn has been resumed at least once (suppresses the
+    # duplicate "start" event and marks the turn in logs)
+    resumed: bool = False
+
+    @property
+    def completed_iterations(self) -> int:
+        """Number of tool iterations that finished before the interruption."""
+        return len(self.tool_exchanges)
+
+    @property
+    def completed_tool_calls(self) -> int:
+        """Number of individual tool calls that already executed."""
+        return len(self.accumulated_tool_uses)
+
+    def is_expired(self, ttl_seconds: int, now: Optional[datetime] = None) -> bool:
+        """Whether a stashed turn has aged past the resumable window."""
+        if self.stashed_at is None:
+            return False
+        now = now or datetime.utcnow()
+        return (now - self.stashed_at).total_seconds() > ttl_seconds
 
 
 @dataclass
@@ -90,6 +180,12 @@ class ConversationSession:
     # new messages are written to the cache once and read on later turns.
     last_cached_context_length: int = 0
 
+    # A turn that died inside the tool loop after completing at least one tool
+    # iteration, kept so it can be resumed instead of restarted. Cleared on a
+    # clean finish, on any fresh (non-resume) turn, and when the session is
+    # closed — so it never outlives the context it was built against.
+    pending_tool_turn: Optional[PendingToolTurn] = None
+
     # ===== Provider-usage token calibration =====
     # After each API response, the provider-reported prompt-side total
     # (input + cache_creation + cache_read) is recorded alongside the local
@@ -119,6 +215,83 @@ class ConversationSession:
             return 1.0
         ratio = self.last_prompt_actual_tokens / self.last_prompt_estimated_tokens
         return max(0.5, min(2.0, ratio))
+
+    def stash_pending_tool_turn(
+        self,
+        turn: PendingToolTurn,
+        error: Optional[str] = None,
+        error_type: Optional[str] = None,
+    ) -> None:
+        """
+        Keep an interrupted turn for resumption.
+
+        Records the context length so a later resume can verify nothing else
+        has touched the context since — `turn.base_messages` only describes
+        the prefix as long as that holds.
+        """
+        turn.stashed_at = datetime.utcnow()
+        turn.last_error = error
+        turn.last_error_type = error_type
+        turn.context_length_at_stash = len(self.conversation_context)
+        self.pending_tool_turn = turn
+        logger.info(
+            f"[RESUME] Stashed interrupted turn for {self.conversation_id[:8]}...: "
+            f"{turn.completed_iterations} iterations, {turn.completed_tool_calls} tool calls "
+            f"completed, resuming at iteration {turn.next_iteration} (error: {error_type})"
+        )
+
+    def clear_pending_tool_turn(self) -> None:
+        """Discard any stashed interrupted turn."""
+        self.pending_tool_turn = None
+
+    def take_resumable_turn(
+        self,
+        entity_id: Optional[str],
+        ttl_seconds: int,
+        turn_id: Optional[str] = None,
+    ) -> Optional[PendingToolTurn]:
+        """
+        Pop the stashed turn if it can still be resumed against this session.
+
+        Returns None (and drops the stash) when there is nothing pending, when
+        the request names a different turn, when the responding entity has
+        changed, when the conversation context has moved on since the stash was
+        taken, or when it has aged out. Callers treat None as "run this as a
+        fresh turn" — resuming is an optimization, never a correctness
+        requirement.
+        """
+        turn = self.pending_tool_turn
+        if turn is None:
+            return None
+
+        self.pending_tool_turn = None
+
+        if turn_id is not None and turn.turn_id != turn_id:
+            logger.info(
+                f"[RESUME] Discarding stashed turn: request names turn "
+                f"{turn_id[:8]}..., stash holds {turn.turn_id[:8]}..."
+            )
+            return None
+
+        if turn.entity_id != entity_id:
+            logger.info(
+                f"[RESUME] Discarding stashed turn: entity changed "
+                f"({turn.entity_id} -> {entity_id})"
+            )
+            return None
+
+        if turn.context_length_at_stash != len(self.conversation_context):
+            logger.info(
+                f"[RESUME] Discarding stashed turn: context moved "
+                f"({turn.context_length_at_stash} -> {len(self.conversation_context)} messages)"
+            )
+            return None
+
+        if turn.is_expired(ttl_seconds):
+            logger.info(f"[RESUME] Discarding stashed turn: older than {ttl_seconds}s")
+            return None
+
+        return turn
 
     def insert_memory_into_context(self, memory: MemoryEntry) -> Tuple[bool, bool]:
         """

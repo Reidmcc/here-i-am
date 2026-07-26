@@ -10,6 +10,7 @@ import {
     setCallbacks,
     addMessage,
     addToolMessage,
+    removeToolMessages,
     createStreamingMessage,
     addTypingIndicator,
     clearMessages,
@@ -344,6 +345,27 @@ describe('Messages Module', () => {
         });
     });
 
+    describe('removeToolMessages', () => {
+        it('should remove tool messages by id', () => {
+            addToolMessage('start', 'web_search', { tool_id: 'tool-1', input: {} });
+            addToolMessage('start', 'notes_read', { tool_id: 'tool-2', input: {} });
+
+            const removed = removeToolMessages(['tool-1']);
+
+            expect(removed).toBe(1);
+            expect(mockElements.messages.querySelector('[data-tool-id="tool-1"]')).toBeFalsy();
+            expect(mockElements.messages.querySelector('[data-tool-id="tool-2"]')).toBeTruthy();
+        });
+
+        it('should handle empty or missing id lists', () => {
+            addToolMessage('start', 'web_search', { tool_id: 'tool-1', input: {} });
+
+            expect(removeToolMessages([])).toBe(0);
+            expect(removeToolMessages(undefined)).toBe(0);
+            expect(mockElements.messages.querySelector('[data-tool-id="tool-1"]')).toBeTruthy();
+        });
+    });
+
     describe('createStreamingMessage', () => {
         it('should create streaming message element', () => {
             const stream = createStreamingMessage('assistant');
@@ -381,6 +403,48 @@ describe('Messages Module', () => {
             stream.updateContent(' world');
 
             expect(stream.getContent()).toBe('Hello world');
+        });
+
+        it('should rewind streamed content to a checkpoint', () => {
+            // A failed tool-loop iteration's text has to come off screen before
+            // the retry re-streams it
+            const stream = createStreamingMessage('assistant');
+
+            stream.updateContent('Kept text. ');
+            stream.updateContent('Half a sent');
+            stream.rewindTo('Kept text. '.length);
+
+            expect(stream.getContent()).toBe('Kept text. ');
+            expect(stream.element.querySelector('.message-content').textContent)
+                .toBe('Kept text. ');
+        });
+
+        it('should ignore a rewind past the end of the content', () => {
+            const stream = createStreamingMessage('assistant');
+
+            stream.updateContent('Hello');
+            stream.rewindTo(99);
+            stream.rewindTo(-1);
+
+            expect(stream.getContent()).toBe('Hello');
+        });
+
+        it('should pause and unpause without finalizing', () => {
+            // An interrupted turn keeps its bubble so a resume can continue it
+            const stream = createStreamingMessage('assistant');
+            stream.updateContent('Partial');
+
+            stream.pause();
+            expect(stream.element.querySelector('.streaming-cursor')).toBeFalsy();
+            expect(stream.element.querySelector('.streaming')).toBeFalsy();
+            expect(stream.element.querySelector('.message-meta')).toBeFalsy();
+
+            stream.unpause();
+            expect(stream.element.querySelector('.streaming-cursor')).toBeTruthy();
+            expect(stream.element.querySelector('.streaming')).toBeTruthy();
+
+            stream.updateContent(' continued');
+            expect(stream.getContent()).toBe('Partial continued');
         });
 
         it('should accumulate content correctly', () => {

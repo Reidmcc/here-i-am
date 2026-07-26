@@ -1,6 +1,7 @@
 from typing import Optional, List, Dict, Any, AsyncIterator
 from openai import AsyncOpenAI
 from app.config import settings
+from app.services.provider_errors import stream_error_event
 import tiktoken
 import logging
 import json
@@ -547,7 +548,7 @@ class OpenAIService:
             yield done_event
 
         except Exception as e:
-            yield {"type": "error", "error": str(e)}
+            yield stream_error_event(e)
 
 
 # Singleton instance

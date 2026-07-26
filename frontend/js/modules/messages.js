@@ -145,6 +145,31 @@ export function addMessage(role, content, options = {}) {
  * @param {Object} data - Tool data
  * @returns {HTMLElement|null} - The tool message element (only for start)
  */
+/**
+ * Remove tool messages by tool id.
+ *
+ * Used when a tool-loop iteration fails after announcing a tool: tools execute
+ * only once the model's stream completes, so an announced-but-not-executed
+ * tool never ran and must not stay on screen when the iteration is re-run.
+ *
+ * @param {string[]} toolIds - Tool ids to remove
+ * @returns {number} How many messages were removed
+ */
+export function removeToolMessages(toolIds) {
+    if (!Array.isArray(toolIds) || toolIds.length === 0) return 0;
+    let removed = 0;
+    for (const toolId of toolIds) {
+        const messages = elements.messages.querySelectorAll(
+            `.tool-message[data-tool-id="${toolId}"]`
+        );
+        messages.forEach((message) => {
+            message.remove();
+            removed += 1;
+        });
+    }
+    return removed;
+}
+
 export function addToolMessage(type, toolName, data) {
     // Check scroll position before adding content
     const wasNearBottom = isNearBottom();
@@ -267,6 +292,28 @@ export function createStreamingMessage(role, speakerLabel = null) {
         updateContent: (newToken) => {
             accumulatedContent += newToken;
             contentSpan.textContent = accumulatedContent;
+        },
+        // Discard streamed text back to `checkpoint` characters. Used when an
+        // iteration of the tool loop fails after streaming some text: that
+        // text is not part of the response (the iteration is re-run from the
+        // same prompt, or abandoned), so it has to come off the screen.
+        rewindTo: (checkpoint) => {
+            if (typeof checkpoint !== 'number' || checkpoint < 0) return;
+            if (checkpoint >= accumulatedContent.length) return;
+            accumulatedContent = accumulatedContent.slice(0, checkpoint);
+            contentSpan.textContent = accumulatedContent;
+        },
+        // Stop the streaming affordances without finalizing, so the bubble can
+        // be continued later. Used when a turn is interrupted mid-response and
+        // offered for resumption: finalizing would render markdown and stamp a
+        // timestamp on a response that is not finished yet.
+        pause: () => {
+            cursor.remove();
+            bubble.classList.remove('streaming');
+        },
+        unpause: () => {
+            bubble.classList.add('streaming');
+            bubble.appendChild(cursor);
         },
         finalize: (options = {}) => {
             cursor.remove();

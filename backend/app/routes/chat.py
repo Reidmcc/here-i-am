@@ -133,6 +133,17 @@ class ChatRequest(BaseModel):
     # ends. When True and message is empty, a standard closing framing is used
     # as the message (stored in history, not vectorized).
     closing_turn: bool = False
+    # Resume a turn that was interrupted inside the tool loop, instead of
+    # starting a new one. The completed tool iterations are kept and their
+    # tools are not re-run. Falls back to a normal send when there is no
+    # resumable turn (server restarted, stash expired, context moved on), so
+    # the client can always set it optimistically after an
+    # "interrupted_tool_turn" error.
+    resume: bool = False
+    # Which interrupted turn to resume: the turn_id carried on the
+    # "interrupted_tool_turn" error. Guards against a stale resume action
+    # picking up a later, unrelated stashed turn.
+    resume_turn_id: Optional[str] = None
 
 
 class MemoryInfo(BaseModel):
@@ -569,20 +580,56 @@ async def stream_message(data: ChatRequest):
                     if provider in (ModelProvider.ANTHROPIC, ModelProvider.OPENAI, ModelProvider.MINIMAX):
                         tool_schemas = tool_service.get_tool_schemas()
 
-                # Capture the send time once: it is stamped onto the message in
-                # LLM context AND set as the DB row's created_at, so a session
-                # reload re-renders the identical timestamp prefix
-                # (prompt-cache stable across conversation switches).
-                message_sent_at = datetime.utcnow()
+                # Resume a turn that was interrupted inside the tool loop, when
+                # one is still resumable. take_resumable_turn validates it
+                # against the session (same responding entity, context
+                # untouched since, not aged out) and returns None otherwise —
+                # in which case this proceeds as a normal send, so the client
+                # can always ask optimistically.
+                resumed_turn = None
+                if data.resume:
+                    resumed_turn = session.take_resumable_turn(
+                        entity_id=session.entity_id,
+                        ttl_seconds=settings.interrupted_turn_stash_ttl_seconds,
+                        turn_id=data.resume_turn_id,
+                    )
 
-                async for event in session_manager.process_message_stream(
-                    session=session,
-                    user_message=effective_message,
-                    db=db,
-                    tool_schemas=tool_schemas,
-                    attachments=attachments_dict,
-                    user_message_timestamp=message_sent_at,
-                ):
+                if resumed_turn is not None:
+                    # What gets persisted comes from the stashed turn, not from
+                    # this request: the turn is the authoritative record of what
+                    # the model was actually shown. That includes the original
+                    # send timestamp — the human row's created_at must keep
+                    # matching the timestamp prefix stamped into context, or a
+                    # later session reload re-renders a different prefix and
+                    # busts the prompt cache.
+                    message_sent_at = resumed_turn.message_sent_at
+                    is_continuation = resumed_turn.raw_user_message is None
+                    persistable_override = resumed_turn.persistable_content
+                    vectorizable_message = resumed_turn.vectorize_user_message
+                    event_stream = session_manager.resume_message_stream(
+                        session=session,
+                        turn=resumed_turn,
+                        tool_schemas=tool_schemas,
+                    )
+                else:
+                    # Capture the send time once: it is stamped onto the message in
+                    # LLM context AND set as the DB row's created_at, so a session
+                    # reload re-renders the identical timestamp prefix
+                    # (prompt-cache stable across conversation switches).
+                    message_sent_at = datetime.utcnow()
+                    persistable_override = None
+                    vectorizable_message = data.message
+                    event_stream = session_manager.process_message_stream(
+                        session=session,
+                        user_message=effective_message,
+                        db=db,
+                        tool_schemas=tool_schemas,
+                        attachments=attachments_dict,
+                        user_message_timestamp=message_sent_at,
+                        vectorizable_user_message=data.message,
+                    )
+
+                async for event in event_stream:
                     event_type = event.get("type")
 
                     if event_type == "memories":
@@ -597,6 +644,10 @@ async def stream_message(data: ChatRequest):
                         yield f"event: tool_start\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "tool_result":
                         yield f"event: tool_result\ndata: {json.dumps(event)}\n\n"
+                    elif event_type == "stream_rewind":
+                        # An iteration failed after streaming some text; the
+                        # client must drop it before the retry re-streams.
+                        yield f"event: stream_rewind\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "done":
                         full_content = event.get("content", full_content)
                         model_used = event.get("model", model_used)
@@ -612,8 +663,15 @@ async def stream_message(data: ChatRequest):
                 human_msg = None
                 persistable_content = None
                 if not is_continuation:
-                    # Build persistable content including extracted file text (images remain ephemeral)
-                    persistable_content = build_persistable_content(effective_message, attachments_dict)
+                    # Build persistable content including extracted file text (images remain ephemeral).
+                    # A resumed turn uses the content stashed with it rather than
+                    # rebuilding from this request, so the row matches the prompt
+                    # the model actually answered.
+                    persistable_content = (
+                        persistable_override
+                        if persistable_override is not None
+                        else build_persistable_content(effective_message, attachments_dict)
+                    )
 
                     # Only create human message if this is not a continuation
                     human_msg = Message(
@@ -679,12 +737,12 @@ async def stream_message(data: ChatRequest):
                             # Skipped for continuations (no human_msg) and for
                             # attachment-only messages (no text to vectorize -
                             # file content is intentionally not stored in memory).
-                            if human_msg and data.message:
+                            if human_msg and vectorizable_message:
                                 await memory_service.store_memory(
                                     message_id=str(human_msg.id),
                                     conversation_id=str(data.conversation_id),
                                     role="human",
-                                    content=data.message,
+                                    content=vectorizable_message,
                                     created_at=human_msg.created_at,
                                     entity_id=entity_id,
                                 )
@@ -715,12 +773,12 @@ async def stream_message(data: ChatRequest):
                         # Skip the human memory for attachment-only messages: there
                         # is no text to vectorize and file content is intentionally
                         # not stored in memory (it is still persisted in the DB).
-                        if data.message:
+                        if vectorizable_message:
                             await memory_service.store_memory(
                                 message_id=str(human_msg.id),
                                 conversation_id=str(data.conversation_id),
                                 role="human",
-                                content=data.message,
+                                content=vectorizable_message,
                                 created_at=human_msg.created_at,
                                 entity_id=session.entity_id,
                             )
@@ -1050,6 +1108,12 @@ async def regenerate_response(data: RegenerateRequest):
                     db=db,
                     tool_schemas=tool_schemas,
                     user_message_timestamp=human_message.created_at if human_message else None,
+                    # Regeneration has no resume affordance, and its turns must
+                    # never be picked up by a /chat/stream resume: that path
+                    # persists a human message from the stashed turn, which
+                    # here would duplicate the message being regenerated from.
+                    # Transient failures are still retried inside the loop.
+                    allow_resume_stash=False,
                 ):
                     event_type = event.get("type")
 
@@ -1065,6 +1129,10 @@ async def regenerate_response(data: RegenerateRequest):
                         yield f"event: tool_start\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "tool_result":
                         yield f"event: tool_result\ndata: {json.dumps(event)}\n\n"
+                    elif event_type == "stream_rewind":
+                        # An iteration failed after streaming some text; the
+                        # client must drop it before the retry re-streams.
+                        yield f"event: stream_rewind\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "done":
                         full_content = event.get("content", full_content)
                         model_used = event.get("model", model_used)

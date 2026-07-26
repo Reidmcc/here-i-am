@@ -242,6 +242,22 @@ class Settings(BaseSettings):
     tools_enabled: bool = True
     # Maximum number of tool use iterations before forcing a final response
     tool_use_max_iterations: int = 10
+    # Interrupted-turn recovery: when an iteration of the tool loop fails with a
+    # transient provider error (overloaded, rate limited, dropped connection),
+    # the identical request is retried instead of discarding the tool work
+    # already done. The prompt is byte-identical, so retries read from the
+    # prompt cache. Set attempts to 1 to disable retrying.
+    tool_loop_retry_attempts: int = 3
+    # Base delay for the exponential backoff between retries (seconds):
+    # attempt N waits base * 2^(N-1), plus up to 25% jitter.
+    tool_loop_retry_base_delay: float = 1.0
+    # Ceiling on any single backoff wait (seconds)
+    tool_loop_retry_max_delay: float = 16.0
+    # When retries are exhausted (or the error is not retryable) and at least
+    # one tool iteration already completed, the partial turn is stashed on the
+    # in-memory session so it can be resumed without re-running those tools.
+    # This is how long a stashed turn stays resumable.
+    interrupted_turn_stash_ttl_seconds: int = 900
     # Brave Search API key (for web search tool)
     brave_search_api_key: str = ""
 

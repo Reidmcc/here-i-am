@@ -14,7 +14,9 @@ conversation_session.py. Helper functions are in session_helpers.py.
 
 from typing import Callable, Dict, List, Set, Optional, Any, AsyncIterator
 from datetime import datetime
+import asyncio
 import logging
+import random
 import re
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -25,17 +27,30 @@ from app.services.tool_service import tool_service, ToolResult
 from app.services.notes_tools import (
     set_current_entity_label,
     consume_last_note_stamps,
+    seed_turn_note_stamps,
     note_content_hash,
     NOTE_IN_CONTEXT_MARKER,
     NOTE_STAMP_TOOL_NAMES,
 )
-from app.services.memory_tools import set_memory_tool_context, consume_last_query_memory_ids
+from app.services.memory_tools import (
+    set_memory_tool_context,
+    consume_last_query_memory_ids,
+    seed_turn_query_memory_ids,
+)
 from app.services.context_tools import set_context_tool_session
+from app.services.provider_errors import (
+    is_retryable_error_event,
+    describe_error_event,
+)
 from app.config import settings
 
 # Import from split modules
 from app.services.attachment_service import build_persistable_content
-from app.services.conversation_session import ConversationSession, MemoryEntry
+from app.services.conversation_session import (
+    ConversationSession,
+    MemoryEntry,
+    PendingToolTurn,
+)
 from app.services.session_helpers import (
     build_memory_queries,
     calculate_significance,
@@ -884,6 +899,10 @@ class SessionManager:
 
         logger.info(f"[MEMORY] Processing message for conversation {session.conversation_id[:8]}...")
 
+        # This turn's retrieval mutates the context any stashed interrupted
+        # turn was built against, so that turn is no longer resumable.
+        session.clear_pending_tool_turn()
+
         # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
         # Validate both that Pinecone is configured AND the entity_id is valid
         if memory_service.is_configured(entity_id=session.entity_id):
@@ -1251,6 +1270,8 @@ class SessionManager:
         tool_schemas: Optional[List[Dict[str, Any]]] = None,
         attachments: Optional[Dict[str, Any]] = None,
         user_message_timestamp: Optional[datetime] = None,
+        vectorizable_user_message: Optional[str] = None,
+        allow_resume_stash: bool = True,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Process a user message through the full pipeline with streaming response.
@@ -1275,6 +1296,20 @@ class SessionManager:
         the original message's created_at, so live and reloaded sessions
         render identical prefixes (prompt-cache stable across reloads).
 
+        vectorizable_user_message is the text the route would store as a
+        memory for this message, or None when it should not be vectorized
+        (continuations, closing turns, attachment-only messages). It is only
+        carried on the turn so that a resumed turn vectorizes exactly what the
+        original attempt would have, instead of re-deriving it from the
+        resuming request.
+
+        allow_resume_stash gates whether an interruption inside the tool loop
+        may stash the turn on the session for later resumption. Callers whose
+        turns cannot be resumed through /chat/stream must pass False:
+        regeneration does, because a resume persists a human message from the
+        stashed turn, which would duplicate the message it regenerated from.
+        Transient failures are still retried inside the loop either way.
+
         Yields events:
         - {"type": "memories", "new_memories": [...], "total_in_context": int}
         - {"type": "start", "model": str}
@@ -1289,29 +1324,12 @@ class SessionManager:
 
         logger.info(f"[MEMORY] Processing message (stream) for conversation {session.conversation_id[:8]}... entity_id={session.entity_id}, model={session.model}")
 
-        # Set entity label for notes tools context
-        # Use responding_entity_label if available (multi-entity), otherwise look up from entity_id
-        entity_label = session.responding_entity_label
-        if not entity_label and session.entity_id:
-            entity_config = settings.get_entity_by_index(session.entity_id)
-            if entity_config:
-                entity_label = entity_config.label
-        # Always reset the notes tool context (even to a None label) so a
-        # previous conversation's session/stamps can't leak into this turn.
-        # Passing the session lets notes_read find note content already in
-        # the conversation context (notes_read dedup).
-        set_current_entity_label(entity_label, session=session)
-        if entity_label:
-            logger.debug(f"[NOTES] Set entity label context: {entity_label}")
+        # A fresh turn supersedes any turn stashed by an earlier interruption:
+        # the memory retrieval and trimming below mutate the context its
+        # base_messages were built against, so it is no longer resumable.
+        session.clear_pending_tool_turn()
 
-        # Set context for memory query tool. Passing the session lets memory_query
-        # exclude memories already in the conversation context from its results.
-        if session.entity_id:
-            set_memory_tool_context(session.entity_id, session.conversation_id, session=session)
-            logger.debug(f"[MEMORY] Set memory tool context: entity_id={session.entity_id}, conversation_id={session.conversation_id[:8]}...")
-
-        # Set session for the context_status tool
-        set_context_tool_session(session)
+        self._set_turn_tool_context(session)
 
         # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
         # Validate both that Pinecone is configured AND the entity_id is valid
@@ -1681,265 +1699,515 @@ class SessionManager:
             provider_hint=session.provider_hint,
         )
 
-        # Step 5: Stream LLM response with caching enabled
-        # This includes a tool use loop if tools are provided
-        full_content = ""
-        accumulated_tool_uses = []  # Track all tool uses across iterations
-        tool_exchanges = []  # Track tool exchanges for rebuilding messages between iterations
-        # Single moving cache breakpoint (like conversation history caching):
-        # it sits on the latest tool_result every iteration, so each iteration
-        # incrementally writes only the newest exchange while reading the rest
-        # of the prefix from cache (longest-prefix matching).
-        iteration = 0
-        max_iterations = settings.tool_use_max_iterations
+        # Step 5: Stream the LLM response through the agentic tool loop.
+        #
+        # Everything the turn accumulates (completed tool exchanges, the text
+        # streamed so far, which iteration runs next) lives on a
+        # PendingToolTurn, so an interruption partway through can stash it on
+        # the session and resume from that point instead of discarding the
+        # work and re-running the tools.
+        turn = PendingToolTurn(
+            entity_id=session.entity_id,
+            conversation_id=session.conversation_id,
+            raw_user_message=user_message,
+            stamped_user_message=stamped_user_message,
+            message_sent_at=user_message_timestamp or datetime.utcnow(),
+            # context_user_message is the message with any [ATTACHED FILE]
+            # blocks folded in — byte-identical to what the route persists.
+            persistable_content=context_user_message,
+            vectorize_user_message=vectorizable_user_message,
+            base_messages=messages,
+        )
 
-        while iteration < max_iterations:
-            iteration += 1
+        async for event in self._run_tool_loop(
+            session, turn, tool_schemas, allow_resume_stash=allow_resume_stash
+        ):
+            yield event
+
+    def _set_turn_tool_context(
+        self,
+        session: ConversationSession,
+        resume_turn: Optional[PendingToolTurn] = None,
+    ) -> None:
+        """
+        Point the tool modules' per-turn context at this session.
+
+        The notes and memory tool contexts are module-level singletons, so
+        they must be (re)set at the start of every turn - including a resumed
+        one, since another conversation may have run in between.
+
+        Setting them resets their turn-level dedup accumulators. For a resume
+        that would lose the memory_query IDs and note stamps recorded by the
+        iterations that already completed: nothing about the turn is persisted
+        yet, so those accumulators are the only record, and without them a
+        later iteration of the same turn could re-surface a memory or re-read
+        a note it already has in context. Re-seed them from the stashed
+        exchanges.
+        """
+        # Set entity label for notes tools context
+        # Use responding_entity_label if available (multi-entity), otherwise look up from entity_id
+        entity_label = session.responding_entity_label
+        if not entity_label and session.entity_id:
+            entity_config = settings.get_entity_by_index(session.entity_id)
+            if entity_config:
+                entity_label = entity_config.label
+        # Always reset the notes tool context (even to a None label) so a
+        # previous conversation's session/stamps can't leak into this turn.
+        # Passing the session lets notes_read find note content already in
+        # the conversation context (notes_read dedup).
+        set_current_entity_label(entity_label, session=session)
+        if entity_label:
+            logger.debug(f"[NOTES] Set entity label context: {entity_label}")
+
+        # Set context for memory query tool. Passing the session lets memory_query
+        # exclude memories already in the conversation context from its results.
+        if session.entity_id:
+            set_memory_tool_context(session.entity_id, session.conversation_id, session=session)
+            logger.debug(f"[MEMORY] Set memory tool context: entity_id={session.entity_id}, conversation_id={session.conversation_id[:8]}...")
+
+        # Set session for the context_status tool
+        set_context_tool_session(session)
+
+        if resume_turn is not None:
+            for exchange in resume_turn.tool_exchanges:
+                if exchange.get("memory_query_ids"):
+                    seed_turn_query_memory_ids(exchange["memory_query_ids"])
+                if exchange.get("note_stamps"):
+                    seed_turn_note_stamps(exchange["note_stamps"])
+
+    async def resume_message_stream(
+        self,
+        session: ConversationSession,
+        turn: PendingToolTurn,
+        tool_schemas: Optional[List[Dict[str, Any]]] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Resume a turn that was interrupted inside the tool loop.
+
+        Picks up at the iteration that failed, keeping the tool exchanges and
+        response text from the iterations that completed. The tools that
+        already ran are not re-executed - which matters both for cost and for
+        tools with side effects (notes writes, GitHub commits, Moltbook posts).
+
+        This deliberately skips everything process_message_stream does before
+        the loop: memory retrieval, retrieval-count updates, recent-reflection
+        injection, context trimming and message building all ran for this turn
+        already. Re-running them would pull more memories into a context the
+        stashed base_messages no longer describe, inflate significance
+        counters for a single retrieval, and change the prompt prefix - which
+        is exactly what makes a resume cheap: the request the loop rebuilds is
+        byte-identical to the one that failed, so the provider serves the
+        prefix from cache.
+
+        Callers must obtain `turn` from session.take_resumable_turn(), which
+        validates that it still matches the session.
+
+        Yields the same events as process_message_stream.
+        """
+        turn.resumed = True
+        logger.info(
+            f"[RESUME] Resuming turn for conversation {session.conversation_id[:8]}... at "
+            f"iteration {turn.next_iteration} with {turn.completed_iterations} completed "
+            f"tool iterations ({turn.completed_tool_calls} tool calls), "
+            f"{len(turn.full_content)} chars of response text"
+        )
+
+        self._set_turn_tool_context(session, resume_turn=turn)
+
+        async for event in self._run_tool_loop(session, turn, tool_schemas):
+            yield event
+
+    def _build_working_messages(self, turn: PendingToolTurn) -> List[Dict[str, Any]]:
+        """
+        Build the API message list for a turn's next iteration.
+
+        Single moving cache breakpoint (like conversation history caching):
+        cache_control sits on the latest tool_result, so each iteration
+        incrementally writes only the newest exchange while reading the rest
+        of the prefix from cache (longest-prefix matching).
+
+        Keyed on the exchanges the turn has accumulated rather than on the
+        iteration number, so a resumed turn rebuilds byte-identical messages
+        to the ones its interrupted attempt sent — which makes the resumed
+        request a cache read rather than a cache rewrite.
+        """
+        working_messages = list(turn.base_messages)
+        for i, exchange in enumerate(turn.tool_exchanges):
+            working_messages.append(exchange["assistant"])
+            if i == len(turn.tool_exchanges) - 1:
+                working_messages.append(_add_cache_control_to_tool_result(exchange["user"]))
+            else:
+                working_messages.append(exchange["user"])
+        return working_messages
+
+    async def _run_tool_loop(
+        self,
+        session: ConversationSession,
+        turn: PendingToolTurn,
+        tool_schemas: Optional[List[Dict[str, Any]]] = None,
+        allow_resume_stash: bool = True,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Run the agentic tool loop for a turn, starting at turn.next_iteration.
+
+        Shared by process_message_stream (fresh turn, first iteration) and
+        resume_message_stream (interrupted turn, picking up where it stopped).
+
+        Interruption handling has two layers:
+
+        1. A transient provider failure (overloaded, rate limited, dropped
+           connection) re-runs the same iteration, up to
+           tool_loop_retry_attempts times with exponential backoff. The
+           request is byte-identical, so the retry reads from the prompt
+           cache. Any tokens the failed attempt streamed are withdrawn with a
+           stream_rewind event.
+        2. If retries are exhausted (or the failure is permanent) and at least
+           one tool iteration already completed, the turn is stashed on the
+           session for resumption. Crucially the session is NOT mutated -
+           no add_exchange, no cache-breakpoint advance - so the context still
+           matches what the stashed base_messages were built against.
+
+        Yields the events documented on process_message_stream, plus:
+        - {"type": "stream_rewind", "checkpoint": int} - discard the tokens
+          streamed since `checkpoint` characters of response text; the
+          iteration that produced them is being re-run or abandoned.
+        """
+        max_iterations = settings.tool_use_max_iterations
+        max_attempts = max(1, settings.tool_loop_retry_attempts)
+
+        while turn.next_iteration <= max_iterations:
+            iteration = turn.next_iteration
+            working_messages = self._build_working_messages(turn)
+            if turn.tool_exchanges:
+                logger.info(
+                    f"[TOOLS] Iteration {iteration}: {len(working_messages)} messages, "
+                    f"{len(turn.tool_exchanges)} tool exchanges, breakpoint on latest tool_result"
+                )
+
             iteration_content = ""
             iteration_tool_use = None
             iteration_content_blocks = []
             stop_reason = None
+            done_event = None
+            error_event = None
 
-            # Build working messages for this iteration
-            # First iteration: the base messages as built above
-            # Subsequent iterations: base messages + accumulated tool exchanges
-            if iteration == 1:
-                working_messages = list(messages)
-            else:
-                # Rebuild from base + accumulated tool exchanges
-                # Single moving cache breakpoint: cache_control goes on the
-                # latest tool_result, so each iteration writes only the newest
-                # exchange and reads everything before it from cache.
-                working_messages = list(messages)
-                for i, exchange in enumerate(tool_exchanges):
-                    working_messages.append(exchange["assistant"])
-                    if i == len(tool_exchanges) - 1:
-                        user_msg = _add_cache_control_to_tool_result(exchange["user"])
-                    else:
-                        user_msg = exchange["user"]
-                    working_messages.append(user_msg)
-                logger.info(f"[TOOLS] Iteration {iteration}: {len(working_messages)} messages, {len(tool_exchanges)} tool exchanges, breakpoint on latest tool_result")
+            for attempt in range(1, max_attempts + 1):
+                # Each attempt re-runs the iteration from scratch; only the
+                # per-iteration state resets, the turn's accumulated work stays.
+                iteration_content = ""
+                iteration_tool_use = None
+                iteration_content_blocks = []
+                stop_reason = None
+                done_event = None
+                error_event = None
+                # Tools this attempt announced to the client but never got to
+                # execute; withdrawn along with the text if the attempt fails.
+                announced_tool_ids = []
 
-            async for event in llm_service.send_message_stream(
-                messages=working_messages,
-                model=session.model,
-                system_prompt=session.system_prompt,
-                temperature=session.temperature,
-                max_tokens=session.max_tokens,
-                enable_caching=True,
-                verbosity=session.verbosity,
-                tools=tool_schemas,
-                provider_hint=session.provider_hint,
-            ):
-                if event["type"] == "token":
-                    content = event["content"]
-                    # Add space before first token after tool use if needed
-                    if iteration > 1 and not iteration_content and full_content and not full_content[-1].isspace():
-                        content = " " + content
-                    iteration_content += content
-                    yield {"type": "token", "content": content}
-                elif event["type"] == "tool_use_start":
-                    # Yield tool start event to frontend
+                async for event in llm_service.send_message_stream(
+                    messages=working_messages,
+                    model=session.model,
+                    system_prompt=session.system_prompt,
+                    temperature=session.temperature,
+                    max_tokens=session.max_tokens,
+                    enable_caching=True,
+                    verbosity=session.verbosity,
+                    tools=tool_schemas,
+                    provider_hint=session.provider_hint,
+                ):
+                    if event["type"] == "token":
+                        content = event["content"]
+                        # Add space before first token after tool use if needed
+                        if iteration > 1 and not iteration_content and turn.full_content and not turn.full_content[-1].isspace():
+                            content = " " + content
+                        iteration_content += content
+                        yield {"type": "token", "content": content}
+                    elif event["type"] == "tool_use_start":
+                        # Yield tool start event to frontend
+                        announced_tool_ids.append(event["tool_use"]["id"])
+                        yield {
+                            "type": "tool_start",
+                            "tool_name": event["tool_use"]["name"],
+                            "tool_id": event["tool_use"]["id"],
+                            "input": {},  # Input comes later when block completes
+                        }
+                    elif event["type"] == "done":
+                        done_event = event
+                        stop_reason = event.get("stop_reason")
+                        iteration_content_blocks = event.get("content_blocks", [])
+                        iteration_tool_use = event.get("tool_use")
+                    elif event["type"] == "error":
+                        error_event = event
+                    elif event["type"] == "start":
+                        # Only yield start once per turn: on the first attempt
+                        # of the first iteration, and never on a resume (the
+                        # client is already showing this turn's response).
+                        if iteration == 1 and attempt == 1 and not turn.resumed:
+                            yield event
+
+                if error_event is None:
+                    break
+
+                # The attempt failed. Nothing it streamed is part of the
+                # response - the iteration is about to be re-run from the same
+                # prompt, or abandoned - so withdraw it from the client before
+                # doing either. That covers both the text and any tool the
+                # attempt announced but never reached execution (tools run
+                # after the stream completes, so none of them actually ran).
+                if iteration_content or announced_tool_ids:
                     yield {
-                        "type": "tool_start",
-                        "tool_name": event["tool_use"]["name"],
-                        "tool_id": event["tool_use"]["id"],
-                        "input": {},  # Input comes later when block completes
+                        "type": "stream_rewind",
+                        "checkpoint": len(turn.full_content),
+                        "discard_tool_ids": announced_tool_ids,
                     }
-                elif event["type"] == "done":
-                    stop_reason = event.get("stop_reason")
-                    iteration_content_blocks = event.get("content_blocks", [])
-                    iteration_tool_use = event.get("tool_use")
+                    iteration_content = ""
 
-                    # If no tool use, this is the final response
-                    if stop_reason != "tool_use" or not iteration_tool_use:
-                        full_content += iteration_content
+                if not is_retryable_error_event(error_event) or attempt >= max_attempts:
+                    break
 
-                        # Guard against a degenerate empty response: providers
-                        # occasionally return no text and no tool use. Persisting
-                        # it would store a blank assistant message and try to
-                        # vectorize blank content (which Pinecone rejects), and
-                        # would leave a blank turn in history that busts the
-                        # prompt cache on the next reload. Treat it as a soft
-                        # error: do NOT mutate the session (no add_exchange, no
-                        # cache advance) so the warm in-memory session can be
-                        # retried in place without a reload, and surface it to
-                        # the caller. Only fires when the turn produced nothing
-                        # at all — if tools ran, the turn has substance and is
-                        # persisted normally.
-                        if not tool_exchanges and not full_content.strip():
-                            logger.warning(
-                                f"[STREAM] Empty response from provider "
-                                f"(model={session.model}, stop_reason={stop_reason}); "
-                                f"not persisting, session left warm for retry"
-                            )
-                            yield {
-                                "type": "error",
-                                "error": "The model returned an empty response. Please try again.",
-                                "error_type": "empty_response",
-                            }
-                            return
+                # Byte-identical retry: the prompt is unchanged, so this reads
+                # from the prompt cache rather than rewriting it.
+                delay = min(
+                    settings.tool_loop_retry_base_delay * (2 ** (attempt - 1)),
+                    settings.tool_loop_retry_max_delay,
+                )
+                delay *= 1 + random.random() * 0.25
+                logger.warning(
+                    f"[TOOLS] Iteration {iteration} attempt {attempt}/{max_attempts} failed "
+                    f"({describe_error_event(error_event)}); retrying in {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
 
-                        # Record the provider-reported prompt size against the
-                        # local estimate of the same prompt (this iteration's
-                        # working messages), to calibrate later trimming counts
-                        session.record_prompt_usage(
-                            actual_tokens=total_prompt_tokens_from_usage(event.get("usage")),
-                            estimated_tokens=estimate_prompt_tokens(
-                                working_messages, llm_service.count_tokens, session.system_prompt
-                            ),
-                        )
-
-                        # Update conversation context and cache state
-                        # Include tool exchanges so they're persisted in conversation history
-                        session.add_exchange(
-                            stamped_user_message,
-                            full_content,
-                            tool_exchanges=tool_exchanges if tool_exchanges else None,
-                        )
-
-                        # Advance the cache breakpoint over the full history
-                        # (including this turn's exchange and any tool
-                        # exchanges). Next turn writes only the new tail to
-                        # the cache and reads the existing prefix.
-                        session.update_cache_state(len(session.conversation_context))
-
-                        # Add tool data to done event if any tools were used
-                        final_event = dict(event)
-                        if accumulated_tool_uses:
-                            final_event["tool_uses"] = accumulated_tool_uses
-                        if tool_exchanges:
-                            # Include full tool exchanges for DB persistence
-                            final_event["tool_exchanges"] = tool_exchanges
-                        yield final_event
-                        return
-                elif event["type"] == "error":
-                    yield event
-                    return
-                elif event["type"] == "start":
-                    # Only yield start on first iteration
-                    if iteration == 1:
-                        yield event
-
-            # If we get here, we have tool_use to process
-            if iteration_tool_use:
-                logger.info(f"[TOOLS] Iteration {iteration}: Processing {len(iteration_tool_use)} tool calls")
-
-                # Execute tools and collect results
-                tool_results = []
-                # Memory IDs surfaced by memory_query calls in this iteration,
-                # stamped onto the exchange so its tool_result context message
-                # carries them (retrieval dedup + reload restoration)
-                exchange_query_memory_ids: List[str] = []
-                # Note-content stamps from notes tool calls in this iteration,
-                # stamped onto the exchange the same way (notes_read dedup)
-                exchange_note_stamps: List[Dict[str, Any]] = []
-                for tool_call in iteration_tool_use:
-                    tool_name = tool_call["name"]
-                    tool_id = tool_call["id"]
-                    tool_input = tool_call.get("input", {})
-
-                    # Yield updated tool_start with actual input
-                    yield {
-                        "type": "tool_start",
-                        "tool_name": tool_name,
-                        "tool_id": tool_id,
-                        "input": tool_input,
-                    }
-
-                    # Execute the tool
-                    result = await tool_service.execute_tool(
-                        tool_use_id=tool_id,
-                        tool_name=tool_name,
-                        tool_input=tool_input,
+            if error_event is not None:
+                # Out of attempts, or a failure that retrying cannot fix.
+                turn.next_iteration = iteration
+                if turn.tool_exchanges and allow_resume_stash:
+                    # Earlier iterations completed real work - tool calls that
+                    # may have had side effects, and output tokens already paid
+                    # for. Stash the turn so it can be resumed from this
+                    # iteration. The session is deliberately left untouched
+                    # (no add_exchange, no cache advance), so the context still
+                    # matches what turn.base_messages was built against.
+                    session.stash_pending_tool_turn(
+                        turn,
+                        error=error_event.get("error"),
+                        error_type=error_event.get("error_type"),
                     )
-
-                    if tool_name == "memory_query":
-                        exchange_query_memory_ids.extend(consume_last_query_memory_ids())
-                    elif tool_name in NOTE_STAMP_TOOL_NAMES:
-                        exchange_note_stamps.extend(consume_last_note_stamps())
-
-                    # Yield tool result to frontend
                     yield {
-                        "type": "tool_result",
-                        "tool_name": tool_name,
-                        "tool_id": tool_id,
-                        "content": result.content,
-                        "is_error": result.is_error,
+                        "type": "error",
+                        "error": error_event.get("error", "The response was interrupted."),
+                        "error_type": "interrupted_tool_turn",
+                        "provider_error_type": error_event.get("error_type"),
+                        "turn_id": turn.turn_id,
+                        "completed_iterations": turn.completed_iterations,
+                        "completed_tool_calls": turn.completed_tool_calls,
                     }
+                else:
+                    # Nothing to preserve - either the turn never got past its
+                    # first iteration, or this caller's turns are not resumable.
+                    # Surface the provider error as-is; the session was never
+                    # mutated, so a plain retry is clean.
+                    session.clear_pending_tool_turn()
+                    yield error_event
+                return
 
-                    tool_results.append(result)
+            # No tool use requested: this iteration is the final response.
+            if stop_reason != "tool_use" or not iteration_tool_use:
+                turn.full_content += iteration_content
 
-                    # Track for final response
-                    accumulated_tool_uses.append({
-                        "call": {
-                            "name": tool_name,
-                            "id": tool_id,
-                            "input": tool_input,
-                        },
-                        "result": {
-                            "content": result.content,
-                            "is_error": result.is_error,
-                        },
-                    })
+                # Guard against a degenerate empty response: providers
+                # occasionally return no text and no tool use. Persisting
+                # it would store a blank assistant message and try to
+                # vectorize blank content (which Pinecone rejects), and
+                # would leave a blank turn in history that busts the
+                # prompt cache on the next reload. Treat it as a soft
+                # error: do NOT mutate the session (no add_exchange, no
+                # cache advance) so the warm in-memory session can be
+                # retried in place without a reload, and surface it to
+                # the caller. Only fires when the turn produced nothing
+                # at all - if tools ran, the turn has substance and is
+                # persisted normally.
+                if not turn.tool_exchanges and not turn.full_content.strip():
+                    logger.warning(
+                        f"[STREAM] Empty response from provider "
+                        f"(model={session.model}, stop_reason={stop_reason}); "
+                        f"not persisting, session left warm for retry"
+                    )
+                    session.clear_pending_tool_turn()
+                    yield {
+                        "type": "error",
+                        "error": "The model returned an empty response. Please try again.",
+                        "error_type": "empty_response",
+                    }
+                    return
 
-                # Build tool exchange messages for tracking
-                assistant_msg = {
-                    "role": "assistant",
-                    "content": iteration_content_blocks,
+                # Record the provider-reported prompt size against the
+                # local estimate of the same prompt (this iteration's
+                # working messages), to calibrate later trimming counts
+                session.record_prompt_usage(
+                    actual_tokens=total_prompt_tokens_from_usage((done_event or {}).get("usage")),
+                    estimated_tokens=estimate_prompt_tokens(
+                        working_messages, llm_service.count_tokens, session.system_prompt
+                    ),
+                )
+
+                # Update conversation context and cache state
+                # Include tool exchanges so they're persisted in conversation history
+                session.add_exchange(
+                    turn.stamped_user_message,
+                    turn.full_content,
+                    tool_exchanges=turn.tool_exchanges if turn.tool_exchanges else None,
+                )
+
+                # Advance the cache breakpoint over the full history
+                # (including this turn's exchange and any tool
+                # exchanges). Next turn writes only the new tail to
+                # the cache and reads the existing prefix.
+                session.update_cache_state(len(session.conversation_context))
+
+                # The turn finished: nothing left to resume.
+                session.clear_pending_tool_turn()
+
+                final_event = dict(done_event or {"type": "done", "model": session.model})
+                # The provider's done event carries only the last iteration's
+                # text. Report the whole turn's text so the row the route
+                # persists matches the assistant message add_exchange just put
+                # in the session context (they must be identical, or the next
+                # session reload rebuilds a different history and busts the
+                # prompt cache) - and so text streamed before an interruption
+                # survives into a resumed turn's stored response.
+                final_event["content"] = turn.full_content
+                if turn.accumulated_tool_uses:
+                    final_event["tool_uses"] = turn.accumulated_tool_uses
+                if turn.tool_exchanges:
+                    # Include full tool exchanges for DB persistence
+                    final_event["tool_exchanges"] = turn.tool_exchanges
+                yield final_event
+                return
+
+            # Tool use requested: execute the tools, then loop.
+            logger.info(f"[TOOLS] Iteration {iteration}: Processing {len(iteration_tool_use)} tool calls")
+
+            # Execute tools and collect results
+            tool_results = []
+            # Memory IDs surfaced by memory_query calls in this iteration,
+            # stamped onto the exchange so its tool_result context message
+            # carries them (retrieval dedup + reload restoration)
+            exchange_query_memory_ids: List[str] = []
+            # Note-content stamps from notes tool calls in this iteration,
+            # stamped onto the exchange the same way (notes_read dedup)
+            exchange_note_stamps: List[Dict[str, Any]] = []
+            for tool_call in iteration_tool_use:
+                tool_name = tool_call["name"]
+                tool_id = tool_call["id"]
+                tool_input = tool_call.get("input", {})
+
+                # Yield updated tool_start with actual input
+                yield {
+                    "type": "tool_start",
+                    "tool_name": tool_name,
+                    "tool_id": tool_id,
+                    "input": tool_input,
                 }
 
-                tool_result_content = []
-                for result in tool_results:
-                    tool_result_content.append({
-                        "type": "tool_result",
-                        "tool_use_id": result.tool_use_id,
+                # Execute the tool
+                result = await tool_service.execute_tool(
+                    tool_use_id=tool_id,
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                )
+
+                if tool_name == "memory_query":
+                    exchange_query_memory_ids.extend(consume_last_query_memory_ids())
+                elif tool_name in NOTE_STAMP_TOOL_NAMES:
+                    exchange_note_stamps.extend(consume_last_note_stamps())
+
+                # Yield tool result to frontend
+                yield {
+                    "type": "tool_result",
+                    "tool_name": tool_name,
+                    "tool_id": tool_id,
+                    "content": result.content,
+                    "is_error": result.is_error,
+                }
+
+                tool_results.append(result)
+
+                # Track for final response
+                turn.accumulated_tool_uses.append({
+                    "call": {
+                        "name": tool_name,
+                        "id": tool_id,
+                        "input": tool_input,
+                    },
+                    "result": {
                         "content": result.content,
                         "is_error": result.is_error,
-                    })
+                    },
+                })
 
-                user_msg = {
-                    "role": "user",
-                    "content": tool_result_content,
-                }
+            # Build tool exchange messages for tracking
+            assistant_msg = {
+                "role": "assistant",
+                "content": iteration_content_blocks,
+            }
 
-                # Store exchange for rebuilding messages without memories on next iteration
-                exchange = {
-                    "assistant": assistant_msg,
-                    "user": user_msg,
-                }
-                # Kept on the exchange dict (not on user_msg, which goes to the
-                # provider API verbatim); add_exchange moves it onto the
-                # tool_result context message.
-                if exchange_query_memory_ids:
-                    exchange["memory_query_ids"] = exchange_query_memory_ids
-                if exchange_note_stamps:
-                    exchange["note_stamps"] = exchange_note_stamps
-                tool_exchanges.append(exchange)
+            tool_result_content = []
+            for result in tool_results:
+                tool_result_content.append({
+                    "type": "tool_result",
+                    "tool_use_id": result.tool_use_id,
+                    "content": result.content,
+                    "is_error": result.is_error,
+                })
 
-                # Accumulate any text content from this iteration
-                full_content += iteration_content
+            user_msg = {
+                "role": "user",
+                "content": tool_result_content,
+            }
+
+            # Store exchange for rebuilding messages without memories on next iteration
+            exchange = {
+                "assistant": assistant_msg,
+                "user": user_msg,
+            }
+            # Kept on the exchange dict (not on user_msg, which goes to the
+            # provider API verbatim); add_exchange moves it onto the
+            # tool_result context message.
+            if exchange_query_memory_ids:
+                exchange["memory_query_ids"] = exchange_query_memory_ids
+            if exchange_note_stamps:
+                exchange["note_stamps"] = exchange_note_stamps
+            turn.tool_exchanges.append(exchange)
+
+            # Accumulate any text content from this iteration
+            turn.full_content += iteration_content
+
+            # This iteration is complete and durable within the turn: an
+            # interruption from here on resumes at the next one.
+            turn.next_iteration = iteration + 1
 
         # If we've exhausted iterations, yield what we have
         logger.warning(f"[TOOLS] Max iterations ({max_iterations}) reached")
         session.add_exchange(
-            stamped_user_message,
-            full_content,
-            tool_exchanges=tool_exchanges if tool_exchanges else None,
+            turn.stamped_user_message,
+            turn.full_content,
+            tool_exchanges=turn.tool_exchanges if turn.tool_exchanges else None,
         )
 
         # Advance the cache breakpoint over the full history (same as the
         # normal exit path).
         session.update_cache_state(len(session.conversation_context))
+        session.clear_pending_tool_turn()
 
         yield {
             "type": "done",
-            "content": full_content,
+            "content": turn.full_content,
             "model": session.model,
             "usage": {},
             "stop_reason": "max_iterations",
-            "tool_uses": accumulated_tool_uses if accumulated_tool_uses else None,
-            "tool_exchanges": tool_exchanges if tool_exchanges else None,
+            "tool_uses": turn.accumulated_tool_uses if turn.accumulated_tool_uses else None,
+            "tool_exchanges": turn.tool_exchanges if turn.tool_exchanges else None,
         }
 
     def close_session(self, conversation_id: str):

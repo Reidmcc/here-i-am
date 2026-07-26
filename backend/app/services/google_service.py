@@ -2,6 +2,7 @@ from typing import Optional, List, Dict, Any, AsyncIterator
 from google import genai
 from google.genai import types
 from app.config import settings
+from app.services.provider_errors import stream_error_event
 import tiktoken
 import logging
 
@@ -275,7 +276,7 @@ class GoogleService:
 
         except Exception as e:
             logger.error(f"[GOOGLE] Streaming error: {e}")
-            yield {"type": "error", "error": str(e)}
+            yield stream_error_event(e)
 
 
 # Singleton instance

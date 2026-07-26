@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import uuid
 
 from app.services.session_manager import SessionManager, ConversationSession, MemoryEntry, _add_cache_control_to_tool_result
+from app.services.conversation_session import PendingToolTurn
 from app.models import Conversation, Message, MessageRole, ConversationType
 
 
@@ -1671,6 +1672,9 @@ class TestAgenticToolLoopMessages:
             mock_settings.default_max_tokens = 64000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.tool_loop_retry_attempts = 3
+            mock_settings.tool_loop_retry_base_delay = 0.0
+            mock_settings.tool_loop_retry_max_delay = 0.0
 
             # Track what messages are built
             build_calls = []
@@ -1740,6 +1744,9 @@ class TestAgenticToolLoopMessages:
             mock_settings.default_max_tokens = 64000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.tool_loop_retry_attempts = 3
+            mock_settings.tool_loop_retry_base_delay = 0.0
+            mock_settings.tool_loop_retry_max_delay = 0.0
 
             # Track messages sent to LLM
             sent_messages = []
@@ -1847,6 +1854,9 @@ class TestAgenticToolLoopMessages:
             mock_settings.default_max_tokens = 64000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.tool_loop_retry_attempts = 3
+            mock_settings.tool_loop_retry_base_delay = 0.0
+            mock_settings.tool_loop_retry_max_delay = 0.0
 
             # Capture the kwargs of every build call so we can inspect attachments
             build_calls = []
@@ -1965,6 +1975,9 @@ class TestAgenticToolLoopMessages:
             mock_settings.default_max_tokens = 64000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.tool_loop_retry_attempts = 3
+            mock_settings.tool_loop_retry_base_delay = 0.0
+            mock_settings.tool_loop_retry_max_delay = 0.0
 
             mock_llm.build_messages = MagicMock(
                 return_value=[{"role": "user", "content": "msg"}]
@@ -2024,6 +2037,9 @@ class TestAgenticToolLoopMessages:
             mock_settings.default_max_tokens = 64000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.tool_loop_retry_attempts = 3
+            mock_settings.tool_loop_retry_base_delay = 0.0
+            mock_settings.tool_loop_retry_max_delay = 0.0
 
             sent_messages = []
 
@@ -2136,6 +2152,9 @@ class TestAgenticToolLoopMessages:
             mock_settings.default_max_tokens = 64000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.tool_loop_retry_attempts = 3
+            mock_settings.tool_loop_retry_base_delay = 0.0
+            mock_settings.tool_loop_retry_max_delay = 0.0
 
             sent_messages = []
 
@@ -2196,6 +2215,9 @@ class TestAgenticToolLoopMessages:
             mock_settings.default_max_tokens = 64000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.tool_loop_retry_attempts = 3
+            mock_settings.tool_loop_retry_base_delay = 0.0
+            mock_settings.tool_loop_retry_max_delay = 0.0
 
             build_calls = []
 
@@ -2442,6 +2464,9 @@ class TestToolIterationCaching:
             mock_settings.default_max_tokens = 64000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.tool_loop_retry_attempts = 3
+            mock_settings.tool_loop_retry_base_delay = 0.0
+            mock_settings.tool_loop_retry_max_delay = 0.0
 
             sent_messages = []
 
@@ -2532,6 +2557,9 @@ class TestToolIterationCaching:
             mock_settings.default_max_tokens = 64000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.tool_loop_retry_attempts = 3
+            mock_settings.tool_loop_retry_base_delay = 0.0
+            mock_settings.tool_loop_retry_max_delay = 0.0
 
             sent_messages = []
 
@@ -2621,6 +2649,9 @@ class TestToolIterationCaching:
             mock_settings.default_max_tokens = 64000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.tool_loop_retry_attempts = 3
+            mock_settings.tool_loop_retry_base_delay = 0.0
+            mock_settings.tool_loop_retry_max_delay = 0.0
 
             sent_messages = []
 
@@ -2753,6 +2784,9 @@ class TestRecentReflectionsInjection:
         mock_settings.retrieval_top_k = 5
         mock_settings.memory_role_balance_enabled = False
         mock_settings.tool_use_max_iterations = 10
+        mock_settings.tool_loop_retry_attempts = 3
+        mock_settings.tool_loop_retry_base_delay = 0.0
+        mock_settings.tool_loop_retry_max_delay = 0.0
         mock_settings.recent_reflections_enabled = enabled
         mock_settings.recent_reflections_count = count
 
@@ -3612,6 +3646,9 @@ class TestNoteStampTracking:
             mock_settings.default_max_tokens = 64000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.tool_loop_retry_attempts = 3
+            mock_settings.tool_loop_retry_base_delay = 0.0
+            mock_settings.tool_loop_retry_max_delay = 0.0
 
             mock_llm.build_messages.return_value = [{"role": "user", "content": "x"}]
             mock_llm.count_tokens = MagicMock(return_value=10)
@@ -3663,6 +3700,9 @@ class TestNoteStampTracking:
             mock_settings.default_max_tokens = 64000
             mock_settings.context_token_limit = 150000
             mock_settings.tool_use_max_iterations = 10
+            mock_settings.tool_loop_retry_attempts = 3
+            mock_settings.tool_loop_retry_base_delay = 0.0
+            mock_settings.tool_loop_retry_max_delay = 0.0
 
             mock_llm.build_messages.return_value = [{"role": "user", "content": "x"}]
             mock_llm.count_tokens = MagicMock(return_value=10)
@@ -3974,3 +4014,744 @@ class TestNoteStampTracking:
 
         tool_results = [m for m in session.conversation_context if m.get("is_tool_result")]
         assert all("note_stamps" not in m for m in tool_results)
+
+
+class TestInterruptedToolTurn:
+    """
+    Tests for surviving an interruption partway through the agentic tool loop.
+
+    Two layers: a transient provider failure re-runs the same iteration, and a
+    failure that outlives its retries stashes the turn so it can be resumed
+    from the iteration that failed. Both exist so the tool calls that already
+    ran are not thrown away and re-executed - which costs tokens and, for
+    tools with side effects, repeats them.
+    """
+
+    @staticmethod
+    def _configure_settings(mock_settings, retry_attempts=3):
+        mock_settings.default_model = "claude-sonnet-4-5-20250929"
+        mock_settings.default_temperature = 1.0
+        mock_settings.default_max_tokens = 64000
+        mock_settings.context_token_limit = 150000
+        mock_settings.tool_use_max_iterations = 10
+        mock_settings.tool_loop_retry_attempts = retry_attempts
+        mock_settings.tool_loop_retry_base_delay = 0.0
+        mock_settings.tool_loop_retry_max_delay = 0.0
+        mock_settings.interrupted_turn_stash_ttl_seconds = 900
+        mock_settings.recent_reflections_enabled = False
+
+    @staticmethod
+    def _tool_result(tool_use_id="tool-1", content="Search results"):
+        result = MagicMock()
+        result.tool_use_id = tool_use_id
+        result.content = content
+        result.is_error = False
+        return result
+
+    @staticmethod
+    def _tool_use_done(tool_id="tool-1", text=""):
+        blocks = []
+        if text:
+            blocks.append({"type": "text", "text": text})
+        blocks.append(
+            {"type": "tool_use", "id": tool_id, "name": "web_search", "input": {"query": "q"}}
+        )
+        return {
+            "type": "done",
+            "content": text,
+            "model": "claude-sonnet-4-5-20250929",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "stop_reason": "tool_use",
+            "content_blocks": blocks,
+            "tool_use": [{"id": tool_id, "name": "web_search", "input": {"query": "q"}}],
+        }
+
+    @staticmethod
+    def _final_done(text="Final answer"):
+        return {
+            "type": "done",
+            "content": text,
+            "model": "claude-sonnet-4-5-20250929",
+            "usage": {"input_tokens": 20, "output_tokens": 10},
+            "stop_reason": "end_turn",
+            "content_blocks": [{"type": "text", "text": text}],
+        }
+
+    @pytest.mark.asyncio
+    async def test_transient_error_retries_iteration_without_rerunning_tools(
+        self, db_session, sample_conversation
+    ):
+        """A retryable failure re-runs the iteration; completed tools stay done."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            self._configure_settings(mock_settings)
+            mock_llm.build_messages.return_value = [{"role": "user", "content": "base"}]
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            calls = []
+
+            async def mock_stream(messages, **kwargs):
+                calls.append(list(messages))
+                if len(calls) == 1:
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield self._tool_use_done()
+                elif len(calls) == 2:
+                    # Iteration 2 dies on an overloaded provider
+                    yield {
+                        "type": "error",
+                        "error": "overloaded",
+                        "error_type": "overloaded",
+                        "retryable": True,
+                    }
+                else:
+                    yield {"type": "token", "content": "Final answer"}
+                    yield self._final_done()
+
+            mock_llm.send_message_stream = mock_stream
+            mock_tool.execute_tool = AsyncMock(return_value=self._tool_result())
+
+            session = manager.create_session(sample_conversation.id)
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Search", db_session, tool_schemas=[{"name": "web_search"}]
+            ):
+                events.append(event)
+
+        # Three provider calls, but the tool ran exactly once
+        assert len(calls) == 3
+        assert mock_tool.execute_tool.await_count == 1
+
+        # The retry re-sent the identical prompt - that is what makes it a
+        # cache read rather than a rewrite
+        assert calls[1] == calls[2]
+
+        # The turn completed normally and left nothing to resume
+        done = [e for e in events if e["type"] == "done"]
+        assert len(done) == 1
+        assert done[0]["content"] == "Final answer"
+        assert session.pending_tool_turn is None
+        assert not [e for e in events if e["type"] == "error"]
+
+    @pytest.mark.asyncio
+    async def test_retry_rewinds_text_streamed_by_the_failed_attempt(
+        self, db_session, sample_conversation
+    ):
+        """Text from a failed attempt is withdrawn so the retry does not duplicate it."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            self._configure_settings(mock_settings)
+            mock_llm.build_messages.return_value = [{"role": "user", "content": "base"}]
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            calls = []
+
+            async def mock_stream(messages, **kwargs):
+                calls.append(list(messages))
+                if len(calls) == 1:
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {"type": "token", "content": "Let me look. "}
+                    yield self._tool_use_done(text="Let me look. ")
+                elif len(calls) == 2:
+                    yield {"type": "token", "content": "Half a sent"}
+                    yield {
+                        "type": "error",
+                        "error": "connection reset",
+                        "error_type": "connection",
+                        "retryable": True,
+                    }
+                else:
+                    yield {"type": "token", "content": "Complete answer"}
+                    yield self._final_done("Complete answer")
+
+            mock_llm.send_message_stream = mock_stream
+            mock_tool.execute_tool = AsyncMock(return_value=self._tool_result())
+
+            session = manager.create_session(sample_conversation.id)
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Search", db_session, tool_schemas=[{"name": "web_search"}]
+            ):
+                events.append(event)
+
+        rewinds = [e for e in events if e["type"] == "stream_rewind"]
+        assert len(rewinds) == 1
+        # Rewind back to the text kept from the completed first iteration
+        assert rewinds[0]["checkpoint"] == len("Let me look. ")
+
+        # The abandoned partial text is not in the stored response
+        done = next(e for e in events if e["type"] == "done")
+        assert done["content"] == "Let me look. Complete answer"
+        assert "Half a sent" not in done["content"]
+
+    @pytest.mark.asyncio
+    async def test_retry_withdraws_a_tool_announced_but_never_executed(
+        self, db_session, sample_conversation
+    ):
+        """
+        A tool the failed attempt announced is withdrawn from the client.
+
+        Tools execute only after the model's stream completes, so a tool
+        announced by a stream that then failed never ran - leaving its bubble
+        on screen would claim work that did not happen.
+        """
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            self._configure_settings(mock_settings)
+            mock_llm.build_messages.return_value = [{"role": "user", "content": "base"}]
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            calls = []
+
+            async def mock_stream(messages, **kwargs):
+                calls.append(list(messages))
+                if len(calls) == 1:
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    # The provider starts a tool block, then the connection dies
+                    yield {"type": "tool_use_start", "tool_use": {"id": "tool-doomed", "name": "web_search"}}
+                    yield {
+                        "type": "error",
+                        "error": "connection reset",
+                        "error_type": "connection",
+                        "retryable": True,
+                    }
+                else:
+                    yield self._final_done()
+
+            mock_llm.send_message_stream = mock_stream
+            mock_tool.execute_tool = AsyncMock(return_value=self._tool_result())
+
+            session = manager.create_session(sample_conversation.id)
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Search", db_session, tool_schemas=[{"name": "web_search"}]
+            ):
+                events.append(event)
+
+        # The doomed tool was announced but never executed
+        assert [e["tool_id"] for e in events if e["type"] == "tool_start"] == ["tool-doomed"]
+        assert mock_tool.execute_tool.await_count == 0
+
+        rewind = next(e for e in events if e["type"] == "stream_rewind")
+        assert rewind["discard_tool_ids"] == ["tool-doomed"]
+
+    @pytest.mark.asyncio
+    async def test_exhausted_retries_stash_the_turn_without_mutating_the_session(
+        self, db_session, sample_conversation
+    ):
+        """When retries run out, the turn is stashed and the session left untouched."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            self._configure_settings(mock_settings, retry_attempts=2)
+            mock_llm.build_messages.return_value = [{"role": "user", "content": "base"}]
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            calls = []
+
+            async def mock_stream(messages, **kwargs):
+                calls.append(list(messages))
+                if len(calls) == 1:
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield self._tool_use_done()
+                else:
+                    yield {
+                        "type": "error",
+                        "error": "overloaded",
+                        "error_type": "overloaded",
+                        "retryable": True,
+                    }
+
+            mock_llm.send_message_stream = mock_stream
+            mock_tool.execute_tool = AsyncMock(return_value=self._tool_result())
+
+            session = manager.create_session(sample_conversation.id)
+            context_before = list(session.conversation_context)
+            cache_before = session.last_cached_context_length
+
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Search", db_session, tool_schemas=[{"name": "web_search"}]
+            ):
+                events.append(event)
+
+        # Iteration 1 plus both attempts at iteration 2
+        assert len(calls) == 3
+
+        error = next(e for e in events if e["type"] == "error")
+        assert error["error_type"] == "interrupted_tool_turn"
+        assert error["provider_error_type"] == "overloaded"
+        assert error["completed_iterations"] == 1
+        assert error["completed_tool_calls"] == 1
+
+        # Nothing was committed: no exchange added, cache breakpoint unmoved.
+        # That is what keeps the stashed base messages describing the context.
+        assert session.conversation_context == context_before
+        assert session.last_cached_context_length == cache_before
+
+        turn = session.pending_tool_turn
+        assert turn is not None
+        assert turn.next_iteration == 2
+        assert len(turn.tool_exchanges) == 1
+        assert turn.stamped_user_message.endswith("Search")
+
+    @pytest.mark.asyncio
+    async def test_fatal_error_is_not_retried(self, db_session, sample_conversation):
+        """A permanent failure stashes immediately rather than burning retries."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            self._configure_settings(mock_settings)
+            mock_llm.build_messages.return_value = [{"role": "user", "content": "base"}]
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            calls = []
+
+            async def mock_stream(messages, **kwargs):
+                calls.append(list(messages))
+                if len(calls) == 1:
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield self._tool_use_done()
+                else:
+                    yield {
+                        "type": "error",
+                        "error": "invalid request",
+                        "error_type": "http_400",
+                        "retryable": False,
+                    }
+
+            mock_llm.send_message_stream = mock_stream
+            mock_tool.execute_tool = AsyncMock(return_value=self._tool_result())
+
+            session = manager.create_session(sample_conversation.id)
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Search", db_session, tool_schemas=[{"name": "web_search"}]
+            ):
+                events.append(event)
+
+        # No retry of the doomed iteration
+        assert len(calls) == 2
+        assert next(e for e in events if e["type"] == "error")["error_type"] == "interrupted_tool_turn"
+        assert session.pending_tool_turn is not None
+
+    @pytest.mark.asyncio
+    async def test_stash_can_be_disabled_for_callers_that_cannot_resume(
+        self, db_session, sample_conversation
+    ):
+        """
+        Regeneration opts out of stashing.
+
+        A /chat/stream resume persists a human message from the stashed turn.
+        For a regenerated turn that message already exists, so a stash left
+        behind here could be picked up later and duplicate it.
+        """
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            self._configure_settings(mock_settings, retry_attempts=1)
+            mock_llm.build_messages.return_value = [{"role": "user", "content": "base"}]
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            calls = []
+
+            async def mock_stream(messages, **kwargs):
+                calls.append(list(messages))
+                if len(calls) == 1:
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield self._tool_use_done()
+                else:
+                    yield {
+                        "type": "error",
+                        "error": "overloaded",
+                        "error_type": "overloaded",
+                        "retryable": True,
+                    }
+
+            mock_llm.send_message_stream = mock_stream
+            mock_tool.execute_tool = AsyncMock(return_value=self._tool_result())
+
+            session = manager.create_session(sample_conversation.id)
+            events = []
+            async for event in manager.process_message_stream(
+                session,
+                "Search",
+                db_session,
+                tool_schemas=[{"name": "web_search"}],
+                allow_resume_stash=False,
+            ):
+                events.append(event)
+
+        # The provider error surfaces as-is, with nothing left to resume
+        error = next(e for e in events if e["type"] == "error")
+        assert error["error_type"] == "overloaded"
+        assert session.pending_tool_turn is None
+
+    @pytest.mark.asyncio
+    async def test_failure_before_any_tool_work_surfaces_raw_error(
+        self, db_session, sample_conversation
+    ):
+        """With nothing to preserve, the provider error passes through unchanged."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            self._configure_settings(mock_settings, retry_attempts=1)
+            mock_llm.build_messages.return_value = [{"role": "user", "content": "base"}]
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            async def mock_stream(messages, **kwargs):
+                yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                yield {
+                    "type": "error",
+                    "error": "invalid request",
+                    "error_type": "http_400",
+                    "retryable": False,
+                }
+
+            mock_llm.send_message_stream = mock_stream
+
+            session = manager.create_session(sample_conversation.id)
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Search", db_session, tool_schemas=[{"name": "web_search"}]
+            ):
+                events.append(event)
+
+        error = next(e for e in events if e["type"] == "error")
+        assert error["error_type"] == "http_400"
+        assert session.pending_tool_turn is None
+
+    @pytest.mark.asyncio
+    async def test_resume_continues_from_the_failed_iteration(
+        self, db_session, sample_conversation
+    ):
+        """Resuming replays the same prefix and does not re-run completed tools."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            self._configure_settings(mock_settings, retry_attempts=1)
+            mock_llm.build_messages.return_value = [{"role": "user", "content": "base"}]
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            calls = []
+
+            async def mock_stream(messages, **kwargs):
+                calls.append(list(messages))
+                if len(calls) == 1:
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {"type": "token", "content": "Looking. "}
+                    yield self._tool_use_done(text="Looking. ")
+                elif len(calls) == 2:
+                    yield {
+                        "type": "error",
+                        "error": "overloaded",
+                        "error_type": "overloaded",
+                        "retryable": True,
+                    }
+                else:
+                    yield {"type": "token", "content": "Found it"}
+                    yield self._final_done("Found it")
+
+            mock_llm.send_message_stream = mock_stream
+            mock_tool.execute_tool = AsyncMock(return_value=self._tool_result())
+
+            session = manager.create_session(sample_conversation.id)
+            async for _ in manager.process_message_stream(
+                session, "Search", db_session, tool_schemas=[{"name": "web_search"}]
+            ):
+                pass
+
+            turn = session.take_resumable_turn(
+                entity_id=session.entity_id, ttl_seconds=900
+            )
+            assert turn is not None
+
+            resumed_events = []
+            async for event in manager.resume_message_stream(
+                session, turn, tool_schemas=[{"name": "web_search"}]
+            ):
+                resumed_events.append(event)
+
+        # The resumed request is byte-identical to the one that failed
+        assert calls[2] == calls[1]
+
+        # The tool from iteration 1 was not run again
+        assert mock_tool.execute_tool.await_count == 1
+
+        # A resume does not re-announce the start of the response
+        assert not [e for e in resumed_events if e["type"] == "start"]
+
+        # The finished turn carries text from before and after the interruption
+        done = next(e for e in resumed_events if e["type"] == "done")
+        assert done["content"] == "Looking. Found it"
+        assert len(done["tool_exchanges"]) == 1
+
+        # And it is committed to the session exactly once
+        assistant_msgs = [
+            m for m in session.conversation_context
+            if m["role"] == "assistant" and not m.get("is_tool_use")
+        ]
+        assert [m["content"] for m in assistant_msgs] == ["Looking. Found it"]
+        assert session.last_cached_context_length == len(session.conversation_context)
+        assert session.pending_tool_turn is None
+
+    @pytest.mark.asyncio
+    async def test_resume_does_not_retrieve_memories_again(
+        self, db_session, sample_conversation
+    ):
+        """A resume skips retrieval: the context it replays must not change."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            # Memory retrieval is live for this test so the resume can be
+            # shown to skip it
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.search_memories = AsyncMock(return_value=[])
+            mock_memory.update_retrieval_count = AsyncMock()
+            self._configure_settings(mock_settings, retry_attempts=1)
+            mock_settings.initial_retrieval_top_k = 5
+            mock_settings.retrieval_top_k = 5
+            mock_settings.memory_role_balance_enabled = False
+            mock_llm.build_messages.return_value = [{"role": "user", "content": "base"}]
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            calls = []
+
+            async def mock_stream(messages, **kwargs):
+                calls.append(list(messages))
+                if len(calls) == 1:
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield self._tool_use_done()
+                elif len(calls) == 2:
+                    yield {
+                        "type": "error",
+                        "error": "overloaded",
+                        "error_type": "overloaded",
+                        "retryable": True,
+                    }
+                else:
+                    yield self._final_done()
+
+            mock_llm.send_message_stream = mock_stream
+            mock_tool.execute_tool = AsyncMock(return_value=self._tool_result())
+
+            session = manager.create_session(sample_conversation.id)
+            session.entity_id = "test-memories"
+            async for _ in manager.process_message_stream(
+                session, "Search", db_session, tool_schemas=[{"name": "web_search"}]
+            ):
+                pass
+
+            # The interrupted turn did retrieve
+            assert mock_memory.search_memories.await_count > 0
+            searches_before = mock_memory.search_memories.await_count
+            build_calls_before = mock_llm.build_messages.call_count
+            turn = session.take_resumable_turn(
+                entity_id=session.entity_id, ttl_seconds=900
+            )
+            async for _ in manager.resume_message_stream(
+                session, turn, tool_schemas=[{"name": "web_search"}]
+            ):
+                pass
+
+        # No new retrieval, no rebuild of the base messages
+        assert mock_memory.search_memories.await_count == searches_before
+        assert mock_memory.update_retrieval_count.await_count == 0
+        assert mock_llm.build_messages.call_count == build_calls_before
+
+    @pytest.mark.asyncio
+    async def test_fresh_turn_discards_a_stashed_turn(self, db_session, sample_conversation):
+        """Starting a new turn invalidates an older interrupted one."""
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            self._configure_settings(mock_settings)
+            mock_llm.build_messages.return_value = [{"role": "user", "content": "base"}]
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            async def mock_stream(messages, **kwargs):
+                yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                yield self._final_done()
+
+            mock_llm.send_message_stream = mock_stream
+
+            session = manager.create_session(sample_conversation.id)
+            session.stash_pending_tool_turn(
+                PendingToolTurn(
+                    entity_id=session.entity_id,
+                    conversation_id=session.conversation_id,
+                    raw_user_message="old",
+                    stamped_user_message="old",
+                    message_sent_at=datetime.utcnow(),
+                )
+            )
+
+            async for _ in manager.process_message_stream(session, "New message", db_session):
+                pass
+
+        assert session.pending_tool_turn is None
+
+    @pytest.mark.asyncio
+    async def test_done_reports_text_from_every_iteration(
+        self, db_session, sample_conversation
+    ):
+        """
+        The done event reports the whole turn's text, not just the last
+        iteration's.
+
+        The route persists the done event's content while the session context
+        holds what add_exchange stored; if the two disagree, the next session
+        reload rebuilds a different history and busts the prompt cache.
+        """
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            self._configure_settings(mock_settings)
+            mock_llm.build_messages.return_value = [{"role": "user", "content": "base"}]
+            mock_llm.count_tokens = MagicMock(return_value=100)
+
+            calls = []
+
+            async def mock_stream(messages, **kwargs):
+                calls.append(list(messages))
+                if len(calls) == 1:
+                    yield {"type": "start", "model": "claude-sonnet-4-5-20250929"}
+                    yield {"type": "token", "content": "First I'll search."}
+                    yield self._tool_use_done(text="First I'll search.")
+                else:
+                    yield {"type": "token", "content": "Here is the answer."}
+                    yield self._final_done("Here is the answer.")
+
+            mock_llm.send_message_stream = mock_stream
+            mock_tool.execute_tool = AsyncMock(return_value=self._tool_result())
+
+            session = manager.create_session(sample_conversation.id)
+            events = []
+            async for event in manager.process_message_stream(
+                session, "Search", db_session, tool_schemas=[{"name": "web_search"}]
+            ):
+                events.append(event)
+
+        done = next(e for e in events if e["type"] == "done")
+        assistant_msg = session.conversation_context[-1]
+        assert done["content"] == "First I'll search. Here is the answer."
+        assert assistant_msg["content"] == done["content"]
+
+
+class TestTakeResumableTurn:
+    """Tests for the guards on reusing a stashed turn."""
+
+    @staticmethod
+    def _stashed(session, entity_id="test-memories"):
+        turn = PendingToolTurn(
+            entity_id=entity_id,
+            conversation_id=session.conversation_id,
+            raw_user_message="Search",
+            stamped_user_message="[2026-01-01 10:00 UTC] Search",
+            message_sent_at=datetime.utcnow(),
+        )
+        turn.tool_exchanges.append({"assistant": {}, "user": {}})
+        session.stash_pending_tool_turn(turn, error="overloaded", error_type="overloaded")
+        return turn
+
+    def test_returns_the_stashed_turn_when_everything_matches(self):
+        session = ConversationSession(conversation_id="conv-1", entity_id="test-memories")
+        self._stashed(session)
+        assert session.take_resumable_turn("test-memories", ttl_seconds=900) is not None
+
+    def test_taking_the_turn_consumes_it(self):
+        """A turn is resumable once; a second attempt has nothing to return."""
+        session = ConversationSession(conversation_id="conv-1", entity_id="test-memories")
+        self._stashed(session)
+        assert session.take_resumable_turn("test-memories", ttl_seconds=900) is not None
+        assert session.take_resumable_turn("test-memories", ttl_seconds=900) is None
+
+    def test_rejects_a_turn_the_request_did_not_name(self):
+        """
+        A resume names the turn it saw interrupted.
+
+        A stale Resume action left on screen from an earlier interruption must
+        not consume a later, unrelated stashed turn - that would persist the
+        later turn's human message under the wrong prompt.
+        """
+        session = ConversationSession(conversation_id="conv-1", entity_id="test-memories")
+        self._stashed(session)
+        assert session.take_resumable_turn(
+            "test-memories", ttl_seconds=900, turn_id="some-other-turn"
+        ) is None
+
+    def test_accepts_the_turn_the_request_names(self):
+        session = ConversationSession(conversation_id="conv-1", entity_id="test-memories")
+        turn = self._stashed(session)
+        assert session.take_resumable_turn(
+            "test-memories", ttl_seconds=900, turn_id=turn.turn_id
+        ) is turn
+
+    def test_rejects_a_different_responding_entity(self):
+        """Another entity's turn is not this entity's to continue."""
+        session = ConversationSession(conversation_id="conv-1", entity_id="entity-a")
+        self._stashed(session, entity_id="entity-a")
+        assert session.take_resumable_turn("entity-b", ttl_seconds=900) is None
+
+    def test_rejects_when_the_context_has_moved_on(self):
+        """The stashed base messages no longer describe the context."""
+        session = ConversationSession(conversation_id="conv-1", entity_id="test-memories")
+        self._stashed(session)
+        session.conversation_context.append({"role": "user", "content": "something else"})
+        assert session.take_resumable_turn("test-memories", ttl_seconds=900) is None
+
+    def test_rejects_an_expired_turn(self):
+        session = ConversationSession(conversation_id="conv-1", entity_id="test-memories")
+        turn = self._stashed(session)
+        turn.stashed_at = datetime.utcnow() - timedelta(seconds=901)
+        assert session.take_resumable_turn("test-memories", ttl_seconds=900) is None
+
+    def test_returns_none_when_nothing_is_stashed(self):
+        session = ConversationSession(conversation_id="conv-1", entity_id="test-memories")
+        assert session.take_resumable_turn("test-memories", ttl_seconds=900) is None

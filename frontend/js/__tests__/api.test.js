@@ -210,6 +210,12 @@ describe('ApiClient', () => {
             expect(callbacks.onToolResult).toHaveBeenCalledWith({ result: 'data' });
         });
 
+        it('should dispatch stream_rewind event', () => {
+            const callbacks = { onStreamRewind: vi.fn() };
+            api._handleStreamEvent('stream_rewind', { checkpoint: 12 }, callbacks);
+            expect(callbacks.onStreamRewind).toHaveBeenCalledWith({ checkpoint: 12 });
+        });
+
         it('should dispatch done event', () => {
             const callbacks = { onDone: vi.fn() };
             api._handleStreamEvent('done', { total: 100 }, callbacks);
