@@ -2,6 +2,7 @@ from typing import Optional, List, Dict, Any, AsyncIterator
 from google import genai
 from google.genai import types
 from app.config import settings
+from app.services.session_helpers import get_message_content_text
 import tiktoken
 import logging
 
@@ -74,9 +75,12 @@ class GoogleService:
             role = msg["role"]
             content = msg["content"]
 
-            # Handle array format (from Anthropic cache_control) - extract text
+            # Handle array format (from Anthropic cache_control or replayed
+            # tool exchanges, whose blocks may include thinking/tool_use/
+            # tool_result) - render to text; indexing content[0]["text"]
+            # would KeyError on non-text leading blocks
             if isinstance(content, list):
-                content = content[0]["text"] if content else ""
+                content = get_message_content_text(content)
                 logger.warning(f"[GOOGLE] Converted array content to string for role={role} (len={len(content)})")
 
             # Map roles: 'user' stays 'user', 'assistant' becomes 'model'
