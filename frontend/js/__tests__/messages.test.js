@@ -301,9 +301,62 @@ describe('Messages Module', () => {
             const message = addThinkingMessage('start');
             addThinkingMessage('stop');
 
-            expect(message.querySelector('.thinking-body').textContent).toBe(
+            expect(message.querySelector('.thinking-summary').textContent).toBe(
                 '(no summary returned)'
             );
+            expect(message.querySelector('.thinking-details').hidden).toBe(true);
+        });
+
+        it('should show only the summary line and collapse the rest', () => {
+            const message = addThinkingMessage('start');
+            addThinkingMessage('delta', { content: 'Weighing the options\n' });
+            addThinkingMessage('delta', { content: 'First I considered the cost, then\n' });
+            addThinkingMessage('delta', { content: 'I checked the schedule.' });
+            addThinkingMessage('stop');
+
+            // Inline view is the first line only...
+            expect(message.querySelector('.thinking-summary').textContent).toBe(
+                'Weighing the options'
+            );
+            // ...with the rest kept, collapsed, behind the expander
+            const details = message.querySelector('.thinking-details');
+            expect(details.hidden).toBe(false);
+            expect(details.open).toBe(false);
+            expect(message.querySelector('.thinking-body').textContent).toContain(
+                'I checked the schedule.'
+            );
+        });
+
+        it('should truncate a long summary line', () => {
+            const message = addThinkingMessage('start');
+            addThinkingMessage('delta', { content: 'x'.repeat(200) });
+            addThinkingMessage('stop');
+
+            const summary = message.querySelector('.thinking-summary').textContent;
+            expect(summary).toBe(`${'x'.repeat(120)}…`);
+            // Truncated means there is more to see, so the expander is offered
+            expect(message.querySelector('.thinking-details').hidden).toBe(false);
+        });
+
+        it('should not offer the expander when the summary is the whole block', () => {
+            const message = addThinkingMessage('start');
+            addThinkingMessage('delta', { content: 'Checking the schedule.' });
+            addThinkingMessage('stop');
+
+            expect(message.querySelector('.thinking-summary').textContent).toBe(
+                'Checking the schedule.'
+            );
+            expect(message.querySelector('.thinking-details').hidden).toBe(true);
+        });
+
+        it('should not render the summary as markup', () => {
+            const message = addThinkingMessage('start');
+            addThinkingMessage('delta', { content: '<img src=x onerror=alert(1)>' });
+            addThinkingMessage('stop');
+
+            const summary = message.querySelector('.thinking-summary');
+            expect(summary.querySelector('img')).toBeNull();
+            expect(summary.textContent).toBe('<img src=x onerror=alert(1)>');
         });
 
         it('should ignore deltas with no open block', () => {

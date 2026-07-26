@@ -226,6 +226,51 @@ export function addToolMessage(type, toolName, data) {
 // first closes.
 let activeThinkingMessage = null;
 
+// How much of the reasoning to show inline before it collapses behind the
+// expander. Long enough to convey what the model is working on, short enough
+// to stay on one line at normal window widths.
+const THINKING_SUMMARY_MAX_LENGTH = 120;
+
+/**
+ * Condense streamed reasoning down to a single-line summary.
+ *
+ * The provider already sends summarized reasoning rather than a raw chain of
+ * thought, and each summary opens with a short topic line — so the first
+ * non-empty line is the summary, and everything after it is detail.
+ *
+ * @param {string} text - Accumulated reasoning text
+ * @returns {string} - Single-line summary (may be truncated with an ellipsis)
+ */
+function summarizeThinking(text) {
+    const firstLine = text.split('\n').find((line) => line.trim().length > 0);
+    if (!firstLine) return '';
+
+    const trimmed = firstLine.trim();
+    if (trimmed.length <= THINKING_SUMMARY_MAX_LENGTH) return trimmed;
+    return `${trimmed.slice(0, THINKING_SUMMARY_MAX_LENGTH).trimEnd()}…`;
+}
+
+/**
+ * Refresh the inline summary from the block's accumulated reasoning, and hide
+ * the expander while the summary *is* the whole text (nothing to expand into).
+ *
+ * @param {HTMLElement} message - A `.thinking-message` element
+ */
+function refreshThinkingSummary(message) {
+    const body = message.querySelector('.thinking-body');
+    const summaryEl = message.querySelector('.thinking-summary');
+    const details = message.querySelector('.thinking-details');
+    if (!body || !summaryEl || !details) return;
+
+    const full = body.textContent.trim();
+    const summary = summarizeThinking(body.textContent);
+
+    // textContent, not innerHTML — reasoning is model output and must never be
+    // parsed as markup.
+    summaryEl.textContent = summary;
+    details.hidden = summary === full;
+}
+
 /**
  * Render streamed reasoning ("thinking") from the model.
  *
@@ -235,6 +280,10 @@ let activeThinkingMessage = null;
  * Models from Claude 4.6 onward reason before answering, which can take minutes
  * on a hard turn with no other output on the wire — without this the UI is
  * simply blank for that whole period.
+ *
+ * Only the one-line summary is shown inline; the rest of the reasoning stays
+ * collapsed behind an expander so a long block can't push the conversation off
+ * screen. The full text is still accumulated, just not displayed by default.
  *
  * @param {'start'|'delta'|'stop'} phase
  * @param {Object} data - Event payload ({ content } on 'delta')
@@ -255,7 +304,11 @@ export function addThinkingMessage(phase, data = {}) {
                 <span class="tool-name">Thinking</span>
                 <span class="tool-status loading">...</span>
             </div>
-            <div class="thinking-body"></div>
+            <div class="thinking-summary"></div>
+            <details class="thinking-details" hidden>
+                <summary>Full reasoning</summary>
+                <div class="thinking-body"></div>
+            </details>
         `;
 
         elements.messages.appendChild(message);
@@ -278,6 +331,7 @@ export function addThinkingMessage(phase, data = {}) {
             // textContent, not innerHTML — reasoning is model output and must
             // never be parsed as markup.
             body.textContent += data.content;
+            refreshThinkingSummary(activeThinkingMessage);
         }
         if (wasNearBottom && callbacks.scrollToBottom) {
             callbacks.scrollToBottom();
@@ -298,9 +352,10 @@ export function addThinkingMessage(phase, data = {}) {
         // (thinking_summaries_enabled off, or a model that omits it). Say so
         // rather than leaving a blank panel.
         const body = activeThinkingMessage.querySelector('.thinking-body');
-        if (body && !body.textContent) {
-            body.classList.add('thinking-empty');
-            body.textContent = '(no summary returned)';
+        const summaryEl = activeThinkingMessage.querySelector('.thinking-summary');
+        if (body && summaryEl && !body.textContent) {
+            summaryEl.classList.add('thinking-empty');
+            summaryEl.textContent = '(no summary returned)';
         }
 
         const finished = activeThinkingMessage;
