@@ -161,6 +161,19 @@
                     <input type="number" id="temperature-number" min="0" max="2" step="0.01" value="1">
                 </div>
 
+                <div class="form-group" id="thinking-effort-group">
+                    <label for="thinking-effort-select">Thinking Effort</label>
+                    <select id="thinking-effort-select">
+                        <option value="">Default (high)</option>
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="xhigh">Xhigh</option>
+                        <option value="max">Max</option>
+                    </select>
+                    <small class="form-help">How hard this entity's model thinks. Applies to the currently selected entity; levels above a model's ceiling are clamped.</small>
+                </div>
+
                 <div class="form-group" id="verbosity-group">
                     <label for="verbosity-select">Verbosity (GPT-5.x only)</label>
                     <select id="verbosity-select">

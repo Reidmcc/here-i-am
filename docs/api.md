@@ -47,9 +47,10 @@ The listing below covers the REST endpoints by resource.
 - `GET /api/memories/status/health` — health check
 
 ## Entities
-- `GET /api/entities/` — list all configured AI entities
+- `GET /api/entities/` — list all configured AI entities. Each entry carries its persisted `system_prompt` and `thinking_effort`; the response also includes `default_thinking_effort` (applied when an entity has none) and `thinking_effort_levels`
 - `GET /api/entities/{id}` — get specific entity
 - `PUT /api/entities/{id}/system-prompt` — set an entity's persisted system prompt
+- `PUT /api/entities/{id}/thinking-effort` — set an entity's thinking effort. Body: `thinking_effort` (`low`/`medium`/`high`/`xhigh`/`max`, or null to clear and follow `DEFAULT_THINKING_EFFORT`). Unknown levels return 422. Returns the stored value plus `effective_thinking_effort`
 - `GET /api/entities/{id}/status` — get entity Pinecone connection status
 
 ## Notes

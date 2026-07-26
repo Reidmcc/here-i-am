@@ -1,6 +1,7 @@
 from typing import Optional, List, Dict, Any, AsyncIterator
 from openai import AsyncOpenAI
 from app.config import settings
+from app.services.thinking_effort import resolve_effort
 import tiktoken
 import logging
 import json
@@ -40,6 +41,26 @@ class OpenAIService:
         "gpt-5.2",
     }
 
+    # Reasoning models that accept `reasoning_effort`. The o1 preview/mini
+    # variants and the non-reasoning chat models reject it, so they are absent.
+    MODELS_WITH_REASONING_EFFORT = {
+        "o1",
+        "o3", "o3-mini",
+        "o4-mini",
+        "gpt-5.1", "gpt-5-mini",
+        "gpt-5.2",
+    }
+
+    # OpenAI's ladder is shorter than the canonical one — the two levels above
+    # "high" have no counterpart, so they collapse onto it.
+    REASONING_EFFORT_MAP = {
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "high",
+        "max": "high",
+    }
+
     def __init__(self):
         self.client = None
         self._encoder = None
@@ -59,6 +80,20 @@ class OpenAIService:
     def _supports_verbosity(self, model: str) -> bool:
         """Check if model supports the verbosity parameter."""
         return model in self.MODELS_WITH_VERBOSITY
+
+    def _supports_reasoning_effort(self, model: str) -> bool:
+        """Check if model supports the reasoning_effort parameter."""
+        return model in self.MODELS_WITH_REASONING_EFFORT
+
+    def _reasoning_effort_for(self, model: str, thinking_effort: Optional[str]) -> Optional[str]:
+        """
+        Translate a canonical thinking-effort level to OpenAI's reasoning_effort.
+
+        Returns None for models that don't take the parameter.
+        """
+        if not self._supports_reasoning_effort(model):
+            return None
+        return self.REASONING_EFFORT_MAP[resolve_effort(thinking_effort)]
 
     def _convert_tools_to_openai_format(
         self,
@@ -130,6 +165,7 @@ class OpenAIService:
         max_tokens: Optional[int] = None,
         verbosity: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        thinking_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Send a message to OpenAI API.
@@ -142,6 +178,7 @@ class OpenAIService:
             max_tokens: Max tokens in response (defaults to 4096)
             verbosity: Verbosity level for gpt-5.1 models (low, medium, high)
             tools: Optional list of tool definitions (Anthropic format, will be converted)
+            thinking_effort: Optional thinking effort level (None uses the configured default)
 
         Returns:
             Dict with 'content', 'model', 'usage', 'stop_reason' keys.
@@ -229,6 +266,12 @@ class OpenAIService:
         if self._supports_verbosity(model):
             api_params["verbosity"] = verbosity or settings.default_verbosity
 
+        # Reasoning depth, for models that expose it
+        reasoning_effort = self._reasoning_effort_for(model, thinking_effort)
+        if reasoning_effort:
+            api_params["reasoning_effort"] = reasoning_effort
+            logger.info(f"[THINKING] OpenAI reasoning_effort '{reasoning_effort}' for model {model}")
+
         # Add tools if provided
         if tools:
             api_params["tools"] = self._convert_tools_to_openai_format(tools)
@@ -312,6 +355,7 @@ class OpenAIService:
         max_tokens: Optional[int] = None,
         verbosity: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        thinking_effort: Optional[str] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Send a message to OpenAI API with streaming response.
@@ -419,6 +463,12 @@ class OpenAIService:
             # Only include verbosity for models that support it (use default if not specified)
             if self._supports_verbosity(model):
                 api_params["verbosity"] = verbosity or settings.default_verbosity
+
+            # Reasoning depth, for models that expose it
+            reasoning_effort = self._reasoning_effort_for(model, thinking_effort)
+            if reasoning_effort:
+                api_params["reasoning_effort"] = reasoning_effort
+                logger.info(f"[THINKING] OpenAI reasoning_effort '{reasoning_effort}' for model {model}")
 
             # Add tools if provided
             if tools:

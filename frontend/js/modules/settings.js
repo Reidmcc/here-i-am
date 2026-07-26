@@ -47,6 +47,8 @@ export async function applySettings() {
     state.settings.systemPrompt = elements.systemPromptInput.value.trim() || null;
     state.settings.conversationType = elements.conversationTypeSelect.value;
     state.settings.verbosity = elements.verbositySelect.value;
+    // Empty option = "Default", i.e. no per-entity override
+    state.settings.thinkingEffort = elements.thinkingEffortSelect?.value || null;
 
     // Save researcher name
     state.settings.researcherName = elements.researcherNameInput.value.trim() || '';
@@ -76,6 +78,18 @@ export async function applySettings() {
             } catch (error) {
                 console.error('Failed to save entity system prompt:', error);
                 showToast('Failed to save system prompt', 'error');
+            }
+        }
+
+        // Thinking effort is per-entity too, and lives in the same table.
+        const newEffort = state.settings.thinkingEffort;
+        if ((state.entityThinkingEfforts[entityId] ?? null) !== newEffort) {
+            state.entityThinkingEfforts[entityId] = newEffort;
+            try {
+                await api.updateEntityThinkingEffort(entityId, newEffort);
+            } catch (error) {
+                console.error('Failed to save entity thinking effort:', error);
+                showToast('Failed to save thinking effort', 'error');
             }
         }
     }
@@ -233,6 +247,60 @@ export function updateVerbosityControlState() {
 }
 
 /**
+ * Check if a model supports a thinking/reasoning effort control
+ * @param {string} modelId - Model ID to check
+ * @returns {boolean}
+ */
+export function modelSupportsThinkingEffort(modelId) {
+    if (!modelId) return false;
+    // The backend owns which models accept an effort parameter (the ladders
+    // differ per provider and per model generation). Absent the flag — a model
+    // not in the available-models list — assume unsupported rather than
+    // offering a control that would be ignored.
+    const model = state.availableModels.find(m => m.id === modelId);
+    return model ? model.thinking_effort_supported === true : false;
+}
+
+/**
+ * Populate the thinking effort dropdown from the levels the backend accepts,
+ * with a leading "Default" option that clears the per-entity override.
+ */
+export function populateThinkingEffortSelect() {
+    if (!elements.thinkingEffortSelect) return;
+
+    const current = elements.thinkingEffortSelect.value;
+    elements.thinkingEffortSelect.innerHTML = '';
+
+    const defaultOption = document.createElement('option');
+    defaultOption.value = '';
+    defaultOption.textContent = `Default (${state.thinkingEffortDefault})`;
+    elements.thinkingEffortSelect.appendChild(defaultOption);
+
+    state.thinkingEffortLevels.forEach(level => {
+        const option = document.createElement('option');
+        option.value = level;
+        option.textContent = level.charAt(0).toUpperCase() + level.slice(1);
+        elements.thinkingEffortSelect.appendChild(option);
+    });
+
+    elements.thinkingEffortSelect.value = current;
+}
+
+/**
+ * Update thinking effort control visibility based on the selected model
+ */
+export function updateThinkingEffortControlState() {
+    if (!elements.modelSelect || !elements.thinkingEffortSelect) return;
+
+    const supportsEffort = modelSupportsThinkingEffort(elements.modelSelect.value);
+
+    const formGroup = elements.thinkingEffortSelect.closest('.form-group');
+    if (formGroup) {
+        formGroup.style.display = supportsEffort ? 'block' : 'none';
+    }
+}
+
+/**
  * Update temperature range based on current entity's provider
  */
 export function updateTemperatureRange() {
@@ -382,6 +450,11 @@ export function initializeSettingsUI() {
     if (elements.verbositySelect) {
         elements.verbositySelect.value = state.settings.verbosity || 'medium';
     }
+    if (elements.thinkingEffortSelect) {
+        populateThinkingEffortSelect();
+        // '' selects the "Default" option — no per-entity override
+        elements.thinkingEffortSelect.value = state.settings.thinkingEffort || '';
+    }
     if (elements.researcherNameInput) {
         elements.researcherNameInput.value = state.settings.researcherName || '';
     }
@@ -391,4 +464,5 @@ export function initializeSettingsUI() {
 
     updateTemperatureControlState();
     updateVerbosityControlState();
+    updateThinkingEffortControlState();
 }

@@ -14,8 +14,11 @@ import {
     loadPresets,
     modelSupportsVerbosity,
     modelSupportsTemperature,
+    modelSupportsThinkingEffort,
     updateTemperatureControlState,
     updateVerbosityControlState,
+    updateThinkingEffortControlState,
+    populateThinkingEffortSelect,
 } from '../modules/settings.js';
 
 describe('Settings Module', () => {
@@ -35,12 +38,16 @@ describe('Settings Module', () => {
         };
         state.selectedEntityId = null;
         state.entitySystemPrompts = {};
+        state.entityThinkingEfforts = {};
+        state.thinkingEffortDefault = 'high';
+        state.thinkingEffortLevels = ['low', 'medium', 'high', 'xhigh', 'max'];
         state.ttsVoices = [];
         state.ttsProvider = null;
         state.availableModels = [
-            { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet', temperature_supported: true },
-            { id: 'gpt-5.1', name: 'GPT-5.1', temperature_supported: true },
-            { id: 'o1', name: 'O1', temperature_supported: false },
+            { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet', temperature_supported: true, thinking_effort_supported: false },
+            { id: 'gpt-5.1', name: 'GPT-5.1', temperature_supported: true, thinking_effort_supported: true },
+            { id: 'o1', name: 'O1', temperature_supported: false, thinking_effort_supported: true },
+            { id: 'claude-opus-5', name: 'Claude Opus 5', temperature_supported: false, thinking_effort_supported: true },
         ];
 
         // Create mock elements matching actual module usage
@@ -52,6 +59,7 @@ describe('Settings Module', () => {
             systemPromptInput: document.createElement('textarea'),
             conversationTypeSelect: document.createElement('select'),
             verbositySelect: document.createElement('select'),
+            thinkingEffortSelect: document.createElement('select'),
             themeSelect: document.createElement('select'),
             voiceSelect: document.createElement('select'),
             researcherNameInput: document.createElement('input'),
@@ -96,6 +104,22 @@ describe('Settings Module', () => {
         verbosityFormGroup.className = 'form-group';
         verbosityFormGroup.appendChild(mockElements.verbositySelect);
         document.body.appendChild(verbosityFormGroup);
+
+        // Thinking effort: "Default" plus the backend levels, in its own group
+        const defaultEffortOption = document.createElement('option');
+        defaultEffortOption.value = '';
+        defaultEffortOption.textContent = 'Default (high)';
+        mockElements.thinkingEffortSelect.appendChild(defaultEffortOption);
+        ['low', 'medium', 'high', 'xhigh', 'max'].forEach(level => {
+            const opt = document.createElement('option');
+            opt.value = level;
+            opt.textContent = level;
+            mockElements.thinkingEffortSelect.appendChild(opt);
+        });
+        const thinkingEffortFormGroup = document.createElement('div');
+        thinkingEffortFormGroup.className = 'form-group';
+        thinkingEffortFormGroup.appendChild(mockElements.thinkingEffortSelect);
+        document.body.appendChild(thinkingEffortFormGroup);
 
         // Add theme options
         const lightOption = document.createElement('option');
@@ -386,6 +410,124 @@ describe('Settings Module', () => {
 
             const formGroup = mockElements.verbositySelect.closest('.form-group');
             expect(formGroup.style.display).toBe('none');
+        });
+    });
+    describe('thinking effort', () => {
+        describe('modelSupportsThinkingEffort', () => {
+            it('should follow the backend flag', () => {
+                expect(modelSupportsThinkingEffort('claude-opus-5')).toBe(true);
+                expect(modelSupportsThinkingEffort('claude-sonnet-4-5-20250929')).toBe(false);
+            });
+
+            it('should assume unsupported for an unknown model', () => {
+                expect(modelSupportsThinkingEffort('some-future-model')).toBe(false);
+                expect(modelSupportsThinkingEffort(null)).toBe(false);
+            });
+        });
+
+        describe('updateThinkingEffortControlState', () => {
+            it('should show the control for a model that thinks', () => {
+                mockElements.modelSelect.value = 'gpt-5.1';
+
+                updateThinkingEffortControlState();
+
+                expect(mockElements.thinkingEffortSelect.closest('.form-group').style.display).toBe('block');
+            });
+
+            it('should hide the control for a model that does not', () => {
+                mockElements.modelSelect.value = 'claude-sonnet-4-5-20250929';
+
+                updateThinkingEffortControlState();
+
+                expect(mockElements.thinkingEffortSelect.closest('.form-group').style.display).toBe('none');
+            });
+        });
+
+        describe('populateThinkingEffortSelect', () => {
+            it('should offer the backend levels plus a Default option', () => {
+                state.thinkingEffortLevels = ['low', 'high'];
+                state.thinkingEffortDefault = 'medium';
+
+                populateThinkingEffortSelect();
+
+                const options = Array.from(mockElements.thinkingEffortSelect.options);
+                expect(options.map(o => o.value)).toEqual(['', 'low', 'high']);
+                expect(options[0].textContent).toBe('Default (medium)');
+            });
+
+            it('should keep the current selection', () => {
+                mockElements.thinkingEffortSelect.value = 'max';
+
+                populateThinkingEffortSelect();
+
+                expect(mockElements.thinkingEffortSelect.value).toBe('max');
+            });
+        });
+
+        describe('initializeSettingsUI', () => {
+            it('should show the entity\'s effort', () => {
+                state.settings.thinkingEffort = 'xhigh';
+
+                initializeSettingsUI();
+
+                expect(mockElements.thinkingEffortSelect.value).toBe('xhigh');
+            });
+
+            it('should select Default when the entity has no override', () => {
+                state.settings.thinkingEffort = null;
+
+                initializeSettingsUI();
+
+                expect(mockElements.thinkingEffortSelect.value).toBe('');
+            });
+        });
+
+        describe('applySettings', () => {
+            it('should persist the effort for the selected entity', async () => {
+                state.selectedEntityId = 'claude-test';
+                window.api.updateEntityThinkingEffort = vi.fn(() => Promise.resolve({}));
+                mockElements.thinkingEffortSelect.value = 'max';
+
+                await applySettings();
+
+                expect(state.settings.thinkingEffort).toBe('max');
+                expect(window.api.updateEntityThinkingEffort).toHaveBeenCalledWith('claude-test', 'max');
+                expect(state.entityThinkingEfforts['claude-test']).toBe('max');
+            });
+
+            it('should send null when Default is chosen, clearing the override', async () => {
+                state.selectedEntityId = 'claude-test';
+                state.entityThinkingEfforts = { 'claude-test': 'low' };
+                window.api.updateEntityThinkingEffort = vi.fn(() => Promise.resolve({}));
+                mockElements.thinkingEffortSelect.value = '';
+
+                await applySettings();
+
+                expect(state.settings.thinkingEffort).toBeNull();
+                expect(window.api.updateEntityThinkingEffort).toHaveBeenCalledWith('claude-test', null);
+                expect(state.entityThinkingEfforts['claude-test']).toBeNull();
+            });
+
+            it('should not call the backend when the effort is unchanged', async () => {
+                state.selectedEntityId = 'claude-test';
+                state.entityThinkingEfforts = { 'claude-test': 'high' };
+                window.api.updateEntityThinkingEffort = vi.fn(() => Promise.resolve({}));
+                mockElements.thinkingEffortSelect.value = 'high';
+
+                await applySettings();
+
+                expect(window.api.updateEntityThinkingEffort).not.toHaveBeenCalled();
+            });
+
+            it('should not persist an effort in multi-entity mode', async () => {
+                state.selectedEntityId = 'multi-entity';
+                window.api.updateEntityThinkingEffort = vi.fn(() => Promise.resolve({}));
+                mockElements.thinkingEffortSelect.value = 'low';
+
+                await applySettings();
+
+                expect(window.api.updateEntityThinkingEffort).not.toHaveBeenCalled();
+            });
         });
     });
 });

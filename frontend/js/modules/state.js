@@ -16,6 +16,13 @@ export const state = {
     selectedEntityId: null,
     entities: [],
     entitySystemPrompts: {},
+    // Per-entity thinking effort, mirrored from the entities API response.
+    // null for an entity means "use the backend default" (thinkingEffortDefault).
+    entityThinkingEfforts: {},
+    // The level the backend applies when an entity has none of its own
+    thinkingEffortDefault: 'high',
+    // Levels the backend accepts, ascending (overwritten from the API response)
+    thinkingEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
     entityModels: {},  // Per-entity model selection persistence
     // Configured default_model that was in effect when each entityModels entry
     // was saved. Used to detect when an entity's .env default_model has changed
@@ -55,6 +62,8 @@ export const state = {
         systemPrompt: null,
         conversationType: 'normal',
         verbosity: 'medium',
+        // null = follow the backend default for this entity
+        thinkingEffort: null,
         researcherName: '',
         enterInsertsNewline: false,
     },
@@ -150,10 +159,13 @@ export function clearAudioCache() {
     state.audioCache.clear();
 }
 
-// NOTE: Per-entity system prompts are NOT stored client-side. The backend
-// (entity_settings table, /api/entities/{id}/system-prompt) is the source of
-// truth; the cache in state.entitySystemPrompts is populated from the entities
-// API response on load. See modules/entities.js and modules/settings.js.
+// NOTE: Per-entity system prompts and thinking effort are NOT stored
+// client-side. The backend
+// (entity_settings table, /api/entities/{id}/system-prompt and
+// /api/entities/{id}/thinking-effort) is the source of truth; the caches in
+// state.entitySystemPrompts and state.entityThinkingEfforts are populated from
+// the entities API response on load. See modules/entities.js and
+// modules/settings.js.
 //
 // LEGACY_ENTITY_PROMPTS_KEY is only read once at startup to migrate any
 // prompts a previous version saved in localStorage up to the backend.

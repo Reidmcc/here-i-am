@@ -1,8 +1,9 @@
-from typing import Optional, List, Dict, Any, AsyncIterator, Union
+from typing import Optional, List, Dict, Any, AsyncIterator, Tuple, Union
 from datetime import datetime
 from anthropic import AsyncAnthropic, APIConnectionError
 from app.config import settings
 from app.services.notes_service import notes_service
+from app.services.thinking_effort import clamp_effort, resolve_effort
 import asyncio
 import httpx
 import tiktoken
@@ -64,6 +65,84 @@ ADAPTIVE_THINKING_MODEL_PREFIXES = (
 def supports_adaptive_thinking(model: str) -> bool:
     """Whether the model accepts the adaptive thinking parameter."""
     return model.startswith(ADAPTIVE_THINKING_MODEL_PREFIXES)
+
+
+# Effort ladders by model, highest-precedence prefix first. `output_config.
+# effort` is GA (no beta header) but the accepted levels differ by model:
+# `xhigh` arrived with Opus 4.7, `max` with the 4.6 generation, and Opus 4.5
+# only ever took low/medium/high. Sonnet 4.5, Haiku 4.5 and anything older
+# reject the parameter outright, so they are absent here and get nothing sent.
+# Matched as prefixes because configured model names may carry a date suffix.
+EFFORT_MODEL_LADDERS = (
+    (
+        ("claude-opus-5", "claude-opus-4-8", "claude-opus-4-7",
+         "claude-sonnet-5", "claude-fable-5", "claude-mythos-5"),
+        ("low", "medium", "high", "xhigh", "max"),
+    ),
+    (
+        ("claude-opus-4-6", "claude-sonnet-4-6"),
+        ("low", "medium", "high", "max"),
+    ),
+    (
+        ("claude-opus-4-5",),
+        ("low", "medium", "high"),
+    ),
+)
+
+
+def supported_effort_levels(model: str) -> Tuple[str, ...]:
+    """The effort levels a model accepts, or () if it takes no effort param."""
+    for prefixes, levels in EFFORT_MODEL_LADDERS:
+        if model.startswith(prefixes):
+            return levels
+    return ()
+
+
+def supports_thinking_effort(model: str) -> bool:
+    """Whether the model accepts `output_config.effort`."""
+    return bool(supported_effort_levels(model))
+
+
+def resolve_effort_for_model(model: str, thinking_effort: Optional[str]) -> Optional[str]:
+    """
+    The effort level to send for this model, or None to send nothing.
+
+    Requests above the model's ceiling are clamped down rather than dropped,
+    so an entity set to `max` still thinks as hard as its model allows.
+    """
+    levels = supported_effort_levels(model)
+    if not levels:
+        return None
+    return clamp_effort(resolve_effort(thinking_effort), levels)
+
+
+def _apply_thinking_effort(
+    api_params: Dict[str, Any],
+    model: str,
+    thinking_effort: Optional[str],
+    provider: Optional[str],
+) -> None:
+    """
+    Add `output_config.effort` to the request when the model accepts it.
+
+    Sent through `extra_body` rather than a named argument: `output_config` is
+    newer than the SDK floor this project pins (anthropic>=0.40.0), and an
+    older client would reject the keyword before the request left the process.
+    `extra_body` is merged into the request body by every SDK version, so this
+    works on old and new clients alike.
+
+    MiniMax speaks the Anthropic wire format but does not accept this
+    parameter, so it is excluded — same carve-out as adaptive thinking.
+    """
+    if provider == "minimax":
+        return
+    effort = resolve_effort_for_model(model, thinking_effort)
+    if not effort:
+        return
+    extra_body = api_params.setdefault("extra_body", {})
+    output_config = extra_body.setdefault("output_config", {})
+    output_config["effort"] = effort
+    logger.info(f"[THINKING] Effort '{effort}' for model {model}")
 
 
 def _get_content_text(content: Union[str, List[Dict[str, Any]]]) -> str:
@@ -193,6 +272,7 @@ class AnthropicService:
         enable_caching: bool = True,
         tools: Optional[List[Dict[str, Any]]] = None,
         provider: Optional[str] = None,
+        thinking_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Send a message to an Anthropic-compatible API with optional prompt caching and tool use.
@@ -206,6 +286,7 @@ class AnthropicService:
             enable_caching: Whether to enable Anthropic prompt caching (default True)
             tools: Optional list of tool definitions in Anthropic format
             provider: Optional provider hint ("anthropic" or "minimax") to select client
+            thinking_effort: Optional thinking effort level (None uses the configured default)
 
         Returns:
             Dict with:
@@ -229,6 +310,8 @@ class AnthropicService:
         # Newer Claude models reject temperature entirely (400)
         if supports_temperature(model):
             api_params["temperature"] = temperature
+
+        _apply_thinking_effort(api_params, model, thinking_effort, provider)
 
         # Add system prompt with caching if provided
         if system_prompt:
@@ -549,6 +632,7 @@ class AnthropicService:
         enable_caching: bool = True,
         tools: Optional[List[Dict[str, Any]]] = None,
         provider: Optional[str] = None,
+        thinking_effort: Optional[str] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Send a message to an Anthropic-compatible API with streaming response and optional prompt caching.
@@ -601,6 +685,11 @@ class AnthropicService:
             and supports_adaptive_thinking(model)
         ):
             api_params["thinking"] = {"type": "adaptive", "display": "summarized"}
+
+        # Reasoning depth. Independent of the display setting above: effort
+        # controls how much the model thinks, display only whether that
+        # thinking comes back readable.
+        _apply_thinking_effort(api_params, model, thinking_effort, provider)
 
         # Add system prompt with caching if provided
         if system_prompt:

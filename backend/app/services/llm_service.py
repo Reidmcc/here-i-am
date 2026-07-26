@@ -11,7 +11,10 @@ from datetime import datetime
 from enum import Enum
 
 from app.services import anthropic_service, openai_service
-from app.services.anthropic_service import supports_temperature as anthropic_supports_temperature
+from app.services.anthropic_service import (
+    supports_temperature as anthropic_supports_temperature,
+    supports_thinking_effort as anthropic_supports_thinking_effort,
+)
 from app.services.openai_service import OpenAIService
 from app.services.google_service import google_service, GoogleService
 from app.config import settings
@@ -195,12 +198,20 @@ class LLMService:
                 if provider_info["id"] == ModelProvider.OPENAI.value:
                     supports_temp = model["id"] not in OpenAIService.MODELS_WITHOUT_TEMPERATURE
                     supports_verbosity = model["id"] in OpenAIService.MODELS_WITH_VERBOSITY
+                    supports_effort = model["id"] in OpenAIService.MODELS_WITH_REASONING_EFFORT
                 elif provider_info["id"] == ModelProvider.ANTHROPIC.value:
                     supports_temp = anthropic_supports_temperature(model["id"])
                     supports_verbosity = False
-                else:
+                    supports_effort = anthropic_supports_thinking_effort(model["id"])
+                elif provider_info["id"] == ModelProvider.GOOGLE.value:
                     supports_temp = True
                     supports_verbosity = False
+                    supports_effort = google_service.supports_thinking(model["id"])
+                else:
+                    # MiniMax: Anthropic-compatible wire format, but no effort parameter
+                    supports_temp = True
+                    supports_verbosity = False
+                    supports_effort = False
 
                 models.append({
                     **model,
@@ -208,6 +219,7 @@ class LLMService:
                     "provider_name": provider_info["name"],
                     "temperature_supported": supports_temp,
                     "verbosity_supported": supports_verbosity,
+                    "thinking_effort_supported": supports_effort,
                 })
         return models
 
@@ -227,6 +239,7 @@ class LLMService:
         verbosity: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         provider_hint: Optional[str] = None,
+        thinking_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Send a message to the appropriate LLM provider based on model.
@@ -242,6 +255,9 @@ class LLMService:
             tools: Optional list of tool definitions (Anthropic format, converted for OpenAI)
             provider_hint: Optional provider string from entity config, used when model
                 isn't in MODEL_PROVIDER_MAP
+            thinking_effort: Thinking/reasoning depth (low, medium, high, xhigh, max).
+                Translated per provider and ignored by models with no such control;
+                None uses settings.default_thinking_effort.
 
         Returns:
             Dict with 'content', 'model', 'usage', 'stop_reason' keys.
@@ -285,6 +301,7 @@ class LLMService:
                 max_tokens=max_tokens,
                 enable_caching=enable_caching,
                 tools=tools,
+                thinking_effort=thinking_effort,
             )
         elif provider == ModelProvider.MINIMAX:
             # MiniMax uses Anthropic-compatible API, route through anthropic_service
@@ -298,6 +315,7 @@ class LLMService:
                 enable_caching=False,
                 tools=tools,
                 provider="minimax",
+                thinking_effort=thinking_effort,
             )
         elif provider == ModelProvider.OPENAI:
             return await openai_service.send_message(
@@ -308,6 +326,7 @@ class LLMService:
                 max_tokens=max_tokens,
                 verbosity=verbosity,
                 tools=tools,
+                thinking_effort=thinking_effort,
             )
         elif provider == ModelProvider.GOOGLE:
             # Tool use not currently supported for Google in this implementation
@@ -317,6 +336,7 @@ class LLMService:
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                thinking_effort=thinking_effort,
             )
         else:
             raise ValueError(f"Unsupported provider: {provider}")
@@ -332,6 +352,7 @@ class LLMService:
         verbosity: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         provider_hint: Optional[str] = None,
+        thinking_effort: Optional[str] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Send a message to the appropriate LLM provider with streaming response.
@@ -382,6 +403,7 @@ class LLMService:
                 max_tokens=max_tokens,
                 enable_caching=enable_caching,
                 tools=tools,
+                thinking_effort=thinking_effort,
             ):
                 yield event
         elif provider == ModelProvider.MINIMAX:
@@ -396,6 +418,7 @@ class LLMService:
                 enable_caching=False,
                 tools=tools,
                 provider="minimax",
+                thinking_effort=thinking_effort,
             ):
                 yield event
         elif provider == ModelProvider.OPENAI:
@@ -407,6 +430,7 @@ class LLMService:
                 max_tokens=max_tokens,
                 verbosity=verbosity,
                 tools=tools,
+                thinking_effort=thinking_effort,
             ):
                 yield event
         elif provider == ModelProvider.GOOGLE:
@@ -417,6 +441,7 @@ class LLMService:
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                thinking_effort=thinking_effort,
             ):
                 yield event
         else:

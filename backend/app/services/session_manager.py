@@ -19,7 +19,14 @@ import re
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity
+from app.models import (
+    Conversation,
+    Message,
+    MessageRole,
+    ConversationType,
+    ConversationEntity,
+    EntitySetting,
+)
 from app.services import memory_service, llm_service
 from app.services.tool_service import tool_service, ToolResult
 from app.services.notes_tools import (
@@ -111,6 +118,25 @@ class SessionManager:
         )
         self._sessions[conversation_id] = session
         return session
+
+    async def refresh_thinking_effort(
+        self,
+        session: ConversationSession,
+        db: AsyncSession,
+    ) -> None:
+        """
+        Point the session at the responding entity's persisted thinking effort.
+
+        Read per turn rather than cached on the session: the effort is a
+        per-entity setting, and in multi-entity conversations the responding
+        entity (and therefore the effort) changes turn to turn. A NULL setting
+        leaves the session at None, which the provider services resolve to
+        settings.default_thinking_effort.
+        """
+        if not session.entity_id:
+            return
+        setting = await db.get(EntitySetting, session.entity_id)
+        session.thinking_effort = setting.thinking_effort if setting else None
 
     def _build_notes_context_message(
         self,
@@ -276,6 +302,9 @@ class SessionManager:
         session.entity_labels = entity_labels
         session.responding_entity_label = responding_entity_label
         session.provider_hint = provider_hint
+
+        # Per-entity thinking effort (refreshed again at the start of each turn)
+        await self.refresh_thinking_effort(session, db)
 
         # Load message history
         result = await db.execute(
@@ -884,6 +913,9 @@ class SessionManager:
 
         logger.info(f"[MEMORY] Processing message for conversation {session.conversation_id[:8]}...")
 
+        # Pick up the responding entity's current thinking effort for this turn
+        await self.refresh_thinking_effort(session, db)
+
         # Step 1-2: Retrieve, re-rank by significance, and deduplicate memories
         # Validate both that Pinecone is configured AND the entity_id is valid
         if memory_service.is_configured(entity_id=session.entity_id):
@@ -1197,6 +1229,7 @@ class SessionManager:
             enable_caching=True,
             verbosity=session.verbosity,
             provider_hint=session.provider_hint,
+            thinking_effort=session.thinking_effort,
         )
 
         # Record the provider-reported prompt size against the local estimate
@@ -1288,6 +1321,9 @@ class SessionManager:
         truly_new_memory_ids = set()  # Only memories never seen before (for cache stability)
 
         logger.info(f"[MEMORY] Processing message (stream) for conversation {session.conversation_id[:8]}... entity_id={session.entity_id}, model={session.model}")
+
+        # Pick up the responding entity's current thinking effort for this turn
+        await self.refresh_thinking_effort(session, db)
 
         # Set entity label for notes tools context
         # Use responding_entity_label if available (multi-entity), otherwise look up from entity_id
@@ -1730,6 +1766,7 @@ class SessionManager:
                 verbosity=session.verbosity,
                 tools=tool_schemas,
                 provider_hint=session.provider_hint,
+                thinking_effort=session.thinking_effort,
             ):
                 if event["type"] == "token":
                     content = event["content"]

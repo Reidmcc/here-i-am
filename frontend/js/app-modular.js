@@ -127,6 +127,7 @@ import {
     modelSupportsTemperature,
     updateTemperatureControlState,
     updateVerbosityControlState,
+    updateThinkingEffortControlState,
     updateTemperatureRange,
     syncTemperatureInputs,
     updateModelIndicator,
@@ -229,6 +230,7 @@ class App {
             presetSelect: document.getElementById('preset-select'),
             themeSelect: document.getElementById('theme-select'),
             verbositySelect: document.getElementById('verbosity-select'),
+            thinkingEffortSelect: document.getElementById('thinking-effort-select'),
             researcherNameInput: document.getElementById('researcher-name-input'),
             enterInsertsNewlineCheckbox: document.getElementById('enter-inserts-newline'),
             voiceSelect: document.getElementById('voice-select'),
@@ -498,6 +500,7 @@ class App {
         this.elements.modelSelect?.addEventListener('change', () => {
             updateTemperatureControlState();
             updateVerbosityControlState();
+            updateThinkingEffortControlState();
         });
         this.elements.presetSelect?.addEventListener('change', (e) => loadPreset(e.target.value));
 

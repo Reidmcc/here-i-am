@@ -3,6 +3,7 @@ from google import genai
 from google.genai import types
 from app.config import settings
 from app.services.session_helpers import get_message_content_text
+from app.services.thinking_effort import resolve_effort
 import tiktoken
 import logging
 
@@ -26,6 +27,30 @@ class GoogleService:
 
     # Models that support temperature parameter (all current models do)
     MODELS_WITH_TEMPERATURE = SUPPORTED_MODELS
+
+    # Model families that think. Matched as prefixes so new point releases in
+    # these families are covered without a code change.
+    THINKING_MODEL_PREFIXES = ("gemini-3", "gemini-2.5")
+
+    # Gemini 3 exposes thinking depth as a two-value level.
+    THINKING_LEVEL_MAP = {
+        "low": "low",
+        "medium": "low",
+        "high": "high",
+        "xhigh": "high",
+        "max": "high",
+    }
+
+    # Gemini 2.5 exposes it as a token budget instead. These sit inside the
+    # budget range every 2.5 model accepts (the tightest ceiling is Flash's
+    # 24576), so one table covers Flash and Pro alike.
+    THINKING_BUDGET_MAP = {
+        "low": 2048,
+        "medium": 8192,
+        "high": 16384,
+        "xhigh": 20480,
+        "max": 24576,
+    }
 
     def __init__(self):
         self._client = None
@@ -59,6 +84,65 @@ class GoogleService:
         """Check if model supports the temperature parameter."""
         # All Gemini models support temperature
         return True
+
+    def supports_thinking(self, model: str) -> bool:
+        """
+        Whether the model thinks and takes a thinking configuration.
+
+        Gemini 2.5 and 3 do; the 2.0 generation does not.
+        """
+        return model.startswith(self.THINKING_MODEL_PREFIXES)
+
+    def _build_thinking_config(
+        self,
+        model: str,
+        thinking_effort: Optional[str],
+    ) -> Optional["types.ThinkingConfig"]:
+        """
+        Translate a canonical effort level into a Gemini thinking config.
+
+        Google has moved this control twice, and the project's floor
+        (google-genai>=1.0.0) predates both spellings, so the field set is
+        probed at runtime rather than assumed: `thinking_level` (Gemini 3) is
+        preferred, `thinking_budget` (Gemini 2.5) is the fallback, and an SDK
+        with neither gets no thinking config at all — the model still thinks,
+        just at its own default depth.
+        """
+        if not self.supports_thinking(model):
+            return None
+
+        fields = getattr(types.ThinkingConfig, "model_fields", {})
+        effort = resolve_effort(thinking_effort)
+
+        if "thinking_level" in fields:
+            return types.ThinkingConfig(thinking_level=self.THINKING_LEVEL_MAP[effort])
+        if "thinking_budget" in fields:
+            return types.ThinkingConfig(thinking_budget=self.THINKING_BUDGET_MAP[effort])
+
+        logger.info(
+            "[THINKING] Installed google-genai exposes no thinking level/budget field; "
+            "using the model's default thinking depth"
+        )
+        return None
+
+    def _apply_thinking_config(
+        self,
+        config: "types.GenerateContentConfig",
+        model: str,
+        thinking_effort: Optional[str],
+    ) -> None:
+        """Attach a thinking config to the request when one applies."""
+        try:
+            thinking_config = self._build_thinking_config(model, thinking_effort)
+        except Exception as e:
+            # A field the installed SDK exposes but the API rejects should cost
+            # a log line, not the turn.
+            logger.warning(f"[THINKING] Could not build Gemini thinking config: {e}")
+            return
+
+        if thinking_config is not None:
+            config.thinking_config = thinking_config
+            logger.info(f"[THINKING] Gemini thinking config {thinking_config} for model {model}")
 
     def _convert_messages_to_contents(
         self,
@@ -100,6 +184,7 @@ class GoogleService:
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        thinking_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Send a message to Google AI (Gemini) API.
@@ -110,6 +195,7 @@ class GoogleService:
             model: Model to use (defaults to gemini-2.5-flash)
             temperature: Temperature setting (defaults to 1.0)
             max_tokens: Max tokens in response (defaults to 4096)
+            thinking_effort: Optional thinking effort level (None uses the configured default)
 
         Returns:
             Dict with 'content', 'model', 'usage' keys
@@ -132,6 +218,8 @@ class GoogleService:
         # Add system instruction if provided
         if system_prompt:
             config.system_instruction = system_prompt
+
+        self._apply_thinking_config(config, model_name, thinking_effort)
 
         logger.info(f"[GOOGLE] Sending {len(contents)} messages to API with model={model_name}")
 
@@ -192,6 +280,7 @@ class GoogleService:
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        thinking_effort: Optional[str] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Send a message to Google AI (Gemini) API with streaming response.
@@ -220,6 +309,8 @@ class GoogleService:
         # Add system instruction if provided
         if system_prompt:
             config.system_instruction = system_prompt
+
+        self._apply_thinking_config(config, model_name, thinking_effort)
 
         logger.info(f"[GOOGLE] Streaming {len(contents)} messages to API with model={model_name}")
 

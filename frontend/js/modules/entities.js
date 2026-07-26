@@ -52,13 +52,21 @@ export async function loadEntities() {
         console.log('[Entities] Parsed entities:', entities);
         state.entities = entities;
 
-        // The backend is the source of truth for per-entity system prompts.
-        // Rebuild the in-memory cache from the response so prompts survive
-        // across sessions/browsers (no client-side persistence).
+        // The backend is the source of truth for per-entity system prompts and
+        // thinking effort. Rebuild the in-memory caches from the response so
+        // both survive across sessions/browsers (no client-side persistence).
         state.entitySystemPrompts = {};
+        state.entityThinkingEfforts = {};
         entities.forEach(entity => {
             state.entitySystemPrompts[entity.index_name] = entity.system_prompt ?? null;
+            state.entityThinkingEfforts[entity.index_name] = entity.thinking_effort ?? null;
         });
+        if (response.default_thinking_effort) {
+            state.thinkingEffortDefault = response.default_thinking_effort;
+        }
+        if (Array.isArray(response.thinking_effort_levels) && response.thinking_effort_levels.length) {
+            state.thinkingEffortLevels = response.thinking_effort_levels;
+        }
 
         // Update entity selector
         console.log('[Entities] entitySelect element:', elements.entitySelect);
@@ -103,6 +111,7 @@ export async function loadEntities() {
         // event, so handleEntityChange won't run on initial load — do it here.
         if (state.selectedEntityId && state.selectedEntityId !== 'multi-entity') {
             state.settings.systemPrompt = state.entitySystemPrompts[state.selectedEntityId] ?? null;
+            state.settings.thinkingEffort = state.entityThinkingEfforts[state.selectedEntityId] ?? null;
         }
 
         updateEntityDescription();
@@ -211,6 +220,10 @@ export function handleEntityChange(entityId) {
         } else {
             state.settings.systemPrompt = null;
         }
+
+        // Restore entity-specific thinking effort. Unlike the prompt, absence
+        // is meaningful here: null means "use the backend default".
+        state.settings.thinkingEffort = state.entityThinkingEfforts[entityId] ?? null;
     }
 
     updateEntityDescription();
