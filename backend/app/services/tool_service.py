@@ -14,6 +14,8 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Awaitable
 import logging
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -199,14 +201,33 @@ class ToolService:
                 is_error=True,
             )
 
+        timeout = settings.tool_execution_timeout
         try:
             logger.info(f"Executing tool: {tool_name} with input: {tool_input}")
-            result = await tool.executor(**tool_input)
+            # Bound every tool. Most executors carry their own HTTP timeouts,
+            # but the ones that touch disk, SQL, or Pinecone do not, and an
+            # unbounded await here hangs the entire turn with no error and no
+            # closing log line — the only trace is an "Executing tool" entry
+            # with no matching completion. Returning the timeout as a tool
+            # error instead lets the model see the failure and move on.
+            result = await asyncio.wait_for(
+                tool.executor(**tool_input), timeout=timeout
+            )
             logger.info(f"Tool {tool_name} completed successfully (result length: {len(result)})")
             return ToolResult(
                 tool_use_id=tool_use_id,
                 content=result,
                 is_error=False,
+            )
+        except asyncio.TimeoutError:
+            error_msg = (
+                f"Error executing tool '{tool_name}': timed out after {timeout:.0f}s"
+            )
+            logger.error(error_msg)
+            return ToolResult(
+                tool_use_id=tool_use_id,
+                content=error_msg,
+                is_error=True,
             )
         except Exception as e:
             error_msg = f"Error executing tool '{tool_name}': {str(e)}"

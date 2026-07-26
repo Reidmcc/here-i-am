@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
+import asyncio
 import logging
 import re
 
@@ -11,6 +12,24 @@ from app.models import Message, MessageRole, ConversationMemoryLink, Conversatio
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+async def run_pinecone(fn, *args, **kwargs):
+    """
+    Run a blocking Pinecone SDK call off the event loop.
+
+    The Pinecone client is synchronous. Called directly from an async function
+    it blocks the entire event loop for the duration of the network round trip,
+    so a slow or stalled Pinecone request freezes every other request the
+    server is handling — not just the turn that made the call, and with nothing
+    logged until it returns.
+
+    This moves the call to a worker thread. Note that it bounds the damage
+    rather than the call: a request that never returns still leaks its thread,
+    because there is no way to cancel a blocking socket read from outside. The
+    server stays responsive either way.
+    """
+    return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 class MemoryService:
@@ -145,7 +164,8 @@ class MemoryService:
         try:
             # Use Pinecone's integrated inference - upsert_records passes raw text
             # and Pinecone generates embeddings using the index's configured model
-            index.upsert_records(
+            await run_pinecone(
+                index.upsert_records,
                 namespace="",
                 records=[{
                     "_id": message_id,
@@ -258,7 +278,8 @@ class MemoryService:
                 logger.debug(f"[MEMORY] Excluding conversation_id: {exclude_conv_id_normalized}")
 
             # Use Pinecone's integrated inference - search with raw text
-            results = index.search(
+            results = await run_pinecone(
+                index.search,
                 namespace="",
                 query=search_query,
             )
@@ -539,11 +560,12 @@ class MemoryService:
                 if index:
                     try:
                         # Fetch current vector to get metadata
-                        fetch_result = index.fetch(ids=[message_id])
+                        fetch_result = await run_pinecone(index.fetch, ids=[message_id])
                         if message_id in fetch_result.vectors:
                             current_count = fetch_result.vectors[message_id].metadata.get("times_retrieved", 0)
                             # Update with incremented count
-                            index.update(
+                            await run_pinecone(
+                                index.update,
                                 id=message_id,
                                 set_metadata={"times_retrieved": current_count + 1}
                             )
@@ -909,7 +931,7 @@ class MemoryService:
             return False
 
         try:
-            index.delete(ids=[message_id])
+            await run_pinecone(index.delete, ids=[message_id])
             return True
         except Exception as e:
             logger.error(f"Error deleting memory: {e}")
@@ -945,13 +967,15 @@ class MemoryService:
 
             while True:
                 if pagination_token:
-                    response = index.list_paginated(
+                    response = await run_pinecone(
+                        index.list_paginated,
                         namespace="",
                         limit=100,
                         pagination_token=pagination_token
                     )
                 else:
-                    response = index.list_paginated(
+                    response = await run_pinecone(
+                        index.list_paginated,
                         namespace="",
                         limit=100
                     )
@@ -1025,7 +1049,7 @@ class MemoryService:
                 # Fetch in batches of 100 to get metadata
                 for i in range(0, len(orphan_ids), 100):
                     batch_ids = orphan_ids[i:i+100]
-                    fetch_result = index.fetch(ids=batch_ids)
+                    fetch_result = await run_pinecone(index.fetch, ids=batch_ids)
 
                     for oid in batch_ids:
                         orphan_info = {"id": oid, "metadata": None}
@@ -1099,7 +1123,7 @@ class MemoryService:
             # Delete in batches of 100
             for i in range(0, len(orphan_ids), 100):
                 batch_ids = orphan_ids[i:i+100]
-                index.delete(ids=batch_ids)
+                await run_pinecone(index.delete, ids=batch_ids)
                 result["orphans_deleted"] += len(batch_ids)
 
             logger.info(f"[MEMORY] Deleted {result['orphans_deleted']} orphaned records from entity={entity_id}")

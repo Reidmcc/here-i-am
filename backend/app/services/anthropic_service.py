@@ -1,13 +1,28 @@
 from typing import Optional, List, Dict, Any, AsyncIterator, Union
 from datetime import datetime
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, APIConnectionError
 from app.config import settings
 from app.services.notes_service import notes_service
+import asyncio
+import httpx
 import tiktoken
 import json
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _describe_exception(exc: Exception) -> str:
+    """
+    Render an exception for display.
+
+    Several transport-level exceptions carry no message at all — httpx.ReadError
+    wrapping anyio.BrokenResourceError (a connection reset mid-stream) is the
+    common one, and it previously surfaced in the UI as a bare "Error:". Always
+    include the exception type so the class of failure is identifiable.
+    """
+    detail = str(exc)
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
 # Anthropic models that reject sampling parameters. Claude Opus 4.7 dropped
@@ -83,12 +98,34 @@ def _get_content_text(content: Union[str, List[Dict[str, Any]]]) -> str:
     return "\n".join(text_parts)
 
 
+def _build_timeout() -> httpx.Timeout:
+    """
+    Timeout policy for Anthropic-compatible clients.
+
+    The SDK default is a flat 10 minutes on every phase, which is both too
+    generous for connecting (a dead host should fail fast) and, for streaming,
+    not the safety net it appears to be: `read` is a per-chunk timeout that
+    resets on every byte, so it only fires when a socket goes genuinely silent.
+    A long reasoning phase keeps it alive indefinitely. It is still worth
+    setting explicitly as a backstop against a half-dead connection that stops
+    delivering without closing — but the read budget has to stay well above the
+    gap between keepalive pings on a slow turn, or healthy streams get killed.
+    """
+    return httpx.Timeout(
+        connect=settings.anthropic_connect_timeout,
+        read=settings.anthropic_read_timeout,
+        write=settings.anthropic_write_timeout,
+        pool=settings.anthropic_connect_timeout,
+    )
+
+
 class AnthropicService:
     def __init__(self):
         # Enable extended cache TTL (1-hour) via beta header
         self.client = AsyncAnthropic(
             api_key=settings.anthropic_api_key,
-            default_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"}
+            default_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
+            timeout=_build_timeout(),
         )
         self._minimax_client = None
         self._encoder = None
@@ -101,6 +138,7 @@ class AnthropicService:
             self._minimax_client = AsyncAnthropic(
                 api_key=settings.minimax_api_key,
                 base_url="https://api.minimax.io/anthropic",
+                timeout=_build_timeout(),
             )
         return self._minimax_client
 
@@ -262,6 +300,161 @@ class AnthropicService:
             "stop_reason": response.stop_reason,
         }
 
+    async def _stream_attempt(
+        self,
+        client: AsyncAnthropic,
+        api_params: Dict[str, Any],
+        model: str,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Run one streaming attempt, yielding events up to and including "done".
+
+        Transport failures are raised, not caught, so the caller can decide
+        whether the attempt is safe to retry. All per-attempt accumulator
+        state is local, so a retry starts from a clean slate.
+        """
+        full_content = ""
+        content_blocks = []
+        tool_use_blocks = []
+        current_tool_use = None
+        current_tool_input_json = ""
+        in_thinking_block = False
+        input_tokens = 0
+        output_tokens = 0
+        cache_creation_input_tokens = 0
+        cache_read_input_tokens = 0
+        stop_reason = None
+
+        async with client.messages.stream(**api_params) as stream:
+            async for event in stream:
+                if event.type == "message_start":
+                    if hasattr(event.message, "usage"):
+                        input_tokens = event.message.usage.input_tokens
+                        # Capture cache metrics from message_start
+                        # Guard against None values (some Anthropic-compatible APIs return None)
+                        if hasattr(event.message.usage, "cache_creation_input_tokens") and event.message.usage.cache_creation_input_tokens is not None:
+                            cache_creation_input_tokens = event.message.usage.cache_creation_input_tokens
+                        if hasattr(event.message.usage, "cache_read_input_tokens") and event.message.usage.cache_read_input_tokens is not None:
+                            cache_read_input_tokens = event.message.usage.cache_read_input_tokens
+
+                elif event.type == "content_block_start":
+                    # Check if this is a tool_use block
+                    if hasattr(event.content_block, "type"):
+                        if event.content_block.type in ("thinking", "redacted_thinking"):
+                            # Thinking blocks are display-only — they are
+                            # never added to content_blocks, so they are
+                            # not persisted, replayed, or vectorized.
+                            in_thinking_block = True
+                            logger.info("[THINKING] Thinking block started")
+                            yield {"type": "thinking_start"}
+                        elif event.content_block.type == "tool_use":
+                            current_tool_use = {
+                                "type": "tool_use",
+                                "id": event.content_block.id,
+                                "name": event.content_block.name,
+                                "input": {},
+                            }
+                            current_tool_input_json = ""
+                            logger.info(f"[TOOLS] Tool use started: {event.content_block.name} (id={event.content_block.id})")
+                            yield {
+                                "type": "tool_use_start",
+                                "tool_use": {
+                                    "id": event.content_block.id,
+                                    "name": event.content_block.name,
+                                }
+                            }
+
+                elif event.type == "content_block_delta":
+                    if hasattr(event.delta, "text"):
+                        # Regular text delta
+                        text = event.delta.text
+                        full_content += text
+                        yield {"type": "token", "content": text}
+                    elif hasattr(event.delta, "thinking"):
+                        # Summarized reasoning delta. Display-only: not
+                        # accumulated into full_content. Empty when the
+                        # model returns thinking blocks with display
+                        # "omitted", in which case there is nothing to show.
+                        thinking_text = event.delta.thinking
+                        if thinking_text:
+                            yield {"type": "thinking", "content": thinking_text}
+                    elif hasattr(event.delta, "partial_json"):
+                        # Tool use input JSON delta
+                        current_tool_input_json += event.delta.partial_json
+                    # signature_delta and any future delta types are ignored
+
+                elif event.type == "content_block_stop":
+                    if in_thinking_block:
+                        in_thinking_block = False
+                        yield {"type": "thinking_stop"}
+
+                    # If we were building a tool use block, finalize it
+                    if current_tool_use is not None:
+                        try:
+                            current_tool_use["input"] = json.loads(current_tool_input_json) if current_tool_input_json else {}
+                        except json.JSONDecodeError:
+                            logger.error(f"[TOOLS] Failed to parse tool input JSON: {current_tool_input_json}")
+                            current_tool_use["input"] = {}
+
+                        content_blocks.append(current_tool_use)
+                        tool_use_blocks.append(current_tool_use)
+                        logger.info(f"[TOOLS] Tool use complete: {current_tool_use['name']}")
+                        current_tool_use = None
+                        current_tool_input_json = ""
+
+                elif event.type == "message_delta":
+                    if hasattr(event, "usage"):
+                        output_tokens = event.usage.output_tokens
+                    if hasattr(event.delta, "stop_reason"):
+                        stop_reason = event.delta.stop_reason
+
+        # Add text content to content_blocks if we have any
+        if full_content:
+            content_blocks.insert(0, {"type": "text", "text": full_content})
+
+        # Detect truncated tool_use blocks (hit max_tokens mid-tool-use)
+        truncated_tool_use = None
+        if current_tool_use is not None:
+            truncated_tool_use = current_tool_use.copy()
+            truncated_tool_use["truncated"] = True
+            truncated_tool_use["partial_input_json"] = current_tool_input_json
+            logger.warning(
+                f"[TOOLS] Tool use truncated! Tool '{current_tool_use['name']}' was cut off by max_tokens. "
+                f"Output tokens: {output_tokens}. The tool will NOT execute. "
+                f"Consider increasing max_tokens or using smaller file content."
+            )
+
+        # Build usage dict with cache information when available
+        usage = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        }
+        if cache_creation_input_tokens > 0:
+            usage["cache_creation_input_tokens"] = cache_creation_input_tokens
+        if cache_read_input_tokens > 0:
+            usage["cache_read_input_tokens"] = cache_read_input_tokens
+
+        # Debug logging for cache results
+        logger.info(f"[CACHE] Stream API Response - input: {input_tokens}, output: {output_tokens}")
+        logger.info(f"[CACHE] Cache write: {cache_creation_input_tokens}, Cache read: {cache_read_input_tokens}")
+
+        if tool_use_blocks:
+            logger.info(f"[TOOLS] Stream complete with {len(tool_use_blocks)} tool calls, stop_reason: {stop_reason}")
+
+        # Yield final done event with complete data
+        done_event = {
+            "type": "done",
+            "content": full_content,
+            "content_blocks": content_blocks,
+            "tool_use": tool_use_blocks if tool_use_blocks else None,
+            "model": model,
+            "usage": usage,
+            "stop_reason": stop_reason,
+        }
+        if truncated_tool_use:
+            done_event["truncated_tool_use"] = truncated_tool_use
+        yield done_event
+
     async def send_message_stream(
         self,
         messages: List[Dict[str, Any]],
@@ -343,161 +536,74 @@ class AnthropicService:
             api_params["tools"] = tools
             logger.info(f"[TOOLS] Streaming request with {len(tools)} tools")
 
-        try:
-            # Yield start event
-            yield {"type": "start", "model": model}
+        # The "start" event is emitted once, outside the retry loop, so a
+        # reconnect does not look like a second turn to the caller.
+        yield {"type": "start", "model": model}
 
-            full_content = ""
-            content_blocks = []
-            tool_use_blocks = []
-            current_tool_use = None
-            current_tool_input_json = ""
-            in_thinking_block = False
-            input_tokens = 0
-            output_tokens = 0
-            cache_creation_input_tokens = 0
-            cache_read_input_tokens = 0
-            stop_reason = None
+        # The SDK does not retry a stream that dies mid-body: its max_retries
+        # only covers establishing the request. Once the response body is
+        # streaming, a connection reset (httpx.ReadError, typically an idle
+        # intermediary reaping a long, quiet reasoning phase) kills the whole
+        # turn — including everything already generated and billed. Retry here
+        # instead. Prompt caching makes this cheap: the prefix comes back as a
+        # cache read.
+        #
+        # Retrying is only safe while the attempt has produced nothing the
+        # caller has already acted on. Once a token or a tool call has been
+        # yielded, the caller has appended text or started rendering a tool, so
+        # replaying the turn would duplicate it — at that point the error is
+        # surfaced instead. Thinking events are display-only, so a retry after
+        # reasoning has streamed is safe; the open block is closed first.
+        max_attempts = max(1, settings.anthropic_stream_max_retries + 1)
+        emitted_output = False
+        in_thinking_block = False
 
-            async with client.messages.stream(**api_params) as stream:
-                async for event in stream:
-                    if event.type == "message_start":
-                        if hasattr(event.message, "usage"):
-                            input_tokens = event.message.usage.input_tokens
-                            # Capture cache metrics from message_start
-                            # Guard against None values (some Anthropic-compatible APIs return None)
-                            if hasattr(event.message.usage, "cache_creation_input_tokens") and event.message.usage.cache_creation_input_tokens is not None:
-                                cache_creation_input_tokens = event.message.usage.cache_creation_input_tokens
-                            if hasattr(event.message.usage, "cache_read_input_tokens") and event.message.usage.cache_read_input_tokens is not None:
-                                cache_read_input_tokens = event.message.usage.cache_read_input_tokens
+        for attempt in range(1, max_attempts + 1):
+            try:
+                async for event in self._stream_attempt(client, api_params, model):
+                    event_type = event.get("type")
+                    if event_type in ("token", "tool_use_start"):
+                        emitted_output = True
+                    elif event_type == "thinking_start":
+                        in_thinking_block = True
+                    elif event_type == "thinking_stop":
+                        in_thinking_block = False
+                    yield event
+                return
 
-                    elif event.type == "content_block_start":
-                        # Check if this is a tool_use block
-                        if hasattr(event.content_block, "type"):
-                            if event.content_block.type in ("thinking", "redacted_thinking"):
-                                # Thinking blocks are display-only — they are
-                                # never added to content_blocks, so they are
-                                # not persisted, replayed, or vectorized.
-                                in_thinking_block = True
-                                logger.info("[THINKING] Thinking block started")
-                                yield {"type": "thinking_start"}
-                            elif event.content_block.type == "tool_use":
-                                current_tool_use = {
-                                    "type": "tool_use",
-                                    "id": event.content_block.id,
-                                    "name": event.content_block.name,
-                                    "input": {},
-                                }
-                                current_tool_input_json = ""
-                                logger.info(f"[TOOLS] Tool use started: {event.content_block.name} (id={event.content_block.id})")
-                                yield {
-                                    "type": "tool_use_start",
-                                    "tool_use": {
-                                        "id": event.content_block.id,
-                                        "name": event.content_block.name,
-                                    }
-                                }
+            except (httpx.TransportError, APIConnectionError) as e:
+                retriable = not emitted_output and attempt < max_attempts
+                if not retriable:
+                    reason = (
+                        "output already streamed to the caller"
+                        if emitted_output
+                        else f"no attempts left after {attempt}"
+                    )
+                    logger.exception(
+                        f"[STREAM] Connection failed mid-stream and cannot be retried "
+                        f"({reason}): {type(e).__name__}: {e}"
+                    )
+                    yield {"type": "error", "error": _describe_exception(e)}
+                    return
 
-                    elif event.type == "content_block_delta":
-                        if hasattr(event.delta, "text"):
-                            # Regular text delta
-                            text = event.delta.text
-                            full_content += text
-                            yield {"type": "token", "content": text}
-                        elif hasattr(event.delta, "thinking"):
-                            # Summarized reasoning delta. Display-only: not
-                            # accumulated into full_content. Empty when the
-                            # model returns thinking blocks with display
-                            # "omitted", in which case there is nothing to show.
-                            thinking_text = event.delta.thinking
-                            if thinking_text:
-                                yield {"type": "thinking", "content": thinking_text}
-                        elif hasattr(event.delta, "partial_json"):
-                            # Tool use input JSON delta
-                            current_tool_input_json += event.delta.partial_json
-                        # signature_delta and any future delta types are ignored
+                # Close a thinking block left open by the dead stream so the
+                # caller is not left with a spinner that never resolves.
+                if in_thinking_block:
+                    in_thinking_block = False
+                    yield {"type": "thinking_stop"}
 
-                    elif event.type == "content_block_stop":
-                        if in_thinking_block:
-                            in_thinking_block = False
-                            yield {"type": "thinking_stop"}
-
-                        # If we were building a tool use block, finalize it
-                        if current_tool_use is not None:
-                            try:
-                                current_tool_use["input"] = json.loads(current_tool_input_json) if current_tool_input_json else {}
-                            except json.JSONDecodeError:
-                                logger.error(f"[TOOLS] Failed to parse tool input JSON: {current_tool_input_json}")
-                                current_tool_use["input"] = {}
-
-                            content_blocks.append(current_tool_use)
-                            tool_use_blocks.append(current_tool_use)
-                            logger.info(f"[TOOLS] Tool use complete: {current_tool_use['name']}")
-                            current_tool_use = None
-                            current_tool_input_json = ""
-
-                    elif event.type == "message_delta":
-                        if hasattr(event, "usage"):
-                            output_tokens = event.usage.output_tokens
-                        if hasattr(event.delta, "stop_reason"):
-                            stop_reason = event.delta.stop_reason
-
-            # Add text content to content_blocks if we have any
-            if full_content:
-                content_blocks.insert(0, {"type": "text", "text": full_content})
-
-            # Detect truncated tool_use blocks (hit max_tokens mid-tool-use)
-            truncated_tool_use = None
-            if current_tool_use is not None:
-                truncated_tool_use = current_tool_use.copy()
-                truncated_tool_use["truncated"] = True
-                truncated_tool_use["partial_input_json"] = current_tool_input_json
+                backoff = settings.anthropic_stream_retry_backoff * (2 ** (attempt - 1))
                 logger.warning(
-                    f"[TOOLS] Tool use truncated! Tool '{current_tool_use['name']}' was cut off by max_tokens. "
-                    f"Output tokens: {output_tokens}. The tool will NOT execute. "
-                    f"Consider increasing max_tokens or using smaller file content."
+                    f"[STREAM] Connection failed mid-stream "
+                    f"({type(e).__name__}: {e or 'no detail'}); "
+                    f"retrying attempt {attempt + 1}/{max_attempts} in {backoff:.1f}s"
                 )
+                await asyncio.sleep(backoff)
 
-            # Build usage dict with cache information when available
-            usage = {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-            }
-            if cache_creation_input_tokens > 0:
-                usage["cache_creation_input_tokens"] = cache_creation_input_tokens
-            if cache_read_input_tokens > 0:
-                usage["cache_read_input_tokens"] = cache_read_input_tokens
-
-            # Debug logging for cache results
-            logger.info(f"[CACHE] Stream API Response - input: {input_tokens}, output: {output_tokens}")
-            logger.info(f"[CACHE] Cache write: {cache_creation_input_tokens}, Cache read: {cache_read_input_tokens}")
-
-            if tool_use_blocks:
-                logger.info(f"[TOOLS] Stream complete with {len(tool_use_blocks)} tool calls, stop_reason: {stop_reason}")
-
-            # Yield final done event with complete data
-            done_event = {
-                "type": "done",
-                "content": full_content,
-                "content_blocks": content_blocks,
-                "tool_use": tool_use_blocks if tool_use_blocks else None,
-                "model": model,
-                "usage": usage,
-                "stop_reason": stop_reason,
-            }
-            if truncated_tool_use:
-                done_event["truncated_tool_use"] = truncated_tool_use
-            yield done_event
-
-        except Exception as e:
-            logger.exception(f"[TOOLS] Stream error: {type(e).__name__}: {e}")
-            # Several transport-level exceptions carry no message at all
-            # (httpx.ReadError wrapping anyio.BrokenResourceError is the common
-            # one — a connection reset mid-stream), which previously surfaced
-            # in the UI as a bare "Error:". Always include the exception type.
-            detail = str(e)
-            error_message = f"{type(e).__name__}: {detail}" if detail else type(e).__name__
-            yield {"type": "error", "error": error_message}
+            except Exception as e:
+                logger.exception(f"[STREAM] Stream error: {type(e).__name__}: {e}")
+                yield {"type": "error", "error": _describe_exception(e)}
+                return
 
     def build_messages(
         self,

@@ -237,6 +237,23 @@ class Settings(BaseSettings):
     # This setting determines which mode the frontend starts in
     dictation_mode: str = "auto"
 
+    # Anthropic client timeouts (seconds)
+    # Connecting should fail fast. The read timeout is per-chunk, not per
+    # request: it resets on every byte, so it only catches a socket that has
+    # gone silent without closing. Keep it well above the gap between keepalive
+    # pings during a long reasoning phase or healthy streams will be killed.
+    anthropic_connect_timeout: float = 15.0
+    anthropic_read_timeout: float = 300.0
+    anthropic_write_timeout: float = 60.0
+
+    # Mid-stream reconnect
+    # The SDK's own retries only cover establishing a request; a connection
+    # reset once the response body is streaming kills the turn outright. These
+    # control the application-level retry for that case. Retries are attempted
+    # only while nothing has been streamed to the caller yet.
+    anthropic_stream_max_retries: int = 2
+    anthropic_stream_retry_backoff: float = 1.0
+
     # Extended thinking settings
     # Request summarized reasoning from Anthropic models that support adaptive
     # thinking (Claude 4.6 and later). Those models think regardless — this
@@ -250,6 +267,10 @@ class Settings(BaseSettings):
     tools_enabled: bool = True
     # Maximum number of tool use iterations before forcing a final response
     tool_use_max_iterations: int = 10
+    # Hard ceiling on a single tool execution (seconds). Most executors carry
+    # their own HTTP timeouts, but the ones that touch disk, SQL, or Pinecone
+    # do not — without this, one wedged tool hangs the whole turn indefinitely.
+    tool_execution_timeout: float = 180.0
     # Brave Search API key (for web search tool)
     brave_search_api_key: str = ""
 

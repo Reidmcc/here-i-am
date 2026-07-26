@@ -33,6 +33,7 @@ from app.models import (
     Message,
     MessageRole,
 )
+from app.services.memory_service import run_pinecone
 
 logger = logging.getLogger(__name__)
 
@@ -269,7 +270,7 @@ class VectorRebuildService:
 
                 if wipe_first:
                     try:
-                        index.delete(delete_all=True, namespace="")
+                        await run_pinecone(index.delete, delete_all=True, namespace="")
                         entity_result["wiped"] = True
                     except Exception as e:
                         # An empty/new index can reject delete_all; that's fine
@@ -282,7 +283,9 @@ class VectorRebuildService:
                 for i in range(0, len(records), UPSERT_BATCH_SIZE):
                     batch = records[i : i + UPSERT_BATCH_SIZE]
                     try:
-                        index.upsert_records(namespace="", records=batch)
+                        await run_pinecone(
+                            index.upsert_records, namespace="", records=batch
+                        )
                         entity_result["records_upserted"] += len(batch)
                     except Exception as e:
                         logger.warning(
@@ -291,7 +294,9 @@ class VectorRebuildService:
                         )
                         for record in batch:
                             try:
-                                index.upsert_records(namespace="", records=[record])
+                                await run_pinecone(
+                                    index.upsert_records, namespace="", records=[record]
+                                )
                                 entity_result["records_upserted"] += 1
                             except Exception as record_error:
                                 entity_result["errors"].append(
@@ -415,7 +420,7 @@ class VectorRebuildService:
             for i in range(0, len(ids), FETCH_BATCH_SIZE):
                 batch_ids = ids[i : i + FETCH_BATCH_SIZE]
                 try:
-                    fetch_result = index.fetch(ids=batch_ids)
+                    fetch_result = await run_pinecone(index.fetch, ids=batch_ids)
                 except Exception as e:
                     result["errors"].append(
                         f"Fetch failed for '{index_name}' batch at {i}: {e}"
