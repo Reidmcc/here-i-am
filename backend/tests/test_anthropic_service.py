@@ -2,9 +2,65 @@
 Unit tests for AnthropicService.
 """
 import pytest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
-from app.services.anthropic_service import AnthropicService, supports_temperature
+import httpx
+
+from app.config import settings
+from app.services.anthropic_service import (
+    AnthropicService,
+    supports_adaptive_thinking,
+    supports_temperature,
+)
+
+
+def _sdk_event(event_type: str, **fields):
+    """Build a stand-in for an SDK stream event."""
+    return SimpleNamespace(type=event_type, **fields)
+
+
+def _text_delta(text: str):
+    return _sdk_event("content_block_delta", delta=SimpleNamespace(text=text))
+
+
+def _thinking_delta(text: str):
+    return _sdk_event("content_block_delta", delta=SimpleNamespace(thinking=text))
+
+
+def _message_delta(stop_reason=None, output_tokens=0):
+    return _sdk_event(
+        "message_delta",
+        delta=SimpleNamespace(stop_reason=stop_reason),
+        usage=SimpleNamespace(output_tokens=output_tokens),
+    )
+
+
+def _stream_ctx(events, raise_after=None, error=None):
+    """
+    An async context manager yielding `events`, optionally raising partway.
+
+    `raise_after` is the number of events to deliver before raising `error`,
+    which simulates a connection dying mid-body — the failure mode the SDK
+    does not retry for us.
+    """
+
+    class _Stream:
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for i, event in enumerate(events):
+                if raise_after is not None and i == raise_after:
+                    raise error
+                yield event
+            if raise_after is not None and raise_after >= len(events):
+                raise error
+
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=_Stream())
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return ctx
 
 
 def _empty_async_iterator():
@@ -232,6 +288,326 @@ class TestAnthropicService:
 
         call_kwargs = client.messages.stream.call_args.kwargs
         assert call_kwargs["temperature"] == 0.5
+
+
+class TestThinkingSummaries:
+    """The thinking parameter and the display-only events it produces."""
+
+    def _service_with(self, events, side_effect=None):
+        service = AnthropicService()
+        client = MagicMock()
+        if side_effect is not None:
+            client.messages.stream = MagicMock(side_effect=side_effect)
+        else:
+            client.messages.stream = MagicMock(return_value=_stream_ctx(events))
+        service.client = client
+        service._minimax_client = client
+        return service, client
+
+    @pytest.mark.asyncio
+    async def test_requests_summarized_thinking_for_adaptive_models(self):
+        service, client = self._service_with([])
+        async for _ in service.send_message_stream([], model="claude-fable-5"):
+            pass
+
+        assert client.messages.stream.call_args.kwargs["thinking"] == {
+            "type": "adaptive",
+            "display": "summarized",
+        }
+
+    @pytest.mark.asyncio
+    async def test_omits_thinking_for_pre_adaptive_models(self):
+        """Sonnet 4.5 is the configured default and 400s on adaptive thinking."""
+        service, client = self._service_with([])
+        async for _ in service.send_message_stream(
+            [], model="claude-sonnet-4-5-20250929"
+        ):
+            pass
+
+        assert "thinking" not in client.messages.stream.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_omits_thinking_for_minimax(self):
+        """MiniMax is Anthropic-compatible but rejects the thinking parameter."""
+        service, client = self._service_with([])
+        async for _ in service.send_message_stream(
+            [], model="claude-fable-5", provider="minimax"
+        ):
+            pass
+
+        assert "thinking" not in client.messages.stream.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_omits_thinking_when_disabled(self):
+        service, client = self._service_with([])
+        with patch.object(settings, "thinking_summaries_enabled", False):
+            async for _ in service.send_message_stream([], model="claude-fable-5"):
+                pass
+
+        assert "thinking" not in client.messages.stream.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_emits_thinking_events_without_polluting_answer_text(self):
+        """
+        Reasoning reaches the caller on two independent channels.
+
+        The thinking_* events are for display. The thinking block in
+        content_blocks is what gets echoed back to the API on the next
+        tool-loop iteration. Neither may leak into `content`, which becomes
+        the stored assistant message.
+        """
+        events = [
+            _sdk_event(
+                "content_block_start",
+                content_block=SimpleNamespace(type="thinking"),
+            ),
+            _thinking_delta("weighing the options"),
+            _sdk_event("content_block_delta", delta=SimpleNamespace(signature="sig-1")),
+            _sdk_event("content_block_stop"),
+            _sdk_event(
+                "content_block_start", content_block=SimpleNamespace(type="text")
+            ),
+            _text_delta("the answer"),
+            _sdk_event("content_block_stop"),
+            _message_delta(stop_reason="end_turn", output_tokens=5),
+        ]
+        service, _ = self._service_with(events)
+
+        collected = [
+            e async for e in service.send_message_stream([], model="claude-fable-5")
+        ]
+
+        # Display channel
+        types = [e["type"] for e in collected]
+        assert types.count("thinking_start") == 1
+        assert types.count("thinking_stop") == 1
+        assert [e["content"] for e in collected if e["type"] == "thinking"] == [
+            "weighing the options"
+        ]
+
+        done = collected[-1]
+        assert done["type"] == "done"
+        # Answer text stays clean
+        assert done["content"] == "the answer"
+        # Echo channel: thinking block preserved in stream order, signature intact
+        assert done["content_blocks"] == [
+            {
+                "type": "thinking",
+                "thinking": "weighing the options",
+                "signature": "sig-1",
+            },
+            {"type": "text", "text": "the answer"},
+        ]
+
+
+class TestMidStreamReconnect:
+    """Retry behaviour when the connection dies mid-body."""
+
+    @staticmethod
+    def _client_with(*contexts):
+        client = MagicMock()
+        client.messages.stream = MagicMock(side_effect=list(contexts))
+        return client
+
+    @pytest.mark.asyncio
+    async def test_retries_when_nothing_has_been_streamed(self):
+        """A reset before any output is replayed rather than surfaced."""
+        good = [_text_delta("recovered"), _message_delta(stop_reason="end_turn")]
+        service = AnthropicService()
+        service.client = self._client_with(
+            _stream_ctx([], raise_after=0, error=httpx.ReadError("")),
+            _stream_ctx(good),
+        )
+
+        with patch.object(settings, "anthropic_stream_retry_backoff", 0):
+            collected = [
+                e async for e in service.send_message_stream([], model="claude-fable-5")
+            ]
+
+        assert service.client.messages.stream.call_count == 2
+        assert not any(e["type"] == "error" for e in collected)
+        assert collected[-1]["content"] == "recovered"
+        # "start" is emitted once, so the caller does not see two turns
+        assert [e["type"] for e in collected].count("start") == 1
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_once_tokens_have_been_emitted(self):
+        """Replaying after visible output would duplicate it in the transcript."""
+        service = AnthropicService()
+        service.client = self._client_with(
+            _stream_ctx([_text_delta("partial")], raise_after=1, error=httpx.ReadError("")),
+            _stream_ctx([_text_delta("would be a duplicate")]),
+        )
+
+        with patch.object(settings, "anthropic_stream_retry_backoff", 0):
+            collected = [
+                e async for e in service.send_message_stream([], model="claude-fable-5")
+            ]
+
+        assert service.client.messages.stream.call_count == 1
+        assert collected[-1]["type"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_closes_open_thinking_block_before_retrying(self):
+        """A dead stream must not leave the caller with an unresolved spinner."""
+        service = AnthropicService()
+        service.client = self._client_with(
+            _stream_ctx(
+                [
+                    _sdk_event(
+                        "content_block_start",
+                        content_block=SimpleNamespace(type="thinking"),
+                    ),
+                    _thinking_delta("mid-thought"),
+                ],
+                raise_after=2,
+                error=httpx.ReadError(""),
+            ),
+            _stream_ctx([_text_delta("ok"), _message_delta(stop_reason="end_turn")]),
+        )
+
+        with patch.object(settings, "anthropic_stream_retry_backoff", 0):
+            collected = [
+                e async for e in service.send_message_stream([], model="claude-fable-5")
+            ]
+
+        types = [e["type"] for e in collected]
+        assert types.count("thinking_start") == types.count("thinking_stop") == 1
+        assert collected[-1]["content"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_retry_discards_thinking_blocks_from_the_dead_attempt(self):
+        """
+        Thinking blocks are echoed back to the API, so a replay must not mix
+        blocks from the failed attempt with the successful one — a spliced
+        sequence carries signatures the retried turn never produced, and the
+        API rejects rearranged or partially dropped thinking sequences.
+        """
+        service = AnthropicService()
+        service.client = self._client_with(
+            _stream_ctx(
+                [
+                    _sdk_event(
+                        "content_block_start",
+                        content_block=SimpleNamespace(type="thinking"),
+                    ),
+                    _thinking_delta("abandoned reasoning"),
+                    _sdk_event(
+                        "content_block_delta",
+                        delta=SimpleNamespace(signature="stale-sig"),
+                    ),
+                    _sdk_event("content_block_stop"),
+                ],
+                raise_after=4,
+                error=httpx.ReadError(""),
+            ),
+            _stream_ctx(
+                [
+                    _sdk_event(
+                        "content_block_start",
+                        content_block=SimpleNamespace(type="thinking"),
+                    ),
+                    _thinking_delta("fresh reasoning"),
+                    _sdk_event(
+                        "content_block_delta",
+                        delta=SimpleNamespace(signature="fresh-sig"),
+                    ),
+                    _sdk_event("content_block_stop"),
+                    _sdk_event(
+                        "content_block_start",
+                        content_block=SimpleNamespace(type="text"),
+                    ),
+                    _text_delta("answer"),
+                    _sdk_event("content_block_stop"),
+                    _message_delta(stop_reason="end_turn"),
+                ]
+            ),
+        )
+
+        with patch.object(settings, "anthropic_stream_retry_backoff", 0):
+            collected = [
+                e async for e in service.send_message_stream([], model="claude-fable-5")
+            ]
+
+        done = collected[-1]
+        assert done["type"] == "done"
+        assert done["content_blocks"] == [
+            {
+                "type": "thinking",
+                "thinking": "fresh reasoning",
+                "signature": "fresh-sig",
+            },
+            {"type": "text", "text": "answer"},
+        ]
+        assert done["content"] == "answer"
+
+    @pytest.mark.asyncio
+    async def test_surfaces_named_error_when_retries_exhausted(self):
+        """httpx.ReadError carries no message; the type must still reach the UI."""
+        service = AnthropicService()
+        service.client = self._client_with(
+            *[
+                _stream_ctx([], raise_after=0, error=httpx.ReadError(""))
+                for _ in range(3)
+            ]
+        )
+
+        with patch.object(settings, "anthropic_stream_max_retries", 2), patch.object(
+            settings, "anthropic_stream_retry_backoff", 0
+        ):
+            collected = [
+                e async for e in service.send_message_stream([], model="claude-fable-5")
+            ]
+
+        assert service.client.messages.stream.call_count == 3
+        assert collected[-1]["type"] == "error"
+        # Previously this surfaced as a bare "Error:" with nothing after it
+        assert collected[-1]["error"] == "ReadError"
+
+    @pytest.mark.asyncio
+    async def test_non_transport_errors_are_not_retried(self):
+        service = AnthropicService()
+        service.client = self._client_with(
+            _stream_ctx([], raise_after=0, error=ValueError("bad request")),
+            _stream_ctx([_text_delta("unreachable")]),
+        )
+
+        collected = [
+            e async for e in service.send_message_stream([], model="claude-fable-5")
+        ]
+
+        assert service.client.messages.stream.call_count == 1
+        assert collected[-1]["error"] == "ValueError: bad request"
+
+
+class TestSupportsAdaptiveThinking:
+    """Tests for the adaptive thinking capability check."""
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-fable-5",
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-opus-4-6-20251101",
+        ],
+    )
+    def test_supported(self, model):
+        assert supports_adaptive_thinking(model) is True
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-sonnet-4-5-20250929",
+            "claude-haiku-4-5",
+            "claude-opus-4-5",
+            "claude-opus-4-1",
+        ],
+    )
+    def test_unsupported(self, model):
+        assert supports_adaptive_thinking(model) is False
 
 
 class TestSupportsTemperature:

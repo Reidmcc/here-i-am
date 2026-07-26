@@ -204,6 +204,31 @@ describe('ApiClient', () => {
             expect(callbacks.onToolStart).toHaveBeenCalledWith({ name: 'search' });
         });
 
+        it('should dispatch thinking lifecycle events', () => {
+            const callbacks = {
+                onThinkingStart: vi.fn(),
+                onThinking: vi.fn(),
+                onThinkingStop: vi.fn(),
+            };
+
+            api._handleStreamEvent('thinking_start', {}, callbacks);
+            api._handleStreamEvent('thinking', { content: 'weighing' }, callbacks);
+            api._handleStreamEvent('thinking_stop', {}, callbacks);
+
+            expect(callbacks.onThinkingStart).toHaveBeenCalledTimes(1);
+            expect(callbacks.onThinking).toHaveBeenCalledWith({ content: 'weighing' });
+            expect(callbacks.onThinkingStop).toHaveBeenCalledTimes(1);
+        });
+
+        it('should not warn on thinking events when no handler is registered', () => {
+            const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+            api._handleStreamEvent('thinking', { content: 'x' }, {});
+
+            expect(warn).not.toHaveBeenCalled();
+            warn.mockRestore();
+        });
+
         it('should dispatch tool_result event', () => {
             const callbacks = { onToolResult: vi.fn() };
             api._handleStreamEvent('tool_result', { result: 'data' }, callbacks);

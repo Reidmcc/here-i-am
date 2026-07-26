@@ -24,7 +24,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.config import settings
-from app.services.memory_service import memory_service
+from app.services.memory_service import memory_service, run_pinecone
 from app.services.notes_service import notes_service
 
 logger = logging.getLogger(__name__)
@@ -184,9 +184,11 @@ class NotesVectorService:
         updated = False
         for index in indexes:
             try:
-                self._delete_note_chunks(index, shared, filename)
+                await run_pinecone(self._delete_note_chunks, index, shared, filename)
                 if records:
-                    index.upsert_records(namespace=NOTES_NAMESPACE, records=records)
+                    await run_pinecone(
+                        index.upsert_records, namespace=NOTES_NAMESPACE, records=records
+                    )
                 updated = True
             except Exception as e:
                 logger.error(f"[NOTES] Failed to vectorize '{filename}' (shared={shared}): {e}")
@@ -207,7 +209,7 @@ class NotesVectorService:
             return False
         for index in indexes:
             try:
-                self._delete_note_chunks(index, shared, filename)
+                await run_pinecone(self._delete_note_chunks, index, shared, filename)
             except Exception as e:
                 logger.error(f"[NOTES] Failed to remove vectors for '{filename}': {e}")
         return True
@@ -235,7 +237,8 @@ class NotesVectorService:
         try:
             # Fetch extra candidates so threshold filtering below does not
             # silently shrink the result set.
-            results = index.search(
+            results = await run_pinecone(
+                index.search,
                 namespace=NOTES_NAMESPACE,
                 query={
                     "inputs": {"text": query},

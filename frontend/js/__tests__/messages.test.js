@@ -10,6 +10,8 @@ import {
     setCallbacks,
     addMessage,
     addToolMessage,
+    addThinkingMessage,
+    resetThinkingMessage,
     createStreamingMessage,
     addTypingIndicator,
     clearMessages,
@@ -258,6 +260,81 @@ describe('Messages Module', () => {
             addMessage('assistant', 'Test 2');
 
             expect(mockElements.messages.children.length).toBe(2);
+        });
+    });
+
+    describe('addThinkingMessage', () => {
+        // The open-block handle is module state; clear it so these tests do not
+        // depend on each other's ordering.
+        beforeEach(() => {
+            resetThinkingMessage();
+        });
+
+        it('should render streamed reasoning into a single panel', () => {
+            const message = addThinkingMessage('start');
+            addThinkingMessage('delta', { content: 'weighing ' });
+            addThinkingMessage('delta', { content: 'the options' });
+            addThinkingMessage('stop');
+
+            expect(message.classList.contains('thinking-message')).toBe(true);
+            expect(message.querySelector('.thinking-body').textContent).toBe(
+                'weighing the options'
+            );
+            expect(mockElements.messages.querySelectorAll('.thinking-message')).toHaveLength(1);
+
+            const status = message.querySelector('.tool-status');
+            expect(status.classList.contains('loading')).toBe(false);
+            expect(status.classList.contains('success')).toBe(true);
+        });
+
+        it('should not render reasoning as markup', () => {
+            const message = addThinkingMessage('start');
+            addThinkingMessage('delta', { content: '<img src=x onerror=alert(1)>' });
+            addThinkingMessage('stop');
+
+            const body = message.querySelector('.thinking-body');
+            expect(body.querySelector('img')).toBeNull();
+            expect(body.textContent).toBe('<img src=x onerror=alert(1)>');
+        });
+
+        it('should label a block that returned no summary', () => {
+            const message = addThinkingMessage('start');
+            addThinkingMessage('stop');
+
+            expect(message.querySelector('.thinking-body').textContent).toBe(
+                '(no summary returned)'
+            );
+        });
+
+        it('should ignore deltas with no open block', () => {
+            expect(addThinkingMessage('delta', { content: 'orphan' })).toBeNull();
+            expect(mockElements.messages.querySelectorAll('.thinking-message')).toHaveLength(0);
+        });
+
+        it('should not let an interrupted block collect the next turn', () => {
+            const first = addThinkingMessage('start');
+            addThinkingMessage('delta', { content: 'interrupted' });
+            // Turn ends without a thinking_stop, as on an abort or a dead stream
+            resetThinkingMessage();
+
+            const second = addThinkingMessage('start');
+            addThinkingMessage('delta', { content: 'fresh' });
+
+            expect(second).not.toBe(first);
+            expect(first.querySelector('.thinking-body').textContent).toBe('interrupted');
+            expect(second.querySelector('.thinking-body').textContent).toBe('fresh');
+            expect(first.querySelector('.tool-status').classList.contains('loading')).toBe(false);
+        });
+
+        it('should self-heal when a block is left open', () => {
+            const first = addThinkingMessage('start');
+            addThinkingMessage('delta', { content: 'stale' });
+
+            // No reset — a new block opening must still not append to the old one
+            addThinkingMessage('start');
+            addThinkingMessage('delta', { content: 'current' });
+
+            expect(first.querySelector('.thinking-body').textContent).toBe('stale');
         });
     });
 

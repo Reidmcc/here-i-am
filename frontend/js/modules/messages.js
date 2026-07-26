@@ -220,6 +220,114 @@ export function addToolMessage(type, toolName, data) {
     return null;
 }
 
+// The thinking block currently being streamed, if any. Reasoning arrives as a
+// contiguous run of deltas between thinking_start and thinking_stop, so a
+// single module-level handle is enough — a second block cannot open before the
+// first closes.
+let activeThinkingMessage = null;
+
+/**
+ * Render streamed reasoning ("thinking") from the model.
+ *
+ * This element is transient chrome: it is not part of the message the backend
+ * stores or re-renders on reload. (The backend does send reasoning back to the
+ * model as thinking blocks, but that is a separate channel from these events.)
+ * Models from Claude 4.6 onward reason before answering, which can take minutes
+ * on a hard turn with no other output on the wire — without this the UI is
+ * simply blank for that whole period.
+ *
+ * @param {'start'|'delta'|'stop'} phase
+ * @param {Object} data - Event payload ({ content } on 'delta')
+ */
+export function addThinkingMessage(phase, data = {}) {
+    if (phase === 'start') {
+        // Close any block left open by an interrupted stream, so its element
+        // cannot collect deltas belonging to this one.
+        resetThinkingMessage();
+
+        const wasNearBottom = isNearBottom();
+
+        const message = document.createElement('div');
+        message.className = 'thinking-message';
+        message.innerHTML = `
+            <div class="tool-indicator">
+                <span class="tool-icon">💭</span>
+                <span class="tool-name">Thinking</span>
+                <span class="tool-status loading">...</span>
+            </div>
+            <div class="thinking-body"></div>
+        `;
+
+        elements.messages.appendChild(message);
+        activeThinkingMessage = message;
+
+        if (wasNearBottom && callbacks.scrollToBottom) {
+            callbacks.scrollToBottom();
+        }
+        return message;
+    }
+
+    if (phase === 'delta') {
+        // A delta with no open block would mean the stream sent content
+        // outside a thinking_start/stop pair; drop it rather than guess.
+        if (!activeThinkingMessage || !data.content) return null;
+
+        const wasNearBottom = isNearBottom();
+        const body = activeThinkingMessage.querySelector('.thinking-body');
+        if (body) {
+            // textContent, not innerHTML — reasoning is model output and must
+            // never be parsed as markup.
+            body.textContent += data.content;
+        }
+        if (wasNearBottom && callbacks.scrollToBottom) {
+            callbacks.scrollToBottom();
+        }
+        return activeThinkingMessage;
+    }
+
+    if (phase === 'stop') {
+        if (!activeThinkingMessage) return null;
+
+        const statusEl = activeThinkingMessage.querySelector('.tool-status');
+        if (statusEl) {
+            statusEl.classList.remove('loading');
+            statusEl.classList.add('success');
+            statusEl.textContent = '✓';
+        }
+        // An empty block means the model reasoned but returned no summary
+        // (thinking_summaries_enabled off, or a model that omits it). Say so
+        // rather than leaving a blank panel.
+        const body = activeThinkingMessage.querySelector('.thinking-body');
+        if (body && !body.textContent) {
+            body.classList.add('thinking-empty');
+            body.textContent = '(no summary returned)';
+        }
+
+        const finished = activeThinkingMessage;
+        activeThinkingMessage = null;
+        return finished;
+    }
+
+    return null;
+}
+
+/**
+ * Drop the handle to any in-progress thinking block.
+ *
+ * Called when a turn ends by any path — done, error, or abort — so a block left
+ * open by an interrupted stream cannot collect deltas from the next turn.
+ */
+export function resetThinkingMessage() {
+    if (activeThinkingMessage) {
+        const statusEl = activeThinkingMessage.querySelector('.tool-status');
+        if (statusEl) {
+            statusEl.classList.remove('loading');
+            statusEl.textContent = '';
+        }
+        activeThinkingMessage = null;
+    }
+}
+
 /**
  * Create a streaming message element
  * @param {string} role - Message role

@@ -4,9 +4,10 @@ Unit tests for the Tool Service.
 Tests tool registration, execution, filtering, and error handling.
 """
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 import asyncio
 
+from app.config import settings
 from app.services.tool_service import (
     ToolService,
     ToolCategory,
@@ -353,6 +354,61 @@ class TestToolExecution:
         assert result.is_error is True
         assert "error" in result.content.lower()
         assert "something went wrong" in result.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_times_out(self, tool_service):
+        """
+        A tool that never returns is reported as an error, not left hanging.
+
+        Without the timeout the await here is unbounded: the turn stalls with
+        no exception and no closing log line, leaving an "Executing tool" entry
+        with no matching completion as the only trace.
+        """
+
+        async def hangs_forever(**kwargs):
+            await asyncio.sleep(3600)
+
+        tool_service.register_tool(
+            name="hangs",
+            description="Never returns",
+            input_schema={"type": "object"},
+            executor=hangs_forever,
+        )
+
+        with patch.object(settings, "tool_execution_timeout", 0.01):
+            result = await tool_service.execute_tool(
+                tool_use_id="test-123",
+                tool_name="hangs",
+                tool_input={},
+            )
+
+        assert result.is_error is True
+        assert result.tool_use_id == "test-123"
+        assert "timed out" in result.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_completes_within_timeout(self, tool_service):
+        """The timeout must not interfere with a tool that returns normally."""
+
+        async def quick(**kwargs):
+            return "done"
+
+        tool_service.register_tool(
+            name="quick",
+            description="Returns immediately",
+            input_schema={"type": "object"},
+            executor=quick,
+        )
+
+        with patch.object(settings, "tool_execution_timeout", 5):
+            result = await tool_service.execute_tool(
+                tool_use_id="test-456",
+                tool_name="quick",
+                tool_input={},
+            )
+
+        assert result.is_error is False
+        assert result.content == "done"
 
 
 class TestBatchExecution:
