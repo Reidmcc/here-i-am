@@ -86,6 +86,22 @@ MAX_REDIRECTS = 5
 # Redirect statuses handled by the manual redirect loop
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 
+# RFC 6598 carrier-grade NAT space. It is not the public internet, but
+# ipaddress only classifies it as private from Python 3.13 on, so it is
+# checked explicitly rather than left to the version in use.
+SHARED_ADDRESS_SPACE = ipaddress.ip_network("100.64.0.0/10")
+
+# Resource types blocked in the Playwright browser for faster loading
+# (only HTML/JS is needed for text extraction)
+PLAYWRIGHT_BLOCKED_RESOURCE_TYPES = {"image", "font", "stylesheet", "media", "imageset"}
+
+# Common tracking/analytics domains blocked in the Playwright browser
+PLAYWRIGHT_BLOCKED_DOMAINS = {
+    "google-analytics.com", "googletagmanager.com", "facebook.net",
+    "doubleclick.net", "analytics.", "tracking.", "ads.", "adservice.",
+    "hotjar.com", "mixpanel.com", "segment.io", "amplitude.com",
+}
+
 # SPA framework container IDs that suggest JavaScript rendering is needed
 SPA_CONTAINER_IDS = ["root", "app", "__next", "__nuxt", "___gatsby"]
 
@@ -114,6 +130,9 @@ def _is_blocked_address(ip: ipaddress._BaseAddress) -> bool:
             ip = mapped
         elif ip.sixtofour is not None:
             ip = ip.sixtofour
+
+    if isinstance(ip, ipaddress.IPv4Address) and ip in SHARED_ADDRESS_SPACE:
+        return True
 
     return (
         ip.is_private
@@ -254,6 +273,42 @@ async def _get_following_redirects(
     return None, current_url, f"Error: Too many redirects (more than {MAX_REDIRECTS}) for URL: {url}"
 
 
+def _should_block_playwright_request(request) -> bool:
+    """
+    Whether the Playwright browser should refuse a request.
+
+    Blocks heavy resource types and tracking domains for speed, then applies
+    the same public-internet rule as the httpx path to everything left.
+
+    That last part covers navigations *and* subresources deliberately.
+    Checking only navigations is not enough: the page's own JavaScript can
+    XHR http://localhost:8000/api/... and write the response into the DOM,
+    which the caller then extracts and hands to the entity. The application's
+    API sends Access-Control-Allow-Origin: * and has no authentication, so
+    nothing on the server side would refuse that read. The address check runs
+    last so it only resolves DNS for requests that would otherwise be allowed.
+
+    Args:
+        request: A Playwright Request (anything with .resource_type and .url)
+
+    Returns:
+        True if the request should be aborted
+    """
+    if request.resource_type in PLAYWRIGHT_BLOCKED_RESOURCE_TYPES:
+        return True
+
+    url_lower = request.url.lower()
+    for domain in PLAYWRIGHT_BLOCKED_DOMAINS:
+        if domain in url_lower:
+            return True
+
+    if _validate_fetch_url(request.url):
+        logger.warning(f"Playwright: blocked request to non-public URL {request.url}")
+        return True
+
+    return False
+
+
 def _needs_javascript_rendering(html_content: str, extracted_text: str) -> Tuple[bool, str]:
     """
     Detect if a page likely needs JavaScript rendering.
@@ -355,42 +410,9 @@ def _fetch_with_playwright_sync(url: str) -> Tuple[Optional[str], Optional[str]]
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-    # Resource types to block for faster loading (we only need HTML/JS for text extraction)
-    BLOCKED_RESOURCE_TYPES = {"image", "font", "stylesheet", "media", "imageset"}
-
-    # Common tracking/analytics domains to block
-    BLOCKED_DOMAINS = {
-        "google-analytics.com", "googletagmanager.com", "facebook.net",
-        "doubleclick.net", "analytics.", "tracking.", "ads.", "adservice.",
-        "hotjar.com", "mixpanel.com", "segment.io", "amplitude.com",
-    }
-
-    def should_block_request(route):
-        """Check if a request should be blocked for performance or safety."""
-        request = route.request
-        resource_type = request.resource_type
-
-        # Block non-essential resource types
-        if resource_type in BLOCKED_RESOURCE_TYPES:
-            return True
-
-        # Navigations (including redirects the browser follows on its own)
-        # must stay on the public internet, same rule as the httpx path.
-        if request.is_navigation_request() and _validate_fetch_url(request.url):
-            logger.warning(f"Playwright: blocked navigation to non-public URL {request.url}")
-            return True
-
-        # Block known tracking/analytics domains
-        url_lower = request.url.lower()
-        for domain in BLOCKED_DOMAINS:
-            if domain in url_lower:
-                return True
-
-        return False
-
     def handle_route(route):
         """Route handler that blocks unnecessary requests."""
-        if should_block_request(route):
+        if _should_block_playwright_request(route.request):
             route.abort()
         else:
             route.continue_()

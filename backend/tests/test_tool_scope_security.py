@@ -6,10 +6,11 @@ actions it was designed for, using only ordinary tool arguments:
 
 - GitHub: retargeting the API at a different repository via path traversal
 - GitHub: widening a code search past the configured repository
-- GitHub: reading blocklisted sensitive files through the API path
+- GitHub: reading, writing or discovering blocklisted sensitive files
 - Notes: reaching another entity's notes folder
 - web_fetch: reaching the loopback interface, private ranges, cloud
-  metadata, or non-HTTP schemes
+  metadata, or non-HTTP schemes - directly, via redirect, or from inside
+  the Playwright browser
 """
 
 import ipaddress
@@ -26,7 +27,12 @@ from app.services.github_service import (
     safe_repo_path,
 )
 from app.services.notes_service import NotesService
-from app.services.web_tools import _is_blocked_address, _validate_fetch_url, web_fetch
+from app.services.web_tools import (
+    _is_blocked_address,
+    _should_block_playwright_request,
+    _validate_fetch_url,
+    web_fetch,
+)
 
 
 # =============================================================================
@@ -267,6 +273,64 @@ class TestSensitiveFilesBlockedOnApiPath:
         assert success is True
         assert [i["path"] for i in data["tree"]] == ["main.py"]
 
+    @pytest.mark.asyncio
+    async def test_code_search_hides_sensitive_files(self, repo_config):
+        """Search must not stay a way to discover which blocked files exist."""
+        service = GitHubService()
+        payload = {
+            "items": [
+                {"path": "app/main.py", "repository": {"full_name": "owner/repo"}},
+                {"path": ".env.production", "repository": {"full_name": "owner/repo"}},
+                {"path": "deploy/id_rsa", "repository": {"full_name": "owner/repo"}},
+            ]
+        }
+        with patch.object(service, "_request", new=AsyncMock(return_value=(200, payload))):
+            success, results = await service.search_code(repo_config, "needle")
+        assert success is True
+        assert [r["path"] for r in results] == ["app/main.py"]
+
+    @pytest.mark.asyncio
+    async def test_code_search_drops_hits_with_no_repository(self, repo_config):
+        """An item that does not name its repo cannot be shown to be in scope."""
+        service = GitHubService()
+        payload = {"items": [{"path": "a.py"}, {"path": "b.py", "repository": {}}]}
+        with patch.object(service, "_request", new=AsyncMock(return_value=(200, payload))):
+            success, results = await service.search_code(repo_config, "needle")
+        assert success is True
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_commit_file_blocks_sensitive_file(self, repo_config):
+        """A file the entity cannot read is one it cannot plant either."""
+        service = GitHubService()
+        with patch.object(service, "_request", new=AsyncMock()) as mock_request:
+            success, data = await service.commit_file(
+                repo_config, path=".env", content="KEY=stolen", message="m", branch="feature"
+            )
+        assert success is False
+        assert data["error"] == "sensitive_file"
+        mock_request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_file_blocks_sensitive_file(self, repo_config):
+        service = GitHubService()
+        with patch.object(service, "_request", new=AsyncMock()) as mock_request:
+            success, data = await service.delete_file(
+                repo_config, path="config/credentials.json", message="m", branch="feature"
+            )
+        assert success is False
+        assert data["error"] == "sensitive_file"
+        mock_request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ordinary_files_are_still_writable(self, repo_config):
+        service = GitHubService()
+        with patch.object(service, "_request", new=AsyncMock(return_value=(404, {}))) as mock_request:
+            await service.commit_file(
+                repo_config, path="src/main.py", content="x", message="m", branch="feature"
+            )
+        assert mock_request.await_count > 0
+
 
 # =============================================================================
 # Notes: cross-entity access
@@ -344,8 +408,21 @@ class TestBlockedAddresses:
         ]:
             assert _is_blocked_address(ipaddress.ip_address(addr)) is True, addr
 
+    def test_blocks_carrier_grade_nat_space(self):
+        """RFC 6598. ipaddress only calls this private from Python 3.13 on."""
+        for addr in [
+            "100.64.0.0", "100.64.0.1", "100.100.100.100", "100.127.255.255",
+            "::ffff:100.64.0.1",
+        ]:
+            assert _is_blocked_address(ipaddress.ip_address(addr)) is True, addr
+
     def test_allows_public_addresses(self):
         for addr in ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700:4700::1111"]:
+            assert _is_blocked_address(ipaddress.ip_address(addr)) is False, addr
+
+    def test_allows_addresses_either_side_of_the_cgnat_range(self):
+        """The CGNAT block must not spill into neighbouring public space."""
+        for addr in ["100.63.255.255", "100.128.0.0"]:
             assert _is_blocked_address(ipaddress.ip_address(addr)) is False, addr
 
 
@@ -420,3 +497,62 @@ class TestWebFetchRefusesNonPublicTargets:
         assert "public internet" in result
         # The first hop was made; the second was refused.
         assert mock_instance.get.await_count == 1
+
+
+class TestPlaywrightRequestsStayPublic:
+    """
+    The browser fallback must apply the same address rule as the httpx path.
+
+    Gating only navigations leaves the page's own JavaScript free to XHR the
+    application's API on localhost and render the response into the DOM,
+    where the text extractor picks it up. The API allows every origin and has
+    no authentication, so the request would succeed on the server side.
+    """
+
+    @staticmethod
+    def _request(url, resource_type="document"):
+        request = MagicMock()
+        request.url = url
+        request.resource_type = resource_type
+        # Set so a regression that reintroduces the navigation-only check
+        # fails loudly on the subresource cases instead of quietly passing.
+        request.is_navigation_request = MagicMock(return_value=resource_type == "document")
+        return request
+
+    def test_blocks_navigation_to_loopback(self):
+        assert _should_block_playwright_request(
+            self._request("http://127.0.0.1:8000/api/conversations")
+        ) is True
+
+    def test_blocks_xhr_to_the_local_api(self):
+        for resource_type in ["xhr", "fetch", "script"]:
+            assert _should_block_playwright_request(
+                self._request("http://localhost:8000/api/conversations", resource_type)
+            ) is True, resource_type
+
+    def test_blocks_subresource_to_cloud_metadata(self):
+        assert _should_block_playwright_request(
+            self._request("http://169.254.169.254/latest/meta-data/", "fetch")
+        ) is True
+
+    def test_allows_ordinary_public_requests(self):
+        with patch("app.services.web_tools.socket.getaddrinfo",
+                   return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]):
+            for resource_type in ["document", "script", "xhr"]:
+                assert _should_block_playwright_request(
+                    self._request("https://example.com/app.js", resource_type)
+                ) is False, resource_type
+
+    def test_still_blocks_heavy_resources_without_resolving_dns(self):
+        with patch("app.services.web_tools.socket.getaddrinfo") as mock_resolve:
+            assert _should_block_playwright_request(
+                self._request("https://example.com/hero.png", "image")
+            ) is True
+        mock_resolve.assert_not_called()
+
+    def test_still_blocks_tracking_domains_without_resolving_dns(self):
+        with patch("app.services.web_tools.socket.getaddrinfo") as mock_resolve:
+            assert _should_block_playwright_request(
+                self._request("https://www.google-analytics.com/collect", "script")
+            ) is True
+        mock_resolve.assert_not_called()

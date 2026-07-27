@@ -125,6 +125,9 @@ def safe_repo_path(path: str) -> str:
     per-repo capability flags. Encoding also keeps '?' and '#' from starting
     a query string or fragment.
 
+    Leading and trailing slashes are stripped, so an absolute-looking path is
+    treated as repository-relative rather than rejected.
+
     Args:
         path: Repository-relative path from a tool argument
 
@@ -132,7 +135,7 @@ def safe_repo_path(path: str) -> str:
         The path, percent-encoded, safe to interpolate into an endpoint
 
     Raises:
-        InvalidTargetError: if the path is absolute or contains a dot segment
+        InvalidTargetError: if the path contains a dot segment or a null byte
     """
     if path is None:
         return ""
@@ -819,6 +822,17 @@ class GitHubService:
         if not encoded_path:
             return False, {"error": "invalid_path", "message": "A file path is required."}
 
+        # The blocklist covers writes as well as reads. A path the entity is
+        # not allowed to read is one it should not be able to create or
+        # overwrite either - committing a '.env' would otherwise be a way to
+        # plant credentials the read path is specifically built to withhold.
+        if self._is_sensitive_file(path):
+            logger.warning(f"Blocked commit to sensitive file: {path}")
+            return False, {
+                "error": "sensitive_file",
+                "message": f"Access blocked: '{path}' is a sensitive file that cannot be written",
+            }
+
         # Get existing file SHA if it exists
         endpoint = f"/repos/{repo.owner}/{repo.repo}/contents/{encoded_path}"
         params = {"ref": branch}
@@ -886,6 +900,15 @@ class GitHubService:
 
         if not encoded_path:
             return False, {"error": "invalid_path", "message": "A file path is required."}
+
+        # Same blocklist as commit_file: a file the entity cannot read is one
+        # it cannot delete either.
+        if self._is_sensitive_file(path):
+            logger.warning(f"Blocked deletion of sensitive file: {path}")
+            return False, {
+                "error": "sensitive_file",
+                "message": f"Access blocked: '{path}' is a sensitive file that cannot be deleted",
+            }
 
         # Get existing file SHA
         endpoint = f"/repos/{repo.owner}/{repo.repo}/contents/{encoded_path}"
@@ -980,11 +1003,18 @@ class GitHubService:
         results = []
         for item in data.get("items", []):
             full_name = (item.get("repository") or {}).get("full_name", "")
-            if full_name and full_name.lower() != expected_full_name:
+            if full_name.lower() != expected_full_name:
                 logger.warning(
-                    f"Dropped out-of-scope code search hit from '{full_name}' "
-                    f"(expected '{expected_full_name}')"
+                    f"Dropped out-of-scope code search hit from "
+                    f"'{full_name or 'unknown'}' (expected '{expected_full_name}')"
                 )
+                continue
+            # Sensitive files are hidden from tree and directory listings, so
+            # hide them here too - otherwise search stays a way to learn which
+            # of them exist, and their paths are the interesting part.
+            item_path = item.get("path", "")
+            if self._is_sensitive_file(item_path):
+                logger.warning(f"Dropped sensitive file from code search results: {item_path}")
                 continue
             results.append({
                 "path": item.get("path"),

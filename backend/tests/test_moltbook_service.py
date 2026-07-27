@@ -14,7 +14,7 @@ import httpx
 from app.services.moltbook_service import (
     BearerAuth,
     MoltbookService,
-    SECURITY_BANNER,
+    UNTRUSTED_SOURCE,
     MAX_RESPONSE_CHARS,
 )
 
