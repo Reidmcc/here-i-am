@@ -4,14 +4,23 @@
  */
 
 /**
- * Escape HTML to prevent XSS
+ * Escape HTML to prevent XSS.
+ *
+ * Text-node serialization only escapes & < >, which is not enough: several
+ * callers (and renderMarkdown's link rule) interpolate the result into a
+ * quoted attribute value, where an unescaped quote closes the attribute and
+ * lets the following text become new attributes. Quotes are escaped here so
+ * the output is safe in both text and attribute contexts.
+ *
  * @param {string} text - Text to escape
  * @returns {string} - Escaped HTML
  */
 export function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
-    return div.innerHTML;
+    return div.innerHTML
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 /**
@@ -49,6 +58,34 @@ export function truncateText(text, maxLength) {
 }
 
 /**
+ * Whether a markdown link target is safe to emit as an <a href>.
+ *
+ * Called with the already-HTML-escaped URL from renderMarkdown. Only
+ * non-executing schemes and document-relative targets are allowed;
+ * everything else (javascript:, data:, vbscript:, unknown handlers) is
+ * rejected so the link renders as plain text instead.
+ *
+ * @param {string} url - HTML-escaped URL captured from [text](url)
+ * @returns {boolean} - True if the URL may be used as an href
+ */
+export function isSafeLinkUrl(url) {
+    if (!url) return false;
+    // Reject raw markup. escapeHtml has already run, so a literal < > or "
+    // here can only have been produced by an earlier markdown rule (inline
+    // code, bold, ...) whose generated tag was swept into the URL capture.
+    // Interpolating that into href="..." would reopen the attribute.
+    if (/[<>"]/.test(url)) return false;
+    // Strip leading whitespace and control characters, which browsers ignore
+    // when resolving a scheme (e.g. "java\tscript:alert(1)").
+    const normalized = url.replace(/[\x00-\x20]/g, '').toLowerCase();
+    if (/^(https?:|mailto:)/.test(normalized)) return true;
+    // Relative targets: path, query, or fragment. Reject protocol-relative
+    // "//host" and anything else carrying a scheme.
+    if (/^(\/(?!\/)|\.{1,2}\/|#|\?)/.test(normalized)) return true;
+    return !/^[a-z][a-z0-9+.-]*:/.test(normalized) && !normalized.startsWith('//');
+}
+
+/**
  * Render markdown to HTML for message display.
  * Handles: bold, italic, inline code, code blocks, links, and line breaks.
  * @param {string} text - The raw text to render
@@ -79,8 +116,14 @@ export function renderMarkdown(text) {
     // Italic (_text_) - underscores at word boundaries (without lookbehind for browser compatibility)
     html = html.replace(/(^|[\s\(\[])_([^_]+)_([\s\)\]\.,!?;:]|$)/g, '$1<em>$2</em>$3');
 
-    // Links [text](url)
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="md-link">$1</a>');
+    // Links [text](url) - only for schemes that cannot execute script.
+    // The URL is model-controlled, so an unrecognized scheme (javascript:,
+    // data:, vbscript:, ...) renders as literal text rather than an anchor.
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) =>
+        isSafeLinkUrl(url)
+            ? `<a href="${url}" target="_blank" rel="noopener noreferrer" class="md-link">${linkText}</a>`
+            : match
+    );
 
     // Headers (## text) - only at start of line
     html = html.replace(/^### (.+)$/gm, '<h4 class="md-header">$1</h4>');

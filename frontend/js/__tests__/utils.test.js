@@ -20,7 +20,7 @@ describe('Utils Module', () => {
     describe('escapeHtml', () => {
         it('should escape < and > characters', () => {
             expect(escapeHtml('<script>alert("xss")</script>')).toBe(
-                '&lt;script&gt;alert("xss")&lt;/script&gt;'
+                '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;'
             );
         });
 
@@ -29,7 +29,11 @@ describe('Utils Module', () => {
         });
 
         it('should escape " character', () => {
-            expect(escapeHtml('He said "hello"')).toBe('He said "hello"');
+            expect(escapeHtml('He said "hello"')).toBe('He said &quot;hello&quot;');
+        });
+
+        it("should escape ' character", () => {
+            expect(escapeHtml("it's")).toBe('it&#39;s');
         });
 
         it('should handle empty string', () => {
@@ -42,7 +46,7 @@ describe('Utils Module', () => {
 
         it('should handle multiple special characters', () => {
             expect(escapeHtml('<div class="test">&nbsp;</div>')).toBe(
-                '&lt;div class="test"&gt;&amp;nbsp;&lt;/div&gt;'
+                '&lt;div class=&quot;test&quot;&gt;&amp;nbsp;&lt;/div&gt;'
             );
         });
     });
