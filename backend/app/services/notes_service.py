@@ -85,6 +85,48 @@ class NotesService:
         allowed_extensions = {'.md', '.json', '.txt', '.html', '.xml', '.yaml', '.yml'}
         ext = Path(filename).suffix.lower()
         return ext in allowed_extensions
+
+    def _resolve_note_path(self, target_dir: Path, filename: str) -> Optional[Path]:
+        """
+        Resolve a note filename inside its owning directory.
+
+        Notes filenames come from tool arguments, so they are model-controlled
+        and must stay inside the entity's own folder. Two things matter here:
+
+        - The filename must be a bare name. A path separator would let one
+          entity address another entity's notes, including the index.md that
+          is auto-injected into that entity's context.
+        - Containment is checked with is_relative_to, not string prefixing.
+          A prefix test treats '/notes/Ada' as containing '/notes/Adam/...',
+          so any entity whose label prefixes another's could read, overwrite,
+          or delete the other's notes.
+
+        Args:
+            target_dir: The entity or shared notes directory
+            filename: Filename from a tool argument
+
+        Returns:
+            The resolved path, or None if it is not a safe target
+        """
+        if not filename or filename in ('.', '..'):
+            return None
+        if '/' in filename or '\\' in filename or '\x00' in filename:
+            return None
+        if Path(filename).name != filename or Path(filename).is_absolute():
+            return None
+
+        candidate = target_dir / filename
+        try:
+            resolved = candidate.resolve()
+            target_resolved = target_dir.resolve()
+        except OSError:
+            return None
+
+        if not resolved.is_relative_to(target_resolved):
+            return None
+        if resolved == target_resolved:
+            return None
+        return candidate
     
     def get_index_content(self, entity_label: str) -> Optional[str]:
         """
@@ -163,15 +205,8 @@ class NotesService:
         else:
             target_dir = self._get_entity_dir(entity_label)
         
-        file_path = target_dir / filename
-        
-        # Security: ensure the resolved path is within the target directory
-        try:
-            resolved = file_path.resolve()
-            target_resolved = target_dir.resolve()
-            if not str(resolved).startswith(str(target_resolved)):
-                return {'success': False, 'error': "Invalid file path"}
-        except OSError:
+        file_path = self._resolve_note_path(target_dir, filename)
+        if file_path is None:
             return {'success': False, 'error': "Invalid file path"}
         
         if not file_path.exists():
@@ -219,15 +254,8 @@ class NotesService:
         if not self._ensure_directory(target_dir):
             return {'success': False, 'error': "Failed to create notes directory"}
         
-        file_path = target_dir / filename
-        
-        # Security: ensure the resolved path is within the target directory
-        try:
-            resolved = file_path.resolve()
-            target_resolved = target_dir.resolve()
-            if not str(resolved).startswith(str(target_resolved)):
-                return {'success': False, 'error': "Invalid file path"}
-        except OSError:
+        file_path = self._resolve_note_path(target_dir, filename)
+        if file_path is None:
             return {'success': False, 'error': "Invalid file path"}
         
         is_new = not file_path.exists()
@@ -286,15 +314,8 @@ class NotesService:
         else:
             target_dir = self._get_entity_dir(entity_label)
 
-        file_path = target_dir / filename
-
-        # Security: ensure the resolved path is within the target directory
-        try:
-            resolved = file_path.resolve()
-            target_resolved = target_dir.resolve()
-            if not str(resolved).startswith(str(target_resolved)):
-                return {'success': False, 'error': "Invalid file path"}
-        except OSError:
+        file_path = self._resolve_note_path(target_dir, filename)
+        if file_path is None:
             return {'success': False, 'error': "Invalid file path"}
 
         if not file_path.exists():
@@ -377,15 +398,8 @@ class NotesService:
         else:
             target_dir = self._get_entity_dir(entity_label)
         
-        file_path = target_dir / filename
-        
-        # Security: ensure the resolved path is within the target directory
-        try:
-            resolved = file_path.resolve()
-            target_resolved = target_dir.resolve()
-            if not str(resolved).startswith(str(target_resolved)):
-                return {'success': False, 'error': "Invalid file path"}
-        except OSError:
+        file_path = self._resolve_note_path(target_dir, filename)
+        if file_path is None:
             return {'success': False, 'error': "Invalid file path"}
         
         if not file_path.exists():

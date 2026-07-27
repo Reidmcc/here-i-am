@@ -9,14 +9,17 @@ Includes JavaScript rendering support via Playwright for single-page application
 
 import asyncio
 import httpx
+import ipaddress
 import json
 import logging
-from typing import TYPE_CHECKING, Optional, Tuple
+import socket
+from typing import TYPE_CHECKING, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 
 from app.config import settings
-from app.services.tool_service import ToolCategory, ToolService
+from app.services.tool_service import ToolCategory, ToolService, wrap_untrusted_content
 
 # Try to import Playwright for JavaScript rendering support
 # Gracefully handle if not installed
@@ -71,6 +74,18 @@ DEFAULT_MAX_LENGTH = 50000
 # Pages with less text than this may need JavaScript rendering
 MIN_CONTENT_LENGTH = 100
 
+# web_fetch is "read the open web". Only these schemes are honoured; anything
+# else (file:, ftp:, gopher:, ...) is refused before a request is made.
+ALLOWED_URL_SCHEMES = {"http", "https"}
+
+# Maximum redirect hops. Redirects are followed manually so each hop's
+# destination can be re-validated - a redirect is otherwise a way to reach a
+# blocked address from an allowed one.
+MAX_REDIRECTS = 5
+
+# Redirect statuses handled by the manual redirect loop
+REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+
 # SPA framework container IDs that suggest JavaScript rendering is needed
 SPA_CONTAINER_IDS = ["root", "app", "__next", "__nuxt", "___gatsby"]
 
@@ -83,6 +98,160 @@ LOADING_INDICATORS = [
     "javascript must be enabled",
     "this page requires javascript",
 ]
+
+
+def _is_blocked_address(ip: ipaddress._BaseAddress) -> bool:
+    """
+    Whether an IP address is outside the public internet.
+
+    Blocks loopback, private, link-local (including the 169.254.169.254 cloud
+    metadata endpoint), multicast, reserved and unspecified ranges, plus
+    IPv4-mapped IPv6 forms of the same.
+    """
+    if isinstance(ip, ipaddress.IPv6Address):
+        mapped = ip.ipv4_mapped
+        if mapped is not None:
+            ip = mapped
+        elif ip.sixtofour is not None:
+            ip = ip.sixtofour
+
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _validate_fetch_url(url: str) -> Optional[str]:
+    """
+    Check that a URL is a public-internet HTTP(S) target.
+
+    web_fetch is scoped to the open web, but the process runs alongside the
+    application's own unauthenticated API (and, in a cloud deployment, a
+    metadata service). Without this check the tool doubles as a request
+    forgery primitive: an entity could read every conversation in the
+    deployment via http://localhost:8000/api/... and exfiltrate it with a
+    second fetch. Hostnames are resolved here so a name that points at a
+    private address is rejected too.
+
+    Blocking (does DNS); call it via _validate_fetch_url_async from async
+    code. Known limit: httpx resolves the name again when it connects, so a
+    hostile DNS server that returns a public address here and a private one
+    there could still slip through. Closing that would mean pinning the
+    resolved address into the connection with a custom transport; it is not
+    addressed here because the threat model is entity misuse and page-borne
+    prompt injection, not an attacker operating their own resolver.
+
+    Args:
+        url: The URL to validate
+
+    Returns:
+        None if the URL is allowed, otherwise an error message
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError as e:
+        return f"Error: Malformed URL: {e}"
+
+    scheme = (parts.scheme or "").lower()
+    if scheme not in ALLOWED_URL_SCHEMES:
+        return (
+            f"Error: Unsupported URL scheme '{scheme or 'none'}'. "
+            f"web_fetch only supports http:// and https:// URLs."
+        )
+
+    hostname = parts.hostname
+    if not hostname:
+        return f"Error: URL has no host: {url}"
+
+    # Literal IP, or a name that has to be resolved first.
+    try:
+        addresses: List[ipaddress._BaseAddress] = [ipaddress.ip_address(hostname)]
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(hostname, parts.port or (443 if scheme == "https" else 80),
+                                          proto=socket.IPPROTO_TCP)
+        except socket.gaierror as e:
+            return f"Error: Could not resolve host '{hostname}': {e}"
+        addresses = []
+        for info in resolved:
+            try:
+                addresses.append(ipaddress.ip_address(info[4][0]))
+            except ValueError:
+                continue
+        if not addresses:
+            return f"Error: Could not resolve host '{hostname}' to an IP address."
+
+    for ip in addresses:
+        if _is_blocked_address(ip):
+            logger.warning(f"Blocked web_fetch to non-public address {ip} for URL: {url}")
+            return (
+                f"Error: Refusing to fetch '{url}'. It resolves to {ip}, which is not "
+                f"a public internet address. web_fetch can only read the open web."
+            )
+
+    return None
+
+
+async def _validate_fetch_url_async(url: str) -> Optional[str]:
+    """
+    Async wrapper for _validate_fetch_url.
+
+    The address check resolves DNS, which would otherwise block the event
+    loop for the duration of the lookup.
+    """
+    return await asyncio.to_thread(_validate_fetch_url, url)
+
+
+async def _get_following_redirects(
+    client: httpx.AsyncClient,
+    url: str,
+) -> Tuple[Optional[httpx.Response], str, Optional[str]]:
+    """
+    GET a URL, following redirects manually so every hop is revalidated.
+
+    httpx's own follow_redirects would happily walk from a public URL to
+    127.0.0.1 or the cloud metadata address, which would defeat the check in
+    _validate_fetch_url. Each Location is therefore validated before it is
+    followed.
+
+    Args:
+        client: An httpx client configured with follow_redirects=False
+        url: The (already validated) starting URL
+
+    Returns:
+        Tuple of (response, final_url, error_message). error_message is None
+        on success, in which case response is set.
+    """
+    headers = {
+        "User-Agent": BROWSER_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,text/plain;q=0.8,*/*;q=0.5",
+    }
+
+    current_url = url
+    for _ in range(MAX_REDIRECTS + 1):
+        response = await client.get(current_url, headers=headers)
+
+        # Explicit status check rather than response.is_redirect so the
+        # behaviour does not depend on the response object's own helpers.
+        if response.status_code not in REDIRECT_STATUS_CODES:
+            return response, current_url, None
+
+        location = response.headers.get("location")
+        if not location:
+            return response, current_url, None
+
+        next_url = str(httpx.URL(current_url).join(location))
+        validation_error = await _validate_fetch_url_async(next_url)
+        if validation_error:
+            logger.warning(f"Blocked redirect from {current_url} to {next_url}")
+            return None, current_url, validation_error
+        current_url = next_url
+
+    return None, current_url, f"Error: Too many redirects (more than {MAX_REDIRECTS}) for URL: {url}"
 
 
 def _needs_javascript_rendering(html_content: str, extracted_text: str) -> Tuple[bool, str]:
@@ -197,12 +366,18 @@ def _fetch_with_playwright_sync(url: str) -> Tuple[Optional[str], Optional[str]]
     }
 
     def should_block_request(route):
-        """Check if a request should be blocked for performance."""
+        """Check if a request should be blocked for performance or safety."""
         request = route.request
         resource_type = request.resource_type
 
         # Block non-essential resource types
         if resource_type in BLOCKED_RESOURCE_TYPES:
+            return True
+
+        # Navigations (including redirects the browser follows on its own)
+        # must stay on the public internet, same rule as the httpx path.
+        if request.is_navigation_request() and _validate_fetch_url(request.url):
+            logger.warning(f"Playwright: blocked navigation to non-public URL {request.url}")
             return True
 
         # Block known tracking/analytics domains
@@ -314,6 +489,11 @@ async def _fetch_with_playwright(url: str) -> Tuple[Optional[str], Optional[str]
     if not PLAYWRIGHT_AVAILABLE:
         return None, "Playwright is not installed. Install with: pip install playwright && playwright install chromium"
 
+    # Revalidate: this is also reachable directly, not only via web_fetch.
+    validation_error = await _validate_fetch_url_async(url)
+    if validation_error:
+        return None, validation_error
+
     # Run the synchronous Playwright code in a separate thread
     # This avoids event loop conflicts that cause NotImplementedError on Windows
     try:
@@ -414,7 +594,7 @@ async def web_search(query: str, num_results: int = DEFAULT_NUM_RESULTS) -> str:
 
             output = f"Search results for: {query}\n\n" + "\n\n".join(formatted_results)
             logger.info(f"Web search completed: {len(web_results)} results for '{query}'")
-            return output
+            return wrap_untrusted_content(output, "a web search")
 
     except httpx.TimeoutException:
         return f"Error: Search request timed out after {SEARCH_TIMEOUT} seconds."
@@ -476,7 +656,7 @@ def _extract_html_content(html_content: str, url: str) -> Tuple[str, str, str]:
     return cleaned_text, title_text, raw_text
 
 
-async def web_fetch(url: str, max_length: int = DEFAULT_MAX_LENGTH) -> str:
+async def _web_fetch_impl(url: str, max_length: int = DEFAULT_MAX_LENGTH) -> str:
     """
     Fetch and extract content from a URL.
 
@@ -499,16 +679,19 @@ async def web_fetch(url: str, max_length: int = DEFAULT_MAX_LENGTH) -> str:
     """
     used_playwright = False
 
+    # Scheme/address check before any network activity. Redirects are
+    # revalidated per hop below, so an allowed URL cannot bounce into the
+    # private network.
+    validation_error = await _validate_fetch_url_async(url)
+    if validation_error:
+        return validation_error
+
     try:
         # Step 1: Fast fetch with httpx
-        async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, follow_redirects=True) as client:
-            response = await client.get(
-                url,
-                headers={
-                    "User-Agent": BROWSER_USER_AGENT,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,text/plain;q=0.8,*/*;q=0.5",
-                },
-            )
+        async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, follow_redirects=False) as client:
+            response, url, redirect_error = await _get_following_redirects(client, url)
+            if redirect_error:
+                return redirect_error
 
             if response.status_code in BOT_BLOCK_STATUS_CODES:
                 # Likely a bot wall turning away the plain HTTP client; a real
@@ -614,6 +797,28 @@ async def web_fetch(url: str, max_length: int = DEFAULT_MAX_LENGTH) -> str:
     except Exception as e:
         logger.exception(f"Unexpected error fetching URL: {e}")
         return f"Error: An unexpected error occurred: {str(e)}"
+
+
+async def web_fetch(url: str, max_length: int = DEFAULT_MAX_LENGTH) -> str:
+    """
+    Fetch a URL and return its content marked as untrusted.
+
+    Page content is written by whoever controls the site, so it is banner-
+    wrapped before it reaches the entity's context. Wrapping happens here,
+    around every success path of _web_fetch_impl, rather than at each return
+    site. Our own error strings are passed through unwrapped.
+
+    Args:
+        url: The URL to fetch
+        max_length: Maximum content length to return
+
+    Returns:
+        Extracted content as text, or error message
+    """
+    result = await _web_fetch_impl(url, max_length)
+    if result.startswith("Error:"):
+        return result
+    return wrap_untrusted_content(result, "a fetched web page")
 
 
 def register_web_tools(tool_service: ToolService) -> None:

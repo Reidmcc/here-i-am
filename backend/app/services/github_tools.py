@@ -11,6 +11,7 @@ Includes composite tools for efficient multi-file operations:
 """
 
 import asyncio
+import functools
 import logging
 import re
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from app.config import settings
 from app.services.github_service import github_service
-from app.services.tool_service import ToolCategory, ToolService
+from app.services.tool_service import ToolCategory, ToolService, wrap_untrusted_content
 from app.services.cache_service import cache_service
 
 if TYPE_CHECKING:
@@ -213,6 +214,30 @@ def apply_patch(original: str, patch: str) -> PatchResult:
         success=True,
         content='\n'.join(result_lines)
     )
+
+
+def _untrusted_result(source: str):
+    """
+    Banner-wrap a tool's successful output as untrusted third-party content.
+
+    Issue and PR titles, bodies and comments are written by anyone who can
+    open an issue on the repository - not by the researcher and not by the
+    entity. The entity reading them also holds commit-capable tools, so this
+    text must not arrive looking like instruction. Our own "Error: ..."
+    strings are passed through unwrapped.
+
+    Args:
+        source: Short description of the origin, for the banner text
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            result = await fn(*args, **kwargs)
+            if isinstance(result, str) and not result.startswith("Error:"):
+                return wrap_untrusted_content(result, source)
+            return result
+        return wrapper
+    return decorator
 
 
 def _format_available_repos() -> str:
@@ -1436,6 +1461,7 @@ async def github_commit_patch(
 # Pull Request Tools (capability: "pr")
 # =============================================================================
 
+@_untrusted_result("GitHub pull requests (third-party authored)")
 async def github_list_pull_requests(
     repo_label: str,
     state: str = "open",
@@ -1485,6 +1511,7 @@ async def github_list_pull_requests(
         return f"Error: An unexpected error occurred: {str(e)}"
 
 
+@_untrusted_result("a GitHub pull request (third-party authored)")
 async def github_get_pull_request(
     repo_label: str,
     pr_number: int,
@@ -1590,6 +1617,7 @@ async def github_create_pull_request(
 # Issue Tools (capability: "issue")
 # =============================================================================
 
+@_untrusted_result("GitHub issues (third-party authored)")
 async def github_list_issues(
     repo_label: str,
     state: str = "open",
@@ -1645,6 +1673,7 @@ async def github_list_issues(
         return f"Error: An unexpected error occurred: {str(e)}"
 
 
+@_untrusted_result("a GitHub issue and its comments (third-party authored)")
 async def github_get_issue(
     repo_label: str,
     issue_number: int,

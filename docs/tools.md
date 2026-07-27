@@ -9,6 +9,10 @@ Enabled by default.
 - `web_search` — search the web via the Brave Search API (up to 20 results). Requires `BRAVE_SEARCH_API_KEY`.
 - `web_fetch` — fetch and read a web page. Extracts main text from HTML, handles JSON and plain text, automatically renders JavaScript-heavy pages via headless Playwright browser, and retries bot-wall 403/429 responses through the browser.
 
+**Scope:** `web_fetch` reaches the *public* internet only. `http://` and `https://` are the only accepted schemes, and the target hostname is resolved before the request: loopback, private, link-local (including the `169.254.169.254` cloud metadata address), multicast and reserved addresses are refused. Redirects are followed one hop at a time and each destination is revalidated, so an allowed URL cannot bounce the fetch into the private network; the same check gates navigations inside the Playwright browser. This keeps the tool from reaching the application's own API, which listens on localhost without authentication.
+
+Results from both tools are wrapped in an untrusted-content banner. Page text is written by whoever controls the site, and the entity reading it also holds notes-write and commit-capable GitHub tools — it is information, never instruction.
+
 ## Memory Tools
 
 Require Pinecone (`PINECONE_API_KEY` + `PINECONE_INDEXES`).
@@ -28,6 +32,15 @@ Require `NOTES_ENABLED=true` (the default).
 - `notes_delete` — delete a note file (except `index.md`).
 - `notes_list` — list note files with size and modification date.
 - `notes_search` — search notes (private and shared) by meaning; returns matching excerpts with filenames. Additionally requires Pinecone.
+
+**Scope:** `filename` must be a bare filename. Path separators and `..` segments are rejected, and containment is verified against the resolved directory, so an entity can only reach its own folder and `shared/` — never another entity's notes (in particular never another entity's auto-injected `index.md`).
+
+**Notes are inert data, by convention rather than enforcement.** The extension allowlist (`.md`, `.json`, `.txt`, `.html`, `.xml`, `.yaml`, `.yml`) exists so notes stay human-readable, not because those formats are harmless. Two properties currently make the files inert, and both are assumptions a future change could quietly break:
+
+- **Nothing serves the notes directory.** `notes_base_dir` (default `./notes`, i.e. `backend/notes`) is outside the static mount, which is `frontend/`. If the notes tree were ever served over HTTP, an entity-authored `.html` or `.xml` file would become stored XSS on the application's origin — and because the API has no authentication, script running there can drive every endpoint. Do not mount this directory.
+- **Nothing loads notes as configuration or code.** `.json`, `.yaml` and `.yml` are written and read back as text only. Pointing a config loader, deserializer, or template engine at this directory would turn note-writing into control over that subsystem.
+
+There is also **no size or file-count limit** on `notes_write`, so an entity can consume disk without bound. This is deliberate for a single-researcher deployment where the entity is not adversarial, but it means the notes directory should live on a volume whose exhaustion is survivable, and should be monitored if that assumption weakens.
 
 ## Context Awareness
 
@@ -55,6 +68,15 @@ Require `GITHUB_TOOLS_ENABLED=true` and `GITHUB_REPOS`. Per-repository `capabili
 
 *Issues:*
 - `github_list_issues`, `github_get_issue`, `github_create_issue`, `github_add_comment`
+
+**Scope:** every request stays inside the configured repository, independently of what the token would allow.
+
+- **Paths and refs are validated and percent-encoded.** `..` and `.` segments are rejected before the URL is built. Without this, httpx resolves the dot segments and a `path` like `../../../../repos/other/repo/contents/x` retargets the request at a *different repository* while still carrying this repo's token — escaping both `GITHUB_REPOS` and the per-repo `capabilities`. `GitHubService._request` re-checks every endpoint as a backstop, so a call site that forgets to validate still cannot escape.
+- **Code search cannot be widened.** `repo:`, `org:`, `user:` and `owner:` qualifiers are rejected in the query (GitHub ORs them together, which would reach any repo the token can read), the repo-scoping qualifier is actually transmitted, and results from other repositories are dropped.
+- **Sensitive files are blocked on both read paths.** The `SENSITIVE_FILE_PATTERNS` blocklist applies to the GitHub API path as well as the local clone, and matching files are hidden from directory and tree listings. Previously the check ran only against a local clone, so supplying a `ref` — which forces the API path — bypassed it.
+- **Issue and PR content is banner-wrapped as untrusted.** Titles, bodies and comments are writable by anyone who can open an issue, so `github_list_issues`, `github_get_issue`, `github_list_pull_requests` and `github_get_pull_request` mark their output as information, not instruction.
+
+These are enforced client-side, so they hold even where a token is broader than the deployment intends. Scope tokens to the configured repositories anyway — this is defense in depth, not a substitute.
 
 ## Codebase Navigator Tools
 

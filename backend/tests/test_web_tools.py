@@ -335,7 +335,10 @@ class TestWebFetch:
             mock_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_instance
 
-            result = await web_fetch("https://api.example.com/data")
+            # Transport is mocked; skip the real DNS lookup in the
+            # SSRF address check so the test stays offline.
+            with patch("app.services.web_tools._validate_fetch_url", return_value=None):
+                result = await web_fetch("https://api.example.com/data")
 
             assert "JSON content" in result
             assert '"key": "value"' in result
@@ -518,7 +521,10 @@ class TestWebFetch:
             mock_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_instance
 
-            result = await web_fetch("https://slow.example.com")
+            # Transport is mocked; skip the real DNS lookup in the
+            # SSRF address check so the test stays offline.
+            with patch("app.services.web_tools._validate_fetch_url", return_value=None):
+                result = await web_fetch("https://slow.example.com")
 
             assert "Error" in result
             assert "timed out" in result.lower()
@@ -535,7 +541,10 @@ class TestWebFetch:
             mock_instance.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value = mock_instance
 
-            result = await web_fetch("https://unreachable.example.com")
+            # Transport is mocked; skip the real DNS lookup in the
+            # SSRF address check so the test stays offline.
+            with patch("app.services.web_tools._validate_fetch_url", return_value=None):
+                result = await web_fetch("https://unreachable.example.com")
 
             assert "Error" in result
             assert "connect" in result.lower() or "Failed" in result

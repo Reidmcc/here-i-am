@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import quote
 
 import httpx
 
@@ -100,6 +101,83 @@ SENSITIVE_FILE_PATTERNS = {
     'shadow',
     'passwd',
 }
+
+
+class InvalidTargetError(ValueError):
+    """Raised when an AI-supplied path or ref cannot be safely used in a URL."""
+
+
+def _has_dot_segment(path: str) -> bool:
+    """True if any path segment is '.' or '..' (a traversal attempt)."""
+    return any(seg in (".", "..") for seg in path.replace("\\", "/").split("/"))
+
+
+def safe_repo_path(path: str) -> str:
+    """
+    Validate a repository-relative file path and percent-encode it for
+    interpolation into a GitHub API URL.
+
+    Paths reach this function straight from tool arguments, so they are
+    model-controlled. httpx resolves dot segments when it builds the URL,
+    which means an unvalidated '../../../../repos/other/repo/contents/x'
+    silently retargets the request at a *different repository* while still
+    carrying this repo's token - escaping the GITHUB_REPOS allowlist and the
+    per-repo capability flags. Encoding also keeps '?' and '#' from starting
+    a query string or fragment.
+
+    Args:
+        path: Repository-relative path from a tool argument
+
+    Returns:
+        The path, percent-encoded, safe to interpolate into an endpoint
+
+    Raises:
+        InvalidTargetError: if the path is absolute or contains a dot segment
+    """
+    if path is None:
+        return ""
+    normalized = path.replace("\\", "/").strip("/")
+    if not normalized:
+        return ""
+    if _has_dot_segment(normalized):
+        raise InvalidTargetError(
+            f"Invalid path '{path}': '.' and '..' segments are not allowed."
+        )
+    if "\x00" in normalized:
+        raise InvalidTargetError(f"Invalid path '{path}': contains a null byte.")
+    return quote(normalized, safe="/")
+
+
+def safe_git_ref(ref: str) -> str:
+    """
+    Validate a git ref (branch, tag, or SHA) and percent-encode it for
+    interpolation into a GitHub API URL.
+
+    Same exposure as safe_repo_path: refs are model-controlled and land in
+    the URL path, so a traversal here retargets the endpoint.
+
+    Args:
+        ref: Branch, tag, or commit SHA from a tool argument
+
+    Returns:
+        The ref, percent-encoded, safe to interpolate into an endpoint
+
+    Raises:
+        InvalidTargetError: if the ref violates git ref naming rules
+    """
+    if not ref:
+        raise InvalidTargetError("Ref must not be empty.")
+    normalized = ref.replace("\\", "/")
+    if _has_dot_segment(normalized) or ".." in normalized:
+        raise InvalidTargetError(f"Invalid ref '{ref}': '..' is not allowed.")
+    if normalized.startswith("/") or normalized.endswith("/"):
+        raise InvalidTargetError(f"Invalid ref '{ref}': must not start or end with '/'.")
+    # Git forbids these in ref names; they are also URL-significant.
+    if re.search(r"[\x00-\x20~^:?*\[\]\\]", normalized):
+        raise InvalidTargetError(
+            f"Invalid ref '{ref}': contains a character not allowed in a git ref."
+        )
+    return quote(normalized, safe="/")
 
 
 @dataclass
@@ -209,6 +287,18 @@ class GitHubService:
         Raises:
             Exception on network errors
         """
+        # Backstop against URL traversal. Every caller is expected to run
+        # untrusted path/ref components through safe_repo_path/safe_git_ref
+        # first; this catches anything that slips past, because httpx would
+        # otherwise resolve the dot segments and silently send the request to
+        # a different repository (or a different API entirely).
+        if _has_dot_segment(endpoint):
+            logger.warning(f"Blocked GitHub request with traversal in endpoint: {endpoint}")
+            return 400, {
+                "error": "invalid_path",
+                "message": "Request path contains '.' or '..' segments and was blocked.",
+            }
+
         # Check if rate limited
         rate_info = self.check_rate_limit(token)
         if rate_info and rate_info.remaining == 0:
@@ -282,7 +372,23 @@ class GitHubService:
             On failure, data contains: error, message
         """
         # First try Contents API
-        endpoint = f"/repos/{repo.owner}/{repo.repo}/contents/{path}"
+        try:
+            encoded_path = safe_repo_path(path)
+        except InvalidTargetError as e:
+            return False, {"error": "invalid_path", "message": str(e)}
+
+        # The sensitive-file blocklist has to apply here as well as on the
+        # local-clone path. github_get_file falls back to the API whenever a
+        # ref is supplied, so checking only in get_file_contents_local left
+        # "read it with ref=main" as a bypass for anything committed.
+        if self._is_sensitive_file(path):
+            logger.warning(f"Blocked API access to sensitive file: {path}")
+            return False, {
+                "error": "sensitive_file",
+                "message": f"Access blocked: '{path}' is a sensitive file that cannot be read",
+            }
+
+        endpoint = f"/repos/{repo.owner}/{repo.repo}/contents/{encoded_path}"
         params = {"ref": ref} if ref else {}
 
         status, data = await self._request("GET", endpoint, repo.token, params=params)
@@ -369,7 +475,11 @@ class GitHubService:
         This handles files between 1MB and 100MB.
         """
         # First, get the tree to find the blob SHA
-        tree_ref = ref or "HEAD"
+        try:
+            tree_ref = safe_git_ref(ref) if ref else "HEAD"
+        except InvalidTargetError as e:
+            return False, {"error": "invalid_ref", "message": str(e)}
+
         endpoint = f"/repos/{repo.owner}/{repo.repo}/git/trees/{tree_ref}"
         params = {"recursive": "true"}
 
@@ -496,7 +606,11 @@ class GitHubService:
             On failure: {"error": "...", "message": "..."}
         """
         # Get the ref SHA first
-        tree_ref = ref or "HEAD"
+        try:
+            tree_ref = safe_git_ref(ref) if ref else "HEAD"
+        except InvalidTargetError as e:
+            return False, {"error": "invalid_ref", "message": str(e)}
+
         endpoint = f"/repos/{repo.owner}/{repo.repo}/git/trees/{tree_ref}"
         params = {"recursive": "1"} if recursive else {}
 
@@ -511,9 +625,16 @@ class GitHubService:
                 "message": data.get("message", f"GitHub API returned {status}"),
             }
 
+        # Hide sensitive files from the tree as well, so they are neither
+        # readable nor discoverable through the API path.
+        tree = [
+            item for item in data.get("tree", [])
+            if not (item.get("type") == "blob" and self._is_sensitive_file(item.get("path", "")))
+        ]
+
         return True, {
             "sha": data.get("sha"),
-            "tree": data.get("tree", []),
+            "tree": tree,
             "truncated": data.get("truncated", False),
         }
 
@@ -531,7 +652,12 @@ class GitHubService:
         ref: Optional[str] = None,
     ) -> Tuple[bool, List[Dict[str, Any]]]:
         """List files and directories at a path."""
-        endpoint = f"/repos/{repo.owner}/{repo.repo}/contents/{path}"
+        try:
+            encoded_path = safe_repo_path(path)
+        except InvalidTargetError as e:
+            return False, [{"error": "invalid_path", "message": str(e)}]
+
+        endpoint = f"/repos/{repo.owner}/{repo.repo}/contents/{encoded_path}"
         params = {"ref": ref} if ref else {}
 
         status, data = await self._request("GET", endpoint, repo.token, params=params)
@@ -558,9 +684,12 @@ class GitHubService:
             else:
                 return False, [{"error": "unexpected", "message": "Unexpected response format"}]
 
-        # Parse directory listing
+        # Parse directory listing, hiding sensitive files (same blocklist the
+        # local-clone path applies)
         items = []
         for item in data:
+            if item.get("type") == "file" and self._is_sensitive_file(item.get("path", "")):
+                continue
             items.append({
                 "type": item.get("type"),  # "file" or "dir"
                 "name": item.get("name"),
@@ -607,6 +736,15 @@ class GitHubService:
     ) -> Tuple[bool, Dict[str, Any]]:
         """Create a new branch from a reference."""
         # Get the SHA of the source reference
+        try:
+            # branch_name goes into the JSON body, so it is validated but kept
+            # raw; from_ref goes into the URL path and must also be encoded.
+            safe_git_ref(branch_name)
+            if from_ref:
+                from_ref = safe_git_ref(from_ref)
+        except InvalidTargetError as e:
+            return False, {"error": "invalid_ref", "message": str(e)}
+
         if from_ref:
             endpoint = f"/repos/{repo.owner}/{repo.repo}/git/ref/heads/{from_ref}"
         else:
@@ -672,8 +810,17 @@ class GitHubService:
                 "message": f"Cannot commit directly to protected branch '{branch}'. Create a feature branch first.",
             }
 
+        try:
+            encoded_path = safe_repo_path(path)
+            safe_git_ref(branch)
+        except InvalidTargetError as e:
+            return False, {"error": "invalid_path", "message": str(e)}
+
+        if not encoded_path:
+            return False, {"error": "invalid_path", "message": "A file path is required."}
+
         # Get existing file SHA if it exists
-        endpoint = f"/repos/{repo.owner}/{repo.repo}/contents/{path}"
+        endpoint = f"/repos/{repo.owner}/{repo.repo}/contents/{encoded_path}"
         params = {"ref": branch}
         status, existing = await self._request("GET", endpoint, repo.token, params=params)
 
@@ -731,8 +878,17 @@ class GitHubService:
                 "message": f"Cannot commit directly to protected branch '{branch}'. Create a feature branch first.",
             }
 
+        try:
+            encoded_path = safe_repo_path(path)
+            safe_git_ref(branch)
+        except InvalidTargetError as e:
+            return False, {"error": "invalid_path", "message": str(e)}
+
+        if not encoded_path:
+            return False, {"error": "invalid_path", "message": "A file path is required."}
+
         # Get existing file SHA
-        endpoint = f"/repos/{repo.owner}/{repo.repo}/contents/{path}"
+        endpoint = f"/repos/{repo.owner}/{repo.repo}/contents/{encoded_path}"
         params = {"ref": branch}
         status, existing = await self._request("GET", endpoint, repo.token, params=params)
 
@@ -783,11 +939,28 @@ class GitHubService:
         query: str,
     ) -> Tuple[bool, List[Dict[str, Any]]]:
         """Search for code in the repository."""
+        # Reject scope-changing qualifiers. GitHub ORs multiple repo:/org:/
+        # user: qualifiers together, so letting them through the model-supplied
+        # query would widen the search past the configured repository to
+        # anything the token can read.
+        forbidden = re.findall(
+            r"(?i)(?:^|\s)(repo|org|user|owner):", query or ""
+        )
+        if forbidden:
+            return False, [{
+                "error": "invalid_query",
+                "message": (
+                    f"Search query may not contain scope qualifiers "
+                    f"({', '.join(sorted(set(q.lower() for q in forbidden)))}:). "
+                    f"Searches are always scoped to '{repo.label}'."
+                ),
+            }]
+
         endpoint = "/search/code"
         search_query = f"{query} repo:{repo.owner}/{repo.repo}"
         params = {"q": search_query, "per_page": 30}
 
-        status, data = await self._request("GET", endpoint, repo.token)
+        status, data = await self._request("GET", endpoint, repo.token, params=params)
 
         if status == 422:
             return False, [{
@@ -801,8 +974,18 @@ class GitHubService:
                 "message": data.get("message", f"GitHub API returned {status}"),
             }]
 
+        # Defense in depth: drop any hit that is not in the configured repo,
+        # regardless of how it got into the result set.
+        expected_full_name = f"{repo.owner}/{repo.repo}".lower()
         results = []
         for item in data.get("items", []):
+            full_name = (item.get("repository") or {}).get("full_name", "")
+            if full_name and full_name.lower() != expected_full_name:
+                logger.warning(
+                    f"Dropped out-of-scope code search hit from '{full_name}' "
+                    f"(expected '{expected_full_name}')"
+                )
+                continue
             results.append({
                 "path": item.get("path"),
                 "name": item.get("name"),
