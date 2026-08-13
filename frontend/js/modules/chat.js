@@ -343,6 +343,10 @@ async function streamSingleEntitySend({ content, attachments, messageToSend, use
             console.error('Failed to send message:', error);
         }
     } finally {
+        // Safety net: the request is over, so the bubble must not keep its
+        // streaming cursor even if the stream ended without a done event.
+        // finalize() is idempotent, so this is a no-op on the normal path.
+        streamingMessage.finalize({ showTimestamp: true });
         endStreaming();
     }
 }
@@ -565,6 +569,8 @@ export async function sendMessageWithResponder() {
         showToast('Failed to send message', 'error');
         console.error('Failed to send message:', error);
     } finally {
+        // Safety net (idempotent) — see streamSingleEntitySend.
+        streamingMessage.finalize({ showTimestamp: true, speakerLabel: responderLabel });
         endStreaming();
     }
 }
@@ -756,6 +762,8 @@ export async function performRegeneration(messageId, respondingEntityId = null) 
         showToast('Failed to regenerate response', 'error');
         console.error('Failed to regenerate:', error);
     } finally {
+        // Safety net (idempotent) — see streamSingleEntitySend.
+        streamingMessage.finalize({ showTimestamp: true });
         endStreaming();
     }
 }
@@ -1129,6 +1137,8 @@ export async function sendClosingTurn() {
             console.error('Failed to send closing turn:', error);
         }
     } finally {
+        // Safety net (idempotent) — see streamSingleEntitySend.
+        streamingMessage.finalize({ showTimestamp: true });
         endStreaming();
     }
 }

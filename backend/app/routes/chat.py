@@ -30,6 +30,20 @@ CLOSING_TURN_PROMPT = (
 )
 
 
+# Keys the "done" event carries for the route's own bookkeeping (persisting the
+# tool exchange messages) but that no client reads. A tool-heavy turn's
+# exchanges hold every tool input, every tool result, and the thinking blocks
+# with their signatures — hundreds of kilobytes, all of it already in the
+# conversation the browser is looking at. Stripping them keeps the final frame
+# small, which matters because a frame is what an SSE reader has to reassemble.
+_DONE_EVENT_INTERNAL_KEYS = ("tool_exchanges", "tool_uses")
+
+
+def build_done_event_payload(event: dict) -> dict:
+    """Strip persistence-only keys from a done event before it goes on the wire."""
+    return {k: v for k, v in event.items() if k not in _DONE_EVENT_INTERNAL_KEYS}
+
+
 async def get_multi_entity_ids(conversation_id: str, db: AsyncSession) -> List[str]:
     """Get the list of entity IDs participating in a multi-entity conversation."""
     result = await db.execute(
@@ -609,7 +623,7 @@ async def stream_message(data: ChatRequest):
                         usage_data = event.get("usage", {})
                         stop_reason = event.get("stop_reason")
                         tool_exchanges = event.get("tool_exchanges", [])
-                        yield f"event: done\ndata: {json.dumps(event)}\n\n"
+                        yield f"event: done\ndata: {json.dumps(build_done_event_payload(event))}\n\n"
                     elif event_type == "error":
                         yield f"event: error\ndata: {json.dumps(event)}\n\n"
                         return
@@ -1083,7 +1097,7 @@ async def regenerate_response(data: RegenerateRequest):
                         usage_data = event.get("usage", {})
                         stop_reason = event.get("stop_reason")
                         tool_exchanges = event.get("tool_exchanges", [])
-                        yield f"event: done\ndata: {json.dumps(event)}\n\n"
+                        yield f"event: done\ndata: {json.dumps(build_done_event_payload(event))}\n\n"
                     elif event_type == "error":
                         yield f"event: error\ndata: {json.dumps(event)}\n\n"
                         return

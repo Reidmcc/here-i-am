@@ -4,6 +4,99 @@
 const API_BASE = '/api';
 
 class ApiClient {
+    /**
+     * Read an SSE response body and dispatch every complete event.
+     *
+     * The parser state (event name, accumulated data lines) deliberately lives
+     * outside the read loop: an SSE frame can straddle any number of network
+     * chunks. The earlier per-chunk parser re-initialized that state on every
+     * read(), so a frame split across a chunk boundary was silently dropped —
+     * the half-parsed `event:` line was thrown away and the `data:` line that
+     * arrived next had no event name to dispatch under. The `done` frame of a
+     * tool-using turn is large enough to split reliably, which is why a
+     * finished response could keep its streaming cursor and never render.
+     *
+     * @param {Response} response - Fetch response with an SSE body
+     * @param {Function} dispatch - Called as (eventType, parsedData)
+     * @param {Function|null} onAbort - Called instead of rethrowing on AbortError
+     * @returns {Promise<void>}
+     */
+    async _readSSEStream(response, dispatch, onAbort = null) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let eventType = null;
+        let dataLines = [];
+
+        // Dispatch the frame accumulated so far (called on the blank line that
+        // terminates it, and once more at end of stream in case the server
+        // closed without a trailing blank line).
+        const flushEvent = () => {
+            if (dataLines.length === 0) {
+                eventType = null;
+                return;
+            }
+            const raw = dataLines.join('\n');
+            const type = eventType || 'message';
+            dataLines = [];
+            eventType = null;
+            try {
+                dispatch(type, JSON.parse(raw));
+            } catch (e) {
+                console.error('Failed to parse SSE data:', e, raw);
+            }
+        };
+
+        const handleLine = (rawLine) => {
+            // Tolerate CRLF line endings.
+            const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+            if (line === '') {
+                flushEvent();
+                return;
+            }
+            // Comment / keep-alive line.
+            if (line.startsWith(':')) return;
+
+            const colon = line.indexOf(':');
+            const field = colon === -1 ? line : line.slice(0, colon);
+            let value = colon === -1 ? '' : line.slice(colon + 1);
+            if (value.startsWith(' ')) value = value.slice(1);
+
+            if (field === 'event') {
+                eventType = value;
+            } else if (field === 'data') {
+                dataLines.push(value);
+            }
+            // 'id' and 'retry' are not used by this API.
+        };
+
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || ''; // Keep the incomplete trailing line
+                for (const line of lines) {
+                    handleLine(line);
+                }
+            }
+
+            // Flush any bytes held by the decoder, then the final partial line.
+            buffer += decoder.decode();
+            if (buffer) handleLine(buffer);
+            flushEvent();
+        } catch (e) {
+            if (e.name === 'AbortError' && onAbort) {
+                onAbort();
+                return;
+            }
+            throw e;
+        }
+    }
+
     async request(endpoint, options = {}) {
         const url = `${API_BASE}${endpoint}`;
         const defaultHeaders = {
@@ -183,48 +276,13 @@ class ApiClient {
             throw new Error(this._formatErrorDetail(error.detail, response.status));
         }
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        try {
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-
-                // Process complete SSE events in buffer
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-
-                let eventType = null;
-                let eventData = null;
-
-                for (const line of lines) {
-                    if (line.startsWith('event: ')) {
-                        eventType = line.slice(7).trim();
-                    } else if (line.startsWith('data: ')) {
-                        eventData = line.slice(6);
-                    } else if (line === '' && eventType && eventData) {
-                        try {
-                            const parsedData = JSON.parse(eventData);
-                            this._handleImportStreamEvent(eventType, parsedData, callbacks);
-                        } catch (e) {
-                            console.error('Failed to parse SSE data:', e, eventData);
-                        }
-                        eventType = null;
-                        eventData = null;
-                    }
-                }
-            }
-        } catch (e) {
-            if (e.name === 'AbortError') {
+        await this._readSSEStream(
+            response,
+            (eventType, data) => this._handleImportStreamEvent(eventType, data, callbacks),
+            () => {
                 if (callbacks.onCancelled) callbacks.onCancelled({ status: 'cancelled' });
-            } else {
-                throw e;
-            }
-        }
+            },
+        );
     }
 
     _handleImportStreamEvent(eventType, data, callbacks) {
@@ -297,73 +355,13 @@ class ApiClient {
             throw new Error(this._formatErrorDetail(error.detail, response.status));
         }
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        try {
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-
-                // Process complete SSE events in buffer
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-                let eventType = null;
-                let eventData = null;
-
-                for (const line of lines) {
-                    if (line.startsWith('event: ')) {
-                        eventType = line.slice(7).trim();
-                    } else if (line.startsWith('data: ')) {
-                        eventData = line.slice(6);
-                    } else if (line === '' && eventType && eventData) {
-                        // Empty line marks end of event
-                        try {
-                            const parsedData = JSON.parse(eventData);
-                            this._handleStreamEvent(eventType, parsedData, callbacks);
-                        } catch (e) {
-                            console.error('Failed to parse SSE data:', e, eventData);
-                        }
-                        eventType = null;
-                        eventData = null;
-                    }
-                }
-            }
-
-            // Process any remaining data in buffer
-            if (buffer.trim()) {
-                const lines = buffer.split('\n');
-                let eventType = null;
-                let eventData = null;
-
-                for (const line of lines) {
-                    if (line.startsWith('event: ')) {
-                        eventType = line.slice(7).trim();
-                    } else if (line.startsWith('data: ')) {
-                        eventData = line.slice(6);
-                    }
-                }
-
-                if (eventType && eventData) {
-                    try {
-                        const parsedData = JSON.parse(eventData);
-                        this._handleStreamEvent(eventType, parsedData, callbacks);
-                    } catch (e) {
-                        console.error('Failed to parse final SSE data:', e, eventData);
-                    }
-                }
-            }
-        } catch (e) {
-            if (e.name === 'AbortError') {
+        await this._readSSEStream(
+            response,
+            (eventType, data) => this._handleStreamEvent(eventType, data, callbacks),
+            () => {
                 if (callbacks.onAborted) callbacks.onAborted({ status: 'aborted' });
-                return;
-            }
-            throw e;
-        }
+            },
+        );
     }
 
     _handleStreamEvent(eventType, data, callbacks) {
@@ -710,73 +708,13 @@ class ApiClient {
             throw new Error(this._formatErrorDetail(error.detail, response.status));
         }
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        try {
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-
-                // Process complete SSE events in buffer
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-                let eventType = null;
-                let eventData = null;
-
-                for (const line of lines) {
-                    if (line.startsWith('event: ')) {
-                        eventType = line.slice(7).trim();
-                    } else if (line.startsWith('data: ')) {
-                        eventData = line.slice(6);
-                    } else if (line === '' && eventType && eventData) {
-                        // Empty line marks end of event
-                        try {
-                            const parsedData = JSON.parse(eventData);
-                            this._handleStreamEvent(eventType, parsedData, callbacks);
-                        } catch (e) {
-                            console.error('Failed to parse SSE data:', e, eventData);
-                        }
-                        eventType = null;
-                        eventData = null;
-                    }
-                }
-            }
-
-            // Process any remaining data in buffer
-            if (buffer.trim()) {
-                const lines = buffer.split('\n');
-                let eventType = null;
-                let eventData = null;
-
-                for (const line of lines) {
-                    if (line.startsWith('event: ')) {
-                        eventType = line.slice(7).trim();
-                    } else if (line.startsWith('data: ')) {
-                        eventData = line.slice(6);
-                    }
-                }
-
-                if (eventType && eventData) {
-                    try {
-                        const parsedData = JSON.parse(eventData);
-                        this._handleStreamEvent(eventType, parsedData, callbacks);
-                    } catch (e) {
-                        console.error('Failed to parse final SSE data:', e, eventData);
-                    }
-                }
-            }
-        } catch (e) {
-            if (e.name === 'AbortError') {
+        await this._readSSEStream(
+            response,
+            (eventType, data) => this._handleStreamEvent(eventType, data, callbacks),
+            () => {
                 if (callbacks.onAborted) callbacks.onAborted({ status: 'aborted' });
-                return;
-            }
-            throw e;
-        }
+            },
+        );
     }
 }
 

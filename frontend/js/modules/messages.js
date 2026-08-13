@@ -383,8 +383,41 @@ export function resetThinkingMessage() {
     }
 }
 
+// How often streamed text is re-rendered as markdown while tokens are arriving.
+// Fast enough to read as live, slow enough that a long message is not re-parsed
+// on every single token.
+const STREAM_RENDER_INTERVAL_MS = 60;
+
+/**
+ * Make a partial markdown string safe to render mid-stream.
+ *
+ * Only fenced code blocks need help: renderMarkdown requires the closing ```
+ * before it recognizes a block at all, so a fence that is still open would
+ * otherwise stream as raw text with visible backticks and then snap into a code
+ * block when it closes. A virtual closing fence is appended for the preview
+ * only — the accumulated content itself is never modified.
+ *
+ * Other unterminated constructs (a lone `**`, a half-typed link) simply render
+ * as the literal characters they are and resolve themselves as more text
+ * arrives, which is the expected behaviour of an incremental renderer.
+ *
+ * @param {string} text - Content received so far
+ * @returns {string} - Text to hand to renderMarkdown for the in-progress view
+ */
+function closeOpenCodeFence(text) {
+    const fences = text.match(/```/g);
+    if (!fences || fences.length % 2 === 0) return text;
+    return text.endsWith('\n') ? `${text}\`\`\`` : `${text}\n\`\`\``;
+}
+
 /**
  * Create a streaming message element
+ *
+ * Content is rendered as markdown while it streams (throttled), not held as raw
+ * text until the turn ends, so formatting appears as it arrives. finalize()
+ * re-renders the complete text and is idempotent, so callers can invoke it
+ * defensively at the end of a stream without risking a doubled timestamp.
+ *
  * @param {string} role - Message role
  * @param {string} speakerLabel - Speaker label for multi-entity
  * @returns {Object} - Object with element, updateContent, finalize, getContent methods
@@ -424,18 +457,55 @@ export function createStreamingMessage(role, speakerLabel = null) {
     elements.messages.appendChild(message);
 
     let accumulatedContent = '';
+    let renderTimer = null;
+    let lastRenderAt = 0;
+    let finalized = false;
+
+    const renderStreamingContent = () => {
+        lastRenderAt = Date.now();
+        contentSpan.innerHTML = renderMarkdown(closeOpenCodeFence(accumulatedContent));
+    };
+
+    // Leading-edge throttle: the first token of a quiet stretch renders
+    // immediately, and a burst of tokens collapses into one render per interval.
+    const scheduleRender = () => {
+        if (finalized || renderTimer !== null) return;
+
+        const sinceLastRender = Date.now() - lastRenderAt;
+        if (sinceLastRender >= STREAM_RENDER_INTERVAL_MS) {
+            renderStreamingContent();
+            return;
+        }
+
+        renderTimer = setTimeout(() => {
+            renderTimer = null;
+            if (!finalized) renderStreamingContent();
+        }, STREAM_RENDER_INTERVAL_MS - sinceLastRender);
+    };
 
     return {
         element: message,
         updateContent: (newToken) => {
             accumulatedContent += newToken;
-            contentSpan.textContent = accumulatedContent;
+            scheduleRender();
         },
         finalize: (options = {}) => {
+            // Idempotent: a stream can reach its end by more than one path
+            // (done event, abort, a caller's defensive close-out), and only the
+            // first one should strip the cursor and stamp the timestamp.
+            if (finalized) return accumulatedContent;
+            finalized = true;
+
+            if (renderTimer !== null) {
+                clearTimeout(renderTimer);
+                renderTimer = null;
+            }
+
             cursor.remove();
             bubble.classList.remove('streaming');
 
-            // Render final content with markdown
+            // Render final content with markdown — the complete text this time,
+            // so any construct left open mid-stream resolves correctly.
             contentSpan.innerHTML = renderMarkdown(accumulatedContent);
 
             // Add timestamp
@@ -449,6 +519,7 @@ export function createStreamingMessage(role, speakerLabel = null) {
 
             return accumulatedContent;
         },
+        isFinalized: () => finalized,
         getContent: () => accumulatedContent,
     };
 }

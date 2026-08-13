@@ -551,6 +551,83 @@ describe('Messages Module', () => {
 
             expect(result).toBe('Final content');
         });
+
+        it('should render markdown while streaming, before finalize', () => {
+            const stream = createStreamingMessage('assistant');
+
+            stream.updateContent('**bold** text');
+
+            const content = stream.element.querySelector('.message-content');
+            expect(content.innerHTML).toContain('<strong>bold</strong>');
+            // Still streaming: cursor stays until finalize.
+            expect(stream.element.querySelector('.streaming-cursor')).toBeTruthy();
+        });
+
+        it('should render an unterminated code fence as a code block mid-stream', () => {
+            const stream = createStreamingMessage('assistant');
+
+            stream.updateContent('```python\nprint("hi")');
+
+            const content = stream.element.querySelector('.message-content');
+            expect(content.innerHTML).toContain('md-code-block');
+            expect(content.textContent).toContain('print("hi")');
+            // The virtual closing fence is for rendering only.
+            expect(stream.getContent()).toBe('```python\nprint("hi")');
+        });
+
+        it('should coalesce rapid token updates into throttled renders', () => {
+            vi.useFakeTimers();
+            try {
+                const stream = createStreamingMessage('assistant');
+                const content = stream.element.querySelector('.message-content');
+
+                stream.updateContent('one ');
+                expect(content.textContent).toBe('one ');
+
+                // Within the throttle window: deferred, not rendered yet.
+                stream.updateContent('two ');
+                stream.updateContent('three');
+                expect(content.textContent).toBe('one ');
+
+                vi.advanceTimersByTime(100);
+                expect(content.textContent).toBe('one two three');
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('should render the full text on finalize even with a render pending', () => {
+            vi.useFakeTimers();
+            try {
+                const stream = createStreamingMessage('assistant');
+
+                stream.updateContent('start ');
+                stream.updateContent('**end**');
+                stream.finalize();
+
+                const content = stream.element.querySelector('.message-content');
+                expect(content.innerHTML).toContain('<strong>end</strong>');
+
+                // No pending timer may write to the finalized bubble.
+                vi.advanceTimersByTime(100);
+                expect(content.innerHTML).toContain('<strong>end</strong>');
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('should make finalize idempotent', () => {
+            const stream = createStreamingMessage('assistant');
+
+            stream.updateContent('Done');
+            stream.finalize();
+            const second = stream.finalize();
+
+            expect(second).toBe('Done');
+            expect(stream.isFinalized()).toBe(true);
+            expect(stream.element.querySelectorAll('.message-meta').length).toBe(1);
+            expect(stream.element.querySelector('.streaming-cursor')).toBeFalsy();
+        });
     });
 
     describe('addTypingIndicator', () => {

@@ -717,6 +717,125 @@ describe('ApiClient', () => {
             await expect(api.sendMessageStream({ message: 'test' })).rejects.toThrow('Server error');
         });
 
+        // Regression: the parser used to re-initialize its event/data state on
+        // every read(), so any frame straddling a chunk boundary was dropped.
+        // The done frame of a tool-using turn is large enough to split, which
+        // left finished responses stuck with a streaming cursor and unrendered
+        // markdown.
+        it('should dispatch events split across chunk boundaries at any offset', async () => {
+            const encoder = new TextEncoder();
+            const sseData =
+                'event: token\ndata: {"content":"Hello"}\n\n' +
+                'event: tool_start\ndata: {"tool_name":"web_search"}\n\n' +
+                'event: done\ndata: {"usage":{"output_tokens":7}}\n\n';
+
+            for (let splitAt = 1; splitAt < sseData.length; splitAt++) {
+                const stream = new ReadableStream({
+                    start(controller) {
+                        controller.enqueue(encoder.encode(sseData.slice(0, splitAt)));
+                        controller.enqueue(encoder.encode(sseData.slice(splitAt)));
+                        controller.close();
+                    },
+                });
+
+                global.fetch = vi.fn().mockResolvedValue({ ok: true, body: stream });
+
+                const callbacks = { onToken: vi.fn(), onToolStart: vi.fn(), onDone: vi.fn() };
+                await api.sendMessageStream({ message: 'test' }, callbacks);
+
+                expect(callbacks.onToken, `split at ${splitAt}`).toHaveBeenCalledWith({ content: 'Hello' });
+                expect(callbacks.onToolStart, `split at ${splitAt}`).toHaveBeenCalledWith({
+                    tool_name: 'web_search',
+                });
+                expect(callbacks.onDone, `split at ${splitAt}`).toHaveBeenCalledWith({
+                    usage: { output_tokens: 7 },
+                });
+            }
+        });
+
+        it('should dispatch a large done frame delivered one byte at a time', async () => {
+            const encoder = new TextEncoder();
+            const payload = { usage: { output_tokens: 12 }, content: 'x'.repeat(5000) };
+            const sseData = `event: done\ndata: ${JSON.stringify(payload)}\n\n`;
+
+            const stream = new ReadableStream({
+                start(controller) {
+                    for (const char of sseData) {
+                        controller.enqueue(encoder.encode(char));
+                    }
+                    controller.close();
+                },
+            });
+
+            global.fetch = vi.fn().mockResolvedValue({ ok: true, body: stream });
+
+            const callbacks = { onDone: vi.fn() };
+            await api.sendMessageStream({ message: 'test' }, callbacks);
+
+            expect(callbacks.onDone).toHaveBeenCalledWith(payload);
+        });
+
+        it('should not split multi-byte characters across chunks', async () => {
+            const encoder = new TextEncoder();
+            const sseData = 'event: token\ndata: {"content":"日本語 — ok"}\n\n';
+            const bytes = encoder.encode(sseData);
+
+            const stream = new ReadableStream({
+                start(controller) {
+                    // Split mid-way through the multi-byte run.
+                    const mid = bytes.indexOf(0xe6) + 1;
+                    controller.enqueue(bytes.slice(0, mid));
+                    controller.enqueue(bytes.slice(mid));
+                    controller.close();
+                },
+            });
+
+            global.fetch = vi.fn().mockResolvedValue({ ok: true, body: stream });
+
+            const callbacks = { onToken: vi.fn() };
+            await api.sendMessageStream({ message: 'test' }, callbacks);
+
+            expect(callbacks.onToken).toHaveBeenCalledWith({ content: '日本語 — ok' });
+        });
+
+        it('should ignore SSE comment/keep-alive lines', async () => {
+            const encoder = new TextEncoder();
+            const sseData = ': keep-alive\n\nevent: done\ndata: {"usage":{}}\n\n';
+
+            const stream = new ReadableStream({
+                start(controller) {
+                    controller.enqueue(encoder.encode(sseData));
+                    controller.close();
+                },
+            });
+
+            global.fetch = vi.fn().mockResolvedValue({ ok: true, body: stream });
+
+            const callbacks = { onDone: vi.fn() };
+            await api.sendMessageStream({ message: 'test' }, callbacks);
+
+            expect(callbacks.onDone).toHaveBeenCalledTimes(1);
+            expect(console.warn).not.toHaveBeenCalled();
+        });
+
+        it('should dispatch a final frame that has no trailing blank line', async () => {
+            const encoder = new TextEncoder();
+
+            const stream = new ReadableStream({
+                start(controller) {
+                    controller.enqueue(encoder.encode('event: done\ndata: {"usage":{}}'));
+                    controller.close();
+                },
+            });
+
+            global.fetch = vi.fn().mockResolvedValue({ ok: true, body: stream });
+
+            const callbacks = { onDone: vi.fn() };
+            await api.sendMessageStream({ message: 'test' }, callbacks);
+
+            expect(callbacks.onDone).toHaveBeenCalledWith({ usage: {} });
+        });
+
         it('should call onAborted on AbortError', async () => {
             const stream = new ReadableStream({
                 pull() {
