@@ -1344,6 +1344,216 @@ class TestMemoryServiceConversationIdNormalization:
             assert len(results) == 0
 
 
+class TestSearchMemoriesRoleFilter:
+    """Tests for restricting search results to human- or AI-authored memories."""
+
+    def _make_service(self, mock_pinecone_index, hits):
+        """Wire a MemoryService whose Pinecone index returns the given hits."""
+        service = MemoryService()
+
+        mock_cache = MagicMock()
+        mock_cache.get_search_results.return_value = None
+        service._cache_service = mock_cache
+
+        mock_hits = []
+        for hit in hits:
+            mock_hit = MagicMock()
+            mock_hit.to_dict.return_value = hit
+            mock_hits.append(mock_hit)
+
+        mock_result = MagicMock()
+        mock_result.hits = mock_hits
+        mock_search_result = MagicMock()
+        mock_search_result.result = mock_result
+        mock_pinecone_index.search = MagicMock(return_value=mock_search_result)
+
+        service._indexes["default"] = mock_pinecone_index
+        return service, mock_cache
+
+    def _hit(self, memory_id, role, conversation_id="conv-1"):
+        return {
+            "_id": memory_id,
+            "_score": 0.9,
+            "fields": {
+                "conversation_id": conversation_id,
+                "created_at": "2024-01-01T12:00:00",
+                "role": role,
+                "content_preview": "preview",
+                "times_retrieved": 0,
+            },
+        }
+
+    def _search_filter(self, mock_pinecone_index):
+        return mock_pinecone_index.search.call_args.kwargs["query"].get("filter")
+
+    @pytest.mark.asyncio
+    async def test_no_role_filter_sends_no_role_condition(self, mock_pinecone_index):
+        """Omitting role_filter leaves the Pinecone filter untouched."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, _ = self._make_service(
+                mock_pinecone_index,
+                [self._hit("mem-human", "human"), self._hit("mem-ai", "assistant")],
+            )
+
+            results = await service.search_memories("Query")
+
+            assert self._search_filter(mock_pinecone_index) is None
+            assert {r["id"] for r in results} == {"mem-human", "mem-ai"}
+
+    @pytest.mark.asyncio
+    async def test_human_filter_queries_only_human_role(self, mock_pinecone_index):
+        """role_filter='human' asks Pinecone for human memories only."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, _ = self._make_service(
+                mock_pinecone_index, [self._hit("mem-human", "human")]
+            )
+
+            results = await service.search_memories("Query", role_filter="human")
+
+            assert self._search_filter(mock_pinecone_index) == {"role": {"$eq": "human"}}
+            assert [r["id"] for r in results] == ["mem-human"]
+
+    @pytest.mark.asyncio
+    async def test_ai_filter_queries_everything_but_human(self, mock_pinecone_index):
+        """
+        role_filter='ai' is expressed as "not human" so assistant messages,
+        reflections, and multi-entity speaker labels all qualify.
+        """
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, _ = self._make_service(
+                mock_pinecone_index,
+                [
+                    self._hit("mem-assistant", "assistant"),
+                    self._hit("mem-reflection", "reflection"),
+                    self._hit("mem-label", "Kira"),
+                ],
+            )
+
+            results = await service.search_memories("Query", role_filter="ai", top_k=5)
+
+            assert self._search_filter(mock_pinecone_index) == {"role": {"$ne": "human"}}
+            assert {r["id"] for r in results} == {
+                "mem-assistant",
+                "mem-reflection",
+                "mem-label",
+            }
+
+    @pytest.mark.asyncio
+    async def test_role_filter_combines_with_conversation_exclusion(self, mock_pinecone_index):
+        """Both metadata conditions are sent together (Pinecone ANDs them)."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, _ = self._make_service(mock_pinecone_index, [])
+
+            await service.search_memories(
+                "Query",
+                exclude_conversation_id="conv-current",
+                role_filter="human",
+            )
+
+            assert self._search_filter(mock_pinecone_index) == {
+                "conversation_id": {"$ne": "conv-current"},
+                "role": {"$eq": "human"},
+            }
+
+    @pytest.mark.asyncio
+    async def test_python_fallback_drops_wrong_role(self, mock_pinecone_index):
+        """A hit that slips past the Pinecone filter is still dropped."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, _ = self._make_service(
+                mock_pinecone_index,
+                [self._hit("mem-human", "human"), self._hit("mem-ai", "assistant")],
+            )
+
+            results = await service.search_memories("Query", role_filter="human")
+
+            assert [r["id"] for r in results] == ["mem-human"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_role_filter_is_ignored(self, mock_pinecone_index):
+        """An unrecognized filter widens to all memories rather than returning none."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, _ = self._make_service(
+                mock_pinecone_index,
+                [self._hit("mem-human", "human"), self._hit("mem-ai", "assistant")],
+            )
+
+            results = await service.search_memories("Query", role_filter="nonsense")
+
+            assert self._search_filter(mock_pinecone_index) is None
+            assert len(results) == 2
+
+    @pytest.mark.asyncio
+    async def test_role_filter_is_part_of_the_cache_key(self, mock_pinecone_index):
+        """
+        Cache reads and writes carry the role filter, so a narrowed search
+        cannot serve its results to an unrestricted one.
+        """
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, mock_cache = self._make_service(
+                mock_pinecone_index, [self._hit("mem-human", "human")]
+            )
+
+            await service.search_memories("Query", role_filter="human")
+
+            assert mock_cache.get_search_results.call_args.kwargs["role_filter"] == "human"
+            assert mock_cache.set_search_results.call_args.kwargs["role_filter"] == "human"
+
+    @pytest.mark.asyncio
+    async def test_cached_results_respect_the_role_filter(self, mock_pinecone_index):
+        """Defense in depth: a stale cache entry is still role-filtered on read."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, mock_cache = self._make_service(mock_pinecone_index, [])
+            mock_cache.get_search_results.return_value = [
+                {"id": "mem-human", "score": 0.9, "role": "human"},
+                {"id": "mem-ai", "score": 0.88, "role": "assistant"},
+            ]
+
+            results = await service.search_memories("Query", role_filter="ai")
+
+            assert [r["id"] for r in results] == ["mem-ai"]
+            mock_pinecone_index.search.assert_not_called()
+
+
 class TestGetRecentReflections:
     """Recency-only reflection fetch backing first-turn injection."""
 

@@ -23,7 +23,7 @@ from typing import Optional, Tuple
 from sqlalchemy import select
 
 from app.services.tool_service import ToolCategory, ToolService
-from app.services.memory_service import memory_service
+from app.services.memory_service import memory_service, VALID_ROLE_FILTERS
 from app.database import async_session_maker
 from app.models import Message, MessageRole, Conversation
 from app.config import settings
@@ -36,6 +36,12 @@ MAX_REFLECTION_LENGTH = 10000
 
 # Minimum ID prefix length accepted by memory_mark/memory_release
 MIN_ID_PREFIX_LENGTH = 6
+
+# Accepted values for memory_query's `source` parameter. "all" (or omitting
+# the parameter) searches every memory; "human" and "ai" map to the role
+# filter memory_service applies to the vector search.
+SOURCE_ALL = "all"
+VALID_QUERY_SOURCES = (SOURCE_ALL,) + tuple(VALID_ROLE_FILTERS)
 
 
 # Track entity context for memory queries (set by session manager before tool execution)
@@ -168,7 +174,11 @@ async def _resolve_memory_id(
     return message, None
 
 
-async def _memory_query(query: str, num_results: int = 5) -> str:
+async def _memory_query(
+    query: str,
+    num_results: int = 5,
+    source: Optional[str] = None,
+) -> str:
     """
     Query your experiential memories with chosen text.
 
@@ -186,6 +196,8 @@ async def _memory_query(query: str, num_results: int = 5) -> str:
         query: The text to search for. Can be a concept, phrase, question,
                or anything you want to find related memories about.
         num_results: Number of memories to retrieve (default 5, max 10)
+        source: Who authored the memories to search — "human", "ai", or
+               "all" (the default when omitted).
 
     Returns:
         Formatted list of relevant memories with content and metadata
@@ -197,6 +209,26 @@ async def _memory_query(query: str, num_results: int = 5) -> str:
 
     if not memory_service.is_configured(entity_id):
         return "Error: Memory system not configured for this entity"
+
+    # Normalize the source filter. An unrecognized value is reported rather
+    # than silently widened, so a typo doesn't look like "there are simply no
+    # memories of that kind".
+    role_filter = str(source if source is not None else "").strip().lower() or SOURCE_ALL
+    if role_filter not in VALID_QUERY_SOURCES:
+        return (
+            f"Error: Unknown source '{source}'. "
+            f"Valid values: {', '.join(VALID_QUERY_SOURCES)}."
+        )
+    if role_filter == SOURCE_ALL:
+        role_filter = None
+
+    # Echoed in the result text so a narrowed search is never mistaken for
+    # "there is nothing here at all"
+    source_suffix = ""
+    if role_filter == "human":
+        source_suffix = " (searching the human's messages only)"
+    elif role_filter == "ai":
+        source_suffix = " (searching AI-authored memories only)"
 
     # Clamp num_results to reasonable range
     num_results = max(1, min(10, num_results))
@@ -219,10 +251,11 @@ async def _memory_query(query: str, num_results: int = 5) -> str:
             # Deliberate queries are short, semantically sparse strings, so they
             # use a lower similarity floor than automatic chat-context retrieval
             similarity_threshold=settings.query_similarity_threshold,
+            role_filter=role_filter,
         )
 
         if not candidates:
-            return f"No memories found matching: \"{query}\""
+            return f"No memories found matching: \"{query}\"{source_suffix}"
 
         # Get full content and update retrieval stats
         # We need our own DB session since tools don't receive one
@@ -296,7 +329,10 @@ async def _memory_query(query: str, num_results: int = 5) -> str:
                     continue
 
         if not memories:
-            return f"No memories found matching: \"{query}\" (candidates existed but content unavailable)"
+            return (
+                f"No memories found matching: \"{query}\"{source_suffix} "
+                "(candidates existed but content unavailable)"
+            )
 
         # Make these results visible to dedup: later memory_query calls and
         # automatic retrieval must not re-surface memories the entity can
@@ -310,7 +346,7 @@ async def _memory_query(query: str, num_results: int = 5) -> str:
         _turn_query_memory_ids.update(surfaced_ids)
 
         # Format results
-        lines = [f"Found {len(memories)} memories matching: \"{query}\"", ""]
+        lines = [f"Found {len(memories)} memories matching: \"{query}\"{source_suffix}", ""]
 
         for i, mem in enumerate(memories, 1):
             role_label = _role_display(mem["role"])
@@ -489,7 +525,9 @@ def register_memory_tools(tool_service: ToolService) -> None:
             "topic, or phrase—unlike automatic memory retrieval which happens based "
             "on conversation context. Returns memories ranked purely by semantic "
             "similarity to your query, each with a short memory ID usable with "
-            "memory_mark and memory_release. Memories already in the current "
+            "memory_mark and memory_release. You can optionally restrict the "
+            "search to what the human said or to what was AI-authored (your own "
+            "messages and reflections). Memories already in the current "
             "conversation context are excluded, so results are things not already "
             "in view. Querying updates retrieval tracking, so deliberate attention "
             "influences future automatic recall."
@@ -510,6 +548,19 @@ def register_memory_tools(tool_service: ToolService) -> None:
                     "default": 5,
                     "minimum": 1,
                     "maximum": 10
+                },
+                "source": {
+                    "type": "string",
+                    "enum": list(VALID_QUERY_SOURCES),
+                    "description": (
+                        "Who authored the memories to search. 'human' searches only "
+                        "what the human said; 'ai' searches only AI-authored memories "
+                        "(your own messages and saved reflections, and in a "
+                        "multi-entity conversation the other entities' messages); "
+                        "'all' searches everything. Optional—omit it to search all "
+                        "memories."
+                    ),
+                    "default": SOURCE_ALL
                 }
             },
             "required": ["query"]

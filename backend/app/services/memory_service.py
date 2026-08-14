@@ -14,6 +14,44 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+# Role filters accepted by search_memories. Memories carry a "role" metadata
+# field: "human" for the human's messages, and "assistant", "reflection", or
+# another entity's speaker label (multi-entity conversations) for everything
+# the AI side produced. "human" and "ai" therefore partition the store, and
+# "ai" is expressed as "not human" so speaker labels — an open set, one per
+# configured entity — are covered without enumerating them.
+ROLE_FILTER_HUMAN = "human"
+ROLE_FILTER_AI = "ai"
+VALID_ROLE_FILTERS = (ROLE_FILTER_HUMAN, ROLE_FILTER_AI)
+
+
+def normalize_role_filter(role_filter: Optional[str]) -> Optional[str]:
+    """
+    Normalize a role filter to "human", "ai", or None (no filtering).
+
+    Accepts None, "" and "all" as "no filter". Unrecognized values are
+    treated as no filter (logged), so a bad value widens results rather
+    than silently returning nothing.
+    """
+    if role_filter is None:
+        return None
+    normalized = str(role_filter).strip().lower()
+    if normalized in ("", "all", "any"):
+        return None
+    if normalized in VALID_ROLE_FILTERS:
+        return normalized
+    logger.warning(f"[MEMORY] Unknown role_filter '{role_filter}', ignoring")
+    return None
+
+
+def role_matches_filter(role: Optional[str], role_filter: Optional[str]) -> bool:
+    """Whether a memory's role metadata satisfies a normalized role filter."""
+    if not role_filter:
+        return True
+    is_human = role == ROLE_FILTER_HUMAN
+    return is_human if role_filter == ROLE_FILTER_HUMAN else not is_human
+
+
 async def run_pinecone(fn, *args, **kwargs):
     """
     Run a blocking Pinecone SDK call off the event loop.
@@ -192,6 +230,7 @@ class MemoryService:
         entity_id: Optional[str] = None,
         use_cache: bool = True,
         similarity_threshold: Optional[float] = None,
+        role_filter: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Search for relevant memories using semantic similarity.
@@ -214,6 +253,13 @@ class MemoryService:
                 messages); deliberate queries (memory_query tool, memory browser
                 search) pass the lower settings.query_similarity_threshold since
                 short search strings carry sparser semantic content.
+            role_filter: Restrict results by who authored the memory:
+                "human" (the human's messages), "ai" (the entity's own
+                messages and reflections, plus other entities' messages in
+                multi-entity conversations), or None/"all" for no
+                restriction. Applied as a Pinecone metadata filter so the
+                top_k slots are filled with matching memories rather than
+                shrunk by post-filtering.
 
         Returns:
             List of memory dicts with id, content, score, metadata
@@ -229,6 +275,7 @@ class MemoryService:
         exclude_ids = exclude_ids or set()
         if similarity_threshold is None:
             similarity_threshold = settings.similarity_threshold
+        role_filter = normalize_role_filter(role_filter)
 
         # Normalize exclude_conversation_id to string for consistent comparison
         exclude_conv_id_normalized = str(exclude_conversation_id) if exclude_conversation_id else None
@@ -241,6 +288,7 @@ class MemoryService:
                 entity_id=entity_id,
                 top_k=top_k * 2,  # Cache the larger fetch_k results
                 exclude_conversation_id=exclude_conv_id_normalized,
+                role_filter=role_filter,
             )
             if cached_results is not None:
                 logger.info(f"[MEMORY] Cache HIT for entity={entity_id}")
@@ -251,6 +299,11 @@ class MemoryService:
                     if mem["id"] in exclude_ids:
                         continue
                     if mem["score"] < similarity_threshold:
+                        continue
+                    # The role filter is part of the cache key, so entries are
+                    # already narrowed; re-checking costs nothing and keeps a
+                    # stale or mis-keyed entry from widening the result
+                    if not role_matches_filter(mem.get("role"), role_filter):
                         continue
                     filtered.append(mem)
                     if len(filtered) >= top_k:
@@ -269,13 +322,27 @@ class MemoryService:
                 "top_k": fetch_k,
             }
 
-            # Add metadata filter to exclude current conversation at Pinecone level
-            # This is more efficient than filtering in Python after retrieval
+            # Add metadata filters at Pinecone level (multiple keys are ANDed).
+            # This is more efficient than filtering in Python after retrieval,
+            # and for the role filter it also means fetch_k candidates all match
+            # instead of most of them being discarded afterwards.
+            metadata_filter = {}
+
             if exclude_conv_id_normalized:
-                search_query["filter"] = {
-                    "conversation_id": {"$ne": exclude_conv_id_normalized}
-                }
+                metadata_filter["conversation_id"] = {"$ne": exclude_conv_id_normalized}
                 logger.debug(f"[MEMORY] Excluding conversation_id: {exclude_conv_id_normalized}")
+
+            if role_filter == ROLE_FILTER_HUMAN:
+                metadata_filter["role"] = {"$eq": ROLE_FILTER_HUMAN}
+            elif role_filter == ROLE_FILTER_AI:
+                # Everything that isn't the human: "assistant", "reflection",
+                # and other entities' speaker labels
+                metadata_filter["role"] = {"$ne": ROLE_FILTER_HUMAN}
+            if role_filter:
+                logger.debug(f"[MEMORY] Restricting to role_filter={role_filter}")
+
+            if metadata_filter:
+                search_query["filter"] = metadata_filter
 
             # Use Pinecone's integrated inference - search with raw text
             results = await run_pinecone(
@@ -297,6 +364,17 @@ class MemoryService:
                 match_score = hit_dict.get('_score', 0)
                 fields = hit_dict.get('fields', {})
                 conv_id = fields.get("conversation_id")
+                role = fields.get("role")
+
+                # Skip roles the caller filtered out (fallback for the Pinecone
+                # filter above; also covers records written before the role
+                # metadata field existed)
+                if not role_matches_filter(role, role_filter):
+                    logger.info(
+                        f"[MEMORY] SKIP (role fallback, filter={role_filter}): "
+                        f"{match_id[:8]}... role={role}"
+                    )
+                    continue
 
                 # Skip same conversation (this filter is part of cache key)
                 # Ensure both values are strings for consistent comparison
@@ -311,7 +389,7 @@ class MemoryService:
                     "score": match_score,
                     "conversation_id": conv_id,
                     "created_at": fields.get("created_at"),
-                    "role": fields.get("role"),
+                    "role": role,
                     "content_preview": fields.get("content_preview"),
                     "times_retrieved": fields.get("times_retrieved", 0),
                 })
@@ -324,6 +402,7 @@ class MemoryService:
                     top_k=fetch_k,
                     exclude_conversation_id=exclude_conv_id_normalized,
                     results=all_memories,
+                    role_filter=role_filter,
                 )
 
             # Now apply exclude_ids and threshold filtering

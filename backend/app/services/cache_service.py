@@ -252,15 +252,36 @@ class CacheService:
         self.token_cache.set(key, count)
 
     # Memory search helpers
+    def _search_key(
+        self,
+        query: str,
+        entity_id: Optional[str],
+        top_k: int,
+        exclude_conversation_id: Optional[str],
+        role_filter: Optional[str],
+    ) -> str:
+        """
+        Cache key for a memory search.
+
+        Every argument that changes which memories Pinecone returns has to be
+        part of the key — role_filter included, or a role-restricted search
+        would serve its narrowed results to a later unrestricted one (and vice
+        versa) for the length of the TTL. entity_id stays first so
+        invalidate_search_cache_for_entity's prefix match keeps working.
+        """
+        query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
+        return f"search:{entity_id}:{top_k}:{exclude_conversation_id}:{role_filter}:{query_hash}"
+
     def get_search_results(
         self,
         query: str,
         entity_id: Optional[str],
         top_k: int,
         exclude_conversation_id: Optional[str] = None,
+        role_filter: Optional[str] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """Get cached search results."""
-        key = f"search:{entity_id}:{top_k}:{exclude_conversation_id}:{hashlib.sha256(query.encode()).hexdigest()[:16]}"
+        key = self._search_key(query, entity_id, top_k, exclude_conversation_id, role_filter)
         return self.search_cache.get(key)
 
     def set_search_results(
@@ -271,9 +292,10 @@ class CacheService:
         exclude_conversation_id: Optional[str],
         results: List[Dict[str, Any]],
         ttl_seconds: Optional[int] = None,
+        role_filter: Optional[str] = None,
     ) -> None:
         """Cache search results."""
-        key = f"search:{entity_id}:{top_k}:{exclude_conversation_id}:{hashlib.sha256(query.encode()).hexdigest()[:16]}"
+        key = self._search_key(query, entity_id, top_k, exclude_conversation_id, role_filter)
         self.search_cache.set(key, results, ttl_seconds)
 
     def invalidate_search_cache_for_entity(self, entity_id: Optional[str]) -> int:
