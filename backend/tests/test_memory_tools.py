@@ -149,6 +149,7 @@ class TestMemoryQuerySearch:
                 use_cache=True,
                 # Deliberate queries use the lower query similarity threshold
                 similarity_threshold=settings.query_similarity_threshold,
+                role_filter=None,  # No source given -> all memories
             )
 
     @pytest.mark.asyncio
@@ -212,6 +213,108 @@ class TestMemoryQuerySearch:
             call_kwargs = mock_service.search_memories.call_args[1]
             # Should exclude current conversation (its content is already in context)
             assert call_kwargs["exclude_conversation_id"] == "current-conv-123"
+
+
+class TestMemoryQuerySourceFilter:
+    """Tests for the optional `source` parameter (human / ai / all)."""
+
+    def _mock_search(self, mock_service):
+        mock_service.is_configured.return_value = True
+        mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
+        mock_service.search_memories = AsyncMock(return_value=[])
+
+    @pytest.mark.asyncio
+    async def test_source_omitted_searches_all_memories(self):
+        """Omitting source applies no role filter."""
+        set_memory_tool_context("test-entity", "test-conversation")
+
+        with patch("app.services.memory_tools.memory_service") as mock_service:
+            self._mock_search(mock_service)
+
+            await _memory_query("something")
+
+            assert mock_service.search_memories.call_args[1]["role_filter"] is None
+
+    @pytest.mark.asyncio
+    async def test_source_all_searches_all_memories(self):
+        """An explicit source='all' is equivalent to omitting it."""
+        set_memory_tool_context("test-entity", "test-conversation")
+
+        with patch("app.services.memory_tools.memory_service") as mock_service:
+            self._mock_search(mock_service)
+
+            await _memory_query("something", source="all")
+
+            assert mock_service.search_memories.call_args[1]["role_filter"] is None
+
+    @pytest.mark.asyncio
+    async def test_source_human_filters_to_human_memories(self):
+        """source='human' passes the human role filter through to the search."""
+        set_memory_tool_context("test-entity", "test-conversation")
+
+        with patch("app.services.memory_tools.memory_service") as mock_service:
+            self._mock_search(mock_service)
+
+            result = await _memory_query("something", source="human")
+
+            assert mock_service.search_memories.call_args[1]["role_filter"] == "human"
+            # The narrowing is stated back, so an empty result isn't read as
+            # "there are no memories of this at all"
+            assert "human's messages only" in result
+
+    @pytest.mark.asyncio
+    async def test_source_ai_filters_to_ai_memories(self):
+        """source='ai' passes the ai role filter through to the search."""
+        set_memory_tool_context("test-entity", "test-conversation")
+
+        with patch("app.services.memory_tools.memory_service") as mock_service:
+            self._mock_search(mock_service)
+
+            result = await _memory_query("something", source="ai")
+
+            assert mock_service.search_memories.call_args[1]["role_filter"] == "ai"
+            assert "AI-authored memories only" in result
+
+    @pytest.mark.asyncio
+    async def test_source_is_case_and_whitespace_insensitive(self):
+        """Models may send ' Human ' or 'AI'; both normalize."""
+        set_memory_tool_context("test-entity", "test-conversation")
+
+        with patch("app.services.memory_tools.memory_service") as mock_service:
+            self._mock_search(mock_service)
+
+            await _memory_query("something", source="  Human ")
+            assert mock_service.search_memories.call_args[1]["role_filter"] == "human"
+
+            await _memory_query("something", source="AI")
+            assert mock_service.search_memories.call_args[1]["role_filter"] == "ai"
+
+    @pytest.mark.asyncio
+    async def test_unknown_source_returns_error_without_searching(self):
+        """An unrecognized source is reported, not silently ignored."""
+        set_memory_tool_context("test-entity", "test-conversation")
+
+        with patch("app.services.memory_tools.memory_service") as mock_service:
+            self._mock_search(mock_service)
+
+            result = await _memory_query("something", source="assistant")
+
+            assert "Error:" in result
+            assert "assistant" in result
+            mock_service.search_memories.assert_not_called()
+
+    def test_source_is_optional_in_the_tool_schema(self):
+        """The registered schema exposes source as an optional enum."""
+        service = ToolService()
+        with patch.object(settings, "pinecone_api_key", "test-key"):
+            register_memory_tools(service)
+
+        schema = service.get_tool("memory_query").input_schema
+        source = schema["properties"]["source"]
+
+        assert schema["required"] == ["query"]
+        assert set(source["enum"]) == {"all", "human", "ai"}
+        assert source["default"] == "all"
 
 
 class TestMemoryQueryFullContentRetrieval:
