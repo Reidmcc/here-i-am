@@ -1,7 +1,7 @@
 {
   "name": "here-i-am-frontend",
   "version": "1.0.0",
-  "description": "Frontend for Here I Am - Experiential Interpretability Research Application",
+  "description": "Frontend for Here I Am",
   "type": "module",
   "scripts": {
     "test": "vitest run",

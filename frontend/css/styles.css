@@ -147,12 +147,6 @@ html, body {
     font-size: 1.5rem;
     font-weight: 600;
     color: var(--text-primary);
-    margin-bottom: 4px;
-}
-
-.app-subtitle {
-    font-size: 0.75rem;
-    color: var(--text-muted);
 }
 
 /* Entity Selector */
