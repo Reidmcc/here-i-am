@@ -299,7 +299,7 @@ async function streamSingleEntitySend({ content, attachments, messageToSend, use
                         streamingMessage.element.dataset.messageId = data.assistant_message_id;
                         removeRegenerateButtons();
                         addAssistantMessageActions(
-                            streamingMessage.element.querySelector('.message-bubble'),
+                            streamingMessage.bubble,
                             data.assistant_message_id,
                             streamingMessage.getContent()
                         );
@@ -720,7 +720,7 @@ export async function performRegeneration(messageId, respondingEntityId = null) 
 
                     removeRegenerateButtons();
                     addAssistantMessageActions(
-                        streamingMessage.element.querySelector('.message-bubble'),
+                        streamingMessage.bubble,
                         data.assistant_message_id,
                         streamingMessage.getContent()
                     );
