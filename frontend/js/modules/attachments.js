@@ -3,7 +3,7 @@
  * Handles file/image attachments for messages
  */
 
-import { state, resetAttachments } from './state.js';
+import { state } from './state.js';
 import { showToast, escapeHtml, readFileAsBase64, readFileAsText } from './utils.js';
 
 // Element references

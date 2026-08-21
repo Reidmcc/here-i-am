@@ -3,9 +3,9 @@
  * Handles settings modal, configuration presets, and settings application
  */
 
-import { state, saveEntityModelsToStorage, getValidSavedEntityModel, saveSelectedVoiceToStorage, clearAudioCache, saveResearcherName, saveEnterInsertsNewline } from './state.js';
+import { state, saveEntityModelsToStorage, saveSelectedVoiceToStorage, clearAudioCache, saveResearcherName, saveEnterInsertsNewline } from './state.js';
 import { showToast } from './utils.js';
-import { showModal, hideModal } from './modals.js';
+import { hideModal } from './modals.js';
 import { setTheme } from './theme.js';
 import { saveStyleTTS2Settings } from './voice.js';
 
@@ -377,37 +377,11 @@ function getModelDisplayName(modelId) {
 }
 
 /**
- * Resolve which model an entity is using.
- * Priority: saved user preference > entity default > first provider model > global setting
- * @param {Object} entity - Entity object with index_name, llm_provider, default_model
- * @returns {string} - Model ID
- */
-function resolveEntityModel(entity) {
-    const provider = entity.llm_provider || 'anthropic';
-
-    // 1. Saved per-entity preference (ignored if stale against a changed .env default)
-    const savedModel = getValidSavedEntityModel(entity);
-    if (savedModel) return savedModel;
-
-    // 2. Entity's configured default
-    if (entity.default_model) return entity.default_model;
-
-    // 3. First available model for the provider
-    if (state.availableModels) {
-        const providerModels = state.availableModels.filter(m => m.provider === provider);
-        if (providerModels.length > 0) return providerModels[0].id;
-    }
-
-    // 4. Global fallback
-    return state.settings.model;
-}
-
-/**
  * Populate model select options
  * @param {Array} models - Available models
- * @param {string} entityProvider - Current entity's provider
+ * @param {string} _entityProvider - Unused; kept for call-site compatibility
  */
-export function populateModelSelect(models, entityProvider) {
+export function populateModelSelect(models, _entityProvider) {
     if (!elements.modelSelect) return;
 
     elements.modelSelect.innerHTML = '';

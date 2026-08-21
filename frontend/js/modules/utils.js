@@ -77,6 +77,7 @@ export function isSafeLinkUrl(url) {
     if (/[<>"]/.test(url)) return false;
     // Strip leading whitespace and control characters, which browsers ignore
     // when resolving a scheme (e.g. "java\tscript:alert(1)").
+    // eslint-disable-next-line no-control-regex -- that is the point here
     const normalized = url.replace(/[\x00-\x20]/g, '').toLowerCase();
     if (/^(https?:|mailto:)/.test(normalized)) return true;
     // Relative targets: path, query, or fragment. Reject protocol-relative
@@ -114,7 +115,7 @@ export function renderMarkdown(text) {
     html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
 
     // Italic (_text_) - underscores at word boundaries (without lookbehind for browser compatibility)
-    html = html.replace(/(^|[\s\(\[])_([^_]+)_([\s\)\]\.,!?;:]|$)/g, '$1<em>$2</em>$3');
+    html = html.replace(/(^|[\s([])_([^_]+)_([\s)\].,!?;:]|$)/g, '$1<em>$2</em>$3');
 
     // Links [text](url) - only for schemes that cannot execute script.
     // The URL is model-controlled, so an unrecognized scheme (javascript:,

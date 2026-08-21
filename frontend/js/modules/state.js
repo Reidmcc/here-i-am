@@ -151,7 +151,7 @@ export function resetAttachments() {
  * Clear audio cache
  */
 export function clearAudioCache() {
-    for (const [key, cached] of state.audioCache) {
+    for (const cached of state.audioCache.values()) {
         if (cached.url) {
             URL.revokeObjectURL(cached.url);
         }
