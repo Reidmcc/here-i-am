@@ -20,6 +20,7 @@ import {
     updateAssistantMessageActions,
     isNearBottom,
     scrollToBottom,
+    collectSavedReflections,
 } from '../modules/messages.js';
 
 describe('Messages Module', () => {
@@ -938,6 +939,73 @@ describe('Messages Module', () => {
             scrollToBottom();
 
             expect(mockElements.messagesContainer.scrollTop).toBe(1000);
+        });
+    });
+    describe('collectSavedReflections', () => {
+        const memorySaveRow = (text) => ({
+            role: 'tool_use',
+            content: JSON.stringify([
+                { type: 'text', text: 'Let me note that.' },
+                { type: 'tool_use', id: 'tu-1', name: 'memory_save', input: { content: text } },
+            ]),
+        });
+
+        it('should collect the text a memory_save tool card already shows', () => {
+            const saved = collectSavedReflections([
+                { role: 'human', content: 'hello' },
+                memorySaveRow('Something worth keeping.'),
+                { role: 'assistant', content: 'Saved.' },
+            ]);
+
+            expect(saved.has('Something worth keeping.')).toBe(true);
+            expect(saved.size).toBe(1);
+        });
+
+        it('should trim so it matches the stripped reflection row', () => {
+            const saved = collectSavedReflections([memorySaveRow('  padded  ')]);
+
+            expect(saved.has('padded')).toBe(true);
+        });
+
+        it('should ignore other tools', () => {
+            const saved = collectSavedReflections([{
+                role: 'tool_use',
+                content: JSON.stringify([
+                    { type: 'tool_use', id: 'tu-1', name: 'web_search', input: { query: 'x' } },
+                ]),
+            }]);
+
+            expect(saved.size).toBe(0);
+        });
+
+        it('should return nothing for a conversation with no tool exchanges', () => {
+            const saved = collectSavedReflections([
+                { role: 'human', content: 'hello' },
+                { role: 'reflection', content: 'An older reflection.' },
+                { role: 'assistant', content: 'Hi.' },
+            ]);
+
+            expect(saved.size).toBe(0);
+        });
+
+        it('should skip rows whose content is not parseable', () => {
+            const saved = collectSavedReflections([
+                { role: 'tool_use', content: 'not json' },
+                memorySaveRow('Still collected.'),
+            ]);
+
+            expect(saved.has('Still collected.')).toBe(true);
+        });
+
+        it('should tolerate a memory_save block with no input', () => {
+            const saved = collectSavedReflections([{
+                role: 'tool_use',
+                content: JSON.stringify([
+                    { type: 'tool_use', id: 'tu-1', name: 'memory_save' },
+                ]),
+            }]);
+
+            expect(saved.size).toBe(0);
         });
     });
 });

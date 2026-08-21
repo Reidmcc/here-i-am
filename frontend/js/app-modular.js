@@ -46,6 +46,7 @@ import {
     setCallbacks as setMessageCallbacks,
     addMessage,
     addToolMessage,
+    collectSavedReflections,
     clearMessages,
     copyMessage,
     isNearBottom,
@@ -989,6 +990,8 @@ class App {
      * @param {string|null} latestAssistantId - ID of latest assistant message
      */
     renderMessages(messages, latestAssistantId) {
+        const savedReflections = collectSavedReflections(messages);
+
         messages.forEach(msg => {
             // Render persisted tool exchanges (stored as JSON content blocks) so
             // tool-call history survives a conversation reload.
@@ -1028,8 +1031,18 @@ class App {
             }
 
             // Self-authored memories saved via memory_save render as a
-            // distinct note (styled by .message.reflection)
+            // distinct note (styled by .message.reflection) - but only when
+            // the memory_save call that wrote them is not itself in the
+            // transcript. Otherwise the same text appears twice: once as the
+            // tool card's input, and once as a loose message in the
+            // conversation flow, sitting above the call that produced it (the
+            // reflection row is written while the tool runs, the exchange rows
+            // only after the response completes). The tool card is the
+            // faithful rendering - it is what the live stream showed.
             if (msg.role === 'reflection') {
+                if (savedReflections.has((msg.content || '').trim())) {
+                    return;
+                }
                 addMessage('reflection', msg.content, {
                     messageId: msg.id,
                     timestamp: msg.created_at,

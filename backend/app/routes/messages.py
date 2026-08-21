@@ -13,6 +13,10 @@ from app.config import settings
 from app.database import get_db
 from app.models import Conversation, ConversationEntity, ConversationType, Message, MessageRole
 from app.services import llm_service, memory_service, session_manager
+from app.services.message_history import (
+    delete_tool_exchange_messages,
+    find_preceding_conversational_message,
+)
 
 router = APIRouter(prefix="/api/messages", tags=["messages"])
 
@@ -59,6 +63,36 @@ def get_entity_label(entity_id: str) -> Optional[str]:
     """Get the label for an entity from settings."""
     entity = settings.get_entity_by_index(entity_id)
     return entity.label if entity else None
+
+
+async def next_turn_start(
+    message: Message,
+    db: AsyncSession,
+) -> Optional[datetime]:
+    """
+    When the turn a human message opened ends: the created_at of the next
+    human message, or None if it is the last turn in the conversation.
+
+    Discarding a response has to take its tool exchange rows with it, and
+    they are only identifiable by position - between the human message and
+    whatever starts the following turn. Bounding on the next *human* message
+    rather than on the response covers the turns that never produced one
+    (the stream failed after the tools ran).
+    """
+    result = await db.execute(
+        select(Message)
+        .where(
+            and_(
+                Message.conversation_id == message.conversation_id,
+                Message.created_at > message.created_at,
+                Message.role == MessageRole.HUMAN,
+            )
+        )
+        .order_by(Message.created_at)
+        .limit(1)
+    )
+    following_human = result.scalar_one_or_none()
+    return following_human.created_at if following_human else None
 
 
 @router.put("/{message_id}")
@@ -121,11 +155,21 @@ async def update_message(
     message.content = data.content
     message.token_count = llm_service.count_tokens(data.content)
 
-    # Delete the subsequent assistant message if it exists
+    # Delete the subsequent assistant message if it exists, together with the
+    # tool exchange rows of that response - the edited message is about to be
+    # answered again, and leftover exchanges would render as tool cards for a
+    # response that no longer exists.
     deleted_assistant_id = None
     if subsequent_assistant_msg:
         deleted_assistant_id = subsequent_assistant_msg.id
         await db.delete(subsequent_assistant_msg)
+
+    await delete_tool_exchange_messages(
+        db,
+        message.conversation_id,
+        after=message.created_at,
+        before=await next_turn_start(message, db),
+    )
 
     # Update conversation timestamp
     conversation.updated_at = datetime.utcnow()
@@ -220,6 +264,27 @@ async def delete_message(
         if subsequent_msg:
             deleted_ids.append(subsequent_msg.id)
             await db.delete(subsequent_msg)
+
+        # The turn's tool exchanges go with it. They are never vectorized,
+        # so they stay out of deleted_ids (which drives the Pinecone cleanup).
+        await delete_tool_exchange_messages(
+            db,
+            message.conversation_id,
+            after=message.created_at,
+            before=await next_turn_start(message, db),
+        )
+    elif message.role == MessageRole.ASSISTANT:
+        # Deleting a response on its own still takes its tool exchanges: they
+        # sit between it and the message it answered.
+        preceding = await find_preceding_conversational_message(
+            db, message.conversation_id, message
+        )
+        await delete_tool_exchange_messages(
+            db,
+            message.conversation_id,
+            after=preceding.created_at if preceding else None,
+            before=message.created_at,
+        )
 
     await db.delete(message)
 

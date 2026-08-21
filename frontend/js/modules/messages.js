@@ -106,6 +106,46 @@ function renderToolInput(input) {
 }
 
 /**
+ * Collect the reflection texts a loaded conversation already shows as the
+ * input of a memory_save tool card, so the reflection rows the tool wrote
+ * are not rendered a second time as loose messages.
+ *
+ * memory_save persists its text twice by design: inside the tool_use content
+ * blocks (the tool call) and as a reflection row (the saved memory). Matching
+ * on the text keeps older conversations - saved before tool exchanges were
+ * rendered on reload - showing their reflections.
+ *
+ * @param {Array} messages - Messages as returned by the API
+ * @returns {Set<string>} Trimmed reflection texts covered by a tool card
+ */
+export function collectSavedReflections(messages) {
+    const saved = new Set();
+
+    for (const msg of messages) {
+        if (msg.role !== 'tool_use') continue;
+
+        let contentBlocks;
+        try {
+            contentBlocks = JSON.parse(msg.content);
+        } catch {
+            // Unparseable rows are reported where they are rendered
+            continue;
+        }
+        if (!Array.isArray(contentBlocks)) continue;
+
+        for (const block of contentBlocks) {
+            if (block?.type !== 'tool_use' || block.name !== 'memory_save') continue;
+            const content = block.input?.content;
+            if (typeof content === 'string') {
+                saved.add(content.trim());
+            }
+        }
+    }
+
+    return saved;
+}
+
+/**
  * Add a message to the chat
  * @param {string} role - Message role ('human' or 'assistant')
  * @param {string} content - Message content
