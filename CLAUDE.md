@@ -13,10 +13,23 @@
 ```bash
 cd backend && ./start.sh        # auto-activates venv, runs run.py on :8000
 cd backend && pytest             # backend tests (in-memory SQLite via tests/conftest.py)
+cd backend && ruff check .       # lint (pip install -r requirements-dev.txt first)
 cd frontend && npm test          # Vitest + jsdom
+cd frontend && npm run lint      # ESLint
 ```
 
 Frontend is served by the backend at `/`; API at `/api/`. Hot reload enabled in dev.
+
+CI (`.github/workflows/ci.yml`) runs all four on every PR, with the backend
+tests across Python 3.11/3.12/3.13. Both linters must be clean to merge, so
+run them before pushing.
+
+**Lint config gotchas.** Ruff's `E712` is disabled repo-wide: `col == False`
+is the correct SQLAlchemy filter idiom, and the rule's fix rewrites it to
+`not col`, which evaluates the column's truthiness at query-build time and
+collapses the clause to `WHERE false`. For the same reason, never run ruff
+with `--unsafe-fixes` here without reading the diff. In the frontend, a
+leading underscore marks a deliberately unused binding.
 
 ## Where things live
 
