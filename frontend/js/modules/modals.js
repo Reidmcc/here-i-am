@@ -3,7 +3,6 @@
  * Handles showing, hiding, and managing modals
  */
 
-import { state } from './state.js';
 
 // Cache of modal elements
 let elements = {};

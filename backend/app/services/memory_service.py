@@ -1,15 +1,21 @@
-from typing import List, Dict, Any, Optional, Set
-from datetime import datetime
 import asyncio
 import logging
 import re
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Set
 
 from pinecone import Pinecone
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, or_
+
 from app.config import settings
-from app.models import Message, MessageRole, ConversationMemoryLink, Conversation, ConversationEntity
-import numpy as np
+from app.models import (
+    Conversation,
+    ConversationEntity,
+    ConversationMemoryLink,
+    Message,
+    MessageRole,
+)
 
 logger = logging.getLogger(__name__)
 

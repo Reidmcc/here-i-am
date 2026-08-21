@@ -4,7 +4,6 @@ Whisper STT FastAPI Server
 Provides speech-to-text transcription using faster-whisper.
 """
 
-import io
 import logging
 import os
 import sys
@@ -88,7 +87,7 @@ if sys.platform == "win32":
         print(f"[CUDA] Warning: Failed to configure DLL paths: {e}")
 
 import torch
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -164,7 +163,7 @@ def get_model():
             
         except Exception as e:
             logger.error(f"Failed to load Whisper model: {e}")
-            raise RuntimeError(f"Failed to load Whisper model: {e}")
+            raise RuntimeError(f"Failed to load Whisper model: {e}") from e
     
     return _whisper_model
 
@@ -217,7 +216,7 @@ async def transcribe_audio(
     try:
         audio_content = await audio_file.read()
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read audio file: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to read audio file: {e}") from e
     
     if len(audio_content) == 0:
         raise HTTPException(status_code=400, detail="Empty audio file")
@@ -248,7 +247,7 @@ async def transcribe_audio(
             temp_path = temp_file.name
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save audio file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save audio file: {e}") from e
     
     try:
         model = get_model()
@@ -316,7 +315,7 @@ async def transcribe_audio(
         
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {e}") from e
     
     finally:
         # Clean up temporary file
@@ -346,6 +345,7 @@ async def list_models():
 def main():
     """Run the server."""
     import argparse
+
     import uvicorn
     
     parser = argparse.ArgumentParser(description="Whisper STT Server")

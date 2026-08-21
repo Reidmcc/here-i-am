@@ -1,18 +1,25 @@
-from typing import Optional, List, Literal
-from datetime import datetime
 import json
+from datetime import datetime
+from typing import List, Literal, Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db, async_session_maker
-from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity
-from app.services import session_manager, memory_service, llm_service, tool_service, attachment_service
+from app.config import settings
+from app.database import async_session_maker, get_db
+from app.models import Conversation, ConversationEntity, ConversationType, Message, MessageRole
+from app.services import (
+    attachment_service,
+    llm_service,
+    memory_service,
+    session_manager,
+    tool_service,
+)
 from app.services.attachment_service import build_persistable_content
 from app.services.llm_service import ModelProvider
-from app.config import settings
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -339,8 +346,6 @@ async def send_message(
             # For multi-entity conversations, store to ALL participating entities
             responding_label = get_entity_label(responding_entity_id)
             for entity_id in multi_entity_ids:
-                entity_label = get_entity_label(entity_id)
-
                 # For human messages: role is "human" for all entities
                 await memory_service.store_memory(
                     message_id=str(human_msg.id),
@@ -543,7 +548,6 @@ async def stream_message(data: ChatRequest):
                 full_content = ""
                 model_used = session.model
                 usage_data = {}
-                stop_reason = None
                 tool_exchanges = []
 
                 # Validate and prepare attachments
@@ -607,7 +611,6 @@ async def stream_message(data: ChatRequest):
                         full_content = event.get("content", full_content)
                         model_used = event.get("model", model_used)
                         usage_data = event.get("usage", {})
-                        stop_reason = event.get("stop_reason")
                         tool_exchanges = event.get("tool_exchanges", [])
                         yield f"event: done\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "error":
@@ -1031,7 +1034,6 @@ async def regenerate_response(data: RegenerateRequest):
                 full_content = ""
                 model_used = session.model
                 usage_data = {}
-                stop_reason = None
                 tool_exchanges = []
 
                 # Get tool schemas if tools are enabled and using a supported provider
@@ -1081,7 +1083,6 @@ async def regenerate_response(data: RegenerateRequest):
                         full_content = event.get("content", full_content)
                         model_used = event.get("model", model_used)
                         usage_data = event.get("usage", {})
-                        stop_reason = event.get("stop_reason")
                         tool_exchanges = event.get("tool_exchanges", [])
                         yield f"event: done\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "error":

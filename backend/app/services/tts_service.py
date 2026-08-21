@@ -2,11 +2,11 @@
 Unified Text-to-Speech service supporting ElevenLabs API and local XTTS v2.
 """
 import logging
-from typing import Optional, AsyncIterator, List, Dict, Any
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 
-from app.config import settings, VoiceConfig
+from app.config import VoiceConfig, settings
 
 logger = logging.getLogger(__name__)
 

@@ -3,21 +3,18 @@ Integration tests for conversations routes.
 
 Tests conversation CRUD, archiving, and entity handling.
 """
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 import uuid
-from datetime import datetime
+from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.main import app
+from app.config import EntityConfig
 from app.database import Base, get_db
-from app.models import Conversation, Message, MessageRole, ConversationType
-from app.config import Settings, EntityConfig
-
+from app.main import app
+from app.models import Conversation, Message, MessageRole
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 

@@ -11,10 +11,10 @@ import hashlib
 import logging
 from typing import Any, Dict, List, Optional
 
-from app.services.tool_service import ToolCategory, ToolService
+from app.config import settings
 from app.services.notes_service import notes_service
 from app.services.notes_vector_service import notes_vector_service
-from app.config import settings
+from app.services.tool_service import ToolCategory, ToolService
 
 logger = logging.getLogger(__name__)
 
@@ -503,7 +503,7 @@ async def _notes_search(query: str, num_results: int = 5) -> str:
         )
 
     lines = [f"Found {len(matches)} note excerpts matching: \"{query}\"", ""]
-    for i, match in enumerate(matches, 1):
+    for match in matches:
         location = "shared" if match["shared"] else "private"
         lines.append(
             f"--- {match['filename']} ({location}, chunk {match['chunk_index']}, "

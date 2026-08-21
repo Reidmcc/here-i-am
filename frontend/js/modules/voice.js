@@ -3,7 +3,7 @@
  * Handles TTS (text-to-speech) and STT (speech-to-text) functionality
  */
 
-import { state, loadSelectedVoiceFromStorage, saveSelectedVoiceToStorage, clearAudioCache } from './state.js';
+import { state, loadSelectedVoiceFromStorage, clearAudioCache } from './state.js';
 import { showToast, escapeHtml, stripMarkdown } from './utils.js';
 import { showModal, hideModal } from './modals.js';
 
@@ -326,7 +326,7 @@ function getStyleTTS2Params() {
     if (stored) {
         try {
             return JSON.parse(stored);
-        } catch (e) {
+        } catch {
             // Fall through to defaults
         }
     }

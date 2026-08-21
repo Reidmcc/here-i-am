@@ -10,12 +10,11 @@ Caches are designed to reduce redundant API calls and database queries
 during multi-turn conversations and rapid message exchanges.
 """
 
-from typing import Dict, Any, Optional, List, Callable, TypeVar, Generic
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 import hashlib
 import threading
-
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Dict, Generic, List, Optional, TypeVar
 
 T = TypeVar('T')
 

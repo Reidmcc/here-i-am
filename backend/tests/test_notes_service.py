@@ -1,30 +1,30 @@
 """
 Unit tests for NotesService and notes tools.
 """
-import pytest
-from unittest.mock import patch, MagicMock
-from pathlib import Path
-import tempfile
 import shutil
-import os
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from app.config import settings as real_settings
 from app.services.conversation_session import ConversationSession
 from app.services.notes_service import NotesService, notes_service
 from app.services.notes_tools import (
-    register_notes_tools,
-    set_current_entity_label,
-    get_current_entity_label,
-    consume_last_note_stamps,
-    note_content_hash,
     NOTE_IN_CONTEXT_MARKER,
+    _notes_delete,
+    _notes_edit,
+    _notes_list,
     _notes_read,
     _notes_write,
-    _notes_edit,
-    _notes_delete,
-    _notes_list,
+    consume_last_note_stamps,
+    get_current_entity_label,
+    note_content_hash,
+    register_notes_tools,
+    set_current_entity_label,
 )
-from app.services.tool_service import ToolService, ToolCategory
+from app.services.tool_service import ToolCategory, ToolService
 
 
 class TestNotesServiceConfiguration:

@@ -52,7 +52,7 @@ export function updateMemoriesPanel() {
 
         // Build HTML with entity sections
         let html = '';
-        for (const [entityId, entityData] of Object.entries(state.retrievedMemoriesByEntity)) {
+        for (const entityData of Object.values(state.retrievedMemoriesByEntity)) {
             if (entityData.memories.length === 0) continue;
 
             html += `

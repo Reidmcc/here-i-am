@@ -15,7 +15,6 @@ import {
     unarchiveConversation,
     deleteConversation,
     showArchiveModalForConversation,
-    showDeleteModal,
     renderConversationList,
 } from '../modules/conversations.js';
 

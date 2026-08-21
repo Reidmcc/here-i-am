@@ -4,17 +4,16 @@ StyleTTS 2 Local Text-to-Speech service.
 This service integrates with a locally running StyleTTS 2 API server for voice synthesis
 and voice cloning capabilities.
 """
-import logging
-import os
-import uuid
 import json
-import aiofiles
+import logging
+import uuid
 from pathlib import Path
-from typing import Optional, AsyncIterator, List, Dict, Any
+from typing import Any, AsyncIterator, Dict, List, Optional
 
+import aiofiles
 import httpx
 
-from app.config import settings, StyleTTS2VoiceConfig
+from app.config import StyleTTS2VoiceConfig, settings
 
 logger = logging.getLogger(__name__)
 
@@ -363,8 +362,8 @@ class StyleTTS2Service:
 
                 try:
                     response = await client.post(url, data=data)
-                except httpx.ConnectError:
-                    raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}")
+                except httpx.ConnectError as e:
+                    raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}") from e
 
                 if response.status_code != 200:
                     error_detail = response.text
@@ -398,8 +397,8 @@ class StyleTTS2Service:
 
             try:
                 response = await client.post(url, data=data, files=files)
-            except httpx.ConnectError:
-                raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}")
+            except httpx.ConnectError as e:
+                raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}") from e
 
             if response.status_code != 200:
                 error_detail = response.text
@@ -507,8 +506,8 @@ class StyleTTS2Service:
 
                     async for chunk in response.aiter_bytes():
                         yield chunk
-            except httpx.ConnectError:
-                raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}")
+            except httpx.ConnectError as e:
+                raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}") from e
 
 
 # Singleton instance

@@ -1,16 +1,11 @@
 """
 Tests for thinking effort: the canonical scale and its per-provider translation.
 """
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 
 from app.config import settings
-from app.services.thinking_effort import (
-    EFFORT_LEVELS,
-    clamp_effort,
-    normalize_effort,
-    resolve_effort,
-)
 from app.services.anthropic_service import (
     AnthropicService,
     resolve_effort_for_model,
@@ -18,6 +13,12 @@ from app.services.anthropic_service import (
     supports_thinking_effort,
 )
 from app.services.openai_service import OpenAIService
+from app.services.thinking_effort import (
+    EFFORT_LEVELS,
+    clamp_effort,
+    normalize_effort,
+    resolve_effort,
+)
 
 
 def _empty_async_iterator():

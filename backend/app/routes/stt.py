@@ -3,9 +3,10 @@ Speech-to-Text API routes.
 
 Supports local Whisper STT for transcribing audio to text.
 """
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from pydantic import BaseModel
 from typing import Optional
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from app.services.whisper_service import whisper_service
 
@@ -43,7 +44,7 @@ async def transcribe_audio(
     try:
         audio_data = await audio_file.read()
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read audio file: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to read audio file: {e}") from e
 
     if len(audio_data) == 0:
         raise HTTPException(status_code=400, detail="Empty audio file")
@@ -74,9 +75,9 @@ async def transcribe_audio(
         )
 
     except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}") from e
 
 
 @router.get("/status")

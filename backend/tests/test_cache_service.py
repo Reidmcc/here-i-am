@@ -3,16 +3,16 @@ Unit tests for the Cache Service.
 
 Tests TTL-based caching, expiration, eviction, and statistics.
 """
-import pytest
-from datetime import datetime, timedelta
-from unittest.mock import patch
-import time
 import threading
+import time
+from datetime import datetime, timedelta
+
+import pytest
 
 from app.services.cache_service import (
-    TTLCache,
     CacheEntry,
     CacheService,
+    TTLCache,
 )
 
 

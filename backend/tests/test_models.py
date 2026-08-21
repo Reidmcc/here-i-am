@@ -1,7 +1,6 @@
 """
 Unit tests for SQLAlchemy models.
 """
-import pytest
 import uuid
 from datetime import datetime
 
@@ -9,9 +8,9 @@ from sqlalchemy import select
 
 from app.models import (
     Conversation,
-    Message,
     ConversationMemoryLink,
     ConversationType,
+    Message,
     MessageRole,
 )
 
@@ -309,7 +308,6 @@ class TestCascadeDeletes:
 
     async def test_delete_conversation_cascades_to_messages(self, db_session, sample_conversation, sample_messages):
         """Test that deleting a conversation deletes its messages."""
-        conversation_id = sample_conversation.id
         message_ids = [m.id for m in sample_messages]
 
         # Verify messages exist

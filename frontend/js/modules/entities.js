@@ -5,7 +5,7 @@
 
 import { state, getValidSavedEntityModel } from './state.js';
 import { showToast, escapeHtml } from './utils.js';
-import { showModal, hideModal, closeAllDropdowns } from './modals.js';
+import { showModal, hideModal } from './modals.js';
 
 // Reference to global API client
 const api = window.api;
@@ -400,7 +400,7 @@ function updateMultiEntityConfirmButton() {
  * Confirm multi-entity selection
  * @param {string} action - 'createConversation' or 'default'
  */
-export function confirmMultiEntitySelection(action = 'default') {
+export function confirmMultiEntitySelection(_action = 'default') {
     if (!elements.multiEntityList) return;
 
     const selected = elements.multiEntityList.querySelectorAll('input[type="checkbox"]:checked');

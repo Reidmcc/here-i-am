@@ -2,37 +2,35 @@
 Unit tests for Codebase Navigator module.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
-from pathlib import Path
-import tempfile
-import shutil
 import json
-import os
+import shutil
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from app.services.codebase_navigator import (
-    CodebaseIndexer,
-    NavigatorClient,
-    NavigatorCache,
-    NavigatorResponse,
-    RelevantFile,
-    CodeSection,
-    QueryType,
-    CodebaseChunk,
-    CodebaseIndex,
     CacheKey,
+    CodebaseChunk,
+    CodebaseIndexer,
+    NavigatorCache,
+    NavigatorClient,
+    NavigatorResponse,
+    QueryType,
+    RelevantFile,
 )
 from app.services.codebase_navigator.exceptions import (
     IndexingError,
-    NavigatorNotConfiguredError,
     InvalidResponseError,
+    NavigatorNotConfiguredError,
 )
 from app.services.codebase_navigator_service import CodebaseNavigatorService
 from app.services.codebase_navigator_tools import (
-    register_codebase_navigator_tools,
     navigate_codebase,
+    register_codebase_navigator_tools,
 )
-from app.services.tool_service import ToolService, ToolCategory
+from app.services.tool_service import ToolCategory, ToolService
 
 
 class TestCodebaseIndexer:

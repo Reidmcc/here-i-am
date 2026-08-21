@@ -7,19 +7,19 @@ the runtime state of an active conversation.
 Split from session_manager.py to reduce file size and improve maintainability.
 """
 
-from typing import Dict, List, Set, Optional, Any, Callable, Tuple
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-import logging
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from app.config import settings
-from app.services.session_helpers import (
-    get_message_content_text,
-)
 from app.services.memory_context import (
     MemoryContextTracker,
-    format_memory_as_context_message,
     find_memory_insertion_point,
+    format_memory_as_context_message,
+)
+from app.services.session_helpers import (
+    get_message_content_text,
 )
 
 logger = logging.getLogger(__name__)

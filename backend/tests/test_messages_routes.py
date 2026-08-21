@@ -3,20 +3,18 @@ Integration tests for messages routes.
 
 Tests message editing and deletion.
 """
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 import uuid
 from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
-from sqlalchemy import select
 
-from app.main import app
 from app.database import Base, get_db
+from app.main import app
 from app.models import Conversation, Message, MessageRole
-
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -238,7 +236,6 @@ class TestUpdateMessage:
     ):
         """Test that updating a message updates Pinecone embeddings."""
         human_msg_id = create_conversation_with_messages["messages"][0]["id"]
-        assistant_msg_id = create_conversation_with_messages["messages"][1]["id"]
 
         response = await async_client.put(
             f"/api/messages/{human_msg_id}",

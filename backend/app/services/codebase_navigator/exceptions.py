@@ -56,7 +56,7 @@ class RateLimitError(NavigatorAPIError):
 
     def __init__(self, retry_after: int = None):
         self.retry_after = retry_after
-        message = f"Rate limit exceeded"
+        message = "Rate limit exceeded"
         if retry_after:
             message += f", retry after {retry_after} seconds"
         super().__init__(message)

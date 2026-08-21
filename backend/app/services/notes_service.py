@@ -11,11 +11,10 @@ Notes are stored in plain text files (markdown, json, etc.) organized by entity.
 Each entity can have an index.md that gets automatically injected into their context.
 """
 
-import os
 import logging
-from pathlib import Path
-from typing import Optional, List, Dict, Any
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from app.config import settings
 
@@ -197,7 +196,7 @@ class NotesService:
         if not self._validate_file_extension(filename):
             return {
                 'success': False,
-                'error': f"Invalid file extension. Allowed: .md, .json, .txt, .html, .xml, .yaml, .yml"
+                'error': "Invalid file extension. Allowed: .md, .json, .txt, .html, .xml, .yaml, .yml"
             }
         
         if shared:
@@ -242,7 +241,7 @@ class NotesService:
         if not self._validate_file_extension(filename):
             return {
                 'success': False,
-                'error': f"Invalid file extension. Allowed: .md, .json, .txt, .html, .xml, .yaml, .yml"
+                'error': "Invalid file extension. Allowed: .md, .json, .txt, .html, .xml, .yaml, .yml"
             }
         
         if shared:
@@ -300,7 +299,7 @@ class NotesService:
         if not self._validate_file_extension(filename):
             return {
                 'success': False,
-                'error': f"Invalid file extension. Allowed: .md, .json, .txt, .html, .xml, .yaml, .yml"
+                'error': "Invalid file extension. Allowed: .md, .json, .txt, .html, .xml, .yaml, .yml"
             }
 
         if not old_string:
@@ -390,7 +389,7 @@ class NotesService:
         if not self._validate_file_extension(filename):
             return {
                 'success': False,
-                'error': f"Invalid file extension. Allowed: .md, .json, .txt, .html, .xml, .yaml, .yml"
+                'error': "Invalid file extension. Allowed: .md, .json, .txt, .html, .xml, .yaml, .yml"
             }
         
         if shared:

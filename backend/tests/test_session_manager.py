@@ -2,13 +2,19 @@
 Unit tests for SessionManager.
 """
 import re
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
-from datetime import datetime, timedelta
 import uuid
+from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.services.session_manager import SessionManager, ConversationSession, MemoryEntry, _add_cache_control_to_tool_result
-from app.models import Conversation, Message, MessageRole, ConversationType
+import pytest
+
+from app.models import Conversation, ConversationType, Message, MessageRole
+from app.services.session_manager import (
+    ConversationSession,
+    MemoryEntry,
+    SessionManager,
+    _add_cache_control_to_tool_result,
+)
 
 
 class TestMemoryEntry:
@@ -193,7 +199,8 @@ class TestConversationSession:
         session.add_exchange("Hello", "Hi there")
         session.add_exchange("How are you?", "I'm well!")
 
-        count_tokens = lambda x: 100
+        def count_tokens(x):
+            return 100
 
         removed = session.trim_context_to_limit(
             max_tokens=150000,
@@ -1275,7 +1282,7 @@ class TestSystemPromptSelection:
     @pytest.mark.asyncio
     async def test_multi_entity_uses_responding_entity_prompt(self, db_session):
         """Test that multi-entity conversations use the responding entity's system prompt."""
-        from app.models import Conversation, ConversationType, ConversationEntity
+        from app.models import Conversation, ConversationEntity, ConversationType
 
         # Create multi-entity conversation with different prompts per entity
         conversation = Conversation(
@@ -1337,7 +1344,7 @@ class TestSystemPromptSelection:
     @pytest.mark.asyncio
     async def test_multi_entity_different_prompts_for_different_entities(self, db_session):
         """Test that different responding entities get different system prompts."""
-        from app.models import Conversation, ConversationType, ConversationEntity
+        from app.models import Conversation, ConversationEntity, ConversationType
 
         # Create multi-entity conversation
         conversation = Conversation(
@@ -1421,7 +1428,7 @@ class TestSystemPromptSelection:
     @pytest.mark.asyncio
     async def test_multi_entity_falls_back_when_entity_not_in_dict(self, db_session):
         """Test multi-entity fallback when responding entity not in entity_system_prompts."""
-        from app.models import Conversation, ConversationType, ConversationEntity
+        from app.models import Conversation, ConversationEntity, ConversationType
 
         # Create multi-entity conversation with only one entity's prompt
         conversation = Conversation(
@@ -1662,7 +1669,7 @@ class TestAgenticToolLoopMessages:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.llm_service") as mock_llm, \
-             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.tool_service"), \
              patch("app.services.session_manager.settings") as mock_settings:
             # Configure mocks
             mock_memory.is_configured.return_value = False
@@ -1940,8 +1947,8 @@ class TestAgenticToolLoopMessages:
         [ATTACHED FILE] blocks, so every reload of such a conversation busted
         the prompt cache from that message onward.
         """
-        from app.services.session_helpers import stamp_human_message
         from app.services.attachment_service import build_persistable_content
+        from app.services.session_helpers import stamp_human_message
 
         manager = SessionManager()
         sent_at = datetime(2026, 1, 15, 12, 30, 0)
@@ -3502,7 +3509,6 @@ class TestNoteStampTracking:
 
     def test_build_notes_context_message_stamps_seed(self):
         """The notes seed message carries seed stamps for the index files."""
-        from app.services.notes_service import notes_service
         from app.services.notes_tools import note_content_hash
 
         manager = SessionManager()
@@ -3703,6 +3709,7 @@ class TestNoteStampTracking:
         """Reload re-stamps notes tool_result messages, replaying notes_edit
         records against the content reconstructed from the history walk."""
         import json
+
         from app.services.notes_tools import note_content_hash
 
         base_time = datetime.utcnow()
@@ -3832,6 +3839,7 @@ class TestNoteStampTracking:
         """A notes_read result provides the full content: it is stamped and
         becomes the base for replaying a later notes_edit."""
         import json
+
         from app.services.notes_tools import note_content_hash
 
         base_time = datetime.utcnow()
@@ -3912,6 +3920,7 @@ class TestNoteStampTracking:
     ):
         """[NOTE IN CONTEXT] pointers and Error results add no stamps."""
         import json
+
         from app.services.notes_tools import NOTE_IN_CONTEXT_MARKER
 
         base_time = datetime.utcnow()

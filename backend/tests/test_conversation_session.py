@@ -8,12 +8,8 @@ Tests cover:
   update_cache_state, trim_context_to_limit)
 """
 
-import pytest
-from datetime import datetime
-from unittest.mock import patch
 
-from app.services.conversation_session import MemoryEntry, ConversationSession
-
+from app.services.conversation_session import ConversationSession, MemoryEntry
 
 # ============================================================
 # Tests for MemoryEntry
@@ -251,7 +247,7 @@ class TestConversationSessionSharedMethods:
             {"role": "user", "content": "Only message"},
         ]
 
-        removed = session.trim_context_to_limit(
+        session.trim_context_to_limit(
             max_tokens=1,
             count_tokens_fn=lambda x: 999,  # Always over limit
         )

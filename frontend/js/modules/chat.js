@@ -39,7 +39,6 @@ let callbacks = {
 let streamAbortController = null;
 
 // Import abort controller
-let importAbortController = null;
 
 /**
  * Set element references
@@ -248,7 +247,7 @@ async function streamSingleEntitySend({ content, attachments, messageToSend, use
                 onMemories: (data) => {
                     handleMemoryUpdate(data);
                 },
-                onStart: (data) => {
+                onStart: (_data) => {
                     // Stream has started
                 },
                 onAborted: () => {
@@ -421,7 +420,6 @@ export async function sendMessageWithResponder() {
     const attachments = state.pendingMessageAttachments;
     const responderId = state.pendingResponderId;
     const userMessageEl = state.pendingUserMessageEl;
-    const isContinuation = !content && !attachments;
 
     // Clear pending state
     state.pendingMessageContent = null;
@@ -469,7 +467,7 @@ export async function sendMessageWithResponder() {
                 onMemories: (data) => {
                     handleMemoryUpdate(data);
                 },
-                onStart: (data) => {
+                onStart: (_data) => {
                     // Stream has started
                 },
                 onAborted: () => {
@@ -679,7 +677,7 @@ export async function performRegeneration(messageId, respondingEntityId = null) 
                 onMemories: (data) => {
                     handleMemoryUpdate(data);
                 },
-                onStart: (data) => {
+                onStart: (_data) => {
                     // Stream has started
                 },
                 onAborted: () => {

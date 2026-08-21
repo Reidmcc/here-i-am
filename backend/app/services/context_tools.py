@@ -15,10 +15,9 @@ Tools are registered via register_context_tools() called from services/__init__.
 """
 
 import logging
-from typing import Optional
 
-from app.services.tool_service import ToolCategory, ToolService
 from app.config import settings
+from app.services.tool_service import ToolCategory, ToolService
 
 logger = logging.getLogger(__name__)
 

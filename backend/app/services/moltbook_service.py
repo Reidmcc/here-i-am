@@ -276,7 +276,7 @@ class MoltbookService:
     def _handle_rate_limit(self, data: Dict[str, Any]) -> str:
         """Format rate limit error with helpful information."""
         details = self._format_error_details(data)
-        result = f"Rate limit exceeded"
+        result = "Rate limit exceeded"
         if details:
             result += f": {details}"
 

@@ -1,27 +1,30 @@
 from app.services.anthropic_service import AnthropicService, anthropic_service
-from app.services.openai_service import OpenAIService, openai_service
+from app.services.attachment_service import AttachmentService, attachment_service
+from app.services.cache_service import CacheService, TTLCache, cache_service
+from app.services.codebase_navigator_service import (
+    CodebaseNavigatorService,
+    codebase_navigator_service,
+)
+from app.services.codebase_navigator_tools import register_codebase_navigator_tools
+from app.services.context_tools import register_context_tools, set_context_tool_session
+from app.services.github_service import GitHubService, github_service
+from app.services.github_tools import register_github_tools
 from app.services.google_service import GoogleService, google_service
 from app.services.llm_service import LLMService, llm_service
 from app.services.memory_service import MemoryService, memory_service
-from app.services.vector_rebuild_service import VectorRebuildService, vector_rebuild_service
-from app.services.session_manager import ConversationSession, SessionManager, session_manager
-from app.services.cache_service import CacheService, TTLCache, cache_service
-from app.services.tts_service import TTSService, tts_service
-from app.services.xtts_service import XTTSService, xtts_service
-from app.services.tool_service import ToolService, ToolCategory, ToolResult, tool_service
-from app.services.web_tools import register_web_tools
-from app.services.github_service import GitHubService, github_service
-from app.services.github_tools import register_github_tools
-from app.services.notes_service import NotesService, notes_service
-from app.services.notes_vector_service import NotesVectorService, notes_vector_service
-from app.services.notes_tools import register_notes_tools, set_current_entity_label
 from app.services.memory_tools import register_memory_tools, set_memory_tool_context
-from app.services.context_tools import register_context_tools, set_context_tool_session
-from app.services.attachment_service import AttachmentService, attachment_service
-from app.services.codebase_navigator_service import CodebaseNavigatorService, codebase_navigator_service
-from app.services.codebase_navigator_tools import register_codebase_navigator_tools
 from app.services.moltbook_service import MoltbookService, moltbook_service
 from app.services.moltbook_tools import register_moltbook_tools
+from app.services.notes_service import NotesService, notes_service
+from app.services.notes_tools import register_notes_tools, set_current_entity_label
+from app.services.notes_vector_service import NotesVectorService, notes_vector_service
+from app.services.openai_service import OpenAIService, openai_service
+from app.services.session_manager import ConversationSession, SessionManager, session_manager
+from app.services.tool_service import ToolCategory, ToolResult, ToolService, tool_service
+from app.services.tts_service import TTSService, tts_service
+from app.services.vector_rebuild_service import VectorRebuildService, vector_rebuild_service
+from app.services.web_tools import register_web_tools
+from app.services.xtts_service import XTTSService, xtts_service
 
 # Register tools at module load time
 register_web_tools(tool_service)

@@ -6,9 +6,9 @@ explore codebases efficiently using the Devstral model.
 """
 
 import logging
-from typing import TYPE_CHECKING, Optional, List
+from typing import TYPE_CHECKING, List, Optional
 
-from app.config import settings, GitHubRepoConfig
+from app.config import GitHubRepoConfig, settings
 from app.services.tool_service import ToolCategory
 
 if TYPE_CHECKING:
@@ -82,8 +82,8 @@ async def navigate_codebase(
     Returns:
         Formatted results with relevant files and explanations
     """
-    from app.services.codebase_navigator_service import codebase_navigator_service
     from app.services.codebase_navigator import NavigatorNotConfiguredError
+    from app.services.codebase_navigator_service import codebase_navigator_service
 
     # Check if configured
     if not codebase_navigator_service.is_configured():

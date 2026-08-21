@@ -1,0 +1,5 @@
+# Development-only tooling. Not needed to run the app.
+#
+# Ruff is pinned: an unpinned linter turns CI red on a commit that changed
+# nothing, whenever a new release adds or tightens a rule.
+ruff==0.15.8

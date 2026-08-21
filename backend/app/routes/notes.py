@@ -9,9 +9,9 @@ or recovery after a Pinecone issue).
 
 from fastapi import APIRouter, HTTPException
 
-from app.services.notes_vector_service import notes_vector_service
-from app.services.memory_service import memory_service
 from app.config import settings
+from app.services.memory_service import memory_service
+from app.services.notes_vector_service import notes_vector_service
 
 router = APIRouter(prefix="/api/notes", tags=["notes"])
 

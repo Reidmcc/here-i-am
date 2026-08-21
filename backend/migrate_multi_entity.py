@@ -10,14 +10,15 @@ Run from the backend directory:
     python migrate_multi_entity.py
 """
 import asyncio
-import sys
 import os
+import sys
 
 # Add app to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
+
 from app.config import settings
 
 

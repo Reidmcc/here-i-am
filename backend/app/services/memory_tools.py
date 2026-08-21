@@ -22,11 +22,11 @@ from typing import Optional, Tuple
 
 from sqlalchemy import select
 
-from app.services.tool_service import ToolCategory, ToolService
-from app.services.memory_service import memory_service, VALID_ROLE_FILTERS
-from app.database import async_session_maker
-from app.models import Message, MessageRole, Conversation
 from app.config import settings
+from app.database import async_session_maker
+from app.models import Conversation, Message, MessageRole
+from app.services.memory_service import VALID_ROLE_FILTERS, memory_service
+from app.services.tool_service import ToolCategory, ToolService
 
 logger = logging.getLogger(__name__)
 
@@ -348,7 +348,7 @@ async def _memory_query(
         # Format results
         lines = [f"Found {len(memories)} memories matching: \"{query}\"{source_suffix}", ""]
 
-        for i, mem in enumerate(memories, 1):
+        for mem in memories:
             role_label = _role_display(mem["role"])
             age_str = f"{mem['days_ago']:.1f} days ago" if mem['days_ago'] >= 1 else "today"
             status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""
