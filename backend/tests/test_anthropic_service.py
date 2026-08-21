@@ -977,14 +977,14 @@ class TestCacheBreakpointPlacement:
 
         # Structure should be identical (ignoring date which changes)
         assert len(messages1) == len(messages2)
-        for i, (m1, m2) in enumerate(zip(messages1, messages2)):
+        for i, (m1, m2) in enumerate(zip(messages1, messages2, strict=True)):
             assert m1["role"] == m2["role"], f"Role mismatch at index {i}"
             # Compare content structure
             c1 = m1["content"]
             c2 = m2["content"]
             if isinstance(c1, list) and isinstance(c2, list):
                 assert len(c1) == len(c2), f"Content array length mismatch at index {i}"
-                for j, (block1, block2) in enumerate(zip(c1, c2)):
+                for j, (block1, block2) in enumerate(zip(c1, c2, strict=True)):
                     assert block1.get("type") == block2.get("type"), f"Block type mismatch at {i}.{j}"
                     assert block1.get("cache_control") == block2.get("cache_control"), f"Cache control mismatch at {i}.{j}"
 

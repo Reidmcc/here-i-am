@@ -1106,7 +1106,7 @@ def _detect_and_parse_export(content: str, source_hint: Optional[str] = None, in
     try:
         data = json.loads(content)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON: {e}")
+        raise ValueError(f"Invalid JSON: {e}") from e
 
     if not isinstance(data, list):
         raise ValueError("Export file must contain a JSON array")
@@ -1150,7 +1150,7 @@ async def preview_external_conversations(
     try:
         conversations, detected_source = _detect_and_parse_export(data.content, data.source, include_ids=True)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     if not conversations:
         raise HTTPException(status_code=400, detail="No conversations found in export file")
@@ -1235,7 +1235,7 @@ async def import_external_conversations(
     try:
         conversations, detected_source = _detect_and_parse_export(data.content, data.source, include_ids=True)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     logger.info(f"Starting external import: source={detected_source}, entity={data.entity_id}, conversations_found={len(conversations)}")
 
@@ -1364,7 +1364,6 @@ async def import_external_conversations(
             # Extract and parse timestamp from the original message
             # OpenAI uses Unix timestamp (float), Anthropic uses ISO string
             created_at = None
-            original_ts = msg_data.get("timestamp") or msg_data.get("timestamp_str")
             if msg_data.get("timestamp"):
                 # OpenAI: Unix timestamp (seconds since epoch)
                 try:
@@ -1560,7 +1559,7 @@ async def import_external_conversations_stream(data: ExternalConversationImport)
                 batch_counter = 0
                 messages_processed = 0
 
-                for conv_idx, conv in enumerate(conversations_to_import):
+                for conv in conversations_to_import:
                     conv_index = conv.get("index", 0)
 
                     # Get selection options
@@ -1594,7 +1593,7 @@ async def import_external_conversations_stream(data: ExternalConversationImport)
 
                     messages_added = 0
 
-                    for msg_idx, msg_data in enumerate(messages):
+                    for msg_data in messages:
                         msg_id = msg_data.get("id")
                         role = MessageRole.HUMAN if msg_data["role"] == "human" else MessageRole.ASSISTANT
                         content = msg_data["content"]

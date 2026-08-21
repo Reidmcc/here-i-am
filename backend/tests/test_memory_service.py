@@ -1134,7 +1134,7 @@ class TestCleanupMemoryQueryLinks:
             await self._add_link(
                 db_session, sample_conversation.id, queried.id, entity_id="entity-a"
             )
-            other_entity_link = await self._add_link(
+            await self._add_link(
                 db_session, sample_conversation.id, queried.id, entity_id="entity-b"
             )
 
@@ -1741,7 +1741,7 @@ class TestGetRecentReflections:
     @pytest.mark.asyncio
     async def test_result_shape_matches_full_memory_content(self, db_session):
         conv = await self._create_conversation(db_session)
-        reflection = await self._create_reflection(db_session, conv.id)
+        await self._create_reflection(db_session, conv.id)
 
         service = MemoryService()
         results = await service.get_recent_reflections(

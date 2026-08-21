@@ -134,7 +134,7 @@ def apply_patch(original: str, patch: str) -> PatchResult:
     result_lines: List[str] = []
     original_pos = 0  # 0-indexed position in original_lines
 
-    for hunk_idx, (old_start, old_count, new_start, new_count, hunk_lines) in enumerate(hunks):
+    for hunk_idx, (old_start, _old_count, _new_start, _new_count, hunk_lines) in enumerate(hunks):
         # Convert to 0-indexed
         old_start_idx = old_start - 1
 
@@ -150,7 +150,6 @@ def apply_patch(original: str, patch: str) -> PatchResult:
 
         # Process hunk lines
         hunk_original_idx = old_start_idx
-        context_mismatch = False
 
         for hunk_line in hunk_lines:
             if hunk_line == '':
@@ -170,7 +169,6 @@ def apply_patch(original: str, patch: str) -> PatchResult:
                               f"Expected context line at position {hunk_original_idx + 1}."
                     )
                 if original_lines[hunk_original_idx] != content:
-                    context_mismatch = True
                     return PatchResult(
                         success=False,
                         error=f"Hunk {hunk_idx + 1}: Context mismatch at line {hunk_original_idx + 1}. "
@@ -316,7 +314,7 @@ def _build_tree_view(
 
         # Build nested dict
         current = tree
-        for i, part in enumerate(parts[:-1]):
+        for part in parts[:-1]:
             if part not in current:
                 current[part] = {"_type": "dir", "_children": {}}
                 dir_count += 1
@@ -1169,7 +1167,7 @@ async def github_explore(
         doc_tasks = [try_get_file(path) for path in KEY_FILES]
         doc_results = await asyncio.gather(*doc_tasks, return_exceptions=True)
 
-        for path, result in zip(KEY_FILES, doc_results):
+        for path, result in zip(KEY_FILES, doc_results, strict=True):
             if isinstance(result, Exception) or result is None:
                 continue
 
@@ -1186,7 +1184,7 @@ async def github_explore(
         project_tasks = [try_get_file(path) for path in PROJECT_FILES]
         project_results = await asyncio.gather(*project_tasks, return_exceptions=True)
 
-        for path, result in zip(PROJECT_FILES, project_results):
+        for path, result in zip(PROJECT_FILES, project_results, strict=True):
             if isinstance(result, Exception) or result is None:
                 continue
 

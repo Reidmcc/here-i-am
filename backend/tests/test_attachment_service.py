@@ -9,6 +9,7 @@ avoid database initialization. The original module is saved and restored
 immediately after loading attachment_service to prevent test pollution.
 """
 import base64
+import importlib.util
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -41,7 +42,6 @@ _mock_app_config.settings = mock_settings
 sys.modules['app.config'] = _mock_app_config
 
 # Now we can import functions directly from the attachment_service module
-import importlib.util
 
 spec = importlib.util.spec_from_file_location(
     "attachment_service",

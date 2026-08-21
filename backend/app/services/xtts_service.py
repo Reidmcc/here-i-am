@@ -372,8 +372,8 @@ class XTTSService:
 
             try:
                 response = await client.post(url, data=data, files=files)
-            except httpx.ConnectError:
-                raise ValueError(f"Cannot connect to XTTS server at {self.api_url}")
+            except httpx.ConnectError as e:
+                raise ValueError(f"Cannot connect to XTTS server at {self.api_url}") from e
 
             if response.status_code != 200:
                 error_detail = response.text
@@ -477,8 +477,8 @@ class XTTSService:
 
                     async for chunk in response.aiter_bytes():
                         yield chunk
-            except httpx.ConnectError:
-                raise ValueError(f"Cannot connect to XTTS server at {self.api_url}")
+            except httpx.ConnectError as e:
+                raise ValueError(f"Cannot connect to XTTS server at {self.api_url}") from e
 
 
 # Singleton instance

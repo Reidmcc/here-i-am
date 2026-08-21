@@ -116,9 +116,9 @@ class WhisperService:
 
                 return response.json()
 
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as e:
             logger.error("Whisper transcription timed out")
-            raise ValueError("Transcription timed out - audio may be too long")
+            raise ValueError("Transcription timed out - audio may be too long") from e
         except Exception as e:
             logger.error(f"Whisper transcription failed: {e}")
             raise

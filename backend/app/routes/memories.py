@@ -275,7 +275,7 @@ async def search_memories(
     # locked file), surface a clear error instead of hanging the request forever.
     try:
         results = await asyncio.wait_for(_enrich(), timeout=SEARCH_ENRICHMENT_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as e:
         logger.error(
             f"[MEMORY] Browser search timed out after {SEARCH_ENRICHMENT_TIMEOUT_SECONDS}s "
             "while loading memory content from SQL. The vector search succeeded, so the "
@@ -287,7 +287,7 @@ async def search_memories(
                 "Memory search timed out while loading memory content from the "
                 "database (vector search succeeded). See server logs."
             ),
-        )
+        ) from e
 
     logger.info(f"[MEMORY] Browser search: returning {len(results)} memories")
     return results

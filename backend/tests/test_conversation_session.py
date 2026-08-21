@@ -247,7 +247,7 @@ class TestConversationSessionSharedMethods:
             {"role": "user", "content": "Only message"},
         ]
 
-        removed = session.trim_context_to_limit(
+        session.trim_context_to_limit(
             max_tokens=1,
             count_tokens_fn=lambda x: 999,  # Always over limit
         )

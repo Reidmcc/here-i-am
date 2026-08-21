@@ -308,7 +308,6 @@ class TestCascadeDeletes:
 
     async def test_delete_conversation_cascades_to_messages(self, db_session, sample_conversation, sample_messages):
         """Test that deleting a conversation deletes its messages."""
-        conversation_id = sample_conversation.id
         message_ids = [m.id for m in sample_messages]
 
         # Verify messages exist

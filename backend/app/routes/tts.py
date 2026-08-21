@@ -74,9 +74,9 @@ async def text_to_speech(data: TTSRequest):
             }
         )
     except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate speech: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate speech: {str(e)}") from e
 
 
 @router.post("/speak/stream")
@@ -273,9 +273,9 @@ async def clone_voice(
             "message": f"Voice '{label}' created successfully",
         }
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to clone voice: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to clone voice: {str(e)}") from e
 
 
 @router.get("/voices/{voice_id}")

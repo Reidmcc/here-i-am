@@ -253,7 +253,7 @@ class TestLLMService:
 
             messages = [{"role": "user", "content": "Hello"}]
             # Use unknown Claude model that's not in the map
-            result = await service.send_message(messages, model="claude-unknown-version")
+            await service.send_message(messages, model="claude-unknown-version")
 
             mock_anthropic.send_message.assert_called_once()
 
@@ -272,7 +272,7 @@ class TestLLMService:
             })
 
             messages = [{"role": "user", "content": "Hello"}]
-            result = await service.send_message(messages, model="gpt-5-preview")
+            await service.send_message(messages, model="gpt-5-preview")
 
             mock_openai.send_message.assert_called_once()
 
@@ -308,7 +308,7 @@ class TestLLMService:
                 {"role": "user", "content": "Built message"},
             ]
 
-            result = service.build_messages(
+            service.build_messages(
                 sample_conversation_context,
                 "Current message",
             )
@@ -343,7 +343,7 @@ class TestAvailableModels:
 
     def test_all_models_have_required_fields(self):
         """Test that all models have required id and name fields."""
-        for provider, models in AVAILABLE_MODELS.items():
+        for models in AVAILABLE_MODELS.values():
             for model in models:
                 assert "id" in model
                 assert "name" in model

@@ -362,8 +362,8 @@ class StyleTTS2Service:
 
                 try:
                     response = await client.post(url, data=data)
-                except httpx.ConnectError:
-                    raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}")
+                except httpx.ConnectError as e:
+                    raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}") from e
 
                 if response.status_code != 200:
                     error_detail = response.text
@@ -397,8 +397,8 @@ class StyleTTS2Service:
 
             try:
                 response = await client.post(url, data=data, files=files)
-            except httpx.ConnectError:
-                raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}")
+            except httpx.ConnectError as e:
+                raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}") from e
 
             if response.status_code != 200:
                 error_detail = response.text
@@ -506,8 +506,8 @@ class StyleTTS2Service:
 
                     async for chunk in response.aiter_bytes():
                         yield chunk
-            except httpx.ConnectError:
-                raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}")
+            except httpx.ConnectError as e:
+                raise ValueError(f"Cannot connect to StyleTTS 2 server at {self.api_url}") from e
 
 
 # Singleton instance

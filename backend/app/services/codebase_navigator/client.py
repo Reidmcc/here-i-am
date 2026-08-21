@@ -315,12 +315,12 @@ IMPORTANT: Your response must be valid JSON only. Do not include any text before
 
                 return content, tokens_used
 
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as e:
             if retry_count < self._max_retries:
                 # Increase timeout and retry
                 await asyncio.sleep(2 ** retry_count)
                 return await self._call_api(messages, retry_count + 1)
-            raise NavigatorAPIError("API request timed out after retries")
+            raise NavigatorAPIError("API request timed out after retries") from e
 
         except RateLimitError as e:
             if retry_count < self._max_retries:
@@ -334,7 +334,7 @@ IMPORTANT: Your response must be valid JSON only. Do not include any text before
             if retry_count < self._max_retries:
                 await asyncio.sleep(2 ** retry_count)
                 return await self._call_api(messages, retry_count + 1)
-            raise NavigatorAPIError(f"API request failed: {str(e)}")
+            raise NavigatorAPIError(f"API request failed: {str(e)}") from e
 
     async def query(
         self,

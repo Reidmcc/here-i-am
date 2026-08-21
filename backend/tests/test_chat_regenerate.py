@@ -518,7 +518,6 @@ class TestRegenerateSingleEntity:
         """Test that single-entity regeneration skips multi-entity validation."""
         # Single entity conversation type
         conversation_type = ConversationType.NORMAL
-        responding_entity_id = None
 
         is_multi_entity = conversation_type == ConversationType.MULTI_ENTITY
 
@@ -530,7 +529,6 @@ class TestRegenerateSingleEntity:
         """Test that single-entity uses session.entity_id for memory operations."""
         session_entity_id = "test-memories"
         is_multi_entity = False
-        responding_entity_id = None
 
         # Logic from endpoint
         if is_multi_entity:

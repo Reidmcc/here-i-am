@@ -236,7 +236,6 @@ class TestUpdateMessage:
     ):
         """Test that updating a message updates Pinecone embeddings."""
         human_msg_id = create_conversation_with_messages["messages"][0]["id"]
-        assistant_msg_id = create_conversation_with_messages["messages"][1]["id"]
 
         response = await async_client.put(
             f"/api/messages/{human_msg_id}",

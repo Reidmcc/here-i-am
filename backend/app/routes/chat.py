@@ -346,8 +346,6 @@ async def send_message(
             # For multi-entity conversations, store to ALL participating entities
             responding_label = get_entity_label(responding_entity_id)
             for entity_id in multi_entity_ids:
-                entity_label = get_entity_label(entity_id)
-
                 # For human messages: role is "human" for all entities
                 await memory_service.store_memory(
                     message_id=str(human_msg.id),
@@ -550,7 +548,6 @@ async def stream_message(data: ChatRequest):
                 full_content = ""
                 model_used = session.model
                 usage_data = {}
-                stop_reason = None
                 tool_exchanges = []
 
                 # Validate and prepare attachments
@@ -614,7 +611,6 @@ async def stream_message(data: ChatRequest):
                         full_content = event.get("content", full_content)
                         model_used = event.get("model", model_used)
                         usage_data = event.get("usage", {})
-                        stop_reason = event.get("stop_reason")
                         tool_exchanges = event.get("tool_exchanges", [])
                         yield f"event: done\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "error":
@@ -1038,7 +1034,6 @@ async def regenerate_response(data: RegenerateRequest):
                 full_content = ""
                 model_used = session.model
                 usage_data = {}
-                stop_reason = None
                 tool_exchanges = []
 
                 # Get tool schemas if tools are enabled and using a supported provider
@@ -1088,7 +1083,6 @@ async def regenerate_response(data: RegenerateRequest):
                         full_content = event.get("content", full_content)
                         model_used = event.get("model", model_used)
                         usage_data = event.get("usage", {})
-                        stop_reason = event.get("stop_reason")
                         tool_exchanges = event.get("tool_exchanges", [])
                         yield f"event: done\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "error":

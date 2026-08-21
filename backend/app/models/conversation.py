@@ -1,13 +1,18 @@
 import enum
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import JSON, Boolean, DateTime, String, Text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.conversation_entity import ConversationEntity
+    from app.models.conversation_memory_link import ConversationMemoryLink
+    from app.models.message import Message
 
 
 class ConversationType(str, enum.Enum):

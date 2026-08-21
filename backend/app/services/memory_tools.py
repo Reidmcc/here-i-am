@@ -348,7 +348,7 @@ async def _memory_query(
         # Format results
         lines = [f"Found {len(memories)} memories matching: \"{query}\"{source_suffix}", ""]
 
-        for i, mem in enumerate(memories, 1):
+        for mem in memories:
             role_label = _role_display(mem["role"])
             age_str = f"{mem['days_ago']:.1f} days ago" if mem['days_ago'] >= 1 else "today"
             status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""

@@ -199,7 +199,8 @@ class TestConversationSession:
         session.add_exchange("Hello", "Hi there")
         session.add_exchange("How are you?", "I'm well!")
 
-        count_tokens = lambda x: 100
+        def count_tokens(x):
+            return 100
 
         removed = session.trim_context_to_limit(
             max_tokens=150000,
@@ -1668,7 +1669,7 @@ class TestAgenticToolLoopMessages:
 
         with patch("app.services.session_manager.memory_service") as mock_memory, \
              patch("app.services.session_manager.llm_service") as mock_llm, \
-             patch("app.services.session_manager.tool_service") as mock_tool, \
+             patch("app.services.session_manager.tool_service"), \
              patch("app.services.session_manager.settings") as mock_settings:
             # Configure mocks
             mock_memory.is_configured.return_value = False

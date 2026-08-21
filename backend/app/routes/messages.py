@@ -118,7 +118,6 @@ async def update_message(
     subsequent_assistant_msg = result.scalar_one_or_none()
 
     # Update the message content
-    old_content = message.content
     message.content = data.content
     message.token_count = llm_service.count_tokens(data.content)
 
