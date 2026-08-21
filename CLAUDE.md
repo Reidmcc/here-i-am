@@ -2,7 +2,7 @@
 
 ## Stack
 
-- **Backend:** Python 3.10+, FastAPI (async), SQLAlchemy 2.x async, Pydantic settings. SQLite dev / Postgres prod via `HERE_I_AM_DATABASE_URL` (NOT `DATABASE_URL`).
+- **Backend:** Python 3.11+, FastAPI (async), SQLAlchemy 2.x async, Pydantic settings. SQLite dev / Postgres prod via `HERE_I_AM_DATABASE_URL` (NOT `DATABASE_URL`).
 - **Frontend:** Vanilla ES6 modules, no build step. Orchestrator `frontend/js/app-modular.js` wires modules in `frontend/js/modules/`.
 - **Vector store:** Pinecone with integrated inference (`llama-text-embed-v2`, dim=1024). Optional — guard with `if memory_service.pinecone:`.
 - **LLM providers:** Anthropic, OpenAI, Google, MiniMax (Anthropic-compatible API, routed through `AnthropicService` with separate client).
