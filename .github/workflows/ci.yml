@@ -15,10 +15,10 @@ jobs:
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      # 3.11 is the real floor, not the 3.10 the README claims: on 3.10,
-      # mock.patch("app.services.<name>.<attr>") resolves <name> to the
-      # singleton that services/__init__.py binds into the package namespace
-      # rather than to the submodule, and ~190 tests fail on it.
+      # 3.11 is the floor: on 3.10, mock.patch("app.services.<name>.<attr>")
+      # resolves <name> to the singleton that services/__init__.py binds into
+      # the package namespace rather than to the submodule, and ~190 tests
+      # fail on it. 3.13 needs newer tiktoken/pydantic pins than we ship.
       matrix:
         python-version: ["3.11", "3.12"]
     defaults:
