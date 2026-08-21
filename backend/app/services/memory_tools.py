@@ -22,11 +22,11 @@ from typing import Optional, Tuple
 
 from sqlalchemy import select
 
-from app.services.tool_service import ToolCategory, ToolService
-from app.services.memory_service import memory_service, VALID_ROLE_FILTERS
-from app.database import async_session_maker
-from app.models import Message, MessageRole, Conversation
 from app.config import settings
+from app.database import async_session_maker
+from app.models import Conversation, Message, MessageRole
+from app.services.memory_service import VALID_ROLE_FILTERS, memory_service
+from app.services.tool_service import ToolCategory, ToolService
 
 logger = logging.getLogger(__name__)
 

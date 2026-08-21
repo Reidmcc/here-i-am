@@ -15,12 +15,12 @@ import functools
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from app.config import settings
+from app.services.cache_service import cache_service
 from app.services.github_service import github_service
 from app.services.tool_service import ToolCategory, ToolService, wrap_untrusted_content
-from app.services.cache_service import cache_service
 
 if TYPE_CHECKING:
     pass
@@ -1212,7 +1212,7 @@ async def github_explore(
                 output_parts.append(header)
                 output_parts.append(content)
                 if was_truncated:
-                    output_parts.append(f"[... truncated. Use github_get_file to read full content.]")
+                    output_parts.append("[... truncated. Use github_get_file to read full content.]")
 
         return "\n".join(output_parts)
 

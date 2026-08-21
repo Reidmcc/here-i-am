@@ -1,11 +1,11 @@
 """
 Unit tests for AnthropicService.
 """
-import pytest
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 
 from app.config import settings
 from app.services.anthropic_service import (
@@ -1263,7 +1263,6 @@ class TestThinkingBlockCapture:
     @staticmethod
     def _stream_client(events):
         """Build a mock client whose messages.stream yields the given events."""
-        from types import SimpleNamespace
 
         class _Iter:
             def __init__(self, items):

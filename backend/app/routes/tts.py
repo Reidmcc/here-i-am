@@ -3,13 +3,14 @@ Text-to-Speech API routes.
 
 Supports ElevenLabs (cloud), XTTS v2 (local), and StyleTTS 2 (local) TTS providers.
 """
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 from typing import Optional
 
-from app.services import tts_service
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
 from app.config import settings
+from app.services import tts_service
 
 router = APIRouter(prefix="/api/tts", tags=["tts"])
 

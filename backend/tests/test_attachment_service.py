@@ -8,12 +8,12 @@ IMPORTANT: This test file temporarily patches sys.modules['app.config'] to
 avoid database initialization. The original module is saved and restored
 immediately after loading attachment_service to prevent test pollution.
 """
-import pytest
 import base64
 import sys
-import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
+
+import pytest
 
 # Set up path for direct module import
 backend_path = Path(__file__).parent.parent
@@ -42,6 +42,7 @@ sys.modules['app.config'] = _mock_app_config
 
 # Now we can import functions directly from the attachment_service module
 import importlib.util
+
 spec = importlib.util.spec_from_file_location(
     "attachment_service",
     backend_path / "app" / "services" / "attachment_service.py"

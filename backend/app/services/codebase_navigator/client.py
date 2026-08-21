@@ -9,26 +9,24 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Optional, Union, List
+from typing import List, Optional, Union
 
 import httpx
 
+from .cache import CacheKey, NavigatorCache
+from .exceptions import (
+    InvalidResponseError,
+    NavigatorAPIError,
+    NavigatorNotConfiguredError,
+    RateLimitError,
+)
+from .indexer import CodebaseIndexer
 from .models import (
-    NavigatorResponse,
-    NavigatorQuery,
-    RelevantFile,
-    CodeSection,
     CodebaseChunk,
     CodebaseIndex,
+    NavigatorResponse,
     QueryType,
-)
-from .cache import NavigatorCache, CacheKey
-from .indexer import CodebaseIndexer
-from .exceptions import (
-    NavigatorAPIError,
-    InvalidResponseError,
-    RateLimitError,
-    NavigatorNotConfiguredError,
+    RelevantFile,
 )
 
 logger = logging.getLogger(__name__)

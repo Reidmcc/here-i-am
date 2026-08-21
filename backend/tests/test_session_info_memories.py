@@ -9,21 +9,21 @@ cover that reconstruction (_build_memories_by_entity).
 """
 import uuid
 from datetime import datetime
-from unittest.mock import patch, AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.main import app
 from app.database import get_db
+from app.main import app
 from app.models import (
     Conversation,
     ConversationEntity,
     ConversationMemoryLink,
+    ConversationType,
     Message,
     MessageRole,
-    ConversationType,
 )
 from app.routes.chat import _build_memories_by_entity
 from app.services import session_manager

@@ -1,18 +1,25 @@
-from typing import Optional, List, Literal
-from datetime import datetime
 import json
+from datetime import datetime
+from typing import List, Literal, Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db, async_session_maker
-from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity
-from app.services import session_manager, memory_service, llm_service, tool_service, attachment_service
+from app.config import settings
+from app.database import async_session_maker, get_db
+from app.models import Conversation, ConversationEntity, ConversationType, Message, MessageRole
+from app.services import (
+    attachment_service,
+    llm_service,
+    memory_service,
+    session_manager,
+    tool_service,
+)
 from app.services.attachment_service import build_persistable_content
 from app.services.llm_service import ModelProvider
-from app.config import settings
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 

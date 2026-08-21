@@ -3,9 +3,10 @@ Speech-to-Text API routes.
 
 Supports local Whisper STT for transcribing audio to text.
 """
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from pydantic import BaseModel
 from typing import Optional
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from app.services.whisper_service import whisper_service
 

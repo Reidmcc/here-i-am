@@ -1,8 +1,9 @@
-from pathlib import Path
-from pydantic_settings import BaseSettings
-from pydantic import Field
-from typing import Optional, List
 import json
+from pathlib import Path
+from typing import List, Optional
+
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 
 class VoiceConfig:

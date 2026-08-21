@@ -12,7 +12,6 @@ import base64
 import fnmatch
 import hashlib
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -22,7 +21,7 @@ from urllib.parse import quote
 
 import httpx
 
-from app.config import settings, GitHubRepoConfig
+from app.config import GitHubRepoConfig, settings
 
 logger = logging.getLogger(__name__)
 
@@ -1575,7 +1574,7 @@ class GitHubService:
             return False, {"error": "not_found", "message": f"File not found: {path}"}
 
         if file_path.is_dir():
-            return False, {"error": "not_a_file", "message": f"Path is a directory, not a file"}
+            return False, {"error": "not_a_file", "message": "Path is a directory, not a file"}
 
         # Get file stats
         try:

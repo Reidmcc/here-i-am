@@ -3,22 +3,23 @@ Unit tests for web tools (web_search and web_fetch).
 
 Tests tool functionality including API interactions, error handling, and content extraction.
 """
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 import json
-import httpx
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import pytest
+
+from app.services.tool_service import ToolCategory, ToolService
 from app.services.web_tools import (
-    web_search,
-    web_fetch,
-    register_web_tools,
     BRAVE_SEARCH_API_URL,
-    SEARCH_TIMEOUT,
-    FETCH_TIMEOUT,
-    DEFAULT_NUM_RESULTS,
     DEFAULT_MAX_LENGTH,
+    DEFAULT_NUM_RESULTS,
+    FETCH_TIMEOUT,
+    SEARCH_TIMEOUT,
+    register_web_tools,
+    web_fetch,
+    web_search,
 )
-from app.services.tool_service import ToolService, ToolCategory
 
 
 class TestWebSearchValidation:

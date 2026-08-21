@@ -5,17 +5,15 @@ Note: Some tests avoid importing from app.routes.chat directly due to
 environment-specific import issues with the Google GenAI library.
 Instead, they test the logic patterns used in the endpoint.
 """
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
-from datetime import datetime
 import uuid
-import json
-
-from pydantic import BaseModel, ValidationError
 from typing import Optional
+from unittest.mock import MagicMock
+
+import pytest
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 
-from app.models import Conversation, Message, MessageRole, ConversationType, ConversationEntity
+from app.models import Conversation, ConversationEntity, ConversationType, Message, MessageRole
 
 
 # Define a test version of RegenerateRequest to avoid import issues

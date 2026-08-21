@@ -5,7 +5,7 @@ Client service for communicating with the local Whisper STT server.
 """
 import asyncio
 import logging
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 import httpx
 

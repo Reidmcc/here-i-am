@@ -1,14 +1,16 @@
-from typing import Optional, List, Dict, Any, AsyncIterator, Tuple, Union
+import asyncio
+import json
+import logging
 from datetime import datetime
-from anthropic import AsyncAnthropic, APIConnectionError
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
+
+import httpx
+import tiktoken
+from anthropic import APIConnectionError, AsyncAnthropic
+
 from app.config import settings
 from app.services.notes_service import notes_service
 from app.services.thinking_effort import clamp_effort, resolve_effort
-import asyncio
-import httpx
-import tiktoken
-import json
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -902,7 +904,7 @@ class AnthropicService:
                             messages.append({"role": msg["role"], "content": cached_blocks})
                         else:
                             messages.append({"role": msg["role"], "content": content_blocks})
-                        logger.info(f"[CACHE] Added cached tool exchange WITH cache_control on last message")
+                        logger.info("[CACHE] Added cached tool exchange WITH cache_control on last message")
                     else:
                         messages.append({"role": msg["role"], "content": content_blocks})
                 else:
@@ -924,7 +926,7 @@ class AnthropicService:
                                 }
                             ]
                         })
-                        logger.info(f"[CACHE] Added cached history WITH cache_control on last message")
+                        logger.info("[CACHE] Added cached history WITH cache_control on last message")
                     else:
                         messages.append({"role": msg["role"], "content": content})
 

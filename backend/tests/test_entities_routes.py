@@ -8,19 +8,18 @@ Tests cover:
 - PUT /api/entities/{entity_id}/system-prompt - Persist entity system prompt
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.config import EntityConfig
 from app.database import Base, get_db
 from app.models import EntitySetting
-
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -340,9 +339,9 @@ class TestGetEntityStatus:
     @patch("app.routes.entities.settings")
     def test_status_pinecone_not_configured(self, mock_settings, mock_memory):
         """Should return not-configured status when Pinecone is not set up."""
-        from fastapi.testclient import TestClient
-        from app.routes.entities import router
         from fastapi import FastAPI
+
+        from app.routes.entities import router
 
         app = FastAPI()
         app.include_router(router)
@@ -363,9 +362,9 @@ class TestGetEntityStatus:
     @patch("app.routes.entities.settings")
     def test_status_index_not_connected(self, mock_settings, mock_memory):
         """Should report index not connected when get_index returns None."""
-        from fastapi.testclient import TestClient
-        from app.routes.entities import router
         from fastapi import FastAPI
+
+        from app.routes.entities import router
 
         app = FastAPI()
         app.include_router(router)
@@ -386,9 +385,9 @@ class TestGetEntityStatus:
     @patch("app.routes.entities.settings")
     def test_status_connected_with_stats(self, mock_settings, mock_memory):
         """Should return stats when index is connected."""
-        from fastapi.testclient import TestClient
-        from app.routes.entities import router
         from fastapi import FastAPI
+
+        from app.routes.entities import router
 
         app = FastAPI()
         app.include_router(router)
@@ -417,9 +416,9 @@ class TestGetEntityStatus:
     @patch("app.routes.entities.settings")
     def test_status_stats_error(self, mock_settings, mock_memory):
         """Should handle stats error gracefully."""
-        from fastapi.testclient import TestClient
-        from app.routes.entities import router
         from fastapi import FastAPI
+
+        from app.routes.entities import router
 
         app = FastAPI()
         app.include_router(router)
@@ -444,9 +443,9 @@ class TestGetEntityStatus:
     @patch("app.routes.entities.settings")
     def test_status_entity_not_found(self, mock_settings, mock_memory):
         """Should return 404 for unknown entity."""
-        from fastapi.testclient import TestClient
-        from app.routes.entities import router
         from fastapi import FastAPI
+
+        from app.routes.entities import router
 
         app = FastAPI()
         app.include_router(router)

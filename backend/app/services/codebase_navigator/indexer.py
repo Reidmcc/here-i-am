@@ -9,23 +9,23 @@ Responsible for preparing a codebase for navigator queries by:
 - Chunking large codebases into navigator-sized pieces
 """
 
-import logging
-import os
 import fnmatch
 import hashlib
-from pathlib import Path
+import logging
+import os
 from datetime import datetime
-from typing import List, Optional, Set, Dict, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import tiktoken
 
+from .exceptions import IndexingError
 from .models import (
-    FileInfo,
-    FileContent,
     CodebaseChunk,
     CodebaseIndex,
+    FileContent,
+    FileInfo,
 )
-from .exceptions import IndexingError
 
 logger = logging.getLogger(__name__)
 

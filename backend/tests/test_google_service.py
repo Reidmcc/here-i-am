@@ -3,9 +3,9 @@ Unit tests for the Google (Gemini) Service.
 
 Tests Gemini API interactions, message formatting, and streaming.
 """
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
-from typing import AsyncIterator
 
 from app.services.google_service import GoogleService
 

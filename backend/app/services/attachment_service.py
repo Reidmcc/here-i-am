@@ -10,7 +10,7 @@ Handles processing of image and file attachments for multimodal conversations.
 import base64
 import io
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import settings
 

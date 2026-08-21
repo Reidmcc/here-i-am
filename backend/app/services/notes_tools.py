@@ -11,10 +11,10 @@ import hashlib
 import logging
 from typing import Any, Dict, List, Optional
 
-from app.services.tool_service import ToolCategory, ToolService
+from app.config import settings
 from app.services.notes_service import notes_service
 from app.services.notes_vector_service import notes_vector_service
-from app.config import settings
+from app.services.tool_service import ToolCategory, ToolService
 
 logger = logging.getLogger(__name__)
 

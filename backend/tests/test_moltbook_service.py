@@ -7,17 +7,16 @@ Tests cover:
   rate limit handling, error formatting, and all API operations
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, patch
+
 import httpx
+import pytest
 
 from app.services.moltbook_service import (
+    MAX_RESPONSE_CHARS,
     BearerAuth,
     MoltbookService,
-    UNTRUSTED_SOURCE,
-    MAX_RESPONSE_CHARS,
 )
-
 
 # ============================================================
 # Tests for BearerAuth

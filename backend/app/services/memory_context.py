@@ -9,9 +9,9 @@ more integrated experience.
 ConversationSession uses these tracking mechanisms for all memory handling.
 """
 
-from typing import Dict, List, Set, Optional, Any, Tuple
-from dataclasses import dataclass, field
 import logging
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Set, Tuple
 
 logger = logging.getLogger(__name__)
 

@@ -1,8 +1,9 @@
 """
 Unit tests for OpenAIService.
 """
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 
 from app.services.openai_service import OpenAIService
 

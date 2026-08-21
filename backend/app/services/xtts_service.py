@@ -4,17 +4,16 @@ XTTS v2 Local Text-to-Speech service.
 This service integrates with a locally running XTTS API server for voice synthesis
 and voice cloning capabilities.
 """
-import logging
-import os
-import uuid
 import json
-import aiofiles
+import logging
+import uuid
 from pathlib import Path
-from typing import Optional, AsyncIterator, List, Dict, Any
+from typing import Any, AsyncIterator, Dict, List, Optional
 
+import aiofiles
 import httpx
 
-from app.config import settings, XTTSVoiceConfig
+from app.config import XTTSVoiceConfig, settings
 
 logger = logging.getLogger(__name__)
 

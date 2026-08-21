@@ -8,12 +8,8 @@ Tests cover:
   update_cache_state, trim_context_to_limit)
 """
 
-import pytest
-from datetime import datetime
-from unittest.mock import patch
 
-from app.services.conversation_session import MemoryEntry, ConversationSession
-
+from app.services.conversation_session import ConversationSession, MemoryEntry
 
 # ============================================================
 # Tests for MemoryEntry

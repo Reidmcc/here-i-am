@@ -6,9 +6,9 @@ used by the navigator components.
 """
 
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Literal, Optional
 
 
 class QueryType(str, Enum):
@@ -201,7 +201,7 @@ class NavigatorResponse:
         lines = []
 
         # Header
-        lines.append(f"=== Codebase Navigator Results ===")
+        lines.append("=== Codebase Navigator Results ===")
         lines.append(f"Query type: {self.query_type.value}")
         lines.append(f"Confidence: {self.confidence:.0%}")
         if self.cached:
@@ -250,7 +250,7 @@ class NavigatorResponse:
             lines.append("")
 
         # Stats
-        lines.append(f"---")
+        lines.append("---")
         lines.append(f"Tokens used: {self.tokens_used:,}")
         lines.append(f"Chunks queried: {self.chunks_queried}")
 

@@ -1,10 +1,11 @@
 """
 Unit tests for LLMService.
 """
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from app.services.llm_service import LLMService, ModelProvider, MODEL_PROVIDER_MAP, AVAILABLE_MODELS
+import pytest
+
+from app.services.llm_service import AVAILABLE_MODELS, MODEL_PROVIDER_MAP, LLMService, ModelProvider
 
 
 class TestModelProviderMapping:

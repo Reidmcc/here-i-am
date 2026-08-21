@@ -11,23 +11,21 @@ Tests cover:
 
 import os
 import time
+from datetime import datetime, timedelta
 
 import pytest
-from datetime import datetime, timedelta
-from unittest.mock import patch, MagicMock
 
 from app.services.session_helpers import (
+    add_cache_control_to_tool_result,
     build_memory_queries,
     calculate_significance,
     ensure_role_balance,
-    get_message_content_text,
-    add_cache_control_to_tool_result,
     estimate_prompt_tokens,
-    total_prompt_tokens_from_usage,
-    stamp_human_message,
+    get_message_content_text,
     make_link_timestamper,
+    stamp_human_message,
+    total_prompt_tokens_from_usage,
 )
-
 
 # ============================================================
 # Tests for stamp_human_message

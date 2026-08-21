@@ -1,17 +1,18 @@
-import logging
-import json
 import asyncio
-from typing import Optional, List
+import json
+import logging
 from datetime import datetime
+from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
 from pydantic import BaseModel
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db, async_session_maker
-from app.models import Conversation, Message, ConversationType, MessageRole, ConversationEntity
 from app.config import settings
+from app.database import async_session_maker, get_db
+from app.models import Conversation, ConversationEntity, ConversationType, Message, MessageRole
 
 logger = logging.getLogger(__name__)
 

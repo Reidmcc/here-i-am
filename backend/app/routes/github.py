@@ -4,8 +4,9 @@ GitHub API routes for repository information and status.
 Provides endpoints for the frontend to display GitHub integration status.
 """
 
+from typing import Any, Dict, List
+
 from fastapi import APIRouter
-from typing import List, Dict, Any
 
 from app.config import settings
 from app.services.github_service import github_service

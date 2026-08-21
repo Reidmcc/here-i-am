@@ -1,20 +1,18 @@
 """
 Pytest configuration and fixtures for Here I Am tests.
 """
-import pytest
 import asyncio
-from datetime import datetime
-from typing import AsyncGenerator, Dict, Any, List
-from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
+from typing import AsyncGenerator, List
+from unittest.mock import AsyncMock, MagicMock
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app.config import Settings
 from app.database import Base
-from app.models import Conversation, Message, ConversationMemoryLink, MessageRole, ConversationType
-from app.config import Settings, EntityConfig
-
+from app.models import Conversation, ConversationType, Message, MessageRole
 
 # Test database URL - in-memory SQLite
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"

@@ -1,7 +1,6 @@
 """
 Unit tests for SQLAlchemy models.
 """
-import pytest
 import uuid
 from datetime import datetime
 
@@ -9,9 +8,9 @@ from sqlalchemy import select
 
 from app.models import (
     Conversation,
-    Message,
     ConversationMemoryLink,
     ConversationType,
+    Message,
     MessageRole,
 )
 

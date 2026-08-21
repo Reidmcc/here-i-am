@@ -7,14 +7,12 @@ Tests cover:
 - find_memory_insertion_point: Finding insertion positions in context
 """
 
-import pytest
 
 from app.services.memory_context import (
-    format_memory_as_context_message,
     MemoryContextTracker,
     find_memory_insertion_point,
+    format_memory_as_context_message,
 )
-
 
 # ============================================================
 # Tests for format_memory_as_context_message

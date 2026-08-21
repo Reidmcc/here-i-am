@@ -1,17 +1,17 @@
 import asyncio
 import logging
-from typing import Optional, List
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from sqlalchemy.orm import selectinload
-from pydantic import BaseModel
+from typing import List, Optional
 
-from app.database import get_db
-from app.models import Message, MessageRole, Conversation
-from app.services import memory_service, vector_rebuild_service
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
+from app.database import get_db
+from app.models import Conversation, Message, MessageRole
+from app.services import memory_service, vector_rebuild_service
 
 logger = logging.getLogger(__name__)
 

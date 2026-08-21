@@ -7,11 +7,11 @@ significance calculation, caching, and token estimation.
 Split from session_manager.py to reduce file size and improve maintainability.
 """
 
-from typing import Callable, Dict, List, Optional, Any, Tuple
-from datetime import datetime, timedelta, timezone
 import itertools
 import json
 import logging
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.config import settings
 

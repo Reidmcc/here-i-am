@@ -4,19 +4,19 @@ Unit tests for memory_query tool.
 Tests the deliberate memory recall functionality that allows AI entities
 to intentionally query their vector memory with chosen text.
 """
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 from datetime import datetime, timedelta
-import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from app.config import settings
 from app.services.memory_tools import (
+    _memory_query,
+    get_memory_tool_context,
     register_memory_tools,
     set_memory_tool_context,
-    get_memory_tool_context,
-    _memory_query,
 )
-from app.services.tool_service import ToolService, ToolCategory
-from app.config import settings
+from app.services.tool_service import ToolCategory, ToolService
 
 
 class TestMemoryToolContext:

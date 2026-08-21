@@ -1,10 +1,13 @@
+import enum
 import uuid
 from datetime import datetime
-from typing import Optional, List
-from sqlalchemy import String, Text, DateTime, JSON, Enum as SQLEnum, Boolean
+from typing import List, Optional
+
+from sqlalchemy import JSON, Boolean, DateTime, String, Text
+from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.database import Base
-import enum
 
 
 class ConversationType(str, enum.Enum):
