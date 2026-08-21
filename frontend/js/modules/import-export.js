@@ -337,7 +337,7 @@ export async function importExternalConversations() {
                     }
                     showToast(`Imported ${result.messages_imported} messages`, 'success');
                 },
-                onCancelled: (data) => {
+                onCancelled: (_data) => {
                     if (elements.importProgress) {
                         elements.importProgress.style.display = 'none';
                     }

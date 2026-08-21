@@ -9,10 +9,10 @@ This service provides:
 """
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, Awaitable
-import logging
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 from app.config import settings
 

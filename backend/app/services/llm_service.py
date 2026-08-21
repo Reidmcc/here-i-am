@@ -6,18 +6,20 @@ Provides a single interface for interacting with multiple LLM providers
 configuration.
 """
 
-from typing import Optional, List, Dict, Any, AsyncIterator, Set
 from datetime import datetime
 from enum import Enum
+from typing import Any, AsyncIterator, Dict, List, Optional
 
+from app.config import settings
 from app.services import anthropic_service, openai_service
 from app.services.anthropic_service import (
     supports_temperature as anthropic_supports_temperature,
+)
+from app.services.anthropic_service import (
     supports_thinking_effort as anthropic_supports_thinking_effort,
 )
+from app.services.google_service import google_service
 from app.services.openai_service import OpenAIService
-from app.services.google_service import google_service, GoogleService
-from app.config import settings
 
 
 class ModelProvider(str, Enum):

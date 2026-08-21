@@ -1,8 +1,9 @@
-from pathlib import Path
-from pydantic_settings import BaseSettings
-from pydantic import Field
-from typing import Optional, List
 import json
+from pathlib import Path
+from typing import List, Optional
+
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 
 class VoiceConfig:
@@ -505,7 +506,7 @@ class Settings(BaseSettings):
         except json.JSONDecodeError as e:
             raise ValueError(
                 f"Invalid JSON in PINECONE_INDEXES environment variable: {e}"
-            )
+            ) from e
 
     def get_default_model_for_provider(self, provider: str) -> str:
         """Get the default model for a given provider."""
@@ -561,7 +562,7 @@ class Settings(BaseSettings):
         except json.JSONDecodeError as e:
             raise ValueError(
                 f"Invalid JSON in GITHUB_REPOS environment variable: {e}"
-            )
+            ) from e
 
     def get_github_repo_by_label(self, label: str) -> Optional[GitHubRepoConfig]:
         """Get a GitHub repo configuration by its label (case-insensitive)."""

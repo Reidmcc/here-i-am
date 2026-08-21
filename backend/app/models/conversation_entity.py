@@ -1,9 +1,14 @@
 import uuid
 from datetime import datetime
-from typing import Optional
-from sqlalchemy import String, DateTime, ForeignKey, Integer
+from typing import TYPE_CHECKING
+
+from sqlalchemy import DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.conversation import Conversation
 
 
 class ConversationEntity(Base):

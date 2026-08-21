@@ -5,15 +5,14 @@
 
 // Import modules
 import { state, resetMemoryState, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName, loadEnterInsertsNewline, loadMessageInputHeight, saveMessageInputHeight, getValidSavedEntityModel, LEGACY_ENTITY_PROMPTS_KEY } from './modules/state.js';
-import { showToast, showLoading, setToastContainer, escapeHtml, renderMarkdown, truncateText, stripMarkdown } from './modules/utils.js';
-import { loadTheme, getCurrentTheme, setTheme } from './modules/theme.js';
-import { setElements as setModalElements, showModal, hideModal, closeActiveModal, isModalOpen, closeAllDropdowns } from './modules/modals.js';
+import { setToastContainer, escapeHtml } from './modules/utils.js';
+import { loadTheme, getCurrentTheme } from './modules/theme.js';
+import { setElements as setModalElements, showModal, hideModal, closeActiveModal, closeAllDropdowns } from './modules/modals.js';
 import {
     setElements as setEntityElements,
     setCallbacks as setEntityCallbacks,
     loadEntities,
     handleEntityChange,
-    updateEntityDescription,
     getEntityLabel,
     showMultiEntityModal,
     hideMultiEntityModal,
@@ -40,9 +39,7 @@ import {
     showDeleteModal,
     deleteConversation,
     showArchivedModal,
-    loadArchivedConversations,
-    unarchiveConversation,
-    exportConversation as exportConv
+    unarchiveConversation
 } from './modules/conversations.js';
 import {
     setElements as setMessageElements,
@@ -50,12 +47,8 @@ import {
     addMessage,
     addToolMessage,
     collectSavedReflections,
-    createStreamingMessage,
-    addTypingIndicator,
     clearMessages,
-    removeRegenerateButtons,
     copyMessage,
-    updateAssistantMessageActions,
     isNearBottom,
     scrollToBottom
 } from './modules/messages.js';
@@ -64,13 +57,8 @@ import {
     setCallbacks as setAttachmentCallbacks,
     initDragAndDrop,
     handleFileSelect,
-    processFiles,
-    updateAttachmentPreview,
     removeAttachment,
-    clearAttachments,
-    hasAttachments,
-    getAttachmentsForRequest,
-    buildDisplayContentWithAttachments
+    hasAttachments
 } from './modules/attachments.js';
 import {
     setElements as setChatElements,
@@ -80,7 +68,6 @@ import {
     stopGeneration,
     regenerateMessage,
     regenerateMessageWithEntity,
-    performRegeneration,
     startEditMessage,
     startContinuationMode,
     sendClosingTurn
@@ -88,7 +75,6 @@ import {
 import {
     setElements as setMemoryElements,
     updateMemoriesPanel,
-    handleMemoryUpdate,
     showMemoriesModal,
     searchMemories,
     checkForOrphans,
@@ -96,18 +82,12 @@ import {
     previewRebuildVectors,
     runRebuildVectors,
     previewRestoreDatabase,
-    runRestoreDatabase,
-    loadMemoryStats,
-    loadMemoryList
+    runRestoreDatabase
 } from './modules/memories.js';
 import {
     setElements as setVoiceElements,
     checkTTSStatus,
-    updateTTSUI,
     speakMessage,
-    stopSpeaking,
-    loadStyleTTS2Settings,
-    saveStyleTTS2Settings,
     showVoiceCloneModal,
     hideVoiceCloneModal,
     updateVoiceCloneButton,
@@ -125,14 +105,11 @@ import {
     applySettings,
     loadPreset,
     loadPresets,
-    modelSupportsTemperature,
     updateTemperatureControlState,
     updateVerbosityControlState,
     updateThinkingEffortControlState,
     updateTemperatureRange,
-    syncTemperatureInputs,
     updateModelIndicator,
-    populateModelSelect,
     initializeSettingsUI
 } from './modules/settings.js';
 import {
@@ -652,7 +629,7 @@ class App {
             const raw = localStorage.getItem(LEGACY_ENTITY_PROMPTS_KEY);
             if (!raw) return;
             legacy = JSON.parse(raw);
-        } catch (e) {
+        } catch {
             localStorage.removeItem(LEGACY_ENTITY_PROMPTS_KEY);
             return;
         }
@@ -918,7 +895,7 @@ class App {
     /**
      * Handle entity changed callback
      */
-    onEntityChanged(entityId) {
+    onEntityChanged(_entityId) {
         // Clear current conversation
         state.currentConversationId = null;
         clearMessages();
@@ -957,7 +934,6 @@ class App {
         // Handle pending action after entity selection
         if (state.pendingActionAfterEntitySelection === 'sendMessage') {
             const content = state.pendingMessageForEntitySelection;
-            const attachments = state.pendingAttachmentsForEntitySelection;
             state.pendingActionAfterEntitySelection = null;
             state.pendingMessageForEntitySelection = null;
             state.pendingAttachmentsForEntitySelection = null;
@@ -984,7 +960,7 @@ class App {
     /**
      * Handle conversation loaded callback
      */
-    onConversationLoaded(conversation, messages) {
+    onConversationLoaded(_conversation, _messages) {
         // Update model indicator (may change between single/multi-entity)
         updateModelIndicator();
         // Handle input change to update button states
@@ -996,14 +972,14 @@ class App {
     /**
      * Handle conversation created callback
      */
-    onConversationCreated(conversation) {
+    onConversationCreated(_conversation) {
         this.handleInputChange();
     }
 
     /**
      * Handle conversation update callback
      */
-    onConversationUpdate(conversation) {
+    onConversationUpdate(_conversation) {
         // Refresh conversation list if needed
         renderConversationList();
     }

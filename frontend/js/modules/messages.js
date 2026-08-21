@@ -56,7 +56,7 @@ export function collectSavedReflections(messages) {
         let contentBlocks;
         try {
             contentBlocks = JSON.parse(msg.content);
-        } catch (e) {
+        } catch {
             // Unparseable rows are reported where they are rendered
             continue;
         }

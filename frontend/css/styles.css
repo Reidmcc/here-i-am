@@ -40,6 +40,9 @@
     --font-mono: 'Consolas', 'Monaco', 'Courier New', monospace;
     --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 
+    /* Layout */
+    --input-btn-height: 44px;
+
     /* Scrollbar colors */
     --scrollbar-thumb: #333;
     --scrollbar-thumb-hover: #444;
@@ -144,12 +147,6 @@ html, body {
     font-size: 1.5rem;
     font-weight: 600;
     color: var(--text-primary);
-    margin-bottom: 4px;
-}
-
-.app-subtitle {
-    font-size: 0.75rem;
-    color: var(--text-muted);
 }
 
 /* Entity Selector */
@@ -1153,9 +1150,19 @@ body.resizing-input {
 
 .input-container {
     display: flex;
+    /* Bottom-aligned rather than stretched: the buttons keep their own height
+       when the user drags the divider to make the textarea taller. */
+    align-items: flex-end;
     gap: 12px;
     max-width: 800px;
     margin: 0 auto;
+}
+
+/* Every control beside the textarea holds one fixed height, whatever the
+   height of the message entry area. */
+.input-container > button {
+    flex: 0 0 auto;
+    height: var(--input-btn-height);
 }
 
 #message-input {
@@ -1168,7 +1175,7 @@ body.resizing-input {
     font-family: var(--font-sans);
     font-size: 0.95rem;
     resize: none;
-    min-height: 44px;
+    min-height: var(--input-btn-height);
     max-height: 200px;
     overflow-y: auto;
 }

@@ -8,19 +8,18 @@ Tests cover:
 - GitHub routes
 - Settings GitHub methods
 """
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-import json
 import base64
+import json
 import time
-import sys
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 # Import configuration and GitHub-specific modules
 # Note: We import these specific modules directly without mocking dependencies
 # at module level to avoid polluting other test files during pytest collection.
-from app.config import Settings, GitHubRepoConfig
-from app.services.github_service import GitHubService, RateLimitInfo, BINARY_EXTENSIONS
-
+from app.config import GitHubRepoConfig, Settings
+from app.services.github_service import GitHubService, RateLimitInfo
 
 # =============================================================================
 # GitHubRepoConfig Tests
@@ -981,7 +980,7 @@ class TestGitHubToolRegistration:
     def test_register_github_tools_disabled(self):
         """Test tools not registered when GitHub disabled."""
         from app.services.github_tools import register_github_tools
-        from app.services.tool_service import ToolService, ToolCategory
+        from app.services.tool_service import ToolCategory, ToolService
 
         tool_service = ToolService()
 
@@ -995,7 +994,7 @@ class TestGitHubToolRegistration:
     def test_register_github_tools_no_repos(self):
         """Test tools not registered when no repos configured."""
         from app.services.github_tools import register_github_tools
-        from app.services.tool_service import ToolService, ToolCategory
+        from app.services.tool_service import ToolCategory, ToolService
 
         tool_service = ToolService()
 
@@ -1011,7 +1010,7 @@ class TestGitHubToolRegistration:
     def test_register_github_tools_read_only(self):
         """Test only read tools registered for read-only repos."""
         from app.services.github_tools import register_github_tools
-        from app.services.tool_service import ToolService, ToolCategory
+        from app.services.tool_service import ToolCategory, ToolService
 
         tool_service = ToolService()
 
@@ -1043,7 +1042,7 @@ class TestGitHubToolRegistration:
     def test_register_github_tools_full_capabilities(self):
         """Test all tools registered for full capability repos."""
         from app.services.github_tools import register_github_tools
-        from app.services.tool_service import ToolService, ToolCategory
+        from app.services.tool_service import ToolCategory, ToolService
 
         tool_service = ToolService()
 
@@ -1727,7 +1726,7 @@ class TestGitHubModifiedTools:
     @pytest.mark.asyncio
     async def test_github_search_code_limits_results(self, mock_github_service, mock_cache_service):
         """Test github_search_code limits results to MAX_SEARCH_RESULTS."""
-        from app.services.github_tools import github_search_code, MAX_SEARCH_RESULTS
+        from app.services.github_tools import MAX_SEARCH_RESULTS, github_search_code
 
         mock_repo = MagicMock()
         mock_repo.has_capability.return_value = True
@@ -1850,7 +1849,7 @@ class TestGitHubToolRegistrationComposite:
     def test_composite_tools_registered_for_read_capability(self):
         """Test composite tools are registered when read capability is available."""
         from app.services.github_tools import register_github_tools
-        from app.services.tool_service import ToolService, ToolCategory
+        from app.services.tool_service import ToolCategory, ToolService
 
         tool_service = ToolService()
 

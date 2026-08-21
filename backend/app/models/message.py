@@ -1,11 +1,17 @@
-import uuid
-import json
-from datetime import datetime
-from typing import Optional, Union, List, Dict, Any
-from sqlalchemy import String, Text, DateTime, Integer, ForeignKey, Enum as SQLEnum
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from app.database import Base
 import enum
+import json
+import uuid
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Enum as SQLEnum
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.conversation import Conversation
 
 
 class MessageRole(str, enum.Enum):

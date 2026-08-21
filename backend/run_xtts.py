@@ -28,8 +28,8 @@ Once running, configure the main app with:
     XTTS_API_URL=http://localhost:8020
 """
 
-import sys
 import os
+import sys
 
 # Add the backend directory to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -58,8 +58,8 @@ def check_dependencies():
 
     # Check TTS library
     try:
-        import TTS
-        print(f"[OK] TTS library found")
+        import TTS  # noqa: F401 -- probing importability
+        print("[OK] TTS library found")
     except ImportError:
         missing.append("TTS (coqui-tts)")
         suggestions.append(

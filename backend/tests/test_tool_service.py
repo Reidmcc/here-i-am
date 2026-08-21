@@ -3,16 +3,17 @@ Unit tests for the Tool Service.
 
 Tests tool registration, execution, filtering, and error handling.
 """
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 import asyncio
+from unittest.mock import patch
+
+import pytest
 
 from app.config import settings
 from app.services.tool_service import (
-    ToolService,
     ToolCategory,
-    ToolResult,
     ToolDefinition,
+    ToolResult,
+    ToolService,
 )
 
 

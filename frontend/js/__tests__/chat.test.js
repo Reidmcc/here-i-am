@@ -409,9 +409,7 @@ describe('Chat Module', () => {
                 files: [],
             };
 
-            let sentData = null;
-            window.api.sendMessageStream = vi.fn((data, handlers) => {
-                sentData = data;
+            window.api.sendMessageStream = vi.fn((_data, handlers) => {
                 handlers.onDone({ usage: {} });
                 handlers.onStored({});
                 return Promise.resolve();

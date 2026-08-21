@@ -7,15 +7,15 @@ client, and caching components.
 
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 from app.config import settings
 from app.services.codebase_navigator import (
     CodebaseIndexer,
     NavigatorClient,
+    NavigatorNotConfiguredError,
     NavigatorResponse,
     QueryType,
-    NavigatorNotConfiguredError,
 )
 
 logger = logging.getLogger(__name__)

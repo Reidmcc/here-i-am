@@ -108,7 +108,7 @@ While Here I Am can be used with no memory features enabled, this is not recomme
 ## Quick Start
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.11+
 - Node.js (optional, for frontend tests)
 
 ### Required API Keys

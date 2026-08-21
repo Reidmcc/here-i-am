@@ -2,20 +2,21 @@
 Routes for individual message operations (edit, delete).
 """
 from datetime import datetime
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
-from pydantic import BaseModel
+from typing import List, Optional
 
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
 from app.database import get_db
-from app.models import Message, MessageRole, Conversation, ConversationType, ConversationEntity
-from app.services import memory_service, session_manager, llm_service
+from app.models import Conversation, ConversationEntity, ConversationType, Message, MessageRole
+from app.services import llm_service, memory_service, session_manager
 from app.services.message_history import (
     delete_tool_exchange_messages,
     find_preceding_conversational_message,
 )
-from app.config import settings
 
 router = APIRouter(prefix="/api/messages", tags=["messages"])
 
@@ -151,7 +152,6 @@ async def update_message(
     subsequent_assistant_msg = result.scalar_one_or_none()
 
     # Update the message content
-    old_content = message.content
     message.content = data.content
     message.token_count = llm_service.count_tokens(data.content)
 

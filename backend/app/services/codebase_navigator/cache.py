@@ -4,15 +4,15 @@ Cache for Codebase Navigator responses.
 Uses SQLite for persistent storage of navigator responses to avoid redundant API calls.
 """
 
+import hashlib
 import json
 import logging
-import hashlib
 import sqlite3
 import threading
-from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Optional
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional
 
 from .models import NavigatorResponse, QueryType
 

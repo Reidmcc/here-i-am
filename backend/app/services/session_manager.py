@@ -12,55 +12,50 @@ The data structures (ConversationSession, MemoryEntry) are now in
 conversation_session.py. Helper functions are in session_helpers.py.
 """
 
-from typing import Callable, Dict, List, Set, Optional, Any, AsyncIterator
-from datetime import datetime
 import logging
 import re
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from datetime import datetime
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Set
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
 from app.models import (
     Conversation,
+    ConversationEntity,
+    ConversationType,
+    EntitySetting,
     Message,
     MessageRole,
-    ConversationType,
-    ConversationEntity,
-    EntitySetting,
 )
-from app.services import memory_service, llm_service
-from app.services.tool_service import tool_service, ToolResult
-from app.services.notes_tools import (
-    set_current_entity_label,
-    consume_last_note_stamps,
-    note_content_hash,
-    NOTE_IN_CONTEXT_MARKER,
-    NOTE_STAMP_TOOL_NAMES,
-)
-from app.services.memory_tools import set_memory_tool_context, consume_last_query_memory_ids
-from app.services.context_tools import set_context_tool_session
-from app.config import settings
+from app.services import llm_service, memory_service
 
 # Import from split modules
 from app.services.attachment_service import build_persistable_content
+from app.services.context_tools import set_context_tool_session
 from app.services.conversation_session import ConversationSession, MemoryEntry
+from app.services.memory_context import format_memory_as_context_message
+from app.services.memory_tools import consume_last_query_memory_ids, set_memory_tool_context
+from app.services.notes_tools import (
+    NOTE_IN_CONTEXT_MARKER,
+    NOTE_STAMP_TOOL_NAMES,
+    consume_last_note_stamps,
+    note_content_hash,
+    set_current_entity_label,
+)
 from app.services.session_helpers import (
-    build_memory_queries,
-    calculate_significance,
-    stamp_human_message,
-    ensure_role_balance,
-    get_message_content_text,
-    add_cache_control_to_tool_result,
-    make_link_timestamper,
-    estimate_prompt_tokens,
-    total_prompt_tokens_from_usage,
+    _add_cache_control_to_tool_result,
     # Backward compatibility aliases (with underscore prefix)
     _build_memory_queries,
     _calculate_significance,
     _ensure_role_balance,
-    _get_message_content_text,
-    _add_cache_control_to_tool_result,
+    estimate_prompt_tokens,
+    make_link_timestamper,
+    stamp_human_message,
+    total_prompt_tokens_from_usage,
 )
-from app.services.memory_context import format_memory_as_context_message
+from app.services.tool_service import tool_service
 
 logger = logging.getLogger(__name__)
 
@@ -1166,7 +1161,7 @@ class SessionManager:
         else:
             # Memory retrieval skipped - log reason
             if not settings.pinecone_api_key:
-                logger.info(f"[MEMORY] Memory retrieval skipped: Pinecone not configured (no API key)")
+                logger.info("[MEMORY] Memory retrieval skipped: Pinecone not configured (no API key)")
             elif session.entity_id and not settings.get_entity_by_index(session.entity_id):
                 logger.warning(f"[MEMORY] Memory retrieval skipped: Invalid entity_id '{session.entity_id}' not found in configuration")
             else:
@@ -1597,7 +1592,7 @@ class SessionManager:
         else:
             # Memory retrieval skipped - log reason
             if not settings.pinecone_api_key:
-                logger.info(f"[MEMORY] Memory retrieval skipped: Pinecone not configured (no API key)")
+                logger.info("[MEMORY] Memory retrieval skipped: Pinecone not configured (no API key)")
             elif session.entity_id and not settings.get_entity_by_index(session.entity_id):
                 logger.warning(f"[MEMORY] Memory retrieval skipped: Invalid entity_id '{session.entity_id}' not found in configuration")
             else:

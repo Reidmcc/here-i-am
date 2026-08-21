@@ -1,15 +1,27 @@
-from contextlib import asynccontextmanager
 import logging
 import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 
-from app.database import init_db
-from app.routes import conversations_router, chat_router, memories_router, entities_router, messages_router, tts_router, github_router, stt_router, notes_router
 from app.config import settings
+from app.database import init_db
+from app.routes import (
+    chat_router,
+    conversations_router,
+    entities_router,
+    github_router,
+    memories_router,
+    messages_router,
+    notes_router,
+    stt_router,
+    tts_router,
+)
 from app.services.memory_service import memory_service
 
 
@@ -66,8 +78,8 @@ def run_pinecone_connection_test():
         print("=" * 60 + "\n")
         return
 
-    print(f"Pinecone API Key: Configured")
-    print(f"Embedding Model: Pinecone integrated inference (llama-text-embed-v2)")
+    print("Pinecone API Key: Configured")
+    print("Embedding Model: Pinecone integrated inference (llama-text-embed-v2)")
 
     print(f"\nEntities to test: {len(result['entities'])}")
     print("-" * 60)
@@ -105,7 +117,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Here I Am",
-    description="Experiential Interpretability Research Application",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -121,8 +132,7 @@ app.add_middleware(
 
 
 # Middleware to disable caching for static files (development)
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
+
 
 class NoCacheMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):

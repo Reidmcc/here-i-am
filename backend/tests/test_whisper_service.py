@@ -5,12 +5,12 @@ Tests cover:
 - WhisperService: Configuration, health checks, transcription, status
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import httpx
+import pytest
 
 from app.services.whisper_service import WhisperService
-
 
 # ============================================================
 # Tests for WhisperService

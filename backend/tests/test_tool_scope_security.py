@@ -14,7 +14,6 @@ actions it was designed for, using only ordinary tool arguments:
 """
 
 import ipaddress
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,7 +32,6 @@ from app.services.web_tools import (
     _validate_fetch_url,
     web_fetch,
 )
-
 
 # =============================================================================
 # GitHub: URL path traversal

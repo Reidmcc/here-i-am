@@ -1,0 +1,34 @@
+# Ruff is the only tool configured here; the package itself is not built from
+# this file (the app runs from source via run.py).
+
+[tool.ruff]
+target-version = "py311"   # matches the CI floor in .github/workflows/ci.yml
+line-length = 100
+
+[tool.ruff.lint]
+# Deliberately narrow: correctness rules (pyflakes + the pycodestyle subset
+# ruff enables by default), likely-bug rules (flake8-bugbear), and import
+# ordering. Style/modernization rulesets (UP, SIM, D, ANN) are excluded --
+# they generate churn rather than findings.
+select = ["E4", "E7", "E9", "F", "B", "I"]
+
+ignore = [
+    # `col == True` / `col == False` is the correct SQLAlchemy filter idiom.
+    # Ruff's suggested rewrite (`not col`) evaluates the column's Python
+    # truthiness at query-build time and collapses the clause to a constant:
+    # `where(Conversation.is_archived == False)` becomes `WHERE false`, which
+    # silently returns zero rows. Never apply this rule's fix here.
+    "E712",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection defaults are calls by design (B008).
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Query",
+]

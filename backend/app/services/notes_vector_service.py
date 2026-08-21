@@ -21,7 +21,7 @@ write still succeeds and the note is simply not searchable until reindexed.
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from app.config import settings
 from app.services.memory_service import memory_service, run_pinecone

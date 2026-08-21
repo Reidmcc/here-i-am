@@ -8,7 +8,6 @@ Includes JavaScript rendering support via Playwright for single-page application
 """
 
 import asyncio
-import httpx
 import ipaddress
 import json
 import logging
@@ -16,6 +15,7 @@ import socket
 from typing import TYPE_CHECKING, List, Optional, Tuple
 from urllib.parse import urlsplit
 
+import httpx
 from bs4 import BeautifulSoup
 
 from app.config import settings

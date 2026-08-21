@@ -1,17 +1,17 @@
 import asyncio
 import logging
-from typing import Optional, List
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from sqlalchemy.orm import selectinload
-from pydantic import BaseModel
+from typing import List, Optional
 
-from app.database import get_db
-from app.models import Message, MessageRole, Conversation
-from app.services import memory_service, vector_rebuild_service
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
+from app.database import get_db
+from app.models import Conversation, Message, MessageRole
+from app.services import memory_service, vector_rebuild_service
 
 logger = logging.getLogger(__name__)
 
@@ -275,7 +275,7 @@ async def search_memories(
     # locked file), surface a clear error instead of hanging the request forever.
     try:
         results = await asyncio.wait_for(_enrich(), timeout=SEARCH_ENRICHMENT_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as e:
         logger.error(
             f"[MEMORY] Browser search timed out after {SEARCH_ENRICHMENT_TIMEOUT_SECONDS}s "
             "while loading memory content from SQL. The vector search succeeded, so the "
@@ -287,7 +287,7 @@ async def search_memories(
                 "Memory search timed out while loading memory content from the "
                 "database (vector search succeeded). See server logs."
             ),
-        )
+        ) from e
 
     logger.info(f"[MEMORY] Browser search: returning {len(results)} memories")
     return results

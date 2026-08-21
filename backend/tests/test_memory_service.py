@@ -1,13 +1,14 @@
 """
 Unit tests for MemoryService.
 """
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
-from datetime import datetime
 import uuid
+from datetime import datetime
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from app.models import ConversationMemoryLink, Message, MessageRole
 from app.services.memory_service import MemoryService
-from app.models import Message, MessageRole, ConversationMemoryLink
 
 
 class TestMemoryServiceConfiguration:
@@ -557,7 +558,6 @@ class TestMemoryServiceDatabase:
     @pytest.mark.asyncio
     async def test_get_archived_conversation_ids_basic(self, db_session, sample_conversation):
         """Test getting archived conversation IDs."""
-        from app.models import Conversation
 
         service = MemoryService()
 
@@ -573,8 +573,9 @@ class TestMemoryServiceDatabase:
     @pytest.mark.asyncio
     async def test_get_archived_conversation_ids_filters_by_entity(self, db_session):
         """Test archived IDs filtered by entity_id."""
-        from app.models import Conversation
         import uuid
+
+        from app.models import Conversation
 
         service = MemoryService()
 
@@ -612,8 +613,9 @@ class TestMemoryServiceDatabase:
         stored in the default entity's Pinecone index, so when filtering by the
         default entity, we must also include conversations with NULL entity_id.
         """
-        from app.models import Conversation
         import uuid
+
+        from app.models import Conversation
 
         service = MemoryService()
 
@@ -662,8 +664,9 @@ class TestMemoryServiceDatabase:
         When querying a non-default entity, NULL entity_id conversations should not
         be included because their memories are in the default entity's index.
         """
-        from app.models import Conversation
         import uuid
+
+        from app.models import Conversation
 
         service = MemoryService()
 
@@ -706,8 +709,9 @@ class TestMemoryServiceDatabase:
         archived conversations for a specific entity, we need to include archived
         multi-entity conversations where that entity is a participant.
         """
-        from app.models import Conversation, ConversationEntity, ConversationType
         import uuid
+
+        from app.models import Conversation, ConversationEntity, ConversationType
 
         service = MemoryService()
 
@@ -897,6 +901,7 @@ class TestMemoryServiceRetrievalCount:
         reload interleaves the memory at the live insertion position (just
         before the human message row that triggered it)."""
         from datetime import datetime, timedelta
+
         from sqlalchemy import select
 
         with patch("app.services.memory_service.settings") as mock_settings:
@@ -969,6 +974,7 @@ class TestMemoryServiceRecordMemoryLink:
         """An explicit retrieved_at is stored on the link (reload-position
         anchoring, same as update_retrieval_count.link_retrieved_at)."""
         from datetime import datetime, timedelta
+
         from sqlalchemy import select
 
         with patch("app.services.memory_service.settings") as mock_settings:
@@ -1128,7 +1134,7 @@ class TestCleanupMemoryQueryLinks:
             await self._add_link(
                 db_session, sample_conversation.id, queried.id, entity_id="entity-a"
             )
-            other_entity_link = await self._add_link(
+            await self._add_link(
                 db_session, sample_conversation.id, queried.id, entity_id="entity-b"
             )
 
@@ -1735,7 +1741,7 @@ class TestGetRecentReflections:
     @pytest.mark.asyncio
     async def test_result_shape_matches_full_memory_content(self, db_session):
         conv = await self._create_conversation(db_session)
-        reflection = await self._create_reflection(db_session, conv.id)
+        await self._create_reflection(db_session, conv.id)
 
         service = MemoryService()
         results = await service.get_recent_reflections(

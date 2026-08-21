@@ -1,9 +1,11 @@
 """
 Unit tests for configuration and EntityConfig.
 """
-import pytest
 from unittest.mock import patch
-from app.config import Settings, EntityConfig
+
+import pytest
+
+from app.config import EntityConfig, Settings
 
 
 class TestEntityConfig:

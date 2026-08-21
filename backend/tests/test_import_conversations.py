@@ -10,21 +10,19 @@ Tests cover:
 - Deduplication using message IDs
 - Import to history vs memory-only
 """
-import pytest
 import json
 import uuid
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Conversation, Message, MessageRole, ConversationType
+from app.models import Conversation, ConversationType, Message, MessageRole
 from app.routes.conversations import (
-    _parse_openai_export,
-    _parse_anthropic_export,
     _detect_and_parse_export,
+    _parse_anthropic_export,
+    _parse_openai_export,
 )
-
 
 # Sample export data fixtures
 
@@ -313,7 +311,10 @@ class TestImportConversationsIntegration:
         self, db_session, sample_anthropic_export, mock_memory_service, mock_settings_with_entity
     ):
         """Test that importing creates hidden (is_imported=True) conversation."""
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         data = ExternalConversationImport(
             content=json.dumps(sample_anthropic_export),
@@ -338,7 +339,10 @@ class TestImportConversationsIntegration:
         self, db_session, sample_anthropic_export, mock_memory_service, mock_settings_with_entity
     ):
         """Test that importing to history creates visible conversation."""
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         data = ExternalConversationImport(
             content=json.dumps(sample_anthropic_export),
@@ -365,7 +369,10 @@ class TestImportConversationsIntegration:
         self, db_session, sample_anthropic_export, mock_memory_service, mock_settings_with_entity
     ):
         """Test that messages with existing IDs are skipped."""
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         # First import
         data = ExternalConversationImport(
@@ -387,7 +394,10 @@ class TestImportConversationsIntegration:
         self, db_session, sample_anthropic_export, mock_memory_service, mock_settings_with_entity
     ):
         """Test importing only selected conversations."""
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         data = ExternalConversationImport(
             content=json.dumps(sample_anthropic_export),
@@ -408,7 +418,10 @@ class TestImportConversationsIntegration:
         self, db_session, sample_anthropic_export, mock_memory_service, mock_settings_with_entity
     ):
         """Test importing as memory only (not to history)."""
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         data = ExternalConversationImport(
             content=json.dumps(sample_anthropic_export),
@@ -428,7 +441,10 @@ class TestImportConversationsIntegration:
         self, db_session, sample_anthropic_export, mock_settings_with_entity
     ):
         """Test importing to history only (without storing as memories)."""
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         with patch("app.services.memory_service") as mock_mem:
             mock_mem.is_configured.return_value = True
@@ -467,7 +483,10 @@ class TestPreviewEndpoint:
         self, db_session, sample_anthropic_export, mock_settings_with_entity
     ):
         """Test that preview returns list of conversations."""
-        from app.routes.conversations import preview_external_conversations, ExternalConversationPreview
+        from app.routes.conversations import (
+            ExternalConversationPreview,
+            preview_external_conversations,
+        )
 
         data = ExternalConversationPreview(
             content=json.dumps(sample_anthropic_export),
@@ -490,10 +509,10 @@ class TestPreviewEndpoint:
     ):
         """Test that preview shows which conversations are already imported."""
         from app.routes.conversations import (
-            preview_external_conversations,
-            import_external_conversations,
-            ExternalConversationPreview,
             ExternalConversationImport,
+            ExternalConversationPreview,
+            import_external_conversations,
+            preview_external_conversations,
         )
 
         with patch("app.services.memory_service") as mock_mem:
@@ -524,8 +543,11 @@ class TestPreviewEndpoint:
         self, db_session, mock_settings_with_entity
     ):
         """Test that preview shows partial import status."""
-        from app.routes.conversations import preview_external_conversations, ExternalConversationPreview
-        from app.models import Message, MessageRole
+        from app.models import Message
+        from app.routes.conversations import (
+            ExternalConversationPreview,
+            preview_external_conversations,
+        )
 
         # Create a message with an ID that will match the export
         existing_msg = Message(
@@ -585,8 +607,12 @@ class TestEdgeCases:
 
     async def test_import_with_invalid_entity(self, db_session, mock_settings_no_entity):
         """Test import with non-existent entity."""
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
         from fastapi import HTTPException
+
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         data = ExternalConversationImport(
             content=json.dumps([]),
@@ -601,8 +627,12 @@ class TestEdgeCases:
 
     async def test_import_empty_file(self, db_session):
         """Test import with empty file."""
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
         from fastapi import HTTPException
+
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         with patch("app.routes.conversations.settings") as mock:
             mock.get_entity_by_index.return_value = MagicMock()
@@ -657,7 +687,10 @@ class TestEdgeCases:
         self, db_session
     ):
         """Test that conversation is not created if all messages are duplicates."""
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         with patch("app.routes.conversations.settings") as mock_settings:
             mock_settings.get_entity_by_index.return_value = MagicMock()
@@ -709,7 +742,10 @@ class TestCrossEntityImport:
         should get new UUIDs since the original IDs are already in the database
         (as primary keys for entity A's messages).
         """
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         with patch("app.routes.conversations.settings") as mock_settings:
             mock_settings.get_entity_by_index.return_value = MagicMock()
@@ -794,7 +830,10 @@ class TestCrossEntityImport:
         After the cross-entity fix, we need to ensure that importing the same
         file twice to the SAME entity still correctly deduplicates.
         """
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         with patch("app.routes.conversations.settings") as mock_settings:
             mock_settings.get_entity_by_index.return_value = MagicMock()
@@ -894,8 +933,12 @@ class TestTimestampPreservation:
 
     async def test_import_preserves_openai_timestamps(self, db_session):
         """Test that imported OpenAI messages preserve original timestamps."""
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
         from datetime import datetime
+
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         with patch("app.routes.conversations.settings") as mock_settings:
             mock_settings.get_entity_by_index.return_value = MagicMock()
@@ -943,8 +986,12 @@ class TestTimestampPreservation:
 
     async def test_import_preserves_anthropic_timestamps(self, db_session):
         """Test that imported Anthropic messages preserve original timestamps."""
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
         from datetime import datetime
+
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         with patch("app.routes.conversations.settings") as mock_settings:
             mock_settings.get_entity_by_index.return_value = MagicMock()
@@ -987,8 +1034,12 @@ class TestTimestampPreservation:
 
     async def test_import_without_timestamp_uses_default(self, db_session):
         """Test that messages without timestamps use current time as default."""
-        from app.routes.conversations import import_external_conversations, ExternalConversationImport
-        from datetime import datetime, timedelta
+        from datetime import datetime
+
+        from app.routes.conversations import (
+            ExternalConversationImport,
+            import_external_conversations,
+        )
 
         with patch("app.routes.conversations.settings") as mock_settings:
             mock_settings.get_entity_by_index.return_value = MagicMock()

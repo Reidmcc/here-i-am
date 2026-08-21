@@ -3,13 +3,14 @@ Text-to-Speech API routes.
 
 Supports ElevenLabs (cloud), XTTS v2 (local), and StyleTTS 2 (local) TTS providers.
 """
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 from typing import Optional
 
-from app.services import tts_service
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
 from app.config import settings
+from app.services import tts_service
 
 router = APIRouter(prefix="/api/tts", tags=["tts"])
 
@@ -73,9 +74,9 @@ async def text_to_speech(data: TTSRequest):
             }
         )
     except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate speech: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate speech: {str(e)}") from e
 
 
 @router.post("/speak/stream")
@@ -272,9 +273,9 @@ async def clone_voice(
             "message": f"Voice '{label}' created successfully",
         }
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to clone voice: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to clone voice: {str(e)}") from e
 
 
 @router.get("/voices/{voice_id}")

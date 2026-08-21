@@ -6,12 +6,11 @@ Tests cover:
 - TTSService: Provider routing, configuration status, voice listing, status
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock, PropertyMock
-import httpx
 
 from app.services.tts_service import ElevenLabsService, TTSService
-
 
 # ============================================================
 # Tests for ElevenLabsService
