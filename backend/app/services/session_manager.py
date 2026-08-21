@@ -1856,6 +1856,17 @@ class SessionManager:
 
                         # Add tool data to done event if any tools were used
                         final_event = dict(event)
+                        # The provider's done event carries only the text of
+                        # the iteration that produced it. Anything the model
+                        # said *before* its tool calls lives in earlier
+                        # iterations, so hand back the accumulated text - it
+                        # is what add_exchange just put in the session context,
+                        # and the routes persist and vectorize this field. A
+                        # per-iteration value would leave the assistant row
+                        # (and its memory) holding only the closing fragment,
+                        # and a reload would rebuild a context that no longer
+                        # matches the one the prompt cache was built on.
+                        final_event["content"] = full_content
                         if accumulated_tool_uses:
                             final_event["tool_uses"] = accumulated_tool_uses
                         if tool_exchanges:

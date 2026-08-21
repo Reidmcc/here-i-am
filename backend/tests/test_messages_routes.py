@@ -489,3 +489,184 @@ class TestUpdateMessageWithoutResponse:
         assert data["message"]["content"] == "Updated message."
         # No assistant message to delete
         assert data["deleted_assistant_message_id"] is None
+
+
+class TestToolExchangeCleanup:
+    """A discarded response must take its tool exchange rows with it.
+
+    They are not addressable from the UI, so a leftover pair only surfaces
+    on the next conversation reload - as a tool card belonging to a response
+    that no longer exists, and as a tool call replayed into the rebuilt LLM
+    context that the assistant never made.
+    """
+
+    @pytest.fixture
+    async def conversation_with_tool_turn(self, test_engine):
+        """A turn that used a tool: human, tool_use, tool_result, assistant."""
+        async_session = async_sessionmaker(
+            test_engine, class_=AsyncSession, expire_on_commit=False
+        )
+
+        created = {}
+        async with async_session() as session:
+            conv_id = str(uuid.uuid4())
+            session.add(Conversation(
+                id=conv_id, title="Tool turn", entity_id="test-entity"
+            ))
+            await session.flush()
+            created["conversation_id"] = conv_id
+
+            now = datetime.utcnow()
+            human = Message(
+                id=str(uuid.uuid4()),
+                conversation_id=conv_id,
+                role=MessageRole.HUMAN,
+                content="Remember this for me.",
+                created_at=now - timedelta(seconds=10),
+            )
+            session.add(human)
+            created["human_id"] = human.id
+
+            session.add(Message(
+                id=str(uuid.uuid4()),
+                conversation_id=conv_id,
+                role=MessageRole.TOOL_USE,
+                content='[{"type": "tool_use", "id": "tu-1", "name": "memory_save", '
+                        '"input": {"content": "A reflection."}}]',
+                created_at=now - timedelta(seconds=8),
+            ))
+            session.add(Message(
+                id=str(uuid.uuid4()),
+                conversation_id=conv_id,
+                role=MessageRole.TOOL_RESULT,
+                content='[{"type": "tool_result", "tool_use_id": "tu-1", '
+                        '"content": "Saved.", "is_error": false}]',
+                created_at=now - timedelta(seconds=7),
+            ))
+
+            assistant = Message(
+                id=str(uuid.uuid4()),
+                conversation_id=conv_id,
+                role=MessageRole.ASSISTANT,
+                content="Saved it.",
+                created_at=now - timedelta(seconds=5),
+            )
+            session.add(assistant)
+            created["assistant_id"] = assistant.id
+
+            await session.commit()
+
+        return created
+
+    async def remaining_roles(self, test_engine, conversation_id):
+        async_session = async_sessionmaker(
+            test_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        async with async_session() as session:
+            result = await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conversation_id)
+                .order_by(Message.created_at)
+            )
+            return [m.role for m in result.scalars().all()]
+
+    @pytest.mark.asyncio
+    async def test_editing_a_human_message_clears_the_turn_tool_rows(
+        self, async_client, test_engine, conversation_with_tool_turn
+    ):
+        response = await async_client.put(
+            f"/api/messages/{conversation_with_tool_turn['human_id']}",
+            json={"content": "Remember this instead."}
+        )
+
+        assert response.status_code == 200
+
+        roles = await self.remaining_roles(
+            test_engine, conversation_with_tool_turn["conversation_id"]
+        )
+        assert roles == [MessageRole.HUMAN]
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_human_message_clears_the_turn_tool_rows(
+        self, async_client, test_engine, conversation_with_tool_turn
+    ):
+        response = await async_client.delete(
+            f"/api/messages/{conversation_with_tool_turn['human_id']}"
+        )
+
+        assert response.status_code == 200
+
+        roles = await self.remaining_roles(
+            test_engine, conversation_with_tool_turn["conversation_id"]
+        )
+        assert roles == []
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_response_clears_its_tool_rows(
+        self, async_client, test_engine, conversation_with_tool_turn
+    ):
+        """Deleting the assistant message alone still takes the exchanges
+        that produced it - the human message stays, ready to be answered."""
+        response = await async_client.delete(
+            f"/api/messages/{conversation_with_tool_turn['assistant_id']}"
+        )
+
+        assert response.status_code == 200
+
+        roles = await self.remaining_roles(
+            test_engine, conversation_with_tool_turn["conversation_id"]
+        )
+        assert roles == [MessageRole.HUMAN]
+
+    @pytest.mark.asyncio
+    async def test_earlier_turns_keep_their_tool_rows(
+        self, async_client, test_engine, conversation_with_tool_turn
+    ):
+        """Only the edited turn's exchanges go."""
+        conv_id = conversation_with_tool_turn["conversation_id"]
+        async_session = async_sessionmaker(
+            test_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        now = datetime.utcnow()
+        async with async_session() as session:
+            later_human = Message(
+                id=str(uuid.uuid4()),
+                conversation_id=conv_id,
+                role=MessageRole.HUMAN,
+                content="And another thing.",
+                created_at=now - timedelta(seconds=3),
+            )
+            session.add(later_human)
+            session.add(Message(
+                id=str(uuid.uuid4()),
+                conversation_id=conv_id,
+                role=MessageRole.TOOL_USE,
+                content='[{"type": "tool_use", "id": "tu-2", "name": "web_search", '
+                        '"input": {"query": "x"}}]',
+                created_at=now - timedelta(seconds=2),
+            ))
+            session.add(Message(
+                id=str(uuid.uuid4()),
+                conversation_id=conv_id,
+                role=MessageRole.ASSISTANT,
+                content="Looked it up.",
+                created_at=now - timedelta(seconds=1),
+            ))
+            await session.commit()
+            later_human_id = later_human.id
+
+        response = await async_client.put(
+            f"/api/messages/{later_human_id}",
+            json={"content": "And something else."}
+        )
+
+        assert response.status_code == 200
+
+        roles = await self.remaining_roles(test_engine, conv_id)
+        assert roles == [
+            MessageRole.HUMAN,
+            MessageRole.TOOL_USE,
+            MessageRole.TOOL_RESULT,
+            MessageRole.ASSISTANT,
+            MessageRole.HUMAN,
+        ]

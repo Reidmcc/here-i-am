@@ -1,5 +1,6 @@
-from typing import Optional, List, Literal
-from datetime import datetime
+from typing import Callable, Optional, List, Literal
+from datetime import datetime, timedelta
+import itertools
 import json
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -12,6 +13,10 @@ from app.models import Conversation, Message, MessageRole, ConversationType, Con
 from app.services import session_manager, memory_service, llm_service, tool_service, attachment_service
 from app.services.attachment_service import build_persistable_content
 from app.services.llm_service import ModelProvider
+from app.services.message_history import (
+    delete_tool_exchange_messages,
+    find_preceding_conversational_message,
+)
 from app.config import settings
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -64,6 +69,29 @@ def assistant_token_count(
         if output_tokens:
             return int(output_tokens)
     return llm_service.count_tokens(content)
+
+
+def make_turn_timestamper() -> Callable[[], datetime]:
+    """
+    Build a callable stamping one turn's persisted rows with strictly
+    increasing created_at values.
+
+    A turn writes its tool exchange rows and its assistant row in a single
+    flush, and datetime.utcnow() (the column default) can hand back the same
+    microsecond to consecutive rows. Conversation history is read back with
+    a bare ORDER BY created_at, which has no tiebreaker, so colliding rows
+    come back in an order the database is free to choose: a tool_result
+    ahead of its tool_use leaves the frontend with a result that matches no
+    tool card (it is dropped), and the assistant row ahead of the exchanges
+    reorders the rebuilt LLM context.
+    """
+    base = datetime.utcnow()
+    counter = itertools.count()
+
+    def next_turn_time() -> datetime:
+        return base + timedelta(microseconds=next(counter))
+
+    return next_turn_time
 
 
 class ImageAttachment(BaseModel):
@@ -632,7 +660,11 @@ async def stream_message(data: ChatRequest):
                     db.add(human_msg)
 
                 # Store tool exchanges as separate messages (between human and final assistant)
-                # This preserves tool results for future responses
+                # This preserves tool results for future responses.
+                # Ordering within the turn is explicit (see make_turn_timestamper):
+                # every exchange must read back ahead of the assistant row that
+                # concludes it, and each result behind its own call.
+                next_turn_time = make_turn_timestamper()
                 tool_exchange_msgs = []
                 if tool_exchanges:
                     for exchange in tool_exchanges:
@@ -644,6 +676,7 @@ async def stream_message(data: ChatRequest):
                             content=tool_use_content,
                             token_count=llm_service.count_tokens(tool_use_content),
                             speaker_entity_id=responding_entity_id if is_multi_entity else None,
+                            created_at=next_turn_time(),
                         )
                         db.add(tool_use_msg)
                         tool_exchange_msgs.append(tool_use_msg)
@@ -655,6 +688,7 @@ async def stream_message(data: ChatRequest):
                             role=MessageRole.TOOL_RESULT,
                             content=tool_result_content,
                             token_count=llm_service.count_tokens(tool_result_content),
+                            created_at=next_turn_time(),
                         )
                         db.add(tool_result_msg)
                         tool_exchange_msgs.append(tool_result_msg)
@@ -665,6 +699,7 @@ async def stream_message(data: ChatRequest):
                     content=full_content,
                     token_count=assistant_token_count(full_content, usage_data, tool_exchanges),
                     speaker_entity_id=responding_entity_id if is_multi_entity else None,
+                    created_at=next_turn_time(),
                 )
                 db.add(assistant_msg)
 
@@ -847,6 +882,9 @@ async def regenerate_response(data: RegenerateRequest):
                 # Determine the human message and assistant message to regenerate
                 is_continuation_regenerate = False
                 human_message = None
+                # The conversational message the discarded response answered.
+                # Bounds the tool exchange rows that belong to that response.
+                regenerate_anchor = None
 
                 if target_message.role == MessageRole.ASSISTANT:
                     assistant_to_delete = target_message
@@ -871,20 +909,14 @@ async def regenerate_response(data: RegenerateRequest):
                     )
                     human_message = result.scalar_one_or_none()
 
-                    # Now check if this is a continuation (another assistant message immediately before)
-                    result = await db.execute(
-                        select(Message)
-                        .where(
-                            and_(
-                                Message.conversation_id == conv_id_str,
-                                Message.created_at <= target_message.created_at,
-                                Message.id != str(target_message.id),
-                            )
-                        )
-                        .order_by(Message.created_at.desc())
-                        .limit(1)
+                    # Now check if this is a continuation (another assistant message immediately before).
+                    # Looks past the response's own tool exchange and reflection rows, which sit
+                    # between the two assistant messages and would otherwise mask the continuation.
+                    preceding_message = await find_preceding_conversational_message(
+                        db, conv_id_str, target_message
                     )
-                    preceding_message = result.scalar_one_or_none()
+
+                    regenerate_anchor = preceding_message
 
                     if preceding_message and preceding_message.role == MessageRole.ASSISTANT:
                         # The message immediately before is an assistant - this is continuation
@@ -893,6 +925,7 @@ async def regenerate_response(data: RegenerateRequest):
                 else:
                     # Target is human message, find the subsequent assistant message
                     human_message = target_message
+                    regenerate_anchor = target_message
                     conv_id_str = str(conversation_id)
                     result = await db.execute(
                         select(Message)
@@ -1008,9 +1041,19 @@ async def regenerate_response(data: RegenerateRequest):
                 if data.user_display_name is not None:
                     session.user_display_name = data.user_display_name
 
-                # Delete the old assistant message from DB and Pinecone
+                # Delete the old assistant message from DB and Pinecone,
+                # along with the tool exchange rows that response produced -
+                # they are part of the discarded response, and leaving them
+                # behind duplicates its tool cards on the next reload and
+                # replays its tool calls into the rebuilt context.
                 if assistant_to_delete:
                     old_assistant_id = assistant_to_delete.id
+                    await delete_tool_exchange_messages(
+                        db,
+                        conversation_id,
+                        after=regenerate_anchor.created_at if regenerate_anchor else None,
+                        before=assistant_to_delete.created_at,
+                    )
                     await db.delete(assistant_to_delete)
                     await db.commit()
 
@@ -1088,7 +1131,9 @@ async def regenerate_response(data: RegenerateRequest):
                         yield f"event: error\ndata: {json.dumps(event)}\n\n"
                         return
 
-                # Store tool exchanges as separate messages (between human and final assistant)
+                # Store tool exchanges as separate messages (between human and final assistant),
+                # explicitly ordered ahead of the assistant row (see make_turn_timestamper)
+                next_turn_time = make_turn_timestamper()
                 tool_exchange_msgs = []
                 if tool_exchanges:
                     for exchange in tool_exchanges:
@@ -1100,6 +1145,7 @@ async def regenerate_response(data: RegenerateRequest):
                             content=tool_use_content,
                             token_count=llm_service.count_tokens(tool_use_content),
                             speaker_entity_id=responding_entity_id if is_multi_entity else None,
+                            created_at=next_turn_time(),
                         )
                         db.add(tool_use_msg)
                         tool_exchange_msgs.append(tool_use_msg)
@@ -1111,6 +1157,7 @@ async def regenerate_response(data: RegenerateRequest):
                             role=MessageRole.TOOL_RESULT,
                             content=tool_result_content,
                             token_count=llm_service.count_tokens(tool_result_content),
+                            created_at=next_turn_time(),
                         )
                         db.add(tool_result_msg)
                         tool_exchange_msgs.append(tool_result_msg)
@@ -1122,6 +1169,7 @@ async def regenerate_response(data: RegenerateRequest):
                     content=full_content,
                     token_count=assistant_token_count(full_content, usage_data, tool_exchanges),
                     speaker_entity_id=responding_entity_id if is_multi_entity else None,
+                    created_at=next_turn_time(),
                 )
                 db.add(assistant_msg)
 
