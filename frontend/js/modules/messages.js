@@ -34,6 +34,77 @@ export function setCallbacks(cbs) {
     callbacks = { ...callbacks, ...cbs };
 }
 
+// The assistant turn currently being streamed, if any.
+//
+// Tool and thinking cards are appended *into* that turn's element rather than
+// onto the end of the message list, so each one keeps the position it had when
+// it happened: the text that streamed before it stays above it, and the text
+// that streams after it opens a fresh bubble below it. Without this the turn's
+// text all accumulates in one bubble created before the first card, which
+// leaves every card stranded at the bottom of the response.
+//
+// Null outside a stream — a conversation reload renders persisted tool cards
+// straight into the message list, exactly as before.
+let activeStreamingTurn = null;
+
+/**
+ * Settle the streaming turn, if any, and hand back the element a tool/thinking
+ * card should be appended to.
+ *
+ * Closing the turn's open text bubble first is what puts the card *after* the
+ * text that preceded it; the next token then opens a fresh bubble below.
+ *
+ * Falls back to the message list when no turn is streaming, and when the
+ * streaming turn's element is no longer in it (an errored stream removes the
+ * element without finalizing) — otherwise the card would render into limbo.
+ *
+ * @returns {HTMLElement}
+ */
+function prepareCardInsertion() {
+    if (activeStreamingTurn && !elements.messages?.contains(activeStreamingTurn.element)) {
+        activeStreamingTurn = null;
+    }
+    if (!activeStreamingTurn) return elements.messages;
+
+    activeStreamingTurn.closeTextSegment();
+    return activeStreamingTurn.element;
+}
+
+/**
+ * Find an already-rendered tool card by its tool_use id.
+ *
+ * Scans rather than building a selector: tool ids come from the provider and
+ * are interpolated nowhere, so a syntactically awkward one can't break the
+ * lookup mid-stream.
+ *
+ * @param {string} toolId
+ * @returns {HTMLElement|null}
+ */
+function findToolMessage(toolId) {
+    if (!toolId || !elements.messages) return null;
+    for (const el of elements.messages.querySelectorAll('.tool-message')) {
+        if (el.dataset.toolId === toolId) return el;
+    }
+    return null;
+}
+
+/**
+ * Render the collapsible "Input" section of a tool card.
+ *
+ * @param {Object|undefined} input - Tool arguments
+ * @returns {string} - HTML, or '' when there are no arguments to show
+ */
+function renderToolInput(input) {
+    if (!input || Object.keys(input).length === 0) return '';
+    const inputStr = JSON.stringify(input, null, 2);
+    return `
+            <details class="tool-input-details">
+                <summary>Input</summary>
+                <pre class="tool-input">${escapeHtml(inputStr)}</pre>
+            </details>
+        `;
+}
+
 /**
  * Add a message to the chat
  * @param {string} role - Message role ('human' or 'assistant')
@@ -156,16 +227,21 @@ export function addToolMessage(type, toolName, data) {
 
     if (type === 'start') {
         const displayName = toolName.replace(/_/g, ' ');
+        const inputContent = renderToolInput(data.input);
 
-        let inputContent = '';
-        if (data.input && Object.keys(data.input).length > 0) {
-            const inputStr = JSON.stringify(data.input, null, 2);
-            inputContent = `
-                <details class="tool-input-details">
-                    <summary>Input</summary>
-                    <pre class="tool-input">${escapeHtml(inputStr)}</pre>
-                </details>
-            `;
+        // A tool is announced twice: once when its block opens (arguments still
+        // streaming, so no input yet) and again with the parsed arguments just
+        // before it runs. Fill in the input on the second announcement instead
+        // of rendering a second card for the same call.
+        const existing = findToolMessage(data.tool_id);
+        if (existing) {
+            const staleInput = existing.querySelector('.tool-input-details');
+            if (staleInput) staleInput.remove();
+            const indicator = existing.querySelector('.tool-indicator');
+            if (inputContent && indicator) {
+                indicator.insertAdjacentHTML('afterend', inputContent);
+            }
+            return existing;
         }
 
         message.innerHTML = `
@@ -177,16 +253,14 @@ export function addToolMessage(type, toolName, data) {
             ${inputContent}
         `;
 
-        elements.messages.appendChild(message);
+        prepareCardInsertion().appendChild(message);
         if (wasNearBottom && callbacks.scrollToBottom) {
             callbacks.scrollToBottom();
         }
         return message;
     } else if (type === 'result') {
         // Find the corresponding start message
-        const startMessage = elements.messages.querySelector(
-            `.tool-message[data-tool-id="${data.tool_id}"]`
-        );
+        const startMessage = findToolMessage(data.tool_id);
 
         if (startMessage) {
             const statusEl = startMessage.querySelector('.tool-status');
@@ -311,7 +385,7 @@ export function addThinkingMessage(phase, data = {}) {
             </details>
         `;
 
-        elements.messages.appendChild(message);
+        prepareCardInsertion().appendChild(message);
         activeThinkingMessage = message;
 
         if (wasNearBottom && callbacks.scrollToBottom) {
@@ -384,10 +458,20 @@ export function resetThinkingMessage() {
 }
 
 /**
- * Create a streaming message element
+ * Create a streaming message element.
+ *
+ * The turn is a container, not a single bubble: its text is split into one
+ * bubble per run of tokens between tool/thinking cards, and those cards are
+ * appended into the same container by `addToolMessage`/`addThinkingMessage`
+ * while this turn is streaming. The result reads top to bottom in the order
+ * things actually happened, instead of one text blob with every card below it.
+ *
+ * `getContent()` still returns the whole turn's text — the backend stores it as
+ * one assistant message, and copy/TTS/regenerate all work off that.
+ *
  * @param {string} role - Message role
  * @param {string} speakerLabel - Speaker label for multi-entity
- * @returns {Object} - Object with element, updateContent, finalize, getContent methods
+ * @returns {Object} - Object with element, bubble, updateContent, finalize, getContent
  */
 export function createStreamingMessage(role, speakerLabel = null) {
     // Hide welcome message
@@ -395,48 +479,128 @@ export function createStreamingMessage(role, speakerLabel = null) {
         elements.welcomeMessage.style.display = 'none';
     }
 
+    // A turn left un-finalized (an errored stream removes its element without
+    // finalizing) must not keep collecting this turn's cards.
+    activeStreamingTurn = null;
+
     const message = document.createElement('div');
     message.className = `message ${role}`;
     message.dataset.role = role;
 
-    const bubble = document.createElement('div');
-    bubble.className = 'message-bubble streaming';
-
-    // Add speaker label for multi-entity conversations
-    if (speakerLabel && role === 'assistant') {
-        const labelSpan = document.createElement('span');
-        labelSpan.className = 'message-speaker-label';
-        labelSpan.textContent = speakerLabel;
-        bubble.appendChild(labelSpan);
-    }
-
-    const contentSpan = document.createElement('span');
-    contentSpan.className = 'message-content';
-    bubble.appendChild(contentSpan);
-
-    // Add cursor element for visual feedback
+    // One cursor for the turn, moved into whichever bubble is currently open.
     const cursor = document.createElement('span');
     cursor.className = 'streaming-cursor';
     cursor.textContent = '\u258c'; // Block cursor character
-    bubble.appendChild(cursor);
 
-    message.appendChild(bubble);
-    elements.messages.appendChild(message);
-
+    // One entry per run of text between cards: { bubble, contentSpan, text }.
+    const segments = [];
+    let activeSegment = null;
     let accumulatedContent = '';
+
+    const openSegment = () => {
+        const bubble = document.createElement('div');
+        bubble.className = 'message-bubble streaming';
+
+        // The speaker label names the turn, so it goes on the first bubble
+        // only — repeating it above every text run would read as several
+        // separate messages from the same entity.
+        if (speakerLabel && role === 'assistant' && segments.length === 0) {
+            const labelSpan = document.createElement('span');
+            labelSpan.className = 'message-speaker-label';
+            labelSpan.textContent = speakerLabel;
+            bubble.appendChild(labelSpan);
+        }
+
+        const contentSpan = document.createElement('span');
+        contentSpan.className = 'message-content';
+        bubble.appendChild(contentSpan);
+        bubble.appendChild(cursor);
+
+        message.appendChild(bubble);
+
+        const segment = { bubble, contentSpan, text: '' };
+        segments.push(segment);
+        activeSegment = segment;
+        return segment;
+    };
+
+    // No more tokens can land in this segment, so render its markdown now.
+    const settleSegment = (segment) => {
+        segment.bubble.classList.remove('streaming');
+        segment.contentSpan.innerHTML = renderMarkdown(segment.text);
+    };
+
+    const dropSegment = (segment) => {
+        segment.bubble.remove();
+        const at = segments.indexOf(segment);
+        if (at !== -1) segments.splice(at, 1);
+    };
+
+    // Called just before a tool/thinking card is appended to this turn.
+    const closeTextSegment = () => {
+        if (!activeSegment) return;
+        const segment = activeSegment;
+        activeSegment = null;
+
+        if (segment.text) {
+            cursor.remove();
+            settleSegment(segment);
+        } else {
+            // Nothing streamed into it — the usual case, since a model
+            // typically thinks or calls a tool before it writes anything. Drop
+            // the empty bubble rather than leave a blank card above the block.
+            dropSegment(segment);
+        }
+    };
+
+    // Opened eagerly so the turn shows a bubble (and a blinking cursor) the
+    // moment it starts, before the first token or card arrives.
+    openSegment();
+
+    activeStreamingTurn = { element: message, closeTextSegment };
+
+    elements.messages.appendChild(message);
 
     return {
         element: message,
+        // The bubble that action buttons belong on: the last one, so they sit
+        // at the end of the response rather than mid-turn.
+        get bubble() {
+            return segments.length ? segments[segments.length - 1].bubble : null;
+        },
         updateContent: (newToken) => {
             accumulatedContent += newToken;
-            contentSpan.textContent = accumulatedContent;
+            const segment = activeSegment || openSegment();
+            segment.text += newToken;
+            segment.contentSpan.textContent = segment.text;
         },
         finalize: (options = {}) => {
             cursor.remove();
-            bubble.classList.remove('streaming');
 
-            // Render final content with markdown
-            contentSpan.innerHTML = renderMarkdown(accumulatedContent);
+            if (activeSegment) {
+                // Keep a trailing empty bubble only when it is all the turn
+                // has: a response that produced no text still needs somewhere
+                // to hang its action buttons.
+                if (activeSegment.text || segments.length === 1) {
+                    settleSegment(activeSegment);
+                } else {
+                    dropSegment(activeSegment);
+                }
+                activeSegment = null;
+            }
+
+            // Every card and no text at all (an aborted turn, say) would
+            // otherwise leave the turn without a bubble.
+            if (segments.length === 0) {
+                const segment = openSegment();
+                activeSegment = null;
+                cursor.remove();
+                settleSegment(segment);
+            }
+
+            if (activeStreamingTurn && activeStreamingTurn.element === message) {
+                activeStreamingTurn = null;
+            }
 
             // Add timestamp
             const timestamp = options.timestamp ? new Date(options.timestamp) : new Date();
@@ -478,6 +642,7 @@ export function addTypingIndicator() {
  * Clear all messages
  */
 export function clearMessages() {
+    activeStreamingTurn = null;
     if (elements.messages) {
         elements.messages.innerHTML = '';
     }
@@ -533,7 +698,10 @@ export async function copyMessage(content, btn) {
 export function updateAssistantMessageActions(messageElement, messageId, messageContent) {
     removeRegenerateButtons();
 
-    const assistantBubble = messageElement.querySelector('.message-bubble');
+    // A turn with tool/thinking cards holds several bubbles; the actions belong
+    // at the end of the response, on the last one.
+    const bubbles = messageElement.querySelectorAll(':scope > .message-bubble');
+    const assistantBubble = bubbles.length ? bubbles[bubbles.length - 1] : null;
     if (assistantBubble) {
         const actionsDiv = document.createElement('div');
         actionsDiv.className = 'message-bubble-actions';

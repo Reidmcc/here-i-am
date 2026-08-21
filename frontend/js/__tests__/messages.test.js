@@ -553,6 +553,207 @@ describe('Messages Module', () => {
         });
     });
 
+    describe('streaming turn ordering', () => {
+        // Read a streaming turn as a flat list of what it renders, in DOM
+        // order: 't:<text>' for a text bubble, 'tool:<id>' / 'thinking' for a
+        // card. The whole point of the turn container is that this list matches
+        // the order the events arrived in.
+        const layoutOf = (element) =>
+            Array.from(element.children)
+                .map((child) => {
+                    if (child.classList.contains('message-bubble')) {
+                        return `t:${child.querySelector('.message-content').textContent}`;
+                    }
+                    if (child.classList.contains('tool-message')) {
+                        return `tool:${child.dataset.toolId}`;
+                    }
+                    if (child.classList.contains('thinking-message')) return 'thinking';
+                    if (child.classList.contains('message-meta')) return 'meta';
+                    return child.className;
+                })
+                .filter((entry) => entry !== 'meta');
+
+        it('should keep tool cards between the text that streamed around them', () => {
+            const stream = createStreamingMessage('assistant');
+
+            stream.updateContent('Looking that up.');
+            addToolMessage('start', 'web_search', { tool_id: 'tool-a', input: { q: 'x' } });
+            addToolMessage('result', 'web_search', { tool_id: 'tool-a', content: 'hits' });
+            stream.updateContent('Found it.');
+            addToolMessage('start', 'web_fetch', { tool_id: 'tool-b', input: { url: 'u' } });
+            addToolMessage('result', 'web_fetch', { tool_id: 'tool-b', content: 'page' });
+            stream.updateContent('Done.');
+
+            expect(layoutOf(stream.element)).toEqual([
+                't:Looking that up.',
+                'tool:tool-a',
+                't:Found it.',
+                'tool:tool-b',
+                't:Done.',
+            ]);
+        });
+
+        it('should keep the ordering after the turn is finalized', () => {
+            const stream = createStreamingMessage('assistant');
+
+            stream.updateContent('Before. ');
+            addToolMessage('start', 'web_search', { tool_id: 'tool-a', input: {} });
+            stream.updateContent('After.');
+            stream.finalize();
+
+            expect(layoutOf(stream.element)).toEqual(['t:Before. ', 'tool:tool-a', 't:After.']);
+        });
+
+        it('should keep thinking cards in position too', () => {
+            const stream = createStreamingMessage('assistant');
+
+            addThinkingMessage('start');
+            addThinkingMessage('delta', { content: 'weighing it' });
+            addThinkingMessage('stop');
+            stream.updateContent('Here goes.');
+            addThinkingMessage('start');
+            addThinkingMessage('delta', { content: 'reconsidering' });
+            addThinkingMessage('stop');
+            stream.updateContent('Actually, this.');
+
+            expect(layoutOf(stream.element)).toEqual([
+                'thinking',
+                't:Here goes.',
+                'thinking',
+                't:Actually, this.',
+            ]);
+        });
+
+        it('should not leave an empty bubble above a leading card', () => {
+            const stream = createStreamingMessage('assistant');
+
+            addThinkingMessage('start');
+            addThinkingMessage('stop');
+            stream.updateContent('Text.');
+            stream.finalize();
+
+            expect(layoutOf(stream.element)).toEqual(['thinking', 't:Text.']);
+        });
+
+        it('should carry the speaker label on the first surviving bubble', () => {
+            const stream = createStreamingMessage('assistant', 'Claude');
+
+            addThinkingMessage('start');
+            addThinkingMessage('stop');
+            stream.updateContent('Hello.');
+            stream.finalize();
+
+            const labels = stream.element.querySelectorAll('.message-speaker-label');
+            expect(labels).toHaveLength(1);
+            expect(labels[0].textContent).toBe('Claude');
+            expect(labels[0].closest('.message-bubble')).toBe(stream.element.querySelector('.message-bubble'));
+        });
+
+        it('should accumulate the whole turn as one string across segments', () => {
+            const stream = createStreamingMessage('assistant');
+
+            stream.updateContent('One ');
+            addToolMessage('start', 'web_search', { tool_id: 'tool-a', input: {} });
+            stream.updateContent('two ');
+            addThinkingMessage('start');
+            addThinkingMessage('stop');
+            stream.updateContent('three');
+
+            expect(stream.getContent()).toBe('One two three');
+            expect(stream.finalize()).toBe('One two three');
+        });
+
+        it('should render markdown in every segment on finalize', () => {
+            const stream = createStreamingMessage('assistant');
+
+            stream.updateContent('**bold**');
+            addToolMessage('start', 'web_search', { tool_id: 'tool-a', input: {} });
+            stream.updateContent('*italic*');
+            stream.finalize();
+
+            expect(stream.element.innerHTML).toContain('<strong>bold</strong>');
+            expect(stream.element.innerHTML).toContain('<em>italic</em>');
+            expect(stream.element.querySelector('.streaming')).toBeFalsy();
+            expect(stream.element.querySelector('.streaming-cursor')).toBeFalsy();
+        });
+
+        it('should expose the last bubble for action buttons', () => {
+            const stream = createStreamingMessage('assistant');
+
+            stream.updateContent('First');
+            addToolMessage('start', 'web_search', { tool_id: 'tool-a', input: {} });
+            stream.updateContent('Last');
+            stream.finalize();
+
+            const bubbles = stream.element.querySelectorAll('.message-bubble');
+            expect(bubbles).toHaveLength(2);
+            expect(stream.bubble).toBe(bubbles[1]);
+        });
+
+        it('should keep a bubble on a turn that produced only cards', () => {
+            const stream = createStreamingMessage('assistant');
+
+            addToolMessage('start', 'web_search', { tool_id: 'tool-a', input: {} });
+            stream.finalize();
+
+            expect(stream.bubble).toBeTruthy();
+            expect(layoutOf(stream.element)).toEqual(['tool:tool-a', 't:']);
+        });
+
+        it('should send cards back to the message list once the turn ends', () => {
+            const stream = createStreamingMessage('assistant');
+            stream.updateContent('Done.');
+            stream.finalize();
+
+            addToolMessage('start', 'web_search', { tool_id: 'tool-later', input: {} });
+
+            expect(stream.element.querySelector('.tool-message')).toBeFalsy();
+            expect(mockElements.messages.querySelector('.tool-message').parentElement)
+                .toBe(mockElements.messages);
+        });
+
+        it('should render cards into the message list when nothing is streaming', () => {
+            addToolMessage('start', 'web_search', { tool_id: 'tool-a', input: {} });
+            addThinkingMessage('start');
+            addThinkingMessage('stop');
+
+            expect(mockElements.messages.querySelector('.tool-message').parentElement)
+                .toBe(mockElements.messages);
+            expect(mockElements.messages.querySelector('.thinking-message').parentElement)
+                .toBe(mockElements.messages);
+        });
+
+        it('should not render a second card when a tool is announced twice', () => {
+            const stream = createStreamingMessage('assistant');
+
+            // The backend announces the block opening (no input yet), then the
+            // same call again once its arguments have been parsed.
+            const first = addToolMessage('start', 'web_search', { tool_id: 'tool-a', input: {} });
+            const second = addToolMessage('start', 'web_search', {
+                tool_id: 'tool-a',
+                input: { query: 'kingfishers' },
+            });
+
+            expect(second).toBe(first);
+            expect(stream.element.querySelectorAll('.tool-message')).toHaveLength(1);
+            expect(first.querySelector('.tool-input').textContent).toContain('kingfishers');
+
+            addToolMessage('result', 'web_search', { tool_id: 'tool-a', content: 'ok' });
+            expect(first.querySelector('.tool-status.success')).toBeTruthy();
+        });
+
+        it('should not adopt cards into a turn whose element was removed', () => {
+            const stream = createStreamingMessage('assistant');
+            stream.updateContent('partial');
+            stream.element.remove();
+
+            addToolMessage('start', 'web_search', { tool_id: 'tool-a', input: {} });
+
+            expect(mockElements.messages.querySelector('.tool-message').parentElement)
+                .toBe(mockElements.messages);
+        });
+    });
+
     describe('addTypingIndicator', () => {
         it('should create typing indicator element', () => {
             const indicator = addTypingIndicator();
