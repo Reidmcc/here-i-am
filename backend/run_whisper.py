@@ -29,8 +29,8 @@ Once running, configure the main app with:
     WHISPER_API_URL=http://localhost:8030
 """
 
-import sys
 import os
+import sys
 from pathlib import Path
 
 # Add the backend directory to the path
@@ -134,8 +134,8 @@ def check_dependencies():
 
     # Check faster-whisper
     try:
-        import faster_whisper
-        print(f"[OK] faster-whisper found")
+        import faster_whisper  # noqa: F401 -- probing importability
+        print("[OK] faster-whisper found")
     except ImportError:
         missing.append("faster-whisper")
         suggestions.append(
@@ -145,9 +145,9 @@ def check_dependencies():
 
     # Check FastAPI and uvicorn
     try:
-        import fastapi
-        import uvicorn
-        print(f"[OK] FastAPI and uvicorn found")
+        import fastapi  # noqa: F401 -- probing importability
+        import uvicorn  # noqa: F401 -- probing importability
+        print("[OK] FastAPI and uvicorn found")
     except ImportError:
         missing.append("fastapi/uvicorn")
         suggestions.append("  pip install fastapi uvicorn[standard]")

@@ -14,13 +14,13 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Tuple, Any
+from typing import Any, Dict, Optional, Tuple
 
-import torch
 import numpy as np
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException
-from fastapi.responses import StreamingResponse, Response
+import torch
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 # Configure logging
@@ -192,7 +192,7 @@ def get_model():
 
         except Exception as e:
             logger.error(f"Failed to load XTTS model: {e}")
-            raise RuntimeError(f"Failed to load XTTS model: {e}")
+            raise RuntimeError(f"Failed to load XTTS model: {e}") from e
 
     return _tts_model
 
@@ -634,7 +634,7 @@ async def tts_to_audio(
         raise
     except Exception as e:
         logger.error(f"TTS generation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}") from e
 
     finally:
         # Clean up temp speaker file
@@ -688,7 +688,7 @@ async def _tts_with_path(text: str, speaker_wav: str, language: str) -> Response
         raise
     except Exception as e:
         logger.error(f"TTS generation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}") from e
 
 
 @app.post("/tts")

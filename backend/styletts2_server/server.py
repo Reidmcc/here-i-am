@@ -15,16 +15,15 @@ import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Tuple, Any, List
+from typing import Any, Dict, Optional
 
-import torch
-import numpy as np
 import nltk
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException
-from fastapi.responses import StreamingResponse, Response
+import numpy as np
+import torch
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
-
 
 # =============================================================================
 # Phonemizer Abstraction
@@ -52,11 +51,11 @@ class GruutPhonemizer(Phonemizer):
         try:
             import gruut
             self.gruut = gruut
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
                 "gruut is required for the gruut phonemizer. "
                 "Install it with: pip install gruut"
-            )
+            ) from e
 
     def phonemize(self, text: str) -> str:
         """Convert text to IPA phonemes using gruut."""
@@ -91,16 +90,16 @@ class EspeakPhonemizer(Phonemizer):
                 words_mismatch='ignore'
             )
             self.phonemizer = phonemizer
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
                 "phonemizer is required for the espeak phonemizer. "
                 "Install it with: pip install phonemizer"
-            )
+            ) from e
         except Exception as e:
             raise RuntimeError(
                 f"Failed to initialize espeak backend: {e}. "
                 "Make sure espeak-ng is installed on your system."
-            )
+            ) from e
 
     def phonemize(self, text: str) -> str:
         """Convert text to IPA phonemes using espeak-ng."""
@@ -326,7 +325,7 @@ def get_model():
 
         except Exception as e:
             logger.error(f"Failed to load StyleTTS 2 model: {e}")
-            raise RuntimeError(f"Failed to load StyleTTS 2 model: {e}")
+            raise RuntimeError(f"Failed to load StyleTTS 2 model: {e}") from e
 
     return _styletts2_model
 
@@ -644,7 +643,9 @@ def fix_pronunciation(text: str) -> str:
     for word, replacement in PRONUNCIATION_FIXES.items():
         # Use word boundaries to match whole words only
         # Case-insensitive matching with a function to preserve case pattern
-        def replace_with_case(match: re.Match) -> str:
+        # Bind the loop variable at definition time (B023); the closure is
+        # only called within this iteration, but this makes that explicit.
+        def replace_with_case(match: re.Match, replacement: str = replacement) -> str:
             original = match.group(0)
             if original.isupper():
                 return replacement.upper()
@@ -1026,7 +1027,7 @@ async def tts_default_voice(
         embedding_scale_val = float(embedding_scale)
         speed_val = float(speed)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}") from e
 
     # Validate parameters
     if not 0 <= alpha_val <= 1:
@@ -1059,7 +1060,7 @@ async def tts_default_voice(
 
     except Exception as e:
         logger.error(f"TTS generation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}") from e
 
 
 @app.post("/tts_to_audio")
@@ -1089,7 +1090,7 @@ async def tts_to_audio(
         embedding_scale_val = float(embedding_scale)
         speed_val = float(speed)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}") from e
 
     # Validate parameters
     if not 0 <= alpha_val <= 1:
@@ -1137,7 +1138,7 @@ async def tts_to_audio(
         raise
     except Exception as e:
         logger.error(f"TTS generation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}") from e
 
     finally:
         # Clean up temp speaker file
@@ -1205,7 +1206,7 @@ async def _tts_with_path(
         raise
     except Exception as e:
         logger.error(f"TTS generation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}") from e
 
 
 @app.post("/tts")
@@ -1250,7 +1251,7 @@ async def tts_form(
         embedding_scale_val = float(embedding_scale)
         speed_val = float(speed)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}") from e
 
     return await _tts_with_path(
         text,

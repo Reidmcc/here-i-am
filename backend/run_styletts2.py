@@ -28,8 +28,8 @@ Once running, configure the main app with:
     STYLETTS2_API_URL=http://localhost:8021
 """
 
-import sys
 import os
+import sys
 
 # Add the backend directory to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -58,8 +58,8 @@ def check_dependencies():
 
     # Check StyleTTS 2 library
     try:
-        import styletts2
-        print(f"[OK] StyleTTS 2 library found")
+        import styletts2  # noqa: F401 -- probing importability
+        print("[OK] StyleTTS 2 library found")
     except ImportError:
         missing.append("styletts2")
         suggestions.append(
@@ -78,8 +78,8 @@ def check_dependencies():
 
     # Check phonemizer (required for StyleTTS 2)
     try:
-        import phonemizer
-        print(f"[OK] phonemizer found")
+        import phonemizer  # noqa: F401 -- probing importability
+        print("[OK] phonemizer found")
     except ImportError:
         missing.append("phonemizer")
         suggestions.append(
