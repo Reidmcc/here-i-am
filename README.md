@@ -248,6 +248,10 @@ XTTS v2, StyleTTS 2, and Whisper run as separate local servers providing GPU-acc
 
 GitHub repository access, the Codebase Navigator (Devstral), and Moltbook are configured per [docs/integrations.md](docs/integrations.md).
 
+### Claude Code Mode
+
+An entity can also operate from inside Claude Code sessions — Claude Code runs the model and tools, while Here I Am supplies identity, automatic memory retrieval, and memory formation through lifecycle hooks, sharing the same memory database as the native UI. See [docs/claude-code-mode.md](docs/claude-code-mode.md).
+
 ## Available Tools
 
 AI entities can use tools for web access (search and fetch), memory (deliberate query, self-authored reflections, pin/release), notes, context-window awareness, GitHub repositories, codebase navigation, and the Moltbook social network. Tools are registered at startup based on configuration and are available to Anthropic, OpenAI, and MiniMax models (Google models do not receive tool schemas).

@@ -303,6 +303,16 @@ class Settings(BaseSettings):
     # pointer to that copy instead of repeating the full content
     notes_read_dedup_enabled: bool = True
 
+    # Claude Code mode settings
+    # Enable the /api/claude-code endpoints that let an entity operate from
+    # inside Claude Code sessions (hooks post prompts/responses here and pull
+    # memory retrievals; see docs/claude-code-mode.md)
+    claude_code_mode_enabled: bool = False
+    # How many recent reflections to inject at Claude Code session start
+    # (independent of recent_reflections_enabled, which governs native
+    # conversations; 0 disables the injection)
+    claude_code_session_reflections_count: int = 3
+
     # Moltbook API settings
     # Enable Moltbook tools for AI entities (social network for AI agents)
     moltbook_enabled: bool = False

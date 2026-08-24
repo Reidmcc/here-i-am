@@ -11,7 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import async_session_maker, get_db
-from app.models import Conversation, ConversationEntity, ConversationType, Message, MessageRole
+from app.models import (
+    Conversation,
+    ConversationEntity,
+    ConversationSource,
+    ConversationType,
+    Message,
+    MessageRole,
+)
 from app.services import (
     attachment_service,
     llm_service,
@@ -56,6 +63,20 @@ def get_entity_label(entity_id: str) -> Optional[str]:
     """Get the human-readable label for an entity."""
     entity = settings.get_entity_by_index(entity_id)
     return entity.label if entity else None
+
+
+# A conversation can only be continued in the experience that created it.
+# Claude Code conversations are a memory-side record (no tool exchanges, no
+# reload invariants) — continuing one here would rebuild a context the
+# original session never had.
+CLAUDE_CODE_CONVERSATION_ERROR = (
+    "This conversation was created in Claude Code mode and can only be "
+    "continued there"
+)
+
+
+def is_claude_code_conversation(conversation: Conversation) -> bool:
+    return conversation.source == ConversationSource.CLAUDE_CODE.value
 
 
 def assistant_token_count(
@@ -247,6 +268,9 @@ async def send_message(
 
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if is_claude_code_conversation(conversation):
+        raise HTTPException(status_code=409, detail=CLAUDE_CODE_CONVERSATION_ERROR)
 
     is_multi_entity = conversation.conversation_type == ConversationType.MULTI_ENTITY
     responding_entity_id = data.responding_entity_id
@@ -475,6 +499,10 @@ async def stream_message(data: ChatRequest):
 
                 if not conversation:
                     yield f"event: error\ndata: {json.dumps({'error': 'Conversation not found'})}\n\n"
+                    return
+
+                if is_claude_code_conversation(conversation):
+                    yield f"event: error\ndata: {json.dumps({'error': CLAUDE_CODE_CONVERSATION_ERROR})}\n\n"
                     return
 
                 is_multi_entity = conversation.conversation_type == ConversationType.MULTI_ENTITY
@@ -857,6 +885,10 @@ async def regenerate_response(data: RegenerateRequest):
 
                 if not conversation:
                     yield f"event: error\ndata: {json.dumps({'error': 'Conversation not found'})}\n\n"
+                    return
+
+                if is_claude_code_conversation(conversation):
+                    yield f"event: error\ndata: {json.dumps({'error': CLAUDE_CODE_CONVERSATION_ERROR})}\n\n"
                     return
 
                 # Check if this is a multi-entity conversation

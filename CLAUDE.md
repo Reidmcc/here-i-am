@@ -38,7 +38,7 @@ backend/app/
 ├── config.py              # Pydantic Settings — single source of truth for env knobs
 ├── main.py                # FastAPI app, router includes, lifespan, presets endpoint
 ├── models/                # SQLAlchemy: conversation, message, conversation_entity, conversation_memory_link
-├── routes/                # chat, conversations, memories, entities, messages, tts, stt, github
+├── routes/                # chat, conversations, memories, entities, messages, tts, stt, github, claude_code
 └── services/
     ├── session_manager.py         # Orchestrator. process_message_stream has the agentic tool loop.
     ├── conversation_session.py    # Session dataclasses (in-memory, lost on restart)
@@ -54,6 +54,7 @@ backend/app/
     ├── notes_service.py / notes_tools.py
     ├── notes_vector_service.py    # Notes semantic indexing ("notes" namespace in entity indexes)
     ├── memory_tools.py            # memory_query, memory_save, memory_mark, memory_release tools
+    ├── claude_code_mode.py        # Claude Code mode: entity operates from CC sessions (hooks in claude-code-mode/)
     ├── context_tools.py           # context_status tool (context-window awareness)
     ├── codebase_navigator*        # Mistral Devstral integration (optional)
     ├── moltbook_*                 # AI social network (optional)
@@ -78,7 +79,7 @@ frontend/js/
 
 Modules don't import each other. The orchestrator injects DOM elements via `setElements()` and cross-module callbacks via `setCallbacks()`.
 
-Reference docs live in `docs/`: `tools.md` (tool catalog — update when adding/changing tools), `api.md` (endpoint listing), `local-services.md` (XTTS/StyleTTS 2/Whisper setup), `integrations.md` (GitHub/navigator/Moltbook setup). The README carries only summaries and links to these.
+Reference docs live in `docs/`: `tools.md` (tool catalog — update when adding/changing tools), `api.md` (endpoint listing), `local-services.md` (XTTS/StyleTTS 2/Whisper setup), `integrations.md` (GitHub/navigator/Moltbook setup), `claude-code-mode.md` (entity operating from inside Claude Code sessions). The README carries only summaries and links to these.
 
 ## Things that will bite you
 
@@ -103,7 +104,8 @@ Reference docs live in `docs/`: `tools.md` (tool catalog — update when adding/
     - `github_service.safe_repo_path` / `safe_git_ref` validate and percent-encode anything going into a GitHub API endpoint. httpx resolves `..` segments when it builds the URL, so an unvalidated path retargets the request at a *different repository* while still carrying this repo's token. `_request` re-checks every endpoint as a backstop.
     - `notes_service._resolve_note_path` requires a bare filename and verifies containment with `is_relative_to`. The old `str.startswith` check treated `/notes/Ada` as containing `/notes/Adam/...`, so a label that prefixed another entity's label reached its notes.
     - `web_tools._validate_fetch_url` restricts `web_fetch` to public http(s) addresses, revalidating each redirect hop and every request the Playwright browser makes (`_should_block_playwright_request` — subresources too, since page JS can `fetch()` a local address and render the reply into the DOM). The app's own API listens on localhost with no authentication and allows every origin, so an unrestricted fetcher is a read primitive over every conversation in the deployment.
-14. **The frontend renders model output as HTML** (`renderMarkdown` → `innerHTML`). `escapeHtml` escapes quotes as well as `& < >` because the result is interpolated into attribute values, and `isSafeLinkUrl` gates link schemes. The API has no auth and is served same-origin, so script execution there is equivalent to full API control. Never add a markdown rule that emits an attribute from unescaped input.
+14. **Claude Code conversations are records, not sessions.** `Conversation.source == "claude_code"` rows (written by the `/api/claude-code` endpoints, driven by hooks in `claude-code-mode/`) hold only HUMAN/ASSISTANT/REFLECTION messages and are never rebuilt into LLM context — Claude Code owns the transcript, keyed by `external_session_id`. The chat routes refuse to send/stream/regenerate into them, and the conversation-list empty cleanup exempts them (a registered session has no messages until its first prompt). None of the native reload/cache invariants apply to them, but their memories go through the same `store_memory` path, so both modes share one memory database.
+15. **The frontend renders model output as HTML** (`renderMarkdown` → `innerHTML`). `escapeHtml` escapes quotes as well as `& < >` because the result is interpolated into attribute values, and `isSafeLinkUrl` gates link schemes. The API has no auth and is served same-origin, so script execution there is equivalent to full API control. Never add a markdown rule that emits an attribute from unescaped input.
 
 ## Memory system
 
@@ -164,7 +166,7 @@ Everything lives in `backend/app/config.py` (`Settings`). Highlights:
 - `ANTHROPIC_API_KEY` is the only strictly required key. `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `MINIMAX_API_KEY` enable their providers.
 - `GITHUB_REPOS` — JSON array of `{owner, repo, label, token, protected_branches?, capabilities?, local_clone_path?, ...}`.
 - Default-on flags: `TOOLS_ENABLED`, `NOTES_ENABLED`, `ATTACHMENTS_ENABLED`, `MEMORY_ROLE_BALANCE_ENABLED`.
-- Default-off flags: `GITHUB_TOOLS_ENABLED`, `CODEBASE_NAVIGATOR_ENABLED`, `MOLTBOOK_ENABLED`, `XTTS_ENABLED`, `STYLETTS2_ENABLED`, `WHISPER_ENABLED`.
+- Default-off flags: `GITHUB_TOOLS_ENABLED`, `CODEBASE_NAVIGATOR_ENABLED`, `MOLTBOOK_ENABLED`, `XTTS_ENABLED`, `STYLETTS2_ENABLED`, `WHISPER_ENABLED`, `CLAUDE_CODE_MODE_ENABLED`.
 - TTS priority when multiple are enabled: StyleTTS 2 > XTTS > ElevenLabs.
 - Token budget: `context_token_limit=175000` (conversation history; retrieved memories are part of the history).
 - `DEFAULT_THINKING_EFFORT` (default `high`) — reasoning depth for models that expose one, used when an entity has no override. See "Thinking effort" below.

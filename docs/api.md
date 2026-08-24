@@ -31,6 +31,15 @@ The listing below covers the REST endpoints by resource.
 - `DELETE /api/chat/session/{id}` — close session
 - `GET /api/chat/config` — get default configuration and available models
 
+## Claude Code mode
+
+Called by Claude Code lifecycle hooks, not the frontend. Gated by
+`CLAUDE_CODE_MODE_ENABLED` (404 when off). See [claude-code-mode.md](claude-code-mode.md).
+
+- `POST /api/claude-code/session-start` — register a Claude Code session; returns the entity's identity/reflections context block (empty on resume)
+- `POST /api/claude-code/retrieve` — record a user prompt and run automatic memory retrieval; returns the memory context block
+- `POST /api/claude-code/log-assistant` — record the entity's final message of a turn (idempotent on `message_uuid`)
+
 ## Memories
 - `GET /api/memories/` — list memories (supports `entity_id` filter, sorting)
 - `GET /api/memories/{id}` — get specific memory
