@@ -29,13 +29,14 @@ from app.models import (
     Message,
     MessageRole,
 )
-from app.services import llm_service, memory_service
 
 # Import from split modules
 from app.services.attachment_service import build_persistable_content
 from app.services.context_tools import set_context_tool_session
 from app.services.conversation_session import ConversationSession, MemoryEntry
+from app.services.llm_service import llm_service
 from app.services.memory_context import format_memory_as_context_message
+from app.services.memory_service import memory_service
 from app.services.memory_tools import consume_last_query_memory_ids, set_memory_tool_context
 from app.services.notes_tools import (
     NOTE_IN_CONTEXT_MARKER,
