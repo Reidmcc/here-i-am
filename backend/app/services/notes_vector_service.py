@@ -308,7 +308,9 @@ class NotesVectorService:
         label_prefix = "shared" if shared else entity_label
         for file_info in listing["files"]:
             filename = file_info["filename"]
-            read = notes_service.read_note(entity_label, filename, shared=shared)
+            read = notes_service.read_note(
+                entity_label, filename, shared=shared, log_read=False
+            )
             if not read.get("success"):
                 summary["errors"].append(f"{label_prefix}/{filename}: {read.get('error')}")
                 continue
@@ -385,7 +387,9 @@ class NotesVectorService:
                 for file_info in listing["files"]:
                     filename = file_info["filename"]
                     current_files.add(filename)
-                    read = notes_service.read_note(entity_label, filename, shared=shared)
+                    read = notes_service.read_note(
+                        entity_label, filename, shared=shared, log_read=False
+                    )
                     if not read.get("success"):
                         summary["errors"].append(f"{scope_key}/{filename}: {read.get('error')}")
                         continue
