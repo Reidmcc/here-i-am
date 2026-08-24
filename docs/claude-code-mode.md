@@ -109,9 +109,13 @@ The integration has two channels:
   exist *only* for dedup; nothing ever re-inserts them into a context.
 - Session-start reflections follow the native recency-injection semantics:
   linked (for dedup) but no `times_retrieved` increment, so injections
-  don't inflate significance. Count is
-  `CLAUDE_CODE_SESSION_REFLECTIONS_COUNT` (default 3), independent of the
-  native `RECENT_REFLECTIONS_ENABLED` flag.
+  don't inflate significance. The count follows `RECENT_REFLECTIONS_COUNT`
+  (default 3) — the same knob the native first-turn injection uses — unless
+  `CLAUDE_CODE_SESSION_REFLECTIONS_COUNT` is set, which overrides it for
+  Claude Code sessions only. The native `RECENT_REFLECTIONS_ENABLED` flag
+  does *not* gate this: a Claude Code session start always injects, because
+  reflections are what survive compaction. To turn it off for this mode
+  only, set `CLAUDE_CODE_SESSION_REFLECTIONS_COUNT=0`.
 - On a plain resume (`session-start` for an already-known session) the
   identity block is *not* re-sent — the transcript already carries it.
 
@@ -182,7 +186,7 @@ files the native notes tools use:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `CLAUDE_CODE_MODE_ENABLED` | `false` | Gate for the `/api/claude-code` endpoints |
-| `CLAUDE_CODE_SESSION_REFLECTIONS_COUNT` | `3` | Recent reflections injected at session start (0 disables) |
+| `CLAUDE_CODE_SESSION_REFLECTIONS_COUNT` | follows `RECENT_REFLECTIONS_COUNT` | Override for the recent reflections injected at session start (0 disables) |
 | `CLAUDE_CODE_POST_COMPACT_REFLECTIONS_COUNT` | `10` | Recent reflections re-injected after compaction (0 disables) |
 
 Hook-side environment (set in `.claude/settings.json` `env`, which the

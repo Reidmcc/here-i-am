@@ -160,6 +160,10 @@ async def build_session_start_context(
     Build the context block the SessionStart hook injects: who the entity is,
     how this mode works, its notes index, and its most recent reflections.
 
+    The reflection count follows RECENT_REFLECTIONS_COUNT, the same knob the
+    native first-turn injection uses, unless
+    CLAUDE_CODE_SESSION_REFLECTIONS_COUNT overrides it for this mode.
+
     Reflections are linked (record_memory_link) so later retrieval in this
     conversation deduplicates against them, but — matching the native
     recency-injection semantics — times_retrieved is not incremented, so
@@ -206,7 +210,7 @@ async def build_session_start_context(
         db,
         conversation,
         entity,
-        count=settings.claude_code_session_reflections_count,
+        count=settings.get_claude_code_session_reflections_count(),
         exclude_current_conversation=True,
     )
     if reflections:

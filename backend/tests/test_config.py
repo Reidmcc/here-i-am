@@ -249,3 +249,39 @@ class TestSettings:
             )
             assert settings.recent_reflections_enabled is True
             assert settings.recent_reflections_count == 5
+
+    def test_claude_code_session_reflections_follow_recent_reflections_count(self):
+        """
+        Unset, the Claude Code session-start count follows
+        RECENT_REFLECTIONS_COUNT rather than a hardcoded 3.
+        """
+        import os
+
+        settings = Settings(anthropic_api_key="test-key", _env_file=None)
+        assert settings.claude_code_session_reflections_count is None
+        assert settings.get_claude_code_session_reflections_count() == 3
+
+        with patch.dict(os.environ, {"RECENT_REFLECTIONS_COUNT": "7"}):
+            settings = Settings(anthropic_api_key="test-key", _env_file=None)
+            assert settings.get_claude_code_session_reflections_count() == 7
+
+    def test_claude_code_session_reflections_count_overrides(self):
+        """
+        CLAUDE_CODE_SESSION_REFLECTIONS_COUNT still wins when set, including
+        0 (which disables the injection for Claude Code sessions only).
+        """
+        import os
+
+        with patch.dict(os.environ, {
+            "RECENT_REFLECTIONS_COUNT": "7",
+            "CLAUDE_CODE_SESSION_REFLECTIONS_COUNT": "2",
+        }):
+            settings = Settings(anthropic_api_key="test-key", _env_file=None)
+            assert settings.get_claude_code_session_reflections_count() == 2
+
+        with patch.dict(os.environ, {
+            "RECENT_REFLECTIONS_COUNT": "7",
+            "CLAUDE_CODE_SESSION_REFLECTIONS_COUNT": "0",
+        }):
+            settings = Settings(anthropic_api_key="test-key", _env_file=None)
+            assert settings.get_claude_code_session_reflections_count() == 0
