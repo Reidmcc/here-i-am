@@ -10,6 +10,12 @@ and the persistent record. Claude Code lifecycle hooks call the
 - prompt submit   -> automatic semantic retrieval, rendered as a context block
 - turn stop       -> the assistant's final message, persisted + vectorized
 
+Registration is lazy: session start only *builds* the context blocks (under
+the session's deterministic conversation id); the Conversation row is
+created by the first endpoint that records something. Claude Desktop fires
+SessionStart for background/utility sessions that never speak, and eager
+registration left a permanent empty row per firing.
+
 Conversations created here carry source="claude_code" and hold only
 HUMAN/ASSISTANT/REFLECTION rows. They are never rebuilt into LLM context
 (Claude Code owns the transcript), so none of the native reload/cache
@@ -20,10 +26,12 @@ database and retrieve each other's memories.
 """
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import EntityConfig, settings
@@ -89,6 +97,66 @@ def resolve_entity(identifier: Optional[str]) -> Optional[EntityConfig]:
     return None
 
 
+def conversation_id_for_session(external_session_id: str) -> str:
+    """
+    The deterministic conversation id for a Claude Code session.
+
+    Registration is lazy — session start hands the entity its
+    conversation_id (named in the memory-tool instructions) before any
+    Conversation row exists, and the row is only created by the first
+    endpoint that records something. Deriving the id from the session id
+    guarantees the lazily created row carries exactly the id already
+    injected into the session's context — and that a re-registration (e.g.
+    after the stale-empty sweep reclaimed an idle row) lands on the same id.
+    """
+    return str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"here-i-am:claude-code:{external_session_id}")
+    )
+
+
+# Reflections injected at session start before the conversation row exists,
+# keyed by the session's deterministic conversation id. Consumed by
+# ensure_conversation when it creates the row, recording the
+# ConversationMemoryLink dedup rows for exactly what was injected.
+# In-memory on purpose (same class of state as SessionManager._sessions): a
+# backend restart in between just means those reflections go unlinked, so
+# automatic retrieval may re-surface one — duplicated content at worst,
+# never hidden content. Bounded because sessions that never speak (the
+# background/utility kind that motivated lazy registration) stash and never
+# consume.
+_pending_reflection_links: Dict[str, Tuple[str, List[str]]] = {}
+_PENDING_REFLECTION_LINKS_MAX = 500
+
+
+def _stash_pending_reflection_links(
+    conversation_id: str, entity_index: str, message_ids: List[str]
+) -> None:
+    _pending_reflection_links.pop(conversation_id, None)
+    _pending_reflection_links[conversation_id] = (entity_index, list(message_ids))
+    while len(_pending_reflection_links) > _PENDING_REFLECTION_LINKS_MAX:
+        _pending_reflection_links.pop(next(iter(_pending_reflection_links)))
+
+
+async def _link_pending_reflections(
+    db: AsyncSession, conversation: Conversation, entity: EntityConfig
+) -> None:
+    """Record links for reflections injected at session start, now that the
+    conversation row they link to exists (see _pending_reflection_links)."""
+    pending = _pending_reflection_links.pop(conversation.id, None)
+    if not pending:
+        return
+    entity_index, message_ids = pending
+    if entity_index != entity.index_name:
+        return
+    for message_id in message_ids:
+        await memory_service.record_memory_link(
+            message_id=message_id,
+            conversation_id=conversation.id,
+            db=db,
+            entity_id=entity.index_name,
+        )
+
+
 async def get_conversation_for_session(
     db: AsyncSession,
     external_session_id: str,
@@ -112,9 +180,13 @@ async def ensure_conversation(
     """
     Find or create the conversation for a Claude Code session.
 
-    Returns (conversation, created). Any endpoint may be the first to see a
-    session (the backend can restart mid-session, so /retrieve or
-    /log-assistant can arrive before /session-start has run for it).
+    Returns (conversation, created). Registration is lazy: /session-start
+    never calls this (background/utility sessions fire SessionStart without
+    ever speaking), so the first endpoint that records something creates the
+    row — under the session's deterministic conversation id, which the
+    session-start context already named for the memory tools. Any endpoint
+    may be that first one (the backend can restart mid-session, so /retrieve
+    or /log-assistant can arrive before the backend has seen the session).
     """
     conversation = await get_conversation_for_session(db, external_session_id)
     if conversation is not None:
@@ -122,11 +194,12 @@ async def ensure_conversation(
 
     title = "Claude Code session"
     if cwd:
-        project = cwd.rstrip("/").rsplit("/", 1)[-1]
+        project = cwd.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         if project:
             title = f"Claude Code: {project}"
 
     conversation = Conversation(
+        id=conversation_id_for_session(external_session_id),
         title=title,
         conversation_type=ConversationType.NORMAL,
         llm_model_used="claude-code",
@@ -135,8 +208,18 @@ async def ensure_conversation(
         external_session_id=external_session_id,
     )
     db.add(conversation)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Two endpoints raced to register the session; the deterministic id
+        # turns that into an explicit collision — take the winner's row.
+        await db.rollback()
+        conversation = await get_conversation_for_session(db, external_session_id)
+        if conversation is None:
+            raise
+        return conversation, False
     await db.refresh(conversation)
+    await _link_pending_reflections(db, conversation, entity)
     logger.info(
         f"[CC MODE] Created conversation {conversation.id[:8]}... for "
         f"Claude Code session {external_session_id[:8]}... (entity={entity.index_name})"
@@ -157,7 +240,7 @@ async def get_entity_system_prompt(
 
 async def build_session_start_context(
     db: AsyncSession,
-    conversation: Conversation,
+    conversation_id: str,
     entity: EntityConfig,
 ) -> Tuple[str, str]:
     """
@@ -165,23 +248,27 @@ async def build_session_start_context(
     (context, bulk_context).
 
     context is the small always-inline block — identity framing, system
-    prompt, memory tool instructions (with this conversation's id), and
-    where the notes live on disk. It is sized to always fit Claude Code's
-    inline hook-output budget. bulk_context carries the heavy parts — the
-    notes indexes and recent reflections, which for a lived-in entity run
-    far past that budget. The hook prints both inline when they fit
-    together; otherwise it writes bulk_context to a file and prints a loud
-    pointer, because the harness alternative is silent truncation to a
-    2KB preview — an identity loss that doesn't announce itself.
+    prompt, memory tool instructions (with this session's deterministic
+    conversation id), and where the notes live on disk. It is sized to
+    always fit Claude Code's inline hook-output budget. bulk_context carries
+    the heavy parts — the notes indexes and recent reflections, which for a
+    lived-in entity run far past that budget. The hook prints both inline
+    when they fit together; otherwise it writes bulk_context to a file and
+    prints a loud pointer, because the harness alternative is silent
+    truncation to a 2KB preview — an identity loss that doesn't announce
+    itself.
+
+    No Conversation row exists yet (registration is lazy — see
+    ensure_conversation), so conversation_id is a bare id, and the
+    reflection dedup links can't be recorded here: the injected ids are
+    stashed for ensure_conversation to link when the row is created.
+    Matching the native recency-injection semantics, times_retrieved is
+    never incremented, so session-start injections don't inflate
+    significance.
 
     The reflection count follows RECENT_REFLECTIONS_COUNT, the same knob the
     native first-turn injection uses, unless
     CLAUDE_CODE_SESSION_REFLECTIONS_COUNT overrides it for this mode.
-
-    Reflections are linked (record_memory_link) so later retrieval in this
-    conversation deduplicates against them, but — matching the native
-    recency-injection semantics — times_retrieved is not incremented, so
-    session-start injections don't inflate significance.
     """
     parts: List[str] = []
     bulk_parts: List[str] = []
@@ -211,7 +298,7 @@ async def build_session_start_context(
             "(recall by chosen text), memory_save (save a reflection in your "
             "own words), memory_mark (pin against significance decay), and "
             "memory_release (withdraw from retrieval). Pass conversation_id "
-            f'"{conversation.id}" when calling them so they act on this '
+            f'"{conversation_id}" when calling them so they act on this '
             "session's conversation. Retrieved memories are labeled with "
             "where they were formed: \"via Here I Am\" (a native "
             "conversation) or \"via Claude Code\" (a session like this one)."
@@ -225,14 +312,19 @@ async def build_session_start_context(
     if notes_indexes:
         bulk_parts.append(notes_indexes)
 
-    reflections = await _inject_recent_reflections(
-        db,
-        conversation,
-        entity,
-        count=settings.get_claude_code_session_reflections_count(),
-        exclude_current_conversation=True,
-    )
+    count = settings.get_claude_code_session_reflections_count()
+    reflections: List[Dict[str, Any]] = []
+    if count > 0:
+        reflections = await memory_service.get_recent_reflections(
+            db,
+            entity_id=entity.index_name,
+            limit=count,
+            exclude_conversation_id=conversation_id,
+        )
     if reflections:
+        _stash_pending_reflection_links(
+            conversation_id, entity.index_name, [r["id"] for r in reflections]
+        )
         bulk_parts.append(
             "[RECENT REFLECTIONS] Reflections you saved recently:\n\n"
             + _render_reflections(reflections)
@@ -287,7 +379,6 @@ async def build_post_compact_context(
         conversation,
         entity,
         count=settings.claude_code_post_compact_reflections_count,
-        exclude_current_conversation=False,
     )
     if reflections:
         bulk_parts.append(
@@ -361,7 +452,6 @@ async def _inject_recent_reflections(
     conversation: Conversation,
     entity: EntityConfig,
     count: int,
-    exclude_current_conversation: bool,
 ) -> List[Dict[str, Any]]:
     """
     Fetch the entity's most recent reflections and record links for any not
@@ -369,10 +459,11 @@ async def _inject_recent_reflections(
     keeps automatic retrieval from re-surfacing them; times_retrieved stays
     untouched, matching native recency-injection semantics).
 
-    exclude_current_conversation is True for a fresh session (native rule:
-    reflections aren't retrievable where they were saved) and False after
-    compaction, where re-showing reflections saved earlier in this very
-    session is the point.
+    Post-compaction only — a fresh session has no conversation row yet, so
+    build_session_start_context stashes its injected ids for the lazy
+    registration to link instead. The current conversation is deliberately
+    NOT excluded here: re-showing reflections saved earlier in this very
+    session is the point of a pre-compaction save.
     """
     if count <= 0:
         return []
@@ -380,7 +471,6 @@ async def _inject_recent_reflections(
         db,
         entity_id=entity.index_name,
         limit=count,
-        exclude_conversation_id=conversation.id if exclude_current_conversation else None,
     )
     if not reflections:
         return []

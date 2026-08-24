@@ -8,7 +8,7 @@ feature gate, and the native-chat guard.
 """
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -117,9 +117,12 @@ class TestFeatureGate:
 
 
 class TestSessionStart:
-    async def test_creates_conversation_with_source_and_session_id(
+    async def test_returns_context_without_creating_conversation(
         self, async_client, db_session
     ):
+        """Registration is lazy: Claude Desktop fires SessionStart for
+        background/utility sessions that never speak, so no row may be
+        created until something is recorded."""
         session_id = str(uuid.uuid4())
         response = await async_client.post(
             "/api/claude-code/session-start",
@@ -133,7 +136,43 @@ class TestSessionStart:
         assert "Test Entity" in body["context"]
 
         result = await db_session.execute(
-            select(Conversation).where(Conversation.id == body["conversation_id"])
+            select(Conversation).where(
+                Conversation.external_session_id == session_id
+            )
+        )
+        assert result.scalar_one_or_none() is None
+
+        # The announced conversation id is deterministic, so a repeat firing
+        # (still unrecorded) hands out the same id and the same full context
+        again = await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": session_id, "cwd": "/home/user/my-project"},
+        )
+        assert again.json()["conversation_id"] == body["conversation_id"]
+        assert again.json()["created"] is True
+
+    async def test_first_prompt_registers_under_announced_id(
+        self, async_client, db_session
+    ):
+        session_id = str(uuid.uuid4())
+        started = await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": session_id, "cwd": "/home/user/my-project"},
+        )
+        announced_id = started.json()["conversation_id"]
+
+        retrieved = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": session_id,
+                "prompt": "hello",
+                "cwd": "/home/user/my-project",
+            },
+        )
+        assert retrieved.json()["conversation_id"] == announced_id
+
+        result = await db_session.execute(
+            select(Conversation).where(Conversation.id == announced_id)
         )
         conversation = result.scalar_one()
         assert conversation.source == ConversationSource.CLAUDE_CODE.value
@@ -141,12 +180,33 @@ class TestSessionStart:
         assert conversation.entity_id == "test-entity"
         assert conversation.title == "Claude Code: my-project"
 
+    async def test_windows_cwd_yields_project_title(self, async_client, db_session):
+        session_id = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": session_id,
+                "prompt": "hello",
+                "cwd": "C:\\Users\\someone\\my-project",
+            },
+        )
+        result = await db_session.execute(
+            select(Conversation).where(
+                Conversation.id == response.json()["conversation_id"]
+            )
+        )
+        assert result.scalar_one().title == "Claude Code: my-project"
+
     async def test_resume_returns_same_conversation_without_context(
         self, async_client
     ):
         session_id = str(uuid.uuid4())
-        first = await async_client.post(
+        await async_client.post(
             "/api/claude-code/session-start", json={"session_id": session_id}
+        )
+        first = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "hello"},
         )
         second = await async_client.post(
             "/api/claude-code/session-start",
@@ -185,8 +245,9 @@ class TestSessionStart:
         db_session.add(reflection)
         await db_session.commit()
 
+        session_id = str(uuid.uuid4())
         response = await async_client.post(
-            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+            "/api/claude-code/session-start", json={"session_id": session_id}
         )
         body = response.json()
         # Reflections ride in the bulk block (spilled to a file when large),
@@ -194,6 +255,19 @@ class TestSessionStart:
         assert "I keep returning to the idea of continuity." in body["bulk_context"]
         assert "I keep returning to the idea of continuity." not in body["context"]
 
+        # No row yet, so no links yet — they are stashed until the first
+        # recorded prompt lazily creates the conversation
+        result = await db_session.execute(
+            select(ConversationMemoryLink).where(
+                ConversationMemoryLink.conversation_id == body["conversation_id"]
+            )
+        )
+        assert result.scalars().all() == []
+
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "hello"},
+        )
         result = await db_session.execute(
             select(ConversationMemoryLink).where(
                 ConversationMemoryLink.conversation_id == body["conversation_id"]
@@ -469,6 +543,11 @@ class TestPostCompact:
             "/api/claude-code/session-start", json={"session_id": session_id}
         )
         conversation_id = started.json()["conversation_id"]
+        # First prompt registers the conversation (lazy registration)
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "hello"},
+        )
 
         # A reflection saved DURING this session (pre-compaction save)
         session_reflection = Message(
@@ -509,12 +588,53 @@ class TestPostCompact:
         await async_client.post(
             "/api/claude-code/session-start", json={"session_id": session_id}
         )
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "hello"},
+        )
         resumed = await async_client.post(
             "/api/claude-code/session-start",
             json={"session_id": session_id, "source": "resume"},
         )
         assert resumed.json()["context"] == ""
         assert resumed.json()["bulk_context"] == ""
+
+    async def test_resume_of_unrecorded_session_reserves_full_context(
+        self, async_client
+    ):
+        """A resume for a session with no row (it never spoke, or it ran
+        while the backend was down) re-serves the full identity block —
+        arriving twice beats never arriving."""
+        session_id = str(uuid.uuid4())
+        resumed = await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": session_id, "source": "resume"},
+        )
+        assert resumed.json()["created"] is True
+        assert "Test Entity" in resumed.json()["context"]
+
+    async def test_compact_on_unregistered_session_registers_it(
+        self, async_client, db_session, notes_dir
+    ):
+        """source "compact" implies a session with recorded history; if the
+        row is missing anyway, the compact registers it so the post-compact
+        block's reflection links have a home."""
+        session_id = str(uuid.uuid4())
+        compacted = await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": session_id, "source": "compact"},
+        )
+        body = compacted.json()
+        assert body["created"] is False
+        assert body["conversation_id"] in body["context"]
+        assert "My index: current projects." in body["bulk_context"]
+
+        result = await db_session.execute(
+            select(Conversation).where(
+                Conversation.external_session_id == session_id
+            )
+        )
+        assert result.scalar_one().id == body["conversation_id"]
 
     async def test_post_compact_reflection_count_knob(
         self, async_client, db_session, monkeypatch
@@ -574,6 +694,10 @@ class TestNotesSync:
         session_id = str(uuid.uuid4())
         started = await async_client.post(
             "/api/claude-code/session-start", json={"session_id": session_id}
+        )
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "hello"},
         )
         await self._drain_background()
         sync_spy.clear()
@@ -730,10 +854,16 @@ class TestMcpEndpoint:
     async def test_memory_save_creates_reflection(
         self, async_client, db_session, test_engine
     ):
+        session_id = str(uuid.uuid4())
         started = await async_client.post(
-            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+            "/api/claude-code/session-start", json={"session_id": session_id}
         )
         conversation_id = started.json()["conversation_id"]
+        # The row the tools act on is created by the first recorded prompt
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "hello"},
+        )
 
         maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
         with patch("app.services.claude_code_mcp.async_session_maker", maker), \
@@ -773,10 +903,15 @@ class TestMcpToolContext:
     ):
         from app.services import claude_code_mcp
 
+        session_id = str(uuid.uuid4())
         started = await async_client.post(
-            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+            "/api/claude-code/session-start", json={"session_id": session_id}
         )
         conversation_id = started.json()["conversation_id"]
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "hello"},
+        )
 
         maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
         with patch("app.services.claude_code_mcp.async_session_maker", maker):
@@ -917,16 +1052,19 @@ class TestConversationResponses:
         listed = {c["id"]: c for c in listing.json()}
         assert listed[conversation_id]["source"] == "claude_code"
 
-    async def test_empty_cc_conversation_survives_list_cleanup(
+    async def test_fresh_empty_cc_conversation_survives_list_cleanup(
         self, async_client, db_session
     ):
         # The list endpoint deletes message-less conversations, but a
-        # registered Claude Code session legitimately has none until its
-        # first prompt — it must not be swept
-        started = await async_client.post(
-            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        # freshly registered Claude Code session can legitimately have none
+        # (e.g. its only input so far was a bare slash command) — it must
+        # not be swept inside the retention window
+        session_id = str(uuid.uuid4())
+        registered = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "/compact"},
         )
-        conversation_id = started.json()["conversation_id"]
+        conversation_id = registered.json()["conversation_id"]
 
         await async_client.get("/api/conversations/")
 
@@ -934,6 +1072,97 @@ class TestConversationResponses:
             select(Conversation).where(Conversation.id == conversation_id)
         )
         assert result.scalar_one_or_none() is not None
+
+    async def test_stale_empty_cc_conversation_is_swept(
+        self, async_client, db_session
+    ):
+        # An empty claude_code row idle past the retention window is an
+        # abandoned registration (e.g. from before lazy registration) and
+        # gets cleaned up like any other empty conversation
+        stale = Conversation(
+            entity_id="test-entity",
+            source=ConversationSource.CLAUDE_CODE.value,
+            external_session_id=str(uuid.uuid4()),
+            created_at=datetime.utcnow() - timedelta(days=2),
+        )
+        db_session.add(stale)
+        await db_session.commit()
+
+        await async_client.get("/api/conversations/")
+
+        result = await db_session.execute(
+            select(Conversation).where(Conversation.id == stale.id)
+        )
+        assert result.scalar_one_or_none() is None
+
+
+class TestLazyRegistration:
+    def test_conversation_id_is_deterministic_per_session(self):
+        from app.services import claude_code_mode as cc_mode
+
+        session_id = str(uuid.uuid4())
+        first = cc_mode.conversation_id_for_session(session_id)
+        assert cc_mode.conversation_id_for_session(session_id) == first
+        assert cc_mode.conversation_id_for_session(str(uuid.uuid4())) != first
+        # Must be a valid uuid string (Conversation.id is String(36))
+        assert uuid.UUID(first)
+
+    def test_pending_reflection_links_registry_is_bounded(self, monkeypatch):
+        """Background sessions stash and never consume, so the registry must
+        not grow without bound over backend uptime."""
+        from app.services import claude_code_mode as cc_mode
+
+        monkeypatch.setattr(cc_mode, "_pending_reflection_links", {})
+        monkeypatch.setattr(cc_mode, "_PENDING_REFLECTION_LINKS_MAX", 3)
+        for i in range(5):
+            cc_mode._stash_pending_reflection_links(
+                f"conversation-{i}", "test-entity", [f"reflection-{i}"]
+            )
+        assert len(cc_mode._pending_reflection_links) == 3
+        # Oldest entries are the ones evicted
+        assert set(cc_mode._pending_reflection_links) == {
+            "conversation-2", "conversation-3", "conversation-4",
+        }
+
+    async def test_registration_without_stash_records_no_links(
+        self, async_client, db_session
+    ):
+        """A backend restart between session start and first prompt loses
+        the stash; registration still succeeds, just without the reflection
+        dedup links (duplicated injection at worst, never hidden content)."""
+        from app.services import claude_code_mode as cc_mode
+
+        other_conversation = Conversation(entity_id="test-entity")
+        db_session.add(other_conversation)
+        await db_session.commit()
+        db_session.add(Message(
+            conversation_id=other_conversation.id,
+            role=MessageRole.REFLECTION,
+            content="A reflection that predates the restart.",
+            speaker_entity_id="test-entity",
+        ))
+        await db_session.commit()
+
+        session_id = str(uuid.uuid4())
+        started = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": session_id}
+        )
+        conversation_id = started.json()["conversation_id"]
+        cc_mode._pending_reflection_links.clear()  # simulate restart
+
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "hello"},
+        )
+        assert response.status_code == 200
+        assert response.json()["conversation_id"] == conversation_id
+
+        result = await db_session.execute(
+            select(ConversationMemoryLink).where(
+                ConversationMemoryLink.conversation_id == conversation_id
+            )
+        )
+        assert result.scalars().all() == []
 
 
 class TestSafeTokenCount:

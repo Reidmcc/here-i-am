@@ -36,8 +36,8 @@ The listing below covers the REST endpoints by resource.
 Called by Claude Code lifecycle hooks, not the frontend. Gated by
 `CLAUDE_CODE_MODE_ENABLED` (404 when off). See [claude-code-mode.md](claude-code-mode.md).
 
-- `POST /api/claude-code/session-start` — register a Claude Code session; returns the entity's identity/reflections context block (empty on resume)
-- `POST /api/claude-code/retrieve` — record a user prompt and run automatic memory retrieval; returns the memory context block
+- `POST /api/claude-code/session-start` — returns the entity's identity/reflections context block for a starting session (empty on resume); does not create the conversation row (registration is lazy)
+- `POST /api/claude-code/retrieve` — record a user prompt (registering the session's conversation on first contact) and run automatic memory retrieval; returns the memory context block
 - `POST /api/claude-code/log-assistant` — record the entity's final message of a turn (idempotent on `message_uuid`)
 - `POST /api/claude-code/session-end` — session ended; re-indexes the entity's notes into the semantic mirror (background)
 - `POST /mcp` — MCP streamable-HTTP endpoint (stateless JSON-RPC) exposing the entity's memory tools (`memory_query`, `memory_save`, `memory_mark`, `memory_release`) to Claude Code sessions

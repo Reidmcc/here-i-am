@@ -24,12 +24,15 @@ The integration has two channels:
 
 1. **Lifecycle hooks** (deterministic — they restore the automatics without
    relying on the model to remember tool calls):
-   - `SessionStart` → `POST /api/claude-code/session-start` — registers the
-     session as a conversation and injects the entity's identity block:
-     a short framing, the entity's system prompt (from `EntitySetting`,
-     same source of truth as native mode), the memory-tool instructions,
-     the notes paths, and — via the bulk channel (see "Hook output limits"
-     below) — the notes indexes and its most recent reflections.
+   - `SessionStart` → `POST /api/claude-code/session-start` — injects the
+     entity's identity block: a short framing, the entity's system prompt
+     (from `EntitySetting`, same source of truth as native mode), the
+     memory-tool instructions, the notes paths, and — via the bulk channel
+     (see "Hook output limits" below) — the notes indexes and its most
+     recent reflections. It does **not** create the conversation row;
+     registration is lazy (see "Conversations" below), because Claude
+     Desktop fires SessionStart for background/utility sessions that never
+     speak.
    - `UserPromptSubmit` → `POST /api/claude-code/retrieve` — records the
      prompt (persisted + vectorized as `role="human"`) and runs the
      automatic retrieval pipeline; the hook's stdout injects the rendered
@@ -109,11 +112,27 @@ A lived-in entity's session-start payload (index.md + reflections) runs to
 - Claude Code conversations carry `Conversation.source = "claude_code"` and
   `external_session_id` = the Claude Code session ID (unique). Hooks key
   every post on the session ID, which makes them idempotent and safe to
-  arrive out of order (any endpoint creates the conversation if the backend
-  hasn't seen the session — e.g. after a mid-session backend restart).
-  `claude --resume` keeps the session ID, so a resumed session lands in the
-  same conversation; `/clear` issues a new session ID and therefore a new
-  conversation.
+  arrive out of order (any endpoint that records content creates the
+  conversation if the backend hasn't seen the session — e.g. after a
+  mid-session backend restart). `claude --resume` keeps the session ID, so
+  a resumed session lands in the same conversation; `/clear` issues a new
+  session ID and therefore a new conversation.
+- **Registration is lazy.** `session-start` builds the identity context but
+  never creates the row — Claude Desktop fires SessionStart for
+  background/utility sessions that never send a prompt, and eager
+  registration left a permanent empty conversation per firing. The
+  conversation id is deterministic (`uuid5` of the session ID,
+  `conversation_id_for_session`), so the identity block can name it for
+  the MCP memory tools before the row exists; the first recorded prompt
+  (or assistant turn, or a post-compact registration) creates the row
+  under exactly that id. The conversation-list empty cleanup gives
+  `claude_code` rows a 24h retention window (`CLAUDE_CODE_EMPTY_RETENTION`
+  in `routes/conversations.py`) instead of the immediate sweep native
+  empties get: a fresh empty row can belong to a live session whose only
+  input so far was a bare slash command, but one idle past the window is
+  an abandoned registration (including pre-lazy-registration legacy rows).
+  A swept session that later speaks re-registers under the same
+  deterministic id, so the id in its injected context stays valid.
 - **A conversation can only be continued in the experience that created
   it.** The chat routes refuse to send/stream/regenerate into a
   `claude_code` conversation (the UI shows it as a read-only record); the
@@ -147,15 +166,23 @@ A lived-in entity's session-start payload (index.md + reflections) runs to
   exist *only* for dedup; nothing ever re-inserts them into a context.
 - Session-start reflections follow the native recency-injection semantics:
   linked (for dedup) but no `times_retrieved` increment, so injections
-  don't inflate significance. The count follows `RECENT_REFLECTIONS_COUNT`
+  don't inflate significance. Because no row exists at session start, the
+  injected ids are stashed in a bounded in-memory registry and the links
+  are recorded when the first recorded prompt creates the row; a backend
+  restart in between loses the stash, degrading to duplicated injection at
+  worst (a reflection re-surfacing via retrieval), never hidden content.
+  The count follows `RECENT_REFLECTIONS_COUNT`
   (default 3) — the same knob the native first-turn injection uses — unless
   `CLAUDE_CODE_SESSION_REFLECTIONS_COUNT` is set, which overrides it for
   Claude Code sessions only. The native `RECENT_REFLECTIONS_ENABLED` flag
   does *not* gate this: a Claude Code session start always injects, because
   reflections are what survive compaction. To turn it off for this mode
   only, set `CLAUDE_CODE_SESSION_REFLECTIONS_COUNT=0`.
-- On a plain resume (`session-start` for an already-known session) the
-  identity block is *not* re-sent — the transcript already carries it.
+- On a plain resume (`session-start` for a session that already has a
+  conversation) the identity block is *not* re-sent — the transcript
+  already carries it. A resume of a session with no row (it never spoke, or
+  it ran while the backend was down) gets the full block again: arriving
+  twice beats never arriving.
 
 ### Compaction survival
 
@@ -237,15 +264,20 @@ hook stdout before bulk content is spilled to a file; default 18000).
 ### Endpoints
 
 All under `/api/claude-code`, all gated by `CLAUDE_CODE_MODE_ENABLED`
-(404 when off), all creating the session's conversation on first contact:
+(404 when off). `/retrieve` and `/log-assistant` create the session's
+conversation on first contact; `/session-start` and `/session-end` never do
+(lazy registration — see "Conversations"):
 
 - `POST /session-start` `{session_id, entity?, cwd?, source?}` →
   `{conversation_id, entity_id, entity_label, created, context,
-  bulk_context}` — full context when `created` (fresh session), the
-  post-compaction context when `source` is `"compact"`, both empty on a
-  plain resume. `context` is the small always-inline block; `bulk_context`
-  (notes indexes + reflections) is what the hook spills to a file when the
-  combined output would exceed the inline budget.
+  bulk_context}` — full context when `created` (no conversation recorded
+  for this session yet; `conversation_id` is the deterministic id the lazy
+  registration will use), the post-compaction context when `source` is
+  `"compact"` (which registers the conversation if its row is somehow
+  missing), both empty on a plain resume. `context` is the small
+  always-inline block; `bulk_context` (notes indexes + reflections) is what
+  the hook spills to a file when the combined output would exceed the
+  inline budget.
 - `POST /session-end` `{session_id, entity?, reason?}` →
   `{conversation_id, notes_sync_started}` — final fire-and-forget notes
   sync; does not create a conversation for an unseen session.
