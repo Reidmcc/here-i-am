@@ -1,4 +1,5 @@
 from app.routes.chat import router as chat_router
+from app.routes.claude_code import mcp_router as claude_code_mcp_router
 from app.routes.claude_code import router as claude_code_router
 from app.routes.conversations import router as conversations_router
 from app.routes.entities import router as entities_router
@@ -9,4 +10,4 @@ from app.routes.notes import router as notes_router
 from app.routes.stt import router as stt_router
 from app.routes.tts import router as tts_router
 
-__all__ = ["conversations_router", "chat_router", "claude_code_router", "memories_router", "entities_router", "messages_router", "tts_router", "github_router", "stt_router", "notes_router"]
+__all__ = ["conversations_router", "chat_router", "claude_code_router", "claude_code_mcp_router", "memories_router", "entities_router", "messages_router", "tts_router", "github_router", "stt_router", "notes_router"]

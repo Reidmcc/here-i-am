@@ -14,11 +14,13 @@ session to a plain one rather than breaking it.
 See docs/claude-code-mode.md for the full design.
 """
 
+import json
 import logging
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,9 +28,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import EntityConfig, settings
 from app.database import get_db
 from app.models import Message, MessageRole
+from app.services import claude_code_mcp
 from app.services import claude_code_mode as cc
 
 router = APIRouter(prefix="/api/claude-code", tags=["claude-code"])
+
+# The MCP transport lives at /mcp (no /api prefix — it is the URL Claude
+# Code's .mcp.json points at, not a frontend API)
+mcp_router = APIRouter(tags=["claude-code-mcp"])
 
 logger = logging.getLogger(__name__)
 
@@ -231,3 +238,60 @@ async def log_assistant(
         message_id=str(assistant_msg.id),
         deduplicated=False,
     )
+
+
+@mcp_router.post("/mcp")
+async def mcp_endpoint(request: Request):
+    """
+    MCP streamable-HTTP transport (stateless, JSON responses).
+
+    Claude Code connects here via the plugin's .mcp.json to reach the
+    entity's deliberate memory tools. Each POST carries one JSON-RPC
+    message (or, on pre-2025-06-18 protocol versions, a batch);
+    notifications are acknowledged with 202 and no body. See
+    services/claude_code_mcp.py for the protocol handling.
+    """
+    _require_enabled()
+
+    try:
+        body = json.loads(await request.body())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": claude_code_mcp.PARSE_ERROR, "message": "Parse error"},
+            },
+        )
+
+    if isinstance(body, list):
+        # JSON-RPC batch (allowed before protocol 2025-06-18)
+        responses = []
+        for message in body:
+            response = await claude_code_mcp.handle_jsonrpc_message(message)
+            if response is not None:
+                responses.append(response)
+        if not responses:
+            return Response(status_code=202)
+        return JSONResponse(content=responses)
+
+    response = await claude_code_mcp.handle_jsonrpc_message(body)
+    if response is None:
+        # Notification: acknowledged, no body
+        return Response(status_code=202)
+    return JSONResponse(content=response)
+
+
+@mcp_router.get("/mcp")
+async def mcp_get():
+    """No server-initiated stream is offered (stateless server)."""
+    _require_enabled()
+    return Response(status_code=405, headers={"Allow": "POST"})
+
+
+@mcp_router.delete("/mcp")
+async def mcp_delete():
+    """No sessions to terminate (stateless server)."""
+    _require_enabled()
+    return Response(status_code=405, headers={"Allow": "POST"})

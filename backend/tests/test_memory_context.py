@@ -64,6 +64,29 @@ class TestFormatMemoryAsContextMessage:
         assert "is_memory" in result
         assert "memory_id" in result
 
+    def test_native_origin_label_is_default(self):
+        """Origin defaults to native and renders as 'via Here I Am'."""
+        result = format_memory_as_context_message(
+            memory_id="mem-3",
+            content="Content",
+            created_at="2024-01-01",
+            role="assistant",
+        )
+        assert "via Here I Am" in result["content"]
+        assert "via Claude Code" not in result["content"]
+
+    def test_claude_code_origin_label(self):
+        """A claude_code-origin memory is labeled 'via Claude Code'."""
+        result = format_memory_as_context_message(
+            memory_id="mem-4",
+            content="Content",
+            created_at="2024-01-01",
+            role="human",
+            origin="claude_code",
+        )
+        assert "via Claude Code" in result["content"]
+        assert "via Here I Am" not in result["content"]
+
 
 # ============================================================
 # Tests for MemoryContextTracker

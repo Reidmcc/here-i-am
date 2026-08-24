@@ -16,25 +16,43 @@ from typing import Any, Dict, List, Set, Tuple
 logger = logging.getLogger(__name__)
 
 
+def format_memory_origin(origin: str) -> str:
+    """
+    Human-readable provenance label for the experience a memory was formed
+    in: a native Here I Am conversation or a Claude Code mode session.
+    Shared by the memory markers below and memory_query tool output so the
+    entity sees one consistent vocabulary.
+    """
+    if origin == "claude_code":
+        return "via Claude Code"
+    return "via Here I Am"
+
+
 def format_memory_as_context_message(
     memory_id: str,
     content: str,
     created_at: str,
     role: str,
+    origin: str = "native",
 ) -> Dict[str, Any]:
     """
     Format a memory as a user message for insertion into conversation context.
-    
+
     Memories are inserted as user-role messages with special markers so they
     can be identified and tracked. The format makes it clear to the AI that
     this is remembered content from a previous conversation.
-    
+
     Args:
         memory_id: The unique ID of the memory
         content: The memory content (original message text)
         created_at: ISO format timestamp of when the original message was created
         role: The original role of the message ("human" or "assistant")
-    
+        origin: Which experience the memory was formed in ("native" or
+                "claude_code"), from the memory's conversation row. Rendered
+                into the marker; the reload path resolves the same value from
+                the database, so live and reloaded markers stay identical
+                (prompt-cache stability).
+
     Returns:
         Dict formatted as a conversation context message with memory metadata
     """
@@ -49,7 +67,11 @@ def format_memory_as_context_message(
     else:
         role_label = f"originally from {role}"
     short_id = memory_id[:8]
-    formatted_content = f"[MEMORY {short_id} from {created_at} - {role_label}]\n{content}\n[/MEMORY]"
+    origin_label = format_memory_origin(origin)
+    formatted_content = (
+        f"[MEMORY {short_id} from {created_at} - {role_label} - {origin_label}]\n"
+        f"{content}\n[/MEMORY]"
+    )
     
     return {
         "role": "user",

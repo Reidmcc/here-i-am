@@ -40,11 +40,25 @@ The integration has two channels:
    plugin) and **fail soft**: backend down or mode disabled means a plain
    Claude Code session, mirroring "memory is optional".
 
-2. **MCP tools** (deliberate acts — Phase 2, not yet implemented): the
-   entity's `memory_query` / `memory_save` / `memory_mark` /
-   `memory_release` exposed over a streamable-HTTP MCP endpoint mounted in
-   the backend app. Notes, git, and web tools are *not* exposed — Claude
-   Code's native tools cover them.
+2. **MCP tools** (deliberate acts): the entity's `memory_query` /
+   `memory_save` / `memory_mark` / `memory_release`, served at `POST /mcp`
+   as a stateless streamable-HTTP MCP endpoint (the plugin's `.mcp.json`
+   points Claude Code at it). The transport is a small in-repo JSON-RPC
+   handler (`services/claude_code_mcp.py` + `routes/claude_code.py`) rather
+   than the MCP SDK, whose dependency floor conflicts with the repo's
+   pinned FastAPI/starlette/httpx; stateless JSON responses are a compliant
+   subset of the transport. The MCP tool variants take an extra
+   `conversation_id` parameter (required for `memory_save`) — the
+   session-start identity block tells the entity its conversation's ID.
+   The entity is resolved from that conversation; passing a *native*
+   conversation ID is refused (reflections and query links must not land on
+   conversations with reload/cache invariants). Unlike native
+   `memory_query`, query results here **are** linked
+   (`ConversationMemoryLink`): Claude Code conversations are never rebuilt
+   into context, so the link is purely the dedup record that keeps
+   automatic retrieval and later queries from re-surfacing them. Notes,
+   git, and web tools are *not* exposed — Claude Code's native tools cover
+   them.
 
 ### Conversations
 
@@ -94,6 +108,16 @@ The integration has two channels:
   native `RECENT_REFLECTIONS_ENABLED` flag.
 - On resume/compact (`session-start` for an already-known session) the
   identity block is *not* re-sent — the transcript already carries it.
+- **Provenance labels:** every retrieved memory is labeled with the
+  experience it was formed in — `via Here I Am` (native conversation) or
+  `via Claude Code` — in `[MEMORY]` markers and `memory_query` output alike.
+  The label derives from the memory's conversation row
+  (`Conversation.source`, joined in `get_full_memory_content` /
+  `get_recent_reflections`), not from Pinecone metadata, so it covers
+  memories formed before the column existed. The reload path resolves the
+  same value, keeping live and reloaded markers byte-identical
+  (prompt-cache stable); the format change itself is a one-time cache bust
+  for conversations reloaded across the upgrade.
 
 ### Configuration
 
@@ -122,6 +146,10 @@ All under `/api/claude-code`, all gated by `CLAUDE_CODE_MODE_ENABLED`
   idempotent on `message_uuid` (the transcript entry's UUID becomes the
   Message row's primary key).
 
+Plus `POST /mcp` (no `/api` prefix — it is the MCP server URL): stateless
+JSON-RPC handling `initialize`, `ping`, `tools/list`, and `tools/call`;
+notifications get `202`, `GET`/`DELETE` get `405`.
+
 ### Scope and non-goals
 
 - **Local sessions only** for now: the endpoints are as unauthenticated as
@@ -144,11 +172,14 @@ installation (manual `settings.json` or plugin) and requirements.
 
 ## Phasing
 
-- **Phase 1 (this)**: schema (`source`, `external_session_id`), the three
+- **Phase 1 (done)**: schema (`source`, `external_session_id`), the three
   endpoints, hook scripts, native-side guard, `source` in conversation
   responses.
-- **Phase 2**: MCP adapter exposing the memory tools (requires refactoring
-  `memory_tools`' module-global context to per-request context).
+- **Phase 2 (done)**: MCP endpoint exposing the memory tools (the
+  `memory_tools` module-global context became an explicit
+  `MemoryToolContext` — the native tool loop keeps a module-level current
+  context, the MCP path builds one per request), plus memory provenance
+  labels (`via Here I Am` / `via Claude Code`) on all retrieved memories.
 - **Phase 3**: polish — PreCompact reflection nudge, optional notes
   bridging, frontend source badge / read-only transcript view, session-end
   digest as an alternative memory granularity.

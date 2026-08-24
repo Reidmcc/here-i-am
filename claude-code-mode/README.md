@@ -16,6 +16,13 @@ Three lifecycle hooks call the backend's `/api/claude-code` endpoints:
 All hooks fail soft: if the backend is down or the mode is disabled, the
 session continues as a plain Claude Code session.
 
+An MCP server (`.mcp.json`, pointing at `http://localhost:8000/mcp`) gives
+the entity its deliberate memory tools in the session: `memory_query`,
+`memory_save`, `memory_mark`, `memory_release`. The session-start context
+tells the entity the `conversation_id` to pass so the tools act on this
+session's conversation. Notes and git tools are not exposed — Claude Code's
+native tools cover them.
+
 ## Requirements
 
 - The Here I Am backend running locally (`cd backend && ./start.sh`) with
@@ -28,7 +35,9 @@ session continues as a plain Claude Code session.
 ## Setup (manual hooks)
 
 Add to the project's `.claude/settings.json` (or `~/.claude/settings.json`
-to enable it everywhere), with `/path/to/here-i-am` replaced:
+to enable it everywhere), with `/path/to/here-i-am` replaced. For the memory
+tools, also copy this directory's `.mcp.json` into the project root (or add
+the `here-i-am` server to an existing one):
 
 ```json
 {

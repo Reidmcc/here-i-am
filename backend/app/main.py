@@ -13,6 +13,7 @@ from app.config import settings
 from app.database import init_db
 from app.routes import (
     chat_router,
+    claude_code_mcp_router,
     claude_code_router,
     conversations_router,
     entities_router,
@@ -160,6 +161,7 @@ app.include_router(github_router)
 app.include_router(stt_router)
 app.include_router(notes_router)
 app.include_router(claude_code_router)
+app.include_router(claude_code_mcp_router)
 
 # Serve static frontend files
 frontend_path = Path(__file__).parent.parent.parent / "frontend"

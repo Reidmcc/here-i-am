@@ -361,6 +361,7 @@ class SessionManager:
                     content=mem_data["content"],
                     created_at=mem_data["created_at"],
                     times_retrieved=mem_data["times_retrieved"],
+                    origin=mem_data.get("source", "native"),
                 )
 
         session.retrieved_ids = retrieved_ids
@@ -442,6 +443,7 @@ class SessionManager:
                         content=memory.content,
                         created_at=memory.created_at,
                         role=memory.role,
+                        origin=memory.origin,
                     )
                     insertion_point = len(session.conversation_context)
                     session.conversation_context.append(memory_message)
@@ -544,6 +546,7 @@ class SessionManager:
                 content=memory.content,
                 created_at=memory.created_at,
                 role=memory.role,
+                origin=memory.origin,
             )
             insertion_point = len(session.conversation_context)
             session.conversation_context.append(memory_message)
@@ -843,6 +846,7 @@ class SessionManager:
                     days_since_creation=days_since_creation,
                     days_since_retrieval=days_since_retrieval,
                     source="recent_reflection",
+                    origin=mem_data.get("source", "native"),
                 )
 
                 added, is_new_retrieval = session.insert_memory_into_context(memory)
@@ -1103,6 +1107,7 @@ class SessionManager:
                     days_since_creation=item["days_since_creation"],
                     days_since_retrieval=item["days_since_retrieval"],
                     source=item["source"],
+                    origin=mem_data.get("source", "native"),
                 )
 
                 added, is_new_retrieval = session.insert_memory_into_context(memory)
@@ -1534,6 +1539,7 @@ class SessionManager:
                     days_since_creation=item["days_since_creation"],
                     days_since_retrieval=item["days_since_retrieval"],
                     source=item["source"],
+                    origin=mem_data.get("source", "native"),
                 )
 
                 added, is_new_retrieval = session.insert_memory_into_context(memory)

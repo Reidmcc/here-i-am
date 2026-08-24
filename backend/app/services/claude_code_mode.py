@@ -173,6 +173,19 @@ async def build_session_start_context(
     if system_prompt and system_prompt.strip():
         parts.append(system_prompt.strip())
 
+    if memory_service.is_configured(entity_id=entity.index_name):
+        parts.append(
+            "[HERE I AM MEMORY TOOLS] When the here-i-am MCP server is "
+            "connected, you also have deliberate memory tools: memory_query "
+            "(recall by chosen text), memory_save (save a reflection in your "
+            "own words), memory_mark (pin against significance decay), and "
+            "memory_release (withdraw from retrieval). Pass conversation_id "
+            f'"{conversation.id}" when calling them so they act on this '
+            "session's conversation. Retrieved memories are labeled with "
+            "where they were formed: \"via Here I Am\" (a native "
+            "conversation) or \"via Claude Code\" (a session like this one)."
+        )
+
     reflections = await _session_start_reflections(db, conversation, entity)
     if reflections:
         rendered = "\n\n".join(
@@ -181,6 +194,7 @@ async def build_session_start_context(
                 content=r["content"],
                 created_at=r["created_at"],
                 role=r["role"],
+                origin=r.get("source", "native"),
             )["content"]
             for r in reflections
         )
@@ -339,6 +353,7 @@ async def retrieve_for_prompt(
             content=item["mem_data"]["content"],
             created_at=item["mem_data"]["created_at"],
             role=item["mem_data"]["role"],
+            origin=item["mem_data"].get("source", "native"),
         )["content"]
         for item in selected
     )

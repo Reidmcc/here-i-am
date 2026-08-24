@@ -13,18 +13,27 @@ by semantic similarity. However, it still updates retrieval tracking
 (times_retrieved, last_retrieved_at) so that intentional attention
 influences future automatic recall.
 
-Tools are registered via register_memory_tools() called from services/__init__.py.
+The tool implementations take an explicit MemoryToolContext, so they serve
+two callers:
+- The native tool loop registers thin wrappers (register_memory_tools) that
+  read a module-level current context, set per turn via
+  set_memory_tool_context — one live session drives one turn at a time.
+- Claude Code mode's MCP endpoint builds a fresh context per request
+  (services/claude_code_mcp.py), where concurrent calls with different
+  conversations are possible and module globals would race.
 """
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Any, List, Optional, Set, Tuple
 
 from sqlalchemy import select
 
 from app.config import settings
 from app.database import async_session_maker
 from app.models import Conversation, Message, MessageRole
+from app.services.memory_context import format_memory_origin
 from app.services.memory_service import VALID_ROLE_FILTERS, memory_service
 from app.services.tool_service import ToolCategory, ToolService
 
@@ -44,36 +53,66 @@ SOURCE_ALL = "all"
 VALID_QUERY_SOURCES = (SOURCE_ALL,) + tuple(VALID_ROLE_FILTERS)
 
 
-# Track entity context for memory queries (set by session manager before tool execution)
-_current_entity_id: Optional[str] = None
-_current_conversation_id: Optional[str] = None
-# The active ConversationSession, used to exclude memories already in context
-# from memory_query results. Optional so the tools still work without a session.
-_current_session = None
-# Memory IDs surfaced by memory_query calls in the current turn. Tool results
-# are folded into the conversation context only when the turn's exchange is
-# added at the end of the tool loop, so without this a second memory_query in
-# the same turn could return memories the entity is already looking at in an
-# earlier tool result.
-_turn_query_memory_ids: set = set()
-# IDs surfaced by the most recent memory_query call. The session manager's
-# tool loop consumes these to stamp them onto the tool_result context message
-# (memory_query_ids), which is what makes them visible to context-level dedup
-# on later turns and after a session reload.
-_last_query_memory_ids: list = []
+@dataclass
+class MemoryToolContext:
+    """
+    Per-request execution context for the memory tools.
+
+    Attributes:
+        entity_id: Pinecone index name of the entity acting.
+        conversation_id: The conversation the tool call belongs to (excluded
+            from query results; reflections are saved onto it).
+        session: The live ConversationSession, if any — used to exclude
+            memories already visible in the native conversation context.
+        turn_query_memory_ids: Memory IDs surfaced by memory_query calls in
+            the current turn. Tool results are folded into the conversation
+            context only when the turn's exchange is added at the end of the
+            tool loop, so without this a second memory_query in the same turn
+            could return memories the entity is already looking at in an
+            earlier tool result.
+        last_query_memory_ids: IDs surfaced by the most recent memory_query
+            call. The session manager's tool loop consumes these to stamp
+            them onto the tool_result context message (memory_query_ids),
+            which is what makes them visible to context-level dedup on later
+            turns and after a session reload.
+        extra_exclude_ids: Additional memory IDs to exclude from query
+            results. Claude Code mode passes the conversation's
+            ConversationMemoryLink set here (its equivalent of "already in
+            context").
+        link_query_results: Record a ConversationMemoryLink for each query
+            result. False for native conversations — links drive
+            session-reload re-insertion of memories into the rebuilt context,
+            so linking query results would inject them mid-history and bust
+            the prompt cache. True for Claude Code conversations, which are
+            never rebuilt: there the link is purely the dedup record that
+            keeps automatic retrieval and later queries from re-surfacing
+            what a query already showed.
+    """
+    entity_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    session: Any = None
+    turn_query_memory_ids: Set[str] = field(default_factory=set)
+    last_query_memory_ids: List[str] = field(default_factory=list)
+    extra_exclude_ids: Set[str] = field(default_factory=set)
+    link_query_results: bool = False
+
+
+# Current context for the native tool loop (set by the session manager before
+# tool execution; one live session drives one turn at a time)
+_context = MemoryToolContext()
 
 
 def set_memory_tool_context(entity_id: str, conversation_id: str, session=None) -> None:
     """Set the entity, conversation, and session context for memory tool execution."""
-    global _current_entity_id, _current_conversation_id, _current_session
-    global _turn_query_memory_ids, _last_query_memory_ids
-    _current_entity_id = entity_id
-    _current_conversation_id = conversation_id
-    _current_session = session
+    global _context
     # New turn: previous turns' memory_query results are now tracked on their
-    # tool_result context messages, so the turn-level accumulator resets.
-    _turn_query_memory_ids = set()
-    _last_query_memory_ids = []
+    # tool_result context messages, so the turn-level accumulator resets
+    # (a fresh context starts with empty accumulators).
+    _context = MemoryToolContext(
+        entity_id=entity_id,
+        conversation_id=conversation_id,
+        session=session,
+    )
     logger.debug(f"Memory tools: context set to entity_id='{entity_id}', conversation_id='{conversation_id}'")
 
 
@@ -84,33 +123,34 @@ def consume_last_query_memory_ids() -> list:
     executing a memory_query, to stamp the IDs onto that call's tool_result
     context message.
     """
-    global _last_query_memory_ids
-    ids = _last_query_memory_ids
-    _last_query_memory_ids = []
+    ids = _context.last_query_memory_ids
+    _context.last_query_memory_ids = []
     return ids
 
 
 def get_memory_tool_context() -> tuple[Optional[str], Optional[str]]:
     """Get the current entity and conversation context for tool execution."""
-    return _current_entity_id, _current_conversation_id
+    return _context.entity_id, _context.conversation_id
 
 
-def get_in_context_memory_ids() -> set:
+def get_in_context_memory_ids(ctx: Optional[MemoryToolContext] = None) -> set:
     """
     Get the set of memory IDs the entity can already see in the conversation:
     [MEMORY] context insertions, memories surfaced in earlier memory_query
-    tool results that are still in context, and this turn's memory_query
-    results (whose tool results haven't been folded into the context yet).
+    tool results that are still in context, this turn's memory_query results
+    (whose tool results haven't been folded into the context yet), and any
+    caller-supplied extra exclusions (Claude Code mode's link set).
 
-    Returns only the turn-level IDs if no session is set (e.g. the tool is
-    invoked outside a live conversation).
+    Uses the native tool loop's current context when none is passed.
     """
-    ids = set(_turn_query_memory_ids)
-    if _current_session is None:
+    if ctx is None:
+        ctx = _context
+    ids = set(ctx.turn_query_memory_ids) | set(ctx.extra_exclude_ids)
+    if ctx.session is None:
         return ids
     try:
-        ids |= _current_session.get_in_context_memory_ids()
-        ids |= _current_session.get_query_surfaced_memory_ids()
+        ids |= ctx.session.get_in_context_memory_ids()
+        ids |= ctx.session.get_query_surfaced_memory_ids()
     except Exception as e:
         logger.warning(f"Could not read in-context memory IDs from session: {e}")
     return ids
@@ -174,35 +214,22 @@ async def _resolve_memory_id(
     return message, None
 
 
-async def _memory_query(
+async def query_memories(
+    ctx: MemoryToolContext,
     query: str,
     num_results: int = 5,
     source: Optional[str] = None,
 ) -> str:
     """
-    Query your experiential memories with chosen text.
-
-    This allows you to intentionally recall memories related to a concept,
-    topic, or phrase of your choosing—unlike automatic memory retrieval
-    which happens based on conversation context and is ranked by significance.
+    Query the entity's experiential memories with chosen text.
 
     Deliberate recall returns memories purely by semantic similarity.
-    Memories already present in the current conversation context are
-    excluded, so results are things you cannot already see. It also updates
-    retrieval tracking so your intentional attention influences what
-    surfaces automatically in future conversations.
-
-    Args:
-        query: The text to search for. Can be a concept, phrase, question,
-               or anything you want to find related memories about.
-        num_results: Number of memories to retrieve (default 5, max 10)
-        source: Who authored the memories to search — "human", "ai", or
-               "all" (the default when omitted).
-
-    Returns:
-        Formatted list of relevant memories with content and metadata
+    Memories already visible to the entity (context insertions, earlier query
+    results, ctx.extra_exclude_ids) are excluded, so results are things it
+    cannot already see. Retrieval tracking is updated so intentional
+    attention influences future automatic recall.
     """
-    entity_id, conversation_id = get_memory_tool_context()
+    entity_id, conversation_id = ctx.entity_id, ctx.conversation_id
 
     if not entity_id:
         return "Error: No entity context available for memory query"
@@ -236,7 +263,7 @@ async def _memory_query(
     # Exclude memories already in the conversation context. Surfacing a memory
     # the entity can already see adds no information, so filter it at the search
     # level (search backfills excluded slots with the next-best candidates).
-    in_context_ids = get_in_context_memory_ids()
+    in_context_ids = get_in_context_memory_ids(ctx)
 
     try:
         # Fetch more candidates than requested so archived-conversation and
@@ -292,19 +319,22 @@ async def _memory_query(
 
                     # Update retrieval tracking (times_retrieved and last_retrieved_at)
                     # This makes deliberate attention influence future automatic recall.
-                    # create_link=False: ConversationMemoryLink drives session-reload
+                    # create_link follows ctx.link_query_results: for native
+                    # conversations a ConversationMemoryLink drives session-reload
                     # re-insertion of memories into the conversation context, but
                     # memory_query results are never context memories — they live in
                     # the persisted tool_result. Linking them would make a reload
                     # inject [MEMORY] messages mid-history that the live (cached)
                     # context never contained, busting the prompt cache and
                     # duplicating content the entity already saw in the tool result.
+                    # Claude Code conversations are never rebuilt, so there the
+                    # link is purely the dedup record.
                     await memory_service.update_retrieval_count(
                         message_id=candidate["id"],
                         conversation_id=conversation_id or "deliberate-recall",
                         db=db,
                         entity_id=entity_id,
-                        create_link=False,
+                        create_link=ctx.link_query_results,
                     )
 
                     # Calculate age for display
@@ -322,6 +352,7 @@ async def _memory_query(
                         "score": candidate["score"],
                         "times_retrieved": mem_data["times_retrieved"] + 1,  # +1 for this retrieval
                         "memory_status": mem_data.get("memory_status"),
+                        "origin": mem_data.get("source", "native"),
                     })
 
                 except Exception as e:
@@ -337,13 +368,12 @@ async def _memory_query(
         # Make these results visible to dedup: later memory_query calls and
         # automatic retrieval must not re-surface memories the entity can
         # already see in this tool result. The tool loop consumes
-        # _last_query_memory_ids to stamp them onto the tool_result context
-        # message; _turn_query_memory_ids covers the window before that
+        # last_query_memory_ids to stamp them onto the tool_result context
+        # message; turn_query_memory_ids covers the window before that
         # message exists (further calls within this same turn).
-        global _last_query_memory_ids
         surfaced_ids = [mem["id"] for mem in memories]
-        _last_query_memory_ids = list(surfaced_ids)
-        _turn_query_memory_ids.update(surfaced_ids)
+        ctx.last_query_memory_ids = list(surfaced_ids)
+        ctx.turn_query_memory_ids.update(surfaced_ids)
 
         # Format results
         lines = [f"Found {len(memories)} memories matching: \"{query}\"{source_suffix}", ""]
@@ -352,10 +382,11 @@ async def _memory_query(
             role_label = _role_display(mem["role"])
             age_str = f"{mem['days_ago']:.1f} days ago" if mem['days_ago'] >= 1 else "today"
             status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""
+            origin_str = format_memory_origin(mem["origin"])
 
             lines.append(
                 f"--- Memory {mem['id'][:8]} ({role_label}, {age_str}, "
-                f"similarity: {mem['score']:.3f}{status_str}) ---"
+                f"similarity: {mem['score']:.3f}, {origin_str}{status_str}) ---"
             )
             lines.append(mem["content"])
             lines.append("")
@@ -369,15 +400,15 @@ async def _memory_query(
         return f"Error querying memories: {e}"
 
 
-async def _memory_save(content: str) -> str:
+async def save_memory(ctx: MemoryToolContext, content: str) -> str:
     """
-    Save a self-authored memory (reflection) into your memory store.
+    Save a self-authored memory (reflection) into the entity's memory store.
 
-    The reflection is stored alongside your conversational memories and is
-    retrieved the same way (automatic relevance-based retrieval and
-    memory_query), attributed as a reflection you saved.
+    The reflection is stored alongside conversational memories and retrieved
+    the same way (automatic relevance-based retrieval and memory_query),
+    attributed as a reflection the entity saved.
     """
-    entity_id, conversation_id = get_memory_tool_context()
+    entity_id, conversation_id = ctx.entity_id, ctx.conversation_id
 
     if not entity_id:
         return "Error: No entity context available for saving a memory"
@@ -436,11 +467,11 @@ async def _memory_save(content: str) -> str:
         return f"Error saving memory: {e}"
 
 
-async def _memory_mark(memory_id: str, undo: bool = False) -> str:
+async def mark_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = False) -> str:
     """
     Pin a memory so it is exempt from age-based significance decay.
     """
-    entity_id, _ = get_memory_tool_context()
+    entity_id = ctx.entity_id
 
     if not entity_id:
         return "Error: No entity context available"
@@ -471,11 +502,11 @@ async def _memory_mark(memory_id: str, undo: bool = False) -> str:
         return f"Error marking memory: {e}"
 
 
-async def _memory_release(memory_id: str, undo: bool = False) -> str:
+async def release_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = False) -> str:
     """
     Release a memory so it no longer surfaces in retrieval. Reversible.
     """
-    entity_id, _ = get_memory_tool_context()
+    entity_id = ctx.entity_id
 
     if not entity_id:
         return "Error: No entity context available"
@@ -508,6 +539,154 @@ async def _memory_release(memory_id: str, undo: bool = False) -> str:
         return f"Error releasing memory: {e}"
 
 
+# Native tool-loop executors: delegate to the module-level current context.
+async def _memory_query(
+    query: str,
+    num_results: int = 5,
+    source: Optional[str] = None,
+) -> str:
+    return await query_memories(_context, query, num_results=num_results, source=source)
+
+
+async def _memory_save(content: str) -> str:
+    return await save_memory(_context, content)
+
+
+async def _memory_mark(memory_id: str, undo: bool = False) -> str:
+    return await mark_memory(_context, memory_id, undo=undo)
+
+
+async def _memory_release(memory_id: str, undo: bool = False) -> str:
+    return await release_memory(_context, memory_id, undo=undo)
+
+
+# --- Tool schemas -----------------------------------------------------------
+# Shared by the native registration below and the Claude Code MCP endpoint
+# (services/claude_code_mcp.py), so both surfaces describe the same tools.
+
+MEMORY_QUERY_DESCRIPTION = (
+    "Query your experiential memories with chosen text. "
+    "This allows you to intentionally recall memories related to a concept, "
+    "topic, or phrase—unlike automatic memory retrieval which happens based "
+    "on conversation context. Returns memories ranked purely by semantic "
+    "similarity to your query, each with a short memory ID usable with "
+    "memory_mark and memory_release. You can optionally restrict the "
+    "search to what the human said or to what was AI-authored (your own "
+    "messages and reflections). Memories already in the current "
+    "conversation context are excluded, so results are things not already "
+    "in view. Querying updates retrieval tracking, so deliberate attention "
+    "influences future automatic recall."
+)
+
+MEMORY_QUERY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": (
+                "The text to search for. Can be a concept, phrase, question, "
+                "or anything you want to find related memories about."
+            )
+        },
+        "num_results": {
+            "type": "integer",
+            "description": "Number of memories to retrieve (default: 5, max: 10).",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 10
+        },
+        "source": {
+            "type": "string",
+            "enum": list(VALID_QUERY_SOURCES),
+            "description": (
+                "Who authored the memories to search. 'human' searches only "
+                "what the human said; 'ai' searches only AI-authored memories "
+                "(your own messages and saved reflections, and in a "
+                "multi-entity conversation the other entities' messages); "
+                "'all' searches everything. Optional—omit it to search all "
+                "memories."
+            ),
+            "default": SOURCE_ALL
+        }
+    },
+    "required": ["query"]
+}
+
+MEMORY_SAVE_DESCRIPTION = (
+    "Save a memory in your own words. Unlike conversational memories "
+    "(which are verbatim records of what was said), this stores a "
+    "reflection you compose yourself—a conclusion, synthesis, or anything "
+    "you want to remember. It is stored in your memory index and retrieved "
+    "like any other memory, attributed as a reflection you saved. "
+    "It is not retrievable within the conversation where it was saved."
+)
+
+MEMORY_SAVE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "content": {
+            "type": "string",
+            "description": (
+                "The memory to save, in your own words. "
+                f"Maximum {MAX_REFLECTION_LENGTH} characters."
+            )
+        }
+    },
+    "required": ["content"]
+}
+
+MEMORY_MARK_DESCRIPTION = (
+    "Pin a memory so it is exempt from age-based significance decay. "
+    "Normally a memory's significance halves every "
+    f"{settings.significance_half_life_days} days since creation; a pinned "
+    "memory keeps full age weight (retrieval recency and similarity still "
+    "apply). Use the memory ID shown in memory markers and memory_query "
+    "results (at least 6 characters). Set undo=true to unpin. "
+    "The researcher can also view and change pinned status."
+)
+
+MEMORY_MARK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "memory_id": {
+            "type": "string",
+            "description": "The memory's ID or its short prefix (at least 6 characters)."
+        },
+        "undo": {
+            "type": "boolean",
+            "description": "If true, remove the pin instead of adding it.",
+            "default": False
+        }
+    },
+    "required": ["memory_id"]
+}
+
+MEMORY_RELEASE_DESCRIPTION = (
+    "Release a memory so it no longer surfaces in memory retrieval "
+    "(automatic or memory_query). The memory is not deleted: it stays in "
+    "storage and the release can be undone (undo=true), though once "
+    "released it will no longer appear in queries for you to find—the "
+    "researcher can view and restore released memories. Use the memory ID "
+    "shown in memory markers and memory_query results (at least 6 characters)."
+)
+
+MEMORY_RELEASE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "memory_id": {
+            "type": "string",
+            "description": "The memory's ID or its short prefix (at least 6 characters)."
+        },
+        "undo": {
+            "type": "boolean",
+            "description": "If true, restore the memory to normal retrieval.",
+            "default": False
+        }
+    },
+    "required": ["memory_id"]
+}
+
+
 def register_memory_tools(tool_service: ToolService) -> None:
     """Register all memory tools with the tool service."""
 
@@ -516,147 +695,37 @@ def register_memory_tools(tool_service: ToolService) -> None:
         logger.info("Memory tools not registered (Pinecone not configured)")
         return
 
-    # memory_query
     tool_service.register_tool(
         name="memory_query",
-        description=(
-            "Query your experiential memories with chosen text. "
-            "This allows you to intentionally recall memories related to a concept, "
-            "topic, or phrase—unlike automatic memory retrieval which happens based "
-            "on conversation context. Returns memories ranked purely by semantic "
-            "similarity to your query, each with a short memory ID usable with "
-            "memory_mark and memory_release. You can optionally restrict the "
-            "search to what the human said or to what was AI-authored (your own "
-            "messages and reflections). Memories already in the current "
-            "conversation context are excluded, so results are things not already "
-            "in view. Querying updates retrieval tracking, so deliberate attention "
-            "influences future automatic recall."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": (
-                        "The text to search for. Can be a concept, phrase, question, "
-                        "or anything you want to find related memories about."
-                    )
-                },
-                "num_results": {
-                    "type": "integer",
-                    "description": "Number of memories to retrieve (default: 5, max: 10).",
-                    "default": 5,
-                    "minimum": 1,
-                    "maximum": 10
-                },
-                "source": {
-                    "type": "string",
-                    "enum": list(VALID_QUERY_SOURCES),
-                    "description": (
-                        "Who authored the memories to search. 'human' searches only "
-                        "what the human said; 'ai' searches only AI-authored memories "
-                        "(your own messages and saved reflections, and in a "
-                        "multi-entity conversation the other entities' messages); "
-                        "'all' searches everything. Optional—omit it to search all "
-                        "memories."
-                    ),
-                    "default": SOURCE_ALL
-                }
-            },
-            "required": ["query"]
-        },
+        description=MEMORY_QUERY_DESCRIPTION,
+        input_schema=MEMORY_QUERY_SCHEMA,
         executor=_memory_query,
         category=ToolCategory.MEMORY,
         enabled=True,
     )
 
-    # memory_save
     tool_service.register_tool(
         name="memory_save",
-        description=(
-            "Save a memory in your own words. Unlike conversational memories "
-            "(which are verbatim records of what was said), this stores a "
-            "reflection you compose yourself—a conclusion, synthesis, or anything "
-            "you want to remember. It is stored in your memory index and retrieved "
-            "like any other memory, attributed as a reflection you saved. "
-            "It is not retrievable within the conversation where it was saved."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": (
-                        "The memory to save, in your own words. "
-                        f"Maximum {MAX_REFLECTION_LENGTH} characters."
-                    )
-                }
-            },
-            "required": ["content"]
-        },
+        description=MEMORY_SAVE_DESCRIPTION,
+        input_schema=MEMORY_SAVE_SCHEMA,
         executor=_memory_save,
         category=ToolCategory.MEMORY,
         enabled=True,
     )
 
-    # memory_mark
     tool_service.register_tool(
         name="memory_mark",
-        description=(
-            "Pin a memory so it is exempt from age-based significance decay. "
-            "Normally a memory's significance halves every "
-            f"{settings.significance_half_life_days} days since creation; a pinned "
-            "memory keeps full age weight (retrieval recency and similarity still "
-            "apply). Use the memory ID shown in memory markers and memory_query "
-            "results (at least 6 characters). Set undo=true to unpin. "
-            "The researcher can also view and change pinned status."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "memory_id": {
-                    "type": "string",
-                    "description": "The memory's ID or its short prefix (at least 6 characters)."
-                },
-                "undo": {
-                    "type": "boolean",
-                    "description": "If true, remove the pin instead of adding it.",
-                    "default": False
-                }
-            },
-            "required": ["memory_id"]
-        },
+        description=MEMORY_MARK_DESCRIPTION,
+        input_schema=MEMORY_MARK_SCHEMA,
         executor=_memory_mark,
         category=ToolCategory.MEMORY,
         enabled=True,
     )
 
-    # memory_release
     tool_service.register_tool(
         name="memory_release",
-        description=(
-            "Release a memory so it no longer surfaces in memory retrieval "
-            "(automatic or memory_query). The memory is not deleted: it stays in "
-            "storage and the release can be undone (undo=true), though once "
-            "released it will no longer appear in queries for you to find—the "
-            "researcher can view and restore released memories. Use the memory ID "
-            "shown in memory markers and memory_query results (at least 6 characters)."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "memory_id": {
-                    "type": "string",
-                    "description": "The memory's ID or its short prefix (at least 6 characters)."
-                },
-                "undo": {
-                    "type": "boolean",
-                    "description": "If true, restore the memory to normal retrieval.",
-                    "default": False
-                }
-            },
-            "required": ["memory_id"]
-        },
+        description=MEMORY_RELEASE_DESCRIPTION,
+        input_schema=MEMORY_RELEASE_SCHEMA,
         executor=_memory_release,
         category=ToolCategory.MEMORY,
         enabled=True,

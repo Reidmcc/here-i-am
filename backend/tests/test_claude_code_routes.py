@@ -7,6 +7,7 @@ recording, identity/reflection context, idempotency, entity resolution, the
 feature gate, and the native-chat guard.
 """
 import uuid
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -340,6 +341,230 @@ class TestNativeChatGuard:
         )
         assert response.status_code == 409
         assert "Claude Code" in response.json()["detail"]
+
+
+def _rpc(method, request_id=1, params=None):
+    message = {"jsonrpc": "2.0", "id": request_id, "method": method}
+    if params is not None:
+        message["params"] = params
+    return message
+
+
+class TestMcpEndpoint:
+    async def test_disabled_returns_404(self, test_engine, monkeypatch):
+        monkeypatch.setattr(settings, "claude_code_mode_enabled", False)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/mcp", json=_rpc("initialize"))
+            assert response.status_code == 404
+
+    async def test_initialize_negotiates_protocol(self, async_client):
+        response = await async_client.post(
+            "/mcp",
+            json=_rpc("initialize", params={
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0"},
+            }),
+        )
+        assert response.status_code == 200
+        result = response.json()["result"]
+        assert result["protocolVersion"] == "2025-03-26"
+        assert result["serverInfo"]["name"] == "here-i-am"
+        assert "tools" in result["capabilities"]
+
+    async def test_initialize_unknown_version_offers_latest(self, async_client):
+        response = await async_client.post(
+            "/mcp",
+            json=_rpc("initialize", params={"protocolVersion": "1999-01-01"}),
+        )
+        assert response.json()["result"]["protocolVersion"] == "2025-06-18"
+
+    async def test_notification_gets_202_no_body(self, async_client):
+        response = await async_client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
+        assert response.status_code == 202
+        assert response.content == b""
+
+    async def test_tools_list(self, async_client):
+        response = await async_client.post("/mcp", json=_rpc("tools/list"))
+        tools = {t["name"]: t for t in response.json()["result"]["tools"]}
+        assert set(tools) == {"memory_query", "memory_save", "memory_mark", "memory_release"}
+        # Every tool takes the MCP-only conversation_id parameter
+        for tool in tools.values():
+            assert "conversation_id" in tool["inputSchema"]["properties"]
+        # memory_save requires it (reflections need a home conversation)
+        assert "conversation_id" in tools["memory_save"]["inputSchema"]["required"]
+
+    async def test_unknown_method_and_tool_errors(self, async_client):
+        response = await async_client.post("/mcp", json=_rpc("resources/list"))
+        assert response.json()["error"]["code"] == -32601
+
+        response = await async_client.post(
+            "/mcp", json=_rpc("tools/call", params={"name": "nonexistent", "arguments": {}})
+        )
+        assert response.json()["error"]["code"] == -32602
+
+    async def test_parse_error(self, async_client):
+        response = await async_client.post(
+            "/mcp", content=b"{not json", headers={"Content-Type": "application/json"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == -32700
+
+    async def test_get_and_delete_are_405(self, async_client):
+        assert (await async_client.get("/mcp")).status_code == 405
+        assert (await async_client.delete("/mcp")).status_code == 405
+
+    async def test_tool_call_without_memory_configured(self, async_client):
+        """Pinecone unconfigured: the tool responds with an error result, not
+        a protocol error."""
+        response = await async_client.post(
+            "/mcp",
+            json=_rpc("tools/call", params={
+                "name": "memory_query", "arguments": {"query": "gardens"},
+            }),
+        )
+        result = response.json()["result"]
+        assert result["isError"] is True
+        assert "not configured" in result["content"][0]["text"]
+
+    async def test_tool_call_rejects_native_conversation(
+        self, async_client, db_session, test_engine
+    ):
+        native = Conversation(entity_id="test-entity")
+        db_session.add(native)
+        await db_session.commit()
+
+        maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        with patch("app.services.claude_code_mcp.async_session_maker", maker):
+            response = await async_client.post(
+                "/mcp",
+                json=_rpc("tools/call", params={
+                    "name": "memory_save",
+                    "arguments": {"content": "a thought", "conversation_id": native.id},
+                }),
+            )
+        result = response.json()["result"]
+        assert result["isError"] is True
+        assert "native" in result["content"][0]["text"]
+
+    async def test_memory_save_creates_reflection(
+        self, async_client, db_session, test_engine
+    ):
+        started = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        conversation_id = started.json()["conversation_id"]
+
+        maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        with patch("app.services.claude_code_mcp.async_session_maker", maker), \
+             patch("app.services.memory_tools.async_session_maker", maker), \
+             patch("app.services.memory_tools.memory_service") as mock_memory:
+            mock_memory.is_configured.return_value = True
+            mock_memory.store_memory = AsyncMock(return_value=True)
+            response = await async_client.post(
+                "/mcp",
+                json=_rpc("tools/call", params={
+                    "name": "memory_save",
+                    "arguments": {
+                        "content": "Continuity holds across modes.",
+                        "conversation_id": conversation_id,
+                    },
+                }),
+            )
+
+        result = response.json()["result"]
+        assert result["isError"] is False
+        assert "Saved reflection" in result["content"][0]["text"]
+
+        rows = await db_session.execute(
+            select(Message).where(
+                Message.conversation_id == conversation_id,
+                Message.role == MessageRole.REFLECTION,
+            )
+        )
+        reflection = rows.scalar_one()
+        assert reflection.content == "Continuity holds across modes."
+        assert reflection.speaker_entity_id == "test-entity"
+
+
+class TestMcpToolContext:
+    async def test_claude_code_conversation_builds_linking_context(
+        self, async_client, db_session, test_engine
+    ):
+        from app.services import claude_code_mcp
+
+        started = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        conversation_id = started.json()["conversation_id"]
+
+        maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        with patch("app.services.claude_code_mcp.async_session_maker", maker):
+            ctx, error = await claude_code_mcp.build_tool_context(conversation_id)
+
+        assert error is None
+        assert ctx.entity_id == "test-entity"
+        assert ctx.conversation_id == conversation_id
+        assert ctx.link_query_results is True
+
+    async def test_no_conversation_falls_back_to_default_entity(self, cc_mode_enabled):
+        from app.services import claude_code_mcp
+
+        ctx, error = await claude_code_mcp.build_tool_context(None)
+        assert error is None
+        assert ctx.entity_id == "test-entity"
+        assert ctx.conversation_id is None
+        assert ctx.link_query_results is False
+
+    async def test_unknown_conversation_errors(
+        self, async_client, test_engine
+    ):
+        from app.services import claude_code_mcp
+
+        maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        with patch("app.services.claude_code_mcp.async_session_maker", maker):
+            ctx, error = await claude_code_mcp.build_tool_context("does-not-exist")
+        assert ctx is None
+        assert "No conversation found" in error
+
+
+class TestMemoryProvenance:
+    async def test_full_memory_content_carries_conversation_source(
+        self, async_client, db_session, test_engine
+    ):
+        from app.services.memory_service import MemoryService
+
+        session_id = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "a prompt to remember"},
+        )
+        message_id = response.json()["human_message_id"]
+
+        service = MemoryService()
+        mem_data = await service.get_full_memory_content(
+            message_id, db_session, use_cache=False
+        )
+        assert mem_data["source"] == "claude_code"
+
+    async def test_session_start_context_names_conversation_id(
+        self, async_client, monkeypatch
+    ):
+        """With memory configured, the identity block tells the entity which
+        conversation_id to pass to the MCP memory tools."""
+        from app.services.claude_code_mode import memory_service as cc_memory_service
+
+        monkeypatch.setattr(cc_memory_service, "is_configured", lambda entity_id=None: True)
+        started = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        body = started.json()
+        assert body["conversation_id"] in body["context"]
+        assert "memory_query" in body["context"]
 
 
 class TestConversationResponses:
