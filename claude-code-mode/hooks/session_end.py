@@ -16,6 +16,8 @@ import os
 import sys
 import urllib.request
 
+import hook_util  # noqa: F401 — imported for its UTF-8 stdio reconfigure
+
 
 def main() -> None:
     if os.environ.get("HIM_DISABLE"):

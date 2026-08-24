@@ -28,6 +28,22 @@ import sys
 import tempfile
 import urllib.request
 
+# Claude Code speaks UTF-8 on every hook stream: the input payload arrives
+# as UTF-8 JSON on stdin, and stdout/stderr are decoded as UTF-8 when
+# injected into context. Python on Windows defaults piped streams to the
+# ANSI codepage (cp1252), which crashed the SessionStart print outright on
+# a non-breaking hyphen in the identity block — the spill file was written
+# but the inline block and its read-this-file pointer never reached the
+# entity — and rendered every em-dash of hook output that did survive as
+# U+FFFD. Reconfigure at import, before any hook I/O, so no hook can
+# forget; stop.py and session_end.py import this module for exactly this
+# side effect.
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 DEFAULT_INLINE_BUDGET = 18000
 
 

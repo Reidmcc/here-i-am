@@ -29,6 +29,8 @@ import os
 import sys
 import urllib.request
 
+import hook_util  # noqa: F401 — imported for its UTF-8 stdio reconfigure
+
 
 def last_assistant_text(transcript_path: str):
     """
