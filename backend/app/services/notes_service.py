@@ -127,6 +127,15 @@ class NotesService:
             return None
         return candidate
     
+    def get_entity_dir_path(self, entity_label: str) -> Path:
+        """Absolute path of an entity's private notes directory (for telling
+        a Claude Code session where its notes live on disk)."""
+        return self._get_entity_dir(entity_label).resolve()
+
+    def get_shared_dir_path(self) -> Path:
+        """Absolute path of the shared notes directory."""
+        return self._get_shared_dir().resolve()
+
     def get_index_content(self, entity_label: str) -> Optional[str]:
         """
         Get the index.md content for an entity.

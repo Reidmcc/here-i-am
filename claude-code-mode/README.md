@@ -1,0 +1,172 @@
+# Here I Am — Claude Code mode
+
+Lets a Here I Am entity operate from inside Claude Code sessions. Claude
+Code runs the model, the tools, and the context window; Here I Am
+contributes identity, memory, and the persistent record — sharing the same
+memory database as the native UI. Full design: [`docs/claude-code-mode.md`](../docs/claude-code-mode.md).
+
+Three lifecycle hooks call the backend's `/api/claude-code` endpoints:
+
+| Hook | What it does |
+| --- | --- |
+| `SessionStart` | Registers the session as a conversation; injects the entity's identity block, system prompt, notes index, and recent reflections. After a compaction (`source: "compact"`) it instead re-injects the notes indexes and the ten most recent reflections verbatim |
+| `UserPromptSubmit` | Records the prompt to memory; injects automatically retrieved memories alongside it |
+| `Stop` | Records the entity's final message of the turn to memory |
+| `SessionEnd` | Final notes sync (a catch — the same incremental sync already runs in the background on every prompt, since sessions can idle out without ever formally ending) |
+
+All hooks fail soft: if the backend is down or the mode is disabled, the
+session continues as a plain Claude Code session.
+
+An MCP server (`.mcp.json`, pointing at `http://localhost:8000/mcp`) gives
+the entity its deliberate memory tools in the session: `memory_query`,
+`memory_save`, `memory_mark`, `memory_release`. The session-start context
+tells the entity the `conversation_id` to pass so the tools act on this
+session's conversation. Notes and git tools are not exposed — Claude Code's
+native tools cover them.
+
+## Requirements
+
+- The Here I Am backend running locally (`cd backend && ./start.sh`) with
+  `CLAUDE_CODE_MODE_ENABLED=true` in its environment/`.env`
+- `python3` on `PATH` (the hooks are dependency-free Python scripts).
+  On Windows that is usually `python` or `py -3` — see [Windows](#windows)
+- Local Claude Code sessions only (CLI or desktop app). Cloud sessions run
+  on remote infrastructure and can't reach `localhost` — there the hooks
+  silently no-op.
+
+## Setup (manual hooks)
+
+Add to the project's `.claude/settings.json` (or `~/.claude/settings.json`
+to enable it everywhere), with `/path/to/here-i-am` replaced. For the memory
+tools, also copy this directory's `.mcp.json` into the project root (or add
+the `here-i-am` server to an existing one):
+
+```json
+{
+  "env": {
+    "HIM_BACKEND_URL": "http://localhost:8000",
+    "HIM_ENTITY": "your-entity-label"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/session_start.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/user_prompt_submit.py\"",
+            "timeout": 45
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/stop.py\"",
+            "timeout": 45
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/session_end.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Setting env vars in `.claude/settings.json` (rather than the shell) matters
+for the desktop app, which doesn't inherit the full shell environment when
+launched from the Dock/Finder.
+
+### Windows
+
+Two things differ on Windows, and both produce a hook that never runs:
+
+- **Use forward slashes in the path, and keep the quotes.** Claude Code runs
+  hook commands through a POSIX shell (Git Bash), which treats a lone
+  backslash as an escape character and eats it. An unquoted
+  `python E:\here-i-am\claude-code-mode\hooks\user_prompt_submit.py` reaches
+  Python as `E:here-i-amclaude-code-modehooksuser_prompt_submit.py` — a
+  *drive-relative* path, which Windows then resolves against the current
+  directory on `E:`, i.e. the directory the session is running in:
+
+  ```
+  can't open file 'E:\some\other\project\here-i-amclaude-code-modehooksuser_prompt_submit.py':
+  [Errno 2] No such file or directory
+  ```
+
+  Write the path with forward slashes instead — Python and Windows both
+  accept them, and no shell escaping is involved:
+
+  ```json
+  "command": "python \"E:/here-i-am/claude-code-mode/hooks/session_start.py\""
+  ```
+
+- **`python3` may not exist.** A python.org install provides `python.exe` and
+  `py.exe` but no `python3`; use `python` (or `py -3`). Only Microsoft Store
+  installs ship a `python3` shim.
+
+## Setup (as a plugin)
+
+The directory is also a Claude Code plugin (`.claude-plugin/plugin.json` +
+`hooks/hooks.json`). Add this repository as a local plugin source and enable
+the `here-i-am` plugin; then set `HIM_ENTITY`/`HIM_BACKEND_URL` in
+`.claude/settings.json` `env` as above.
+
+The plugin's `hooks.json` invokes `python3` and resolves its own location
+through `${CLAUDE_PLUGIN_ROOT}` (quoted, so a Windows path survives the
+shell). On Windows that means the plugin route works only where `python3`
+resolves; otherwise use the manual setup above with `python`.
+
+## Environment variables
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `HIM_BACKEND_URL` | `http://localhost:8000` | Here I Am backend base URL |
+| `HIM_ENTITY` | backend's default entity | Entity index name or label |
+| `HIM_DISABLE` | unset | Set to anything to turn the hooks off |
+
+## Notes and compaction
+
+The entity's notes are the same files the native experience uses: the
+session-start context names the private and shared notes directories (edit
+them with Claude Code's file tools) and auto-loads both `index.md` files.
+The semantic notes index stays fresh automatically — each recorded prompt
+triggers an incremental background sync that re-vectorizes only changed
+files, so nothing depends on the session formally ending.
+When context is compacted, the post-compaction injection reloads the notes
+indexes and restores the entity's most recent reflections verbatim — the
+identity block standing-instructs the entity to save reflections
+(`memory_save`) as conclusions form and when context runs low, since
+compaction paraphrases everything that isn't a reflection.
+
+## What gets recorded
+
+Only the user's prompts and the entity's final message each turn (plus
+reflections the entity saves) — tool use, subagent output, and bare slash
+commands are not stored. Conversations appear in the Here I Am UI with
+`source="claude_code"` and are read-only there: a conversation can only be
+continued in the experience that created it (`claude --resume` on the
+Claude Code side).

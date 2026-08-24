@@ -12,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import async_session_maker, get_db
-from app.models import Conversation, ConversationEntity, ConversationType, Message, MessageRole
+from app.models import (
+    Conversation,
+    ConversationEntity,
+    ConversationSource,
+    ConversationType,
+    Message,
+    MessageRole,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +76,10 @@ class ConversationResponse(BaseModel):
     entities: Optional[List[EntityInfo]] = None
     # Per-entity system prompts: { entity_id: system_prompt, ... }
     entity_system_prompts: Optional[dict] = None
+    # Which experience owns this conversation ("native" or "claude_code").
+    # Claude Code conversations are read-only records here — the chat routes
+    # refuse to continue them.
+    source: str = "native"
 
     class Config:
         from_attributes = True
@@ -153,6 +164,9 @@ class ConversationExport(BaseModel):
     llm_model_used: str
     notes: Optional[str]
     entity_id: Optional[str] = None
+    # Provenance ("native"/"claude_code"). Informational on export; the
+    # import path ignores it and imported conversations default to native.
+    source: str = "native"
     messages: List[dict]
 
 
@@ -234,6 +248,7 @@ async def create_conversation(
             title=conversation.title,
             tags=conversation.tags,
             conversation_type=conversation.conversation_type.value,
+            source=conversation.source,
             system_prompt_used=conversation.system_prompt_used,
             llm_model_used=conversation.llm_model_used,
             notes=conversation.notes,
@@ -278,6 +293,7 @@ async def create_conversation(
             title=conversation.title,
             tags=conversation.tags,
             conversation_type=conversation.conversation_type.value,
+            source=conversation.source,
             system_prompt_used=conversation.system_prompt_used,
             llm_model_used=conversation.llm_model_used,
             notes=conversation.notes,
@@ -338,8 +354,11 @@ async def list_conversations(
         messages = msg_result.scalars().all()
         message_count = len(messages)
 
-        # Clean up empty conversations (no messages ever sent)
-        if message_count == 0:
+        # Clean up empty conversations (no messages ever sent). Claude Code
+        # conversations are exempt: a registered session legitimately has no
+        # messages until its first prompt, and deleting the row would drop
+        # its session mapping and reflection links mid-session.
+        if message_count == 0 and conv.source != ConversationSource.CLAUDE_CODE.value:
             await db.delete(conv)
             deleted_empty = True
             continue
@@ -363,6 +382,7 @@ async def list_conversations(
             title=conv.title,
             tags=conv.tags,
             conversation_type=conv.conversation_type.value,
+            source=conv.source,
             system_prompt_used=conv.system_prompt_used,
             llm_model_used=conv.llm_model_used,
             notes=conv.notes,
@@ -437,6 +457,7 @@ async def list_archived_conversations(
             title=conv.title,
             tags=conv.tags,
             conversation_type=conv.conversation_type.value,
+            source=conv.source,
             system_prompt_used=conv.system_prompt_used,
             llm_model_used=conv.llm_model_used,
             notes=conv.notes,
@@ -490,6 +511,7 @@ async def get_conversation(
         title=conversation.title,
         tags=conversation.tags,
         conversation_type=conversation.conversation_type.value,
+        source=conversation.source,
         system_prompt_used=conversation.system_prompt_used,
         llm_model_used=conversation.llm_model_used,
         notes=conversation.notes,
@@ -584,6 +606,7 @@ async def update_conversation(
         title=conversation.title,
         tags=conversation.tags,
         conversation_type=conversation.conversation_type.value,
+        source=conversation.source,
         system_prompt_used=conversation.system_prompt_used,
         llm_model_used=conversation.llm_model_used,
         notes=conversation.notes,
@@ -749,6 +772,7 @@ async def export_conversation(
         title=conversation.title,
         tags=conversation.tags,
         conversation_type=conversation.conversation_type.value,
+        source=conversation.source,
         system_prompt_used=conversation.system_prompt_used,
         llm_model_used=conversation.llm_model_used,
         notes=conversation.notes,

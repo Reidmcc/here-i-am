@@ -225,6 +225,24 @@ async def run_migrations(conn):
             ))
             print("  ✓ Added notes_seed column for frozen single-entity notes seed")
 
+        if 'source' not in columns:
+            print("Migrating: Adding 'source' column to conversations table...")
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN source VARCHAR(20) NOT NULL DEFAULT 'native'"
+            ))
+            print("  ✓ Added source column for Claude Code mode conversations")
+
+        if 'external_session_id' not in columns:
+            print("Migrating: Adding 'external_session_id' column to conversations table...")
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN external_session_id VARCHAR(100)"
+            ))
+            await conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_conversations_external_session_id "
+                "ON conversations(external_session_id)"
+            ))
+            print("  ✓ Added external_session_id column for Claude Code session mapping")
+
 
 async def init_db():
     async with engine.begin() as conn:

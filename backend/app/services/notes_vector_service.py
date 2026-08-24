@@ -19,9 +19,11 @@ Vectorization is best-effort: if Pinecone is unavailable the filesystem
 write still succeeds and the note is simply not searchable until reindexed.
 """
 
+import asyncio
+import hashlib
 import logging
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from app.config import settings
 from app.services.memory_service import memory_service, run_pinecone
@@ -30,6 +32,10 @@ from app.services.notes_service import notes_service
 logger = logging.getLogger(__name__)
 
 NOTES_NAMESPACE = "notes"
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 # Chunk size in characters (~500 tokens), safely within the embedding
 # model's input limit while keeping search results focused
@@ -92,6 +98,23 @@ def _note_id_prefix(shared: bool, filename: str) -> str:
 
 class NotesVectorService:
     """Mirrors note files into Pinecone for semantic search."""
+
+    def __init__(self):
+        # Content hash of each file as last vectorized, keyed by
+        # ("shared" | "private:{label}", filename). Drives the incremental
+        # sync below: unchanged files are skipped, files present in the map
+        # but gone from disk get their vectors removed. In-memory only — a
+        # backend restart just means the next sync re-vectorizes everything
+        # once (idempotent), and deletions that happened while the backend
+        # was down go uncaught until a manual reindex, same as before.
+        self._synced_hashes: Dict[Tuple[str, str], str] = {}
+        # One sync at a time per entity; concurrent requests skip instead
+        # of queueing (the next prompt will sync again anyway)
+        self._sync_locks: Dict[str, asyncio.Lock] = {}
+
+    @staticmethod
+    def _scope_key(entity_label: str, shared: bool) -> str:
+        return "shared" if shared else f"private:{entity_label}"
 
     def _get_index_for_label(self, entity_label: str):
         """Get the Pinecone index for an entity by its display label."""
@@ -194,6 +217,7 @@ class NotesVectorService:
                 logger.error(f"[NOTES] Failed to vectorize '{filename}' (shared={shared}): {e}")
 
         if updated:
+            self._synced_hashes[(self._scope_key(entity_label, shared), filename)] = _content_hash(content)
             logger.info(f"[NOTES] Vectorized '{filename}' (shared={shared}, {len(records)} chunks)")
         return updated
 
@@ -212,6 +236,7 @@ class NotesVectorService:
                 await run_pinecone(self._delete_note_chunks, index, shared, filename)
             except Exception as e:
                 logger.error(f"[NOTES] Failed to remove vectors for '{filename}': {e}")
+        self._synced_hashes.pop((self._scope_key(entity_label, shared), filename), None)
         return True
 
     async def search_notes(
@@ -268,6 +293,26 @@ class NotesVectorService:
                 break
         return matches
 
+    async def _reindex_listing(
+        self, entity_label: str, shared: bool, summary: Dict[str, Any]
+    ) -> None:
+        """Re-vectorize every note file in one folder, accumulating into summary."""
+        listing = notes_service.list_notes(entity_label, shared=shared)
+        if not listing.get("success"):
+            return
+        label_prefix = "shared" if shared else entity_label
+        for file_info in listing["files"]:
+            filename = file_info["filename"]
+            read = notes_service.read_note(entity_label, filename, shared=shared)
+            if not read.get("success"):
+                summary["errors"].append(f"{label_prefix}/{filename}: {read.get('error')}")
+                continue
+            ok = await self.vectorize_note(entity_label, filename, read["content"], shared=shared)
+            if ok:
+                summary["indexed"] += 1
+            else:
+                summary["errors"].append(f"{label_prefix}/{filename}: vectorization failed")
+
     async def reindex_all(self) -> Dict[str, Any]:
         """
         Re-vectorize every note file for every configured entity, plus shared
@@ -281,36 +326,80 @@ class NotesVectorService:
 
         # Private notes per entity
         for entity in settings.get_entities():
-            listing = notes_service.list_notes(entity.label, shared=False)
-            if not listing.get("success"):
-                continue
-            for file_info in listing["files"]:
-                filename = file_info["filename"]
-                read = notes_service.read_note(entity.label, filename, shared=False)
-                if not read.get("success"):
-                    summary["errors"].append(f"{entity.label}/{filename}: {read.get('error')}")
-                    continue
-                ok = await self.vectorize_note(entity.label, filename, read["content"], shared=False)
-                if ok:
-                    summary["indexed"] += 1
-                else:
-                    summary["errors"].append(f"{entity.label}/{filename}: vectorization failed")
+            await self._reindex_listing(entity.label, shared=False, summary=summary)
 
         # Shared notes (indexed into every entity's index)
-        listing = notes_service.list_notes("", shared=True)
-        if listing.get("success"):
-            for file_info in listing["files"]:
-                filename = file_info["filename"]
-                read = notes_service.read_note("", filename, shared=True)
-                if not read.get("success"):
-                    summary["errors"].append(f"shared/{filename}: {read.get('error')}")
-                    continue
-                ok = await self.vectorize_note("", filename, read["content"], shared=True)
-                if ok:
-                    summary["indexed"] += 1
-                else:
-                    summary["errors"].append(f"shared/{filename}: vectorization failed")
+        await self._reindex_listing("", shared=True, summary=summary)
 
+        return summary
+
+    async def sync_entity_notes(self, entity_label: str) -> Dict[str, Any]:
+        """
+        Incrementally sync one entity's notes (private + shared) into the
+        semantic mirror: hash each file against the content last vectorized,
+        re-vectorize only changes and new files, and remove vectors for
+        files that have disappeared from disk.
+
+        Claude Code mode's notes bridge: sessions edit note files directly
+        with Claude Code's file tools, bypassing the write-time
+        vectorization the native notes tools do — so this runs in the
+        background on every recorded prompt (and at session end, when one
+        fires). Sessions can idle out without ever formally ending, so
+        freshness must not depend on a session-end event; per-prompt hash
+        checks are cheap and only actual diffs touch Pinecone.
+
+        A sync already running for this entity is skipped, not queued — the
+        next prompt syncs again anyway.
+        """
+        summary: Dict[str, Any] = {"indexed": 0, "removed": 0, "unchanged": 0, "errors": []}
+
+        if not memory_service.is_configured():
+            summary["errors"].append("Pinecone not configured")
+            return summary
+
+        lock = self._sync_locks.setdefault(entity_label, asyncio.Lock())
+        if lock.locked():
+            summary["skipped"] = True
+            return summary
+
+        async with lock:
+            for shared in (False, True):
+                scope_key = self._scope_key(entity_label, shared)
+                listing = notes_service.list_notes(entity_label, shared=shared)
+                if not listing.get("success"):
+                    summary["errors"].append(f"{scope_key}: {listing.get('error')}")
+                    continue
+
+                current_files = set()
+                for file_info in listing["files"]:
+                    filename = file_info["filename"]
+                    current_files.add(filename)
+                    read = notes_service.read_note(entity_label, filename, shared=shared)
+                    if not read.get("success"):
+                        summary["errors"].append(f"{scope_key}/{filename}: {read.get('error')}")
+                        continue
+                    if self._synced_hashes.get((scope_key, filename)) == _content_hash(read["content"]):
+                        summary["unchanged"] += 1
+                        continue
+                    ok = await self.vectorize_note(
+                        entity_label, filename, read["content"], shared=shared
+                    )
+                    if ok:
+                        summary["indexed"] += 1
+                    else:
+                        summary["errors"].append(f"{scope_key}/{filename}: vectorization failed")
+
+                # Files vectorized before but no longer on disk
+                stale = [
+                    key for key in self._synced_hashes
+                    if key[0] == scope_key and key[1] not in current_files
+                ]
+                for _, filename in stale:
+                    await self.remove_note_vectors(entity_label, filename, shared=shared)
+                    summary["removed"] += 1
+
+        if summary["indexed"] or summary["removed"] or summary["errors"]:
+            logger.info(f"[NOTES] Sync for '{entity_label}': {summary}")
         return summary
 
 

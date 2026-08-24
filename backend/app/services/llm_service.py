@@ -11,7 +11,13 @@ from enum import Enum
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from app.config import settings
-from app.services import anthropic_service, openai_service
+
+# Import the singletons from their own modules, never `from app.services import
+# <name>`: this module is imported from `app/services/__init__.py` before that
+# file has bound every singleton onto the package, so the package attribute may
+# still be the submodule rather than the instance (it was, for openai_service —
+# `openai_service.is_configured()` raised AttributeError on every /chat/config).
+from app.services.anthropic_service import anthropic_service
 from app.services.anthropic_service import (
     supports_temperature as anthropic_supports_temperature,
 )
@@ -19,7 +25,7 @@ from app.services.anthropic_service import (
     supports_thinking_effort as anthropic_supports_thinking_effort,
 )
 from app.services.google_service import google_service
-from app.services.openai_service import OpenAIService
+from app.services.openai_service import OpenAIService, openai_service
 
 
 class ModelProvider(str, Enum):

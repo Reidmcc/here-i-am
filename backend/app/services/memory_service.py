@@ -487,7 +487,7 @@ class MemoryService:
             return []
 
         query = (
-            select(Message)
+            select(Message, Conversation.source)
             .join(Conversation, Conversation.id == Message.conversation_id)
             .where(
                 Message.role == MessageRole.REFLECTION,
@@ -505,7 +505,7 @@ class MemoryService:
         query = query.order_by(Message.created_at.desc()).limit(limit)
 
         result = await db.execute(query)
-        messages = result.scalars().all()
+        rows = result.all()
 
         reflections = [
             {
@@ -517,8 +517,9 @@ class MemoryService:
                 "times_retrieved": m.times_retrieved,
                 "last_retrieved_at": m.last_retrieved_at.isoformat() if m.last_retrieved_at else None,
                 "memory_status": m.memory_status,
+                "source": conversation_source or "native",
             }
-            for m in messages
+            for m, conversation_source in rows
         ]
         logger.info(
             f"[MEMORY] Recent reflections: found {len(reflections)} for entity={entity_id} (limit={limit})"
@@ -555,9 +556,12 @@ class MemoryService:
                 return cached_content
 
         result = await db.execute(
-            select(Message).where(Message.id == message_id)
+            select(Message, Conversation.source)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(Message.id == message_id)
         )
-        message = result.scalar_one_or_none()
+        row = result.first()
+        message, conversation_source = row if row else (None, None)
 
         if message:
             content_dict = {
@@ -569,6 +573,10 @@ class MemoryService:
                 "times_retrieved": message.times_retrieved,
                 "last_retrieved_at": message.last_retrieved_at.isoformat() if message.last_retrieved_at else None,
                 "memory_status": message.memory_status,
+                # Which experience the memory was formed in ("native" or
+                # "claude_code") — rendered into memory markers and tool
+                # output so the entity can see a memory's provenance
+                "source": conversation_source or "native",
             }
             # Cache the result
             if use_cache:

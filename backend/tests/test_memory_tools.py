@@ -33,14 +33,13 @@ class TestMemoryToolContext:
 
     def test_context_initially_none(self):
         """Test that context is None before being set."""
-        # Reset the module-level state by importing fresh
+        # Reset the module-level state
         # (in practice, context should be set before each tool execution)
         from app.services import memory_tools
-        memory_tools._current_entity_id = None
-        memory_tools._current_conversation_id = None
-        
+        memory_tools._context = memory_tools.MemoryToolContext()
+
         entity_id, conversation_id = get_memory_tool_context()
-        
+
         assert entity_id is None
         assert conversation_id is None
 
@@ -53,9 +52,8 @@ class TestMemoryQueryValidation:
         """Test that query fails without entity context."""
         # Clear context
         from app.services import memory_tools
-        memory_tools._current_entity_id = None
-        memory_tools._current_conversation_id = None
-        
+        memory_tools._context = memory_tools.MemoryToolContext()
+
         result = await _memory_query("test query")
         
         assert "Error:" in result
@@ -522,12 +520,12 @@ class TestMemoryQueryResultDedup:
             mock_session_maker.return_value = mock_db_session
 
             await _memory_query("a query")
-            assert "mem-x" in memory_tools._turn_query_memory_ids
-            assert memory_tools._last_query_memory_ids == ["mem-x"]
+            assert "mem-x" in memory_tools._context.turn_query_memory_ids
+            assert memory_tools._context.last_query_memory_ids == ["mem-x"]
 
         set_memory_tool_context("test-entity", "test-conversation")
-        assert memory_tools._turn_query_memory_ids == set()
-        assert memory_tools._last_query_memory_ids == []
+        assert memory_tools._context.turn_query_memory_ids == set()
+        assert memory_tools._context.last_query_memory_ids == []
 
 
 class TestMemoryQueryRetrievalTracking:

@@ -303,6 +303,24 @@ class Settings(BaseSettings):
     # pointer to that copy instead of repeating the full content
     notes_read_dedup_enabled: bool = True
 
+    # Claude Code mode settings
+    # Enable the /api/claude-code endpoints that let an entity operate from
+    # inside Claude Code sessions (hooks post prompts/responses here and pull
+    # memory retrievals; see docs/claude-code-mode.md)
+    claude_code_mode_enabled: bool = False
+    # How many recent reflections to inject at Claude Code session start.
+    # Unset (the default) follows recent_reflections_count, the same knob the
+    # native first-turn injection uses; set it only to give Claude Code
+    # sessions a different count. The native recent_reflections_enabled flag
+    # does not gate this — a Claude Code session start always injects (0
+    # disables it here).
+    claude_code_session_reflections_count: Optional[int] = None
+    # How many recent reflections to re-inject after a Claude Code session's
+    # context is compacted (the compaction summary paraphrases; these restore
+    # the verbatim ground, including reflections saved just before
+    # compaction; 0 disables)
+    claude_code_post_compact_reflections_count: int = 10
+
     # Moltbook API settings
     # Enable Moltbook tools for AI entities (social network for AI agents)
     moltbook_enabled: bool = False
@@ -530,6 +548,19 @@ class Settings(BaseSettings):
         """Get the first (default) entity, or None if no entities configured."""
         entities = self.get_entities()
         return entities[0] if entities else None
+
+    def get_claude_code_session_reflections_count(self) -> int:
+        """
+        How many recent reflections a Claude Code session start injects.
+
+        Follows RECENT_REFLECTIONS_COUNT — the same knob the native
+        first-turn injection uses — unless
+        CLAUDE_CODE_SESSION_REFLECTIONS_COUNT is set explicitly, which
+        overrides it for Claude Code sessions only.
+        """
+        if self.claude_code_session_reflections_count is not None:
+            return self.claude_code_session_reflections_count
+        return self.recent_reflections_count
 
     def get_github_repos(self) -> List[GitHubRepoConfig]:
         """

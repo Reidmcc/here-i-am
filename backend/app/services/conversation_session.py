@@ -40,6 +40,7 @@ class MemoryEntry:
     days_since_creation: float = 0.0  # Age of the memory in days
     days_since_retrieval: float = 0.0  # Days since last retrieval (None if never retrieved)
     source: str = "unknown"  # What retrieved this memory: "user"/"assistant"/"both" (semantic queries) or "recent_reflection" (first-turn recency injection)
+    origin: str = "native"  # Which experience formed this memory: "native" or "claude_code" (from the memory's conversation row; rendered in its marker)
 
 
 @dataclass
@@ -157,6 +158,7 @@ class ConversationSession:
             content=memory.content,
             created_at=memory.created_at,
             role=memory.role,
+            origin=memory.origin,
         )
         
         insertion_point = find_memory_insertion_point(self.conversation_context)

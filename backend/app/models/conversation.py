@@ -21,6 +21,19 @@ class ConversationType(str, enum.Enum):
     MULTI_ENTITY = "multi_entity"
 
 
+class ConversationSource(str, enum.Enum):
+    """Which experience a conversation belongs to.
+
+    A conversation can only be continued in the experience that created it:
+    native conversations are driven by the Here I Am UI and rebuilt into LLM
+    context on reload; Claude Code conversations are a memory-side record of
+    a session whose transcript lives in Claude Code, so they are never
+    rebuilt into context and hold no tool exchange rows.
+    """
+    NATIVE = "native"
+    CLAUDE_CODE = "claude_code"
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
 
@@ -56,6 +69,17 @@ class Conversation(Base):
     # cache re-write. Not used for multi-entity conversations (their notes live
     # in the per-turn message, not a position-0 seed).
     notes_seed: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # Which experience owns this conversation (see ConversationSource).
+    # Stored as a plain string ("native"/"claude_code") rather than an enum
+    # column so existing rows need only a DEFAULT, not a table rebuild.
+    source: Mapped[str] = mapped_column(String(20), default=ConversationSource.NATIVE.value)
+    # For source="claude_code": the Claude Code session ID this conversation
+    # records. Hooks key their posts on it, making session-start and
+    # assistant-turn logging idempotent and letting `claude --resume` find
+    # its conversation again. NULL for native conversations.
+    external_session_id: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True, unique=True, index=True
+    )
 
     messages: Mapped[List["Message"]] = relationship(
         "Message", back_populates="conversation", cascade="all, delete-orphan"

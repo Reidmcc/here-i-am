@@ -1,0 +1,5 @@
+{
+  "name": "here-i-am",
+  "description": "Here I Am entity continuity for Claude Code sessions: identity injection, automatic memory retrieval, and memory formation via a locally running Here I Am backend.",
+  "version": "0.1.0"
+}

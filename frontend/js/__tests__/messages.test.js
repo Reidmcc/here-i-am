@@ -93,6 +93,37 @@ describe('Messages Module', () => {
             expect(message.dataset.role).toBe('assistant');
         });
 
+        it('offers edit and regenerate in native conversations', () => {
+            state.currentConversationSource = 'native';
+
+            const human = addMessage('human', 'Hi', { messageId: 'msg-1' });
+            const assistant = addMessage('assistant', 'Hello', {
+                messageId: 'msg-2',
+                isLatestAssistant: true,
+            });
+
+            expect(human.querySelector('.edit-btn')).not.toBeNull();
+            expect(assistant.querySelector('.regenerate-btn')).not.toBeNull();
+        });
+
+        it('hides edit and regenerate in read-only Claude Code conversations', () => {
+            state.currentConversationSource = 'claude_code';
+
+            const human = addMessage('human', 'Hi', { messageId: 'msg-1' });
+            const assistant = addMessage('assistant', 'Hello', {
+                messageId: 'msg-2',
+                isLatestAssistant: true,
+            });
+
+            expect(human.querySelector('.edit-btn')).toBeNull();
+            expect(assistant.querySelector('.regenerate-btn')).toBeNull();
+            // Copy stays available — the record is still readable
+            expect(human.querySelector('.copy-btn')).not.toBeNull();
+            expect(assistant.querySelector('.copy-btn')).not.toBeNull();
+
+            state.currentConversationSource = 'native';
+        });
+
         it('should store speaker entity ID for multi-entity', () => {
             const message = addMessage('assistant', 'Test', { speakerEntityId: 'entity-1' });
 

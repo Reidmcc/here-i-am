@@ -1009,3 +1009,115 @@ class TestNotesReadDedup:
         result = await _notes_read("other.md")
 
         assert result == "content"
+
+
+class TestNotesVectorSync:
+    """Incremental notes sync (Claude Code mode's notes bridge)."""
+
+    @pytest.fixture
+    def synced_service(self, tmp_path, monkeypatch):
+        """A NotesVectorService with fake vectorize/remove that honor the
+        hash-recording contract, over a temp notes tree."""
+        from app.services.notes_vector_service import (
+            NotesVectorService,
+            _content_hash,
+        )
+
+        monkeypatch.setattr(notes_service, "_base_dir", tmp_path)
+        entity_dir = tmp_path / "TestEntity"
+        entity_dir.mkdir(parents=True)
+        (entity_dir / "index.md").write_text("index content", encoding="utf-8")
+        (entity_dir / "projects.md").write_text("projects", encoding="utf-8")
+        (tmp_path / "shared").mkdir()
+        (tmp_path / "shared" / "rules.md").write_text("rules", encoding="utf-8")
+
+        service = NotesVectorService()
+        vectorized = []
+        removed = []
+
+        async def fake_vectorize(entity_label, filename, content, shared=False):
+            vectorized.append((filename, shared))
+            key = (service._scope_key(entity_label, shared), filename)
+            service._synced_hashes[key] = _content_hash(content)
+            return True
+
+        async def fake_remove(entity_label, filename, shared=False):
+            removed.append((filename, shared))
+            service._synced_hashes.pop(
+                (service._scope_key(entity_label, shared), filename), None
+            )
+            return True
+
+        monkeypatch.setattr(service, "vectorize_note", fake_vectorize)
+        monkeypatch.setattr(service, "remove_note_vectors", fake_remove)
+        from app.services.notes_vector_service import memory_service as nvs_memory
+        monkeypatch.setattr(nvs_memory, "is_configured", lambda entity_id=None: True)
+        return service, tmp_path, vectorized, removed
+
+    @pytest.mark.asyncio
+    async def test_first_sync_vectorizes_everything(self, synced_service):
+        service, _, vectorized, _ = synced_service
+
+        summary = await service.sync_entity_notes("TestEntity")
+
+        assert summary["indexed"] == 3
+        assert summary["errors"] == []
+        assert sorted(vectorized) == [
+            ("index.md", False), ("projects.md", False), ("rules.md", True),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_second_sync_is_a_no_op(self, synced_service):
+        service, _, vectorized, _ = synced_service
+        await service.sync_entity_notes("TestEntity")
+        vectorized.clear()
+
+        summary = await service.sync_entity_notes("TestEntity")
+
+        assert summary["indexed"] == 0
+        assert summary["unchanged"] == 3
+        assert vectorized == []
+
+    @pytest.mark.asyncio
+    async def test_only_changed_files_revectorize(self, synced_service):
+        service, tmp_path, vectorized, _ = synced_service
+        await service.sync_entity_notes("TestEntity")
+        vectorized.clear()
+
+        (tmp_path / "TestEntity" / "projects.md").write_text(
+            "projects, updated by a Claude Code session", encoding="utf-8"
+        )
+
+        summary = await service.sync_entity_notes("TestEntity")
+
+        assert summary["indexed"] == 1
+        assert summary["unchanged"] == 2
+        assert vectorized == [("projects.md", False)]
+
+    @pytest.mark.asyncio
+    async def test_deleted_files_lose_their_vectors(self, synced_service):
+        service, tmp_path, vectorized, removed = synced_service
+        await service.sync_entity_notes("TestEntity")
+        vectorized.clear()
+
+        (tmp_path / "TestEntity" / "projects.md").unlink()
+
+        summary = await service.sync_entity_notes("TestEntity")
+
+        assert summary["removed"] == 1
+        assert removed == [("projects.md", False)]
+        # And it stays gone on the next sync
+        summary2 = await service.sync_entity_notes("TestEntity")
+        assert summary2["removed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_memory_reports_error(self, tmp_path, monkeypatch):
+        from app.services.notes_vector_service import NotesVectorService
+        from app.services.notes_vector_service import memory_service as nvs_memory
+        monkeypatch.setattr(nvs_memory, "is_configured", lambda entity_id=None: False)
+        service = NotesVectorService()
+
+        summary = await service.sync_entity_notes("TestEntity")
+
+        assert summary["indexed"] == 0
+        assert "Pinecone not configured" in summary["errors"]

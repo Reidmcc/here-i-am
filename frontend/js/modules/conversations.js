@@ -22,6 +22,7 @@ let callbacks = {
     updateHeader: null,
     updateMemoriesPanel: null,
     clearMessages: null,
+    setReadOnlyMode: null,
 };
 
 /**
@@ -124,11 +125,17 @@ export function renderConversationList() {
             entityInfo = `<span class="conv-entity-label">${escapeHtml(label)}</span>`;
         }
 
+        // Claude Code conversations are read-only records of external sessions
+        const sourceBadge = conv.source === 'claude_code'
+            ? '<span class="conv-source-badge">Claude Code</span>'
+            : '';
+
         return `
             <div class="conversation-item ${isActive}" data-id="${conv.id}">
                 <div class="conversation-item-content" onclick="app.loadConversation('${conv.id}')">
                     <div class="conversation-item-title">${escapeHtml(conv.title || 'Untitled')}</div>
                     <div class="conversation-item-meta">
+                        ${sourceBadge}
                         ${entityInfo}
                         <span class="conv-date">${new Date(conv.created_at).toLocaleDateString()}</span>
                     </div>
@@ -229,6 +236,7 @@ export async function createNewConversation(skipEntityModal = false) {
 
         const conversation = await api.createConversation(conversationData);
         state.lastCreatedConversation = conversation;
+        state.currentConversationSource = 'native';
 
         // Store entities for multi-entity
         if (conversation.entities && conversation.entities.length > 0) {
@@ -293,6 +301,11 @@ export async function loadConversation(id) {
             api.getConversationMessages(id),
             api.getSessionInfo(id).catch(() => null),
         ]);
+
+        // Track the conversation's owning experience BEFORE rendering:
+        // message action buttons key off it (Claude Code records are
+        // read-only here)
+        state.currentConversationSource = conversation.source || 'native';
 
         // Repopulate the "memories retrieved in this session" panel so it
         // reflects the loaded conversation instead of staying empty until the
@@ -413,6 +426,10 @@ export async function archiveConversation() {
         // Clear current view if we archived the active conversation
         if (conversationId === state.currentConversationId) {
             state.currentConversationId = null;
+            state.currentConversationSource = 'native';
+            if (callbacks.setReadOnlyMode) {
+                callbacks.setReadOnlyMode(false);
+            }
             resetMemoryState();
             if (callbacks.clearMessages) {
                 callbacks.clearMessages();

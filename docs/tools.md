@@ -24,6 +24,19 @@ Require Pinecone (`PINECONE_API_KEY` + `PINECONE_INDEXES`).
 - `memory_mark` — pin a memory so it is exempt from age-based significance decay (or unpin with `undo=true`). Accepts memory ID prefixes of 6+ characters.
 - `memory_release` — remove a memory from all retrieval without deleting it (reversible with `undo=true`; the researcher can also view and restore released memories).
 
+Every retrieved memory — in `[MEMORY]` context markers and in `memory_query`
+results — is labeled with the experience it was formed in: `via Here I Am`
+(a native conversation) or `via Claude Code` (a Claude Code mode session).
+
+The four memory tools are also exposed over MCP for Claude Code mode
+(`POST /mcp`, gated by `CLAUDE_CODE_MODE_ENABLED` — see
+[claude-code-mode.md](claude-code-mode.md)). The MCP variants take an extra
+`conversation_id` parameter (required for `memory_save`) identifying the
+session's Claude Code conversation; there, `memory_query` results *are*
+linked (`ConversationMemoryLink`), because Claude Code conversations are
+never rebuilt into context — the link is purely the dedup record that keeps
+automatic retrieval from re-surfacing queried memories.
+
 ## Notes Tools
 
 Require `NOTES_ENABLED=true` (the default).
