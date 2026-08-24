@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,6 +27,16 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 # Batch size for committing during imports to prevent memory exhaustion
 IMPORT_BATCH_SIZE = 50
+
+# How long an empty claude_code conversation is kept before the list
+# cleanup treats it as abandoned. Session registration is lazy (see
+# routes/claude_code.py), so an empty row only arises from a session whose
+# sole recorded input was a bare slash command, from a post-compact
+# registration, or from before lazy registration shipped; a live session
+# that speaks after being swept re-registers under the same deterministic
+# conversation id, so the retention only needs to cover the window where
+# its reflection links are still worth keeping.
+CLAUDE_CODE_EMPTY_RETENTION = timedelta(hours=24)
 
 
 class ConversationCreate(BaseModel):
@@ -355,13 +365,23 @@ async def list_conversations(
         message_count = len(messages)
 
         # Clean up empty conversations (no messages ever sent). Claude Code
-        # conversations are exempt: a registered session legitimately has no
-        # messages until its first prompt, and deleting the row would drop
-        # its session mapping and reflection links mid-session.
-        if message_count == 0 and conv.source != ConversationSource.CLAUDE_CODE.value:
-            await db.delete(conv)
-            deleted_empty = True
-            continue
+        # conversations get a retention window instead of an immediate
+        # sweep: an empty row can belong to a session that is still live
+        # (e.g. its only input so far was a bare slash command), and
+        # deleting it would drop the reflection links mid-session — but one
+        # idle past the retention is abandoned (deletion cascades its
+        # links; if the session ever speaks it re-registers under the same
+        # deterministic conversation id).
+        if message_count == 0:
+            if conv.source != ConversationSource.CLAUDE_CODE.value:
+                await db.delete(conv)
+                deleted_empty = True
+                continue
+            last_activity = conv.updated_at or conv.created_at
+            if last_activity < datetime.utcnow() - CLAUDE_CODE_EMPTY_RETENTION:
+                await db.delete(conv)
+                deleted_empty = True
+                continue
 
         # Get preview from first human message
         preview = None

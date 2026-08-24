@@ -9,7 +9,7 @@ Three lifecycle hooks call the backend's `/api/claude-code` endpoints:
 
 | Hook | What it does |
 | --- | --- |
-| `SessionStart` | Registers the session as a conversation; injects the entity's identity block, system prompt, notes index, and recent reflections. After a compaction (`source: "compact"`) it instead re-injects the notes indexes and the ten most recent reflections verbatim |
+| `SessionStart` | Injects the entity's identity block, system prompt, notes index, and recent reflections (the conversation itself is registered lazily, on the first recorded prompt — background sessions that never speak leave no record). After a compaction (`source: "compact"`) it instead re-injects the notes indexes and the ten most recent reflections verbatim |
 | `UserPromptSubmit` | Records the prompt to memory; injects automatically retrieved memories alongside it |
 | `Stop` | Records the entity's final message of the turn to memory |
 | `SessionEnd` | Final notes sync (a catch — the same incremental sync already runs in the background on every prompt, since sessions can idle out without ever formally ending) |

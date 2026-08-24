@@ -3,9 +3,12 @@ Claude Code mode endpoints.
 
 Called by the Claude Code lifecycle hooks shipped in claude-code-mode/ (not
 by the frontend). Each endpoint is keyed on the Claude Code session ID and
-is safe to call out of order: any of them will create the session's
-conversation if the backend hasn't seen it yet (e.g. after a mid-session
-backend restart).
+is safe to call out of order: any endpoint that records content will create
+the session's conversation if the backend hasn't seen it yet (e.g. after a
+mid-session backend restart). /session-start deliberately does NOT create
+it — registration is lazy, deferred to the first recorded prompt, because
+Claude Desktop fires SessionStart for background/utility sessions that
+never speak (see services/claude_code_mode.py).
 
 Gated by CLAUDE_CODE_MODE_ENABLED (default off) — the hooks are written to
 fail soft, so a disabled or unreachable backend degrades a Claude Code
@@ -55,9 +58,13 @@ class SessionStartRequest(BaseModel):
 
 
 class SessionStartResponse(BaseModel):
+    # The session's conversation id — deterministic, and handed out before
+    # the row exists (lazy registration; see services/claude_code_mode.py)
     conversation_id: str
     entity_id: str
     entity_label: str
+    # True when this response carries the fresh-session context (no row
+    # yet). The hook uses it only to name the bulk spill file.
     created: bool
     context: str
     # Notes indexes + recent reflections. Separate from `context` because the
@@ -134,43 +141,61 @@ async def session_start(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Register a Claude Code session and return the entity's context block.
+    Return the entity's context block for a starting Claude Code session.
 
-    A new conversation gets the full block (identity + system prompt +
+    No conversation row is created here: registration is lazy, deferred to
+    the first endpoint that records something (/retrieve, /log-assistant).
+    The conversation id named in the context is deterministic (uuid5 of the
+    session id), so the row those endpoints create matches what the entity
+    was already told to pass to the memory tools.
+
+    An unrecorded session gets the full block (identity + system prompt +
     notes index + recent reflections). An existing conversation whose
     context was just compacted (source "compact") gets the post-compaction
     block: notes index reloaded plus the most recent reflections restored
-    verbatim (compaction paraphrases everything else). A plain resume gets
-    an empty block — its transcript already carries the injections, so
-    re-sending them would duplicate context.
+    verbatim (compaction paraphrases everything else); a compact for a
+    session with no row registers it first — the post-compact block records
+    reflection links, which need a home. A session-start for a session that
+    already has a conversation (a resume) gets an empty block — its
+    transcript already carries the injections, so re-sending them would
+    duplicate context.
     """
     _require_enabled()
     entity = _resolve_entity_or_400(data.entity)
 
-    conversation, created = await cc.ensure_conversation(
-        db, data.session_id, entity, cwd=data.cwd
-    )
+    conversation = await cc.get_conversation_for_session(db, data.session_id)
+    if conversation is None and data.source == "compact":
+        # A compaction implies a session with recorded history; if its row
+        # is missing anyway (e.g. it ran while the backend was down), the
+        # session is clearly a speaking one — register it now
+        conversation, _ = await cc.ensure_conversation(
+            db, data.session_id, entity, cwd=data.cwd
+        )
 
     context = ""
     bulk_context = ""
-    if created:
+    fresh = conversation is None
+    if fresh:
+        conversation_id = cc.conversation_id_for_session(data.session_id)
         context, bulk_context = await cc.build_session_start_context(
-            db, conversation, entity
+            db, conversation_id, entity
         )
-    elif data.source == "compact":
-        context, bulk_context = await cc.build_post_compact_context(
-            db, conversation, entity
-        )
+    else:
+        conversation_id = str(conversation.id)
+        if data.source == "compact":
+            context, bulk_context = await cc.build_post_compact_context(
+                db, conversation, entity
+            )
 
     # Catch note edits made while the backend wasn't watching (e.g. before
     # this backend start)
     _spawn_notes_sync(entity)
 
     return SessionStartResponse(
-        conversation_id=str(conversation.id),
+        conversation_id=conversation_id,
         entity_id=entity.index_name,
         entity_label=entity.label,
-        created=created,
+        created=fresh,
         context=context,
         bulk_context=bulk_context,
     )
