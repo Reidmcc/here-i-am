@@ -1035,7 +1035,7 @@ class TestNotesVectorSync:
         vectorized = []
         removed = []
 
-        async def fake_vectorize(entity_label, filename, content, shared=False):
+        async def fake_vectorize(entity_label, filename, content, shared=False, log_result=True):
             vectorized.append((filename, shared))
             key = (service._scope_key(entity_label, shared), filename)
             service._synced_hashes[key] = _content_hash(content)

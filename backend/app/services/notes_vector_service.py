@@ -179,10 +179,14 @@ class NotesVectorService:
         filename: str,
         content: str,
         shared: bool = False,
+        log_result: bool = True,
     ) -> bool:
         """
         (Re)index a note file. Replaces any previously indexed chunks.
         Returns True if at least one index was updated.
+
+        Bulk callers (reindex/sync) pass log_result=False and log a single
+        summary line instead of one line per note.
         """
         indexes = self._target_indexes(entity_label, shared)
         if not indexes:
@@ -218,7 +222,8 @@ class NotesVectorService:
 
         if updated:
             self._synced_hashes[(self._scope_key(entity_label, shared), filename)] = _content_hash(content)
-            logger.info(f"[NOTES] Vectorized '{filename}' (shared={shared}, {len(records)} chunks)")
+            if log_result:
+                logger.info(f"[NOTES] Vectorized '{filename}' (shared={shared}, {len(records)} chunks)")
         return updated
 
     async def remove_note_vectors(
@@ -307,7 +312,9 @@ class NotesVectorService:
             if not read.get("success"):
                 summary["errors"].append(f"{label_prefix}/{filename}: {read.get('error')}")
                 continue
-            ok = await self.vectorize_note(entity_label, filename, read["content"], shared=shared)
+            ok = await self.vectorize_note(
+                entity_label, filename, read["content"], shared=shared, log_result=False
+            )
             if ok:
                 summary["indexed"] += 1
             else:
@@ -331,6 +338,10 @@ class NotesVectorService:
         # Shared notes (indexed into every entity's index)
         await self._reindex_listing("", shared=True, summary=summary)
 
+        logger.info(
+            f"[NOTES] Reindex complete: {summary['indexed']} note(s) vectorized, "
+            f"{len(summary['errors'])} error(s)"
+        )
         return summary
 
     async def sync_entity_notes(self, entity_label: str) -> Dict[str, Any]:
@@ -382,7 +393,8 @@ class NotesVectorService:
                         summary["unchanged"] += 1
                         continue
                     ok = await self.vectorize_note(
-                        entity_label, filename, read["content"], shared=shared
+                        entity_label, filename, read["content"], shared=shared,
+                        log_result=False,
                     )
                     if ok:
                         summary["indexed"] += 1
@@ -399,7 +411,13 @@ class NotesVectorService:
                     summary["removed"] += 1
 
         if summary["indexed"] or summary["removed"] or summary["errors"]:
-            logger.info(f"[NOTES] Sync for '{entity_label}': {summary}")
+            logger.info(
+                f"[NOTES] Sync for '{entity_label}': {summary['indexed']} indexed, "
+                f"{summary['removed']} removed, {summary['unchanged']} unchanged, "
+                f"{len(summary['errors'])} error(s)"
+            )
+            for error in summary["errors"]:
+                logger.warning(f"[NOTES] Sync error for '{entity_label}': {error}")
         return summary
 
 
