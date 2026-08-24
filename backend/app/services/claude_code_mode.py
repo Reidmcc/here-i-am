@@ -56,7 +56,12 @@ def safe_token_count(text: str) -> Optional[int]:
     soft, so the error would silently drop the message from memory.
     """
     try:
-        from app.services import llm_service
+        # Import the singleton from its own module, never `from app.services
+        # import llm_service`: that resolves against the package's attributes,
+        # which hold the submodule until `app/services/__init__.py` binds the
+        # instance. This function swallows exceptions, so a shadowed name would
+        # silently degrade every token count to NULL rather than failing loudly.
+        from app.services.llm_service import llm_service
         return llm_service.count_tokens(text)
     except Exception as e:
         logger.warning(f"[CC MODE] Token counting unavailable: {e}")

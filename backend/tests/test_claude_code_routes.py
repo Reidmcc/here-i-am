@@ -814,3 +814,54 @@ class TestConversationResponses:
             select(Conversation).where(Conversation.id == conversation_id)
         )
         assert result.scalar_one_or_none() is not None
+
+
+class TestSafeTokenCount:
+    """safe_token_count must reach the LLMService singleton, not the submodule.
+
+    `from app.services import llm_service` resolves against the package's
+    attributes, which hold the submodule until __init__.py binds the
+    instance (this is what broke GET /api/chat/config). Here the failure
+    would be silent rather than loud: the function swallows exceptions, so a
+    shadowed name turns every recorded message's token_count into NULL with
+    only a log line to show for it.
+    """
+
+    def test_reaches_the_singleton(self, monkeypatch):
+        from app.services import claude_code_mode as cc_mode
+        from app.services.llm_service import llm_service as singleton
+
+        monkeypatch.setattr(singleton, "count_tokens", lambda text, model=None: 4242)
+
+        assert cc_mode.safe_token_count("some prompt text") == 4242
+
+    def test_counting_failure_degrades_to_none(self, monkeypatch):
+        from app.services import claude_code_mode as cc_mode
+        from app.services.llm_service import llm_service as singleton
+
+        def boom(text, model=None):
+            raise RuntimeError("tiktoken encoding unavailable")
+
+        monkeypatch.setattr(singleton, "count_tokens", boom)
+
+        assert cc_mode.safe_token_count("some prompt text") is None
+
+    def test_survives_package_attribute_shadowing(self, monkeypatch):
+        """The discriminating case: with `app.services.llm_service` still
+        bound to the submodule (as it is mid-`__init__.py`), the old
+        `from app.services import llm_service` form silently yields None."""
+        import importlib
+
+        import app.services as services_pkg
+        from app.services import claude_code_mode as cc_mode
+        from app.services.llm_service import llm_service as singleton
+
+        # `import app.services.llm_service as m` would itself resolve through
+        # the package attribute (i.e. to the singleton); import_module is the
+        # one way to get the actual module object.
+        llm_module = importlib.import_module("app.services.llm_service")
+        assert llm_module is not singleton
+        monkeypatch.setattr(services_pkg, "llm_service", llm_module, raising=False)
+        monkeypatch.setattr(singleton, "count_tokens", lambda text, model=None: 7)
+
+        assert cc_mode.safe_token_count("some prompt text") == 7
