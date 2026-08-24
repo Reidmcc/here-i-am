@@ -24,6 +24,7 @@ Environment:
 """
 import json
 import os
+import re
 import sys
 import tempfile
 import urllib.request
@@ -45,6 +46,22 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
         pass
 
 DEFAULT_INLINE_BUDGET = 18000
+
+# Claude Code delivers harness events through the prompt channel: background
+# task notifications arrive as a bare <task-notification> block, and other
+# events ride in a <system-reminder> block prepended to (or standing in for)
+# the user's message. UserPromptSubmit fires for all of them, so without
+# stripping, harness plumbing gets archived — and vectorized — as the
+# human's own words. The archive stays the talk.
+_HARNESS_BLOCK_RE = re.compile(
+    r"<(system-reminder|task-notification)>.*?</\1>\s*", re.DOTALL
+)
+
+
+def strip_harness_blocks(prompt: str) -> str:
+    """The prompt with harness-injected blocks removed; empty string when
+    nothing user-authored remains (callers should skip recording then)."""
+    return _HARNESS_BLOCK_RE.sub("", prompt).strip()
 
 
 def read_hook_input():
