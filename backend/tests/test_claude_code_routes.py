@@ -201,6 +201,63 @@ class TestSessionStart:
         await db_session.refresh(reflection)
         assert reflection.times_retrieved == 0
 
+    async def test_session_reflection_count_follows_recent_reflections_count(
+        self, async_client, db_session, monkeypatch
+    ):
+        """
+        With no Claude Code override, session start injects
+        RECENT_REFLECTIONS_COUNT reflections, not a hardcoded 3.
+        """
+        monkeypatch.setattr(settings, "claude_code_session_reflections_count", None)
+        monkeypatch.setattr(settings, "recent_reflections_count", 1)
+        other_conversation = Conversation(entity_id="test-entity")
+        db_session.add(other_conversation)
+        await db_session.commit()
+        for i in range(3):
+            db_session.add(Message(
+                conversation_id=other_conversation.id,
+                role=MessageRole.REFLECTION,
+                content=f"Recency reflection {i}.",
+                speaker_entity_id="test-entity",
+                created_at=datetime(2026, 2, 1 + i),
+            ))
+        await db_session.commit()
+
+        response = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        context = response.json()["context"]
+        assert "Recency reflection 2." in context  # newest
+        assert "Recency reflection 1." not in context
+        assert "Recency reflection 0." not in context
+
+    async def test_session_reflection_count_override_wins(
+        self, async_client, db_session, monkeypatch
+    ):
+        """CLAUDE_CODE_SESSION_REFLECTIONS_COUNT still overrides the native knob."""
+        monkeypatch.setattr(settings, "claude_code_session_reflections_count", 2)
+        monkeypatch.setattr(settings, "recent_reflections_count", 1)
+        other_conversation = Conversation(entity_id="test-entity")
+        db_session.add(other_conversation)
+        await db_session.commit()
+        for i in range(3):
+            db_session.add(Message(
+                conversation_id=other_conversation.id,
+                role=MessageRole.REFLECTION,
+                content=f"Override reflection {i}.",
+                speaker_entity_id="test-entity",
+                created_at=datetime(2026, 3, 1 + i),
+            ))
+        await db_session.commit()
+
+        response = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        context = response.json()["context"]
+        assert "Override reflection 2." in context
+        assert "Override reflection 1." in context
+        assert "Override reflection 0." not in context
+
     async def test_unknown_entity_rejected(self, async_client):
         response = await async_client.post(
             "/api/claude-code/session-start",
