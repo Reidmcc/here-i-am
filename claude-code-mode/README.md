@@ -14,8 +14,20 @@ Three lifecycle hooks call the backend's `/api/claude-code` endpoints:
 | `Stop` | Records the entity's final message of the turn to memory |
 | `SessionEnd` | Final notes sync (a catch — the same incremental sync already runs in the background on every prompt, since sessions can idle out without ever formally ending) |
 
-All hooks fail soft: if the backend is down or the mode is disabled, the
-session continues as a plain Claude Code session.
+All hooks fail soft, **loudly**: if the backend is down or the mode is
+disabled, the session continues as a plain Claude Code session — with a
+one-line `[HERE I AM]` notice injected so the entity knows it is running
+without memory (a `Stop` failure, whose output can't reach context, exits 2
+once so the loss of the turn's final message is seen and can be acted on).
+Only `HIM_DISABLE`, the deliberate off switch, degrades silently.
+
+Claude Code silently truncates oversized hook stdout to a ~2KB preview, so
+the hooks never hand it more than `HIM_INLINE_BUDGET` (default 18KB): the
+session-start bulk (notes indexes + reflections — 150KB+ for a lived-in
+entity) and any oversized retrieval block are written to
+`<tmp>/here-i-am-sessions/` instead, with a loud pointer injected telling
+the entity to read the file before doing anything else. Small payloads
+stay fully inline.
 
 An MCP server (`.mcp.json`, pointing at `http://localhost:8000/mcp`) gives
 the entity its deliberate memory tools in the session: `memory_query`,
@@ -23,6 +35,21 @@ the entity its deliberate memory tools in the session: `memory_query`,
 tells the entity the `conversation_id` to pass so the tools act on this
 session's conversation. Notes and git tools are not exposed — Claude Code's
 native tools cover them.
+
+**The MCP server must be registered separately from the hooks** — hooks in
+`settings.json` do not carry it, and without it the entity has no
+`memory_save` (it cannot save reflections, the only verbatim carriers
+across compaction). For hooks registered in `~/.claude/settings.json`
+(all projects), register the server user-wide to match:
+
+```bash
+claude mcp add --scope user --transport http here-i-am http://localhost:8000/mcp
+```
+
+For project-scoped setups, copy this directory's `.mcp.json` into the
+project root instead (or `claude mcp add` without `--scope user`). Verify
+with `claude mcp list` — `here-i-am` should show as connected while the
+backend is running.
 
 ## Requirements
 
@@ -146,7 +173,8 @@ resolves; otherwise use the manual setup above with `python`.
 | --- | --- | --- |
 | `HIM_BACKEND_URL` | `http://localhost:8000` | Here I Am backend base URL |
 | `HIM_ENTITY` | backend's default entity | Entity index name or label |
-| `HIM_DISABLE` | unset | Set to anything to turn the hooks off |
+| `HIM_DISABLE` | unset | Set to anything to turn the hooks off (silently — this is the deliberate off switch) |
+| `HIM_INLINE_BUDGET` | `18000` | Max bytes of hook stdout before bulk content is spilled to a file with an inline pointer (Claude Code truncates oversized hook output silently; the default sits under the observed ~20KB cap) |
 
 ## Notes and compaction
 

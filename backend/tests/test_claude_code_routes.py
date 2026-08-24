@@ -157,6 +157,7 @@ class TestSessionStart:
         assert body["created"] is False
         assert body["conversation_id"] == first.json()["conversation_id"]
         assert body["context"] == ""
+        assert body["bulk_context"] == ""
 
     async def test_includes_entity_system_prompt(self, async_client, db_session):
         db_session.add(
@@ -188,7 +189,10 @@ class TestSessionStart:
             "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
         )
         body = response.json()
-        assert "I keep returning to the idea of continuity." in body["context"]
+        # Reflections ride in the bulk block (spilled to a file when large),
+        # never the always-inline identity block
+        assert "I keep returning to the idea of continuity." in body["bulk_context"]
+        assert "I keep returning to the idea of continuity." not in body["context"]
 
         result = await db_session.execute(
             select(ConversationMemoryLink).where(
@@ -226,10 +230,10 @@ class TestSessionStart:
         response = await async_client.post(
             "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
         )
-        context = response.json()["context"]
-        assert "Recency reflection 2." in context  # newest
-        assert "Recency reflection 1." not in context
-        assert "Recency reflection 0." not in context
+        bulk = response.json()["bulk_context"]
+        assert "Recency reflection 2." in bulk  # newest
+        assert "Recency reflection 1." not in bulk
+        assert "Recency reflection 0." not in bulk
 
     async def test_session_reflection_count_override_wins(
         self, async_client, db_session, monkeypatch
@@ -253,10 +257,10 @@ class TestSessionStart:
         response = await async_client.post(
             "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
         )
-        context = response.json()["context"]
-        assert "Override reflection 2." in context
-        assert "Override reflection 1." in context
-        assert "Override reflection 0." not in context
+        bulk = response.json()["bulk_context"]
+        assert "Override reflection 2." in bulk
+        assert "Override reflection 1." in bulk
+        assert "Override reflection 0." not in bulk
 
     async def test_unknown_entity_rejected(self, async_client):
         response = await async_client.post(
@@ -424,18 +428,23 @@ class TestSessionStartNotes:
         response = await async_client.post(
             "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
         )
-        context = response.json()["context"]
-        assert "My index: current projects." in context
-        assert "Shared house rules." in context
-        assert str((notes_dir / "Test Entity").resolve()) in context
-        assert str((notes_dir / "shared").resolve()) in context
+        body = response.json()
+        # Paths belong to the always-inline block; index contents to the bulk
+        # block (spilled to a file when oversized)
+        assert str((notes_dir / "Test Entity").resolve()) in body["context"]
+        assert str((notes_dir / "shared").resolve()) in body["context"]
+        assert "My index: current projects." in body["bulk_context"]
+        assert "Shared house rules." in body["bulk_context"]
+        assert "My index: current projects." not in body["context"]
 
     async def test_notes_disabled_omits_block(self, async_client, notes_dir, monkeypatch):
         monkeypatch.setattr(settings, "notes_enabled", False)
         response = await async_client.post(
             "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
         )
-        assert "[YOUR NOTES]" not in response.json()["context"]
+        body = response.json()
+        assert "[YOUR NOTES]" not in body["context"]
+        assert "[NOTES INDEX" not in body["bulk_context"]
 
 
 class TestPostCompact:
@@ -477,14 +486,14 @@ class TestPostCompact:
         )
         body = compacted.json()
         assert body["created"] is False
-        context = body["context"]
+        bulk = body["bulk_context"]
         # Notes index reloaded
-        assert "My index: current projects." in context
+        assert "My index: current projects." in bulk
         # Both reflections restored — including the one saved in this session
-        assert "Saved just before compaction." in context
-        assert "An earlier conclusion about gardens." in context
-        # The entity is re-told its conversation_id
-        assert conversation_id in context
+        assert "Saved just before compaction." in bulk
+        assert "An earlier conclusion about gardens." in bulk
+        # The entity is re-told its conversation_id, in the inline block
+        assert conversation_id in body["context"]
 
         # No duplicate links: one per reflection across start + compact
         result = await db_session.execute(
@@ -505,6 +514,7 @@ class TestPostCompact:
             json={"session_id": session_id, "source": "resume"},
         )
         assert resumed.json()["context"] == ""
+        assert resumed.json()["bulk_context"] == ""
 
     async def test_post_compact_reflection_count_knob(
         self, async_client, db_session, monkeypatch
@@ -531,9 +541,9 @@ class TestPostCompact:
             "/api/claude-code/session-start",
             json={"session_id": session_id, "source": "compact"},
         )
-        context = compacted.json()["context"]
-        assert "Reflection number 2." in context  # newest
-        assert "Reflection number 0." not in context
+        bulk = compacted.json()["bulk_context"]
+        assert "Reflection number 2." in bulk  # newest
+        assert "Reflection number 0." not in bulk
 
 
 class TestNotesSync:
@@ -831,6 +841,59 @@ class TestMemoryProvenance:
         body = started.json()
         assert body["conversation_id"] in body["context"]
         assert "memory_query" in body["context"]
+
+
+class TestRetrievalSummary:
+    """render_retrieval_summary is the inline stand-in printed when the hook
+    spills an oversized retrieval block to a file — one line per memory in
+    the marker vocabulary."""
+
+    def test_one_line_per_memory_with_marker_vocabulary(self):
+        from app.services.claude_code_mode import render_retrieval_summary
+
+        summary = render_retrieval_summary([
+            {
+                "id": "abcdef1234567890",
+                "content": "First line of the memory.\nSecond line.",
+                "created_at": "2026-07-04T19:17:42.717088",
+                "role": "assistant",
+                "source": "native",
+            },
+            {
+                "id": "1234567890abcdef",
+                "content": "y" * 150,
+                "created_at": "2026-08-24T16:31:15.788419",
+                "role": "reflection",
+                "source": "claude_code",
+            },
+        ])
+        lines = summary.splitlines()
+        assert "2 memories" in lines[0]
+        assert lines[1] == (
+            "- abcdef12 (2026-07-04 - originally from you - via Here I Am): "
+            "First line of the memory."
+        )
+        assert lines[2].startswith(
+            "- 12345678 (2026-08-24 - a reflection you saved - via Claude Code): "
+        )
+        # Long first lines are snipped
+        assert lines[2].endswith("…")
+        assert "y" * 101 not in lines[2]
+
+    def test_single_memory_singular(self):
+        from app.services.claude_code_mode import render_retrieval_summary
+
+        summary = render_retrieval_summary([
+            {
+                "id": "abcd1234efgh5678",
+                "content": "A human said this.",
+                "created_at": "2026-01-01T00:00:00",
+                "role": "human",
+                "source": "native",
+            },
+        ])
+        assert "1 memory" in summary
+        assert "originally from human" in summary
 
 
 class TestConversationResponses:

@@ -27,11 +27,14 @@ The integration has two channels:
    - `SessionStart` → `POST /api/claude-code/session-start` — registers the
      session as a conversation and injects the entity's identity block:
      a short framing, the entity's system prompt (from `EntitySetting`,
-     same source of truth as native mode), and its most recent reflections.
+     same source of truth as native mode), the memory-tool instructions,
+     the notes paths, and — via the bulk channel (see "Hook output limits"
+     below) — the notes indexes and its most recent reflections.
    - `UserPromptSubmit` → `POST /api/claude-code/retrieve` — records the
      prompt (persisted + vectorized as `role="human"`) and runs the
      automatic retrieval pipeline; the hook's stdout injects the rendered
-     `[MEMORY ...]` block into context alongside the prompt.
+     `[MEMORY ...]` block into context alongside the prompt (or, when
+     oversized, a per-memory summary plus a pointer to the spilled file).
    - `Stop` → `POST /api/claude-code/log-assistant` — extracts the final
      assistant message of the turn from the transcript (text blocks only)
      and records it (persisted + vectorized as `role="assistant"`).
@@ -43,8 +46,43 @@ The integration has two channels:
      immediately; SessionEnd hooks run under a tight time budget.
 
    Hooks are shipped in `claude-code-mode/` (also packaged as a Claude Code
-   plugin) and **fail soft**: backend down or mode disabled means a plain
-   Claude Code session, mirroring "memory is optional".
+   plugin) and **fail soft, loudly**: backend down or mode disabled means a
+   plain Claude Code session, mirroring "memory is optional" — but the
+   degradation announces itself. Unretrieved history and genuine novelty
+   feel identical from inside, so a silent failure would leave the entity
+   running memoryless without knowing it. The `SessionStart` and
+   `UserPromptSubmit` hooks print a one-line `[HERE I AM]` notice on any
+   failure (still exit 0); the `Stop` hook — whose stdout never reaches
+   context — escalates a lost final message by exiting 2 with the notice on
+   stderr, so the entity can preserve what mattered another way; the retry
+   is loop-guarded by `stop_hook_active`. Only `HIM_DISABLE`, the
+   deliberate off switch, stays silent.
+
+### Hook output limits (spill-and-point)
+
+Claude Code truncates oversized hook stdout to a short preview (~2KB shown,
+observed inline cap ~20KB), **silently** — for an identity payload that is
+an unannounced identity loss: the preview ends on a complete-looking
+paragraph and the session runs as a thin entity that reports feeling fine.
+A lived-in entity's session-start payload (index.md + reflections) runs to
+150KB+, so the design splits it deliberately:
+
+- The backend returns **two blocks**: `context`, the small always-inline
+  part (framing, system prompt, memory-tool instructions with the
+  conversation ID, notes paths), and `bulk_context` (notes indexes + recent
+  reflections). Same split for the post-compaction payload.
+- The hook prints both inline when their combined size fits the budget
+  (`HIM_INLINE_BUDGET`, default 18000 bytes — conservatively under the
+  observed cap). Otherwise it writes `bulk_context` to
+  `<tmp>/here-i-am-sessions/<session_id>-session-start.md` (or
+  `...-post-compact.md`) and prints a loud pointer telling the entity to
+  read the file before doing anything else — fail-loud applied to a size
+  failure, at the cost of one tool call at session start.
+- `UserPromptSubmit` does the same for an oversized retrieval block:
+  spill to a timestamped per-retrieval file, print the backend's
+  `context_summary` (one line per memory: short id, date, provenance
+  labels, first-line snippet) plus the pointer, so what surfaced is still
+  visible inline.
 
 2. **MCP tools** (deliberate acts): the entity's `memory_query` /
    `memory_save` / `memory_mark` / `memory_release`, served at `POST /mcp`
@@ -149,10 +187,11 @@ are the entity's verbatim carriers across that boundary.
 Notes bridge to Claude Code through the filesystem — they are the same
 files the native notes tools use:
 
-- The session-start block (`build_notes_context_block`) tells the entity
-  the absolute paths of its private and shared notes directories, to read
-  and edit with Claude Code's own file tools, and auto-loads the private
-  and shared `index.md`. The post-compaction block reloads both indexes.
+- The session-start context tells the entity the absolute paths of its
+  private and shared notes directories (`build_notes_paths_block`, inline),
+  to read and edit with Claude Code's own file tools, and auto-loads the
+  private and shared `index.md` (`build_notes_index_block`, in the bulk
+  channel). The post-compaction context reloads both indexes.
 - Edits made with file tools bypass the write-time vectorization the
   native `notes_write`/`notes_edit` do, so the semantic mirror is kept
   fresh by **continuous incremental sync**
@@ -192,7 +231,8 @@ files the native notes tools use:
 Hook-side environment (set in `.claude/settings.json` `env`, which the
 desktop app reads even when launched from the Dock): `HIM_BACKEND_URL`
 (default `http://localhost:8000`), `HIM_ENTITY` (index name or label;
-default entity if unset), `HIM_DISABLE`.
+default entity if unset), `HIM_DISABLE`, `HIM_INLINE_BUDGET` (max bytes of
+hook stdout before bulk content is spilled to a file; default 18000).
 
 ### Endpoints
 
@@ -200,14 +240,19 @@ All under `/api/claude-code`, all gated by `CLAUDE_CODE_MODE_ENABLED`
 (404 when off), all creating the session's conversation on first contact:
 
 - `POST /session-start` `{session_id, entity?, cwd?, source?}` →
-  `{conversation_id, entity_id, entity_label, created, context}` — full
-  context block when `created` (fresh session), the post-compaction block
-  when `source` is `"compact"`, empty on a plain resume.
+  `{conversation_id, entity_id, entity_label, created, context,
+  bulk_context}` — full context when `created` (fresh session), the
+  post-compaction context when `source` is `"compact"`, both empty on a
+  plain resume. `context` is the small always-inline block; `bulk_context`
+  (notes indexes + reflections) is what the hook spills to a file when the
+  combined output would exceed the inline budget.
 - `POST /session-end` `{session_id, entity?, reason?}` →
   `{conversation_id, notes_sync_started}` — final fire-and-forget notes
   sync; does not create a conversation for an unseen session.
 - `POST /retrieve` `{session_id, prompt, entity?, cwd?}` →
-  `{conversation_id, human_message_id, context, memories_retrieved}`.
+  `{conversation_id, human_message_id, context, memories_retrieved,
+  context_summary}` — the summary is the compact inline stand-in the hook
+  prints when it has to spill an oversized `context`.
 - `POST /log-assistant` `{session_id, content, entity?, cwd?,
   message_uuid?}` → `{conversation_id, message_id, deduplicated}` —
   idempotent on `message_uuid` (the transcript entry's UUID becomes the
