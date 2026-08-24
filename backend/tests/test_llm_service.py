@@ -1,11 +1,18 @@
 """
 Unit tests for LLMService.
 """
+import importlib
+from types import ModuleType
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.services.llm_service import AVAILABLE_MODELS, MODEL_PROVIDER_MAP, LLMService, ModelProvider
+from app.services.openai_service import OpenAIService
+
+# The package attribute `app.services.llm_service` is the LLMService singleton,
+# so reach for the module itself the one way that cannot resolve to it.
+llm_module = importlib.import_module("app.services.llm_service")
 
 
 class TestModelProviderMapping:
@@ -349,3 +356,38 @@ class TestAvailableModels:
                 assert "name" in model
                 assert isinstance(model["id"], str)
                 assert isinstance(model["name"], str)
+
+
+class TestServiceSingletonBindings:
+    """The module-level provider names must be the singletons, not the modules.
+
+    `llm_service` is imported from `app/services/__init__.py` before that file
+    binds every singleton onto the package, so a `from app.services import
+    openai_service` here silently resolves to the *submodule*. The rest of the
+    suite patches these names with mocks (which answer to any attribute), so
+    nothing else catches the regression — every real call, including
+    GET /api/chat/config, died with AttributeError.
+    """
+
+    def test_provider_names_are_service_instances(self):
+        """The provider globals expose the service API, not a module."""
+        for service in (
+            llm_module.anthropic_service,
+            llm_module.openai_service,
+            llm_module.google_service,
+        ):
+            assert not isinstance(service, ModuleType), (
+                f"{service} is the module, not the service singleton"
+            )
+
+        assert isinstance(llm_module.openai_service, OpenAIService)
+        assert callable(llm_module.openai_service.is_configured)
+        assert callable(llm_module.anthropic_service.count_tokens)
+
+    def test_get_available_providers_runs_unpatched(self):
+        """The real (unmocked) provider probe must not raise."""
+        providers = LLMService().get_available_providers()
+
+        assert isinstance(providers, list)
+        for provider in providers:
+            assert {"id", "name", "models"} <= provider.keys()
