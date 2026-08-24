@@ -60,6 +60,12 @@ class SessionStartResponse(BaseModel):
     entity_label: str
     created: bool
     context: str
+    # Notes indexes + recent reflections. Separate from `context` because the
+    # hook must keep its stdout under Claude Code's inline budget (oversized
+    # hook output is silently truncated to a preview): when the combined
+    # blocks don't fit, the hook writes this to a file and prints a loud
+    # pointer instead.
+    bulk_context: str = ""
 
 
 class RetrieveRequest(BaseModel):
@@ -74,6 +80,9 @@ class RetrieveResponse(BaseModel):
     human_message_id: Optional[str]
     context: str
     memories_retrieved: int
+    # One line per retrieved memory; the hook prints it in place of an
+    # oversized `context` it had to spill to a file
+    context_summary: str = ""
 
 
 class LogAssistantRequest(BaseModel):
@@ -143,10 +152,15 @@ async def session_start(
     )
 
     context = ""
+    bulk_context = ""
     if created:
-        context = await cc.build_session_start_context(db, conversation, entity)
+        context, bulk_context = await cc.build_session_start_context(
+            db, conversation, entity
+        )
     elif data.source == "compact":
-        context = await cc.build_post_compact_context(db, conversation, entity)
+        context, bulk_context = await cc.build_post_compact_context(
+            db, conversation, entity
+        )
 
     # Catch note edits made while the backend wasn't watching (e.g. before
     # this backend start)
@@ -158,6 +172,7 @@ async def session_start(
         entity_label=entity.label,
         created=created,
         context=context,
+        bulk_context=bulk_context,
     )
 
 
@@ -198,7 +213,9 @@ async def retrieve(
         token_count=cc.safe_token_count(prompt),
     )
 
-    context, count = await cc.retrieve_for_prompt(db, conversation, entity, prompt)
+    context, count, summary = await cc.retrieve_for_prompt(
+        db, conversation, entity, prompt
+    )
 
     # Keep the semantic notes mirror fresh continuously: sessions edit note
     # files with Claude Code's own tools and may never formally end, so each
@@ -211,6 +228,7 @@ async def retrieve(
         human_message_id=str(human_msg.id),
         context=context,
         memories_retrieved=count,
+        context_summary=summary,
     )
 
 

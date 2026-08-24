@@ -12,7 +12,15 @@ re-fired hook. Only the main conversation loop is logged — this script is
 wired to Stop, not SubagentStop, so subagent turns never write the
 entity's memory.
 
-Fail-soft: any problem exits 0 silently.
+Fail-soft, loudly: when the backend can't be reached the final message of
+the turn — the sole memory-bearing artifact of everything that happened in
+it — is lost from the archive. A Stop hook's stdout never reaches context,
+so the failure is escalated the one way the entity can see it: exit 2 with
+the notice on stderr, which continues the turn with the message shown. The
+entity can then preserve what mattered another way and tell the user. The
+escalation is guarded by stop_hook_active so a persistently down backend
+gets exactly one loud retry per turn, never a loop; the retry's Stop fires
+with stop_hook_active set and any failure there exits 0 silently.
 
 Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE (see session_start.py).
 """
@@ -93,8 +101,18 @@ def main() -> None:
     )
     try:
         urllib.request.urlopen(request, timeout=30).close()
-    except Exception:
-        return
+    except Exception as e:
+        if data.get("stop_hook_active"):
+            return
+        print(
+            "[HERE I AM] The Here I Am backend was unreachable at the end of "
+            f"this turn ({e.__class__.__name__}: {e}). Your final message was "
+            "NOT recorded to your long-term memory. Preserve anything "
+            "important another way (memory_save via MCP if available, or your "
+            "notes files), and tell the user the backend is down.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 
 if __name__ == "__main__":

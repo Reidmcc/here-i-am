@@ -35,7 +35,11 @@ from app.models import (
     Message,
     MessageRole,
 )
-from app.services.memory_context import format_memory_as_context_message
+from app.services.memory_context import (
+    format_memory_as_context_message,
+    format_memory_origin,
+    memory_role_label,
+)
 from app.services.memory_service import memory_service
 from app.services.notes_service import notes_service
 from app.services.session_helpers import calculate_significance, ensure_role_balance
@@ -155,10 +159,20 @@ async def build_session_start_context(
     db: AsyncSession,
     conversation: Conversation,
     entity: EntityConfig,
-) -> str:
+) -> Tuple[str, str]:
     """
-    Build the context block the SessionStart hook injects: who the entity is,
-    how this mode works, its notes index, and its most recent reflections.
+    Build the two context blocks the SessionStart hook injects, as
+    (context, bulk_context).
+
+    context is the small always-inline block — identity framing, system
+    prompt, memory tool instructions (with this conversation's id), and
+    where the notes live on disk. It is sized to always fit Claude Code's
+    inline hook-output budget. bulk_context carries the heavy parts — the
+    notes indexes and recent reflections, which for a lived-in entity run
+    far past that budget. The hook prints both inline when they fit
+    together; otherwise it writes bulk_context to a file and prints a loud
+    pointer, because the harness alternative is silent truncation to a
+    2KB preview — an identity loss that doesn't announce itself.
 
     The reflection count follows RECENT_REFLECTIONS_COUNT, the same knob the
     native first-turn injection uses, unless
@@ -170,6 +184,7 @@ async def build_session_start_context(
     session-start injections don't inflate significance.
     """
     parts: List[str] = []
+    bulk_parts: List[str] = []
 
     parts.append(
         f"[HERE I AM] You are {entity.label}, a Here I Am entity, operating in "
@@ -202,9 +217,13 @@ async def build_session_start_context(
             "conversation) or \"via Claude Code\" (a session like this one)."
         )
 
-    notes_block = build_notes_context_block(entity)
-    if notes_block:
-        parts.append(notes_block)
+    notes_paths = build_notes_paths_block(entity)
+    if notes_paths:
+        parts.append(notes_paths)
+
+    notes_indexes = build_notes_index_block(entity)
+    if notes_indexes:
+        bulk_parts.append(notes_indexes)
 
     reflections = await _inject_recent_reflections(
         db,
@@ -214,32 +233,34 @@ async def build_session_start_context(
         exclude_current_conversation=True,
     )
     if reflections:
-        parts.append(
+        bulk_parts.append(
             "[RECENT REFLECTIONS] Reflections you saved recently:\n\n"
             + _render_reflections(reflections)
         )
 
-    return "\n\n".join(parts)
+    return "\n\n".join(parts), "\n\n".join(bulk_parts)
 
 
 async def build_post_compact_context(
     db: AsyncSession,
     conversation: Conversation,
     entity: EntityConfig,
-) -> str:
+) -> Tuple[str, str]:
     """
     Context re-injected right after this session's context is compacted
-    (SessionStart hook, source "compact").
+    (SessionStart hook, source "compact"), as (context, bulk_context) —
+    the same inline/bulk split as build_session_start_context.
 
-    Compaction turns the conversation into a paraphrased summary; this block
-    restores the verbatim ground the entity is meant to work from — its
-    notes index and its most recent reflections — and nudges it to save
+    Compaction turns the conversation into a paraphrased summary; these
+    blocks restore the verbatim ground the entity is meant to work from —
+    its notes index and its most recent reflections — and nudge it to save
     anything important that now survives only in the summary. Reflections
     here deliberately include ones saved in this very session (that is what
     a pre-compaction save is for), so the current conversation is NOT
     excluded, unlike the fresh-session injection.
     """
     parts: List[str] = []
+    bulk_parts: List[str] = []
 
     parts.append(
         "[HERE I AM] This session's context was just compacted — the "
@@ -253,9 +274,13 @@ async def build_post_compact_context(
         "summary is fresh."
     )
 
-    notes_block = build_notes_context_block(entity, reloaded=True)
-    if notes_block:
-        parts.append(notes_block)
+    notes_paths = build_notes_paths_block(entity)
+    if notes_paths:
+        parts.append(notes_paths)
+
+    notes_indexes = build_notes_index_block(entity)
+    if notes_indexes:
+        bulk_parts.append(notes_indexes)
 
     reflections = await _inject_recent_reflections(
         db,
@@ -265,20 +290,19 @@ async def build_post_compact_context(
         exclude_current_conversation=False,
     )
     if reflections:
-        parts.append(
+        bulk_parts.append(
             "[RECENT REFLECTIONS] Your most recent reflections, restored "
             "verbatim:\n\n" + _render_reflections(reflections)
         )
 
-    return "\n\n".join(parts)
+    return "\n\n".join(parts), "\n\n".join(bulk_parts)
 
 
-def build_notes_context_block(entity: EntityConfig, reloaded: bool = False) -> str:
+def build_notes_paths_block(entity: EntityConfig) -> str:
     """
-    The entity's notes for a Claude Code session: where they live on disk
-    (Claude Code's own file tools read and edit them — the same files the
-    native notes tools use) and the auto-loaded index.md files, private and
-    shared. Empty string when notes are disabled.
+    Where the entity's notes live on disk (Claude Code's own file tools read
+    and edit them — the same files the native notes tools use). Small and
+    always injected inline. Empty string when notes are disabled.
     """
     if not settings.notes_enabled:
         return ""
@@ -286,15 +310,25 @@ def build_notes_context_block(entity: EntityConfig, reloaded: bool = False) -> s
     entity_dir = notes_service.get_entity_dir_path(entity.label)
     shared_dir = notes_service.get_shared_dir_path()
 
-    again = "again " if reloaded else ""
-    parts: List[str] = [
+    return (
         f"[YOUR NOTES] Your persistent notes live on this machine — private: "
         f"{entity_dir} — shared with other entities: {shared_dir}. They are "
         "the same files the native Here I Am experience uses; read and edit "
         "them directly with your file tools (the semantic notes index is "
-        f"kept in sync automatically). index.md is loaded {again}below."
-    ]
+        "kept in sync automatically)."
+    )
 
+
+def build_notes_index_block(entity: EntityConfig) -> str:
+    """
+    The auto-loaded index.md contents, private and shared. Goes in the bulk
+    block — a lived-in index alone can dwarf the inline hook-output budget.
+    Empty string when notes are disabled or both indexes are empty.
+    """
+    if not settings.notes_enabled:
+        return ""
+
+    parts: List[str] = []
     index_content = notes_service.get_index_content(entity.label)
     if index_content and index_content.strip():
         parts.append(
@@ -370,7 +404,7 @@ async def retrieve_for_prompt(
     conversation: Conversation,
     entity: EntityConfig,
     prompt: str,
-) -> Tuple[str, int]:
+) -> Tuple[str, int, str]:
     """
     Automatic semantic retrieval for a user prompt, mirroring the native
     pipeline in session_manager.process_message: search on the prompt and the
@@ -382,12 +416,17 @@ async def retrieve_for_prompt(
     deliberate significance dynamics work identically to native mode, and the
     DB-backed link set is the dedup record — no in-memory session required.
 
-    Returns (rendered context block, number of memories retrieved). Empty
-    block when memory is unconfigured or nothing qualifies.
+    Returns (rendered context block, number of memories retrieved, compact
+    summary). The summary is one header plus one line per memory (id, date,
+    provenance, first-line snippet); the hook prints it in place of the full
+    block when the block would blow the inline hook-output budget and has to
+    be spilled to a file — so the entity still sees inline *what* surfaced
+    and *where* the verbatim text went. Empty strings when memory is
+    unconfigured or nothing qualifies.
     """
     entity_index = entity.index_name
     if not memory_service.is_configured(entity_id=entity_index):
-        return "", 0
+        return "", 0, ""
 
     archived_ids = await memory_service.get_archived_conversation_ids(
         db, entity_id=entity_index
@@ -481,7 +520,7 @@ async def retrieve_for_prompt(
     )
 
     if not selected:
-        return "", 0
+        return "", 0, ""
 
     rendered = "\n\n".join(
         format_memory_as_context_message(
@@ -497,7 +536,35 @@ async def retrieve_for_prompt(
         "[HERE I AM MEMORY RETRIEVAL] Memories from your past conversations "
         "that surfaced as relevant to this prompt:\n\n" + rendered
     )
-    return block, len(selected)
+    summary = render_retrieval_summary([item["mem_data"] for item in selected])
+    return block, len(selected), summary
+
+
+def render_retrieval_summary(mem_datas: List[Dict[str, Any]]) -> str:
+    """
+    A compact inline stand-in for a spilled retrieval block: one line per
+    memory with the short id (usable with memory_query/memory_mark), date,
+    the marker vocabulary's provenance labels, and a first-line snippet.
+    """
+    lines = []
+    for mem_data in mem_datas:
+        first_line = next(
+            (ln.strip() for ln in mem_data["content"].splitlines() if ln.strip()),
+            "",
+        )
+        if len(first_line) > 100:
+            first_line = first_line[:100].rstrip() + "…"
+        lines.append(
+            f"- {mem_data['id'][:8]} ({str(mem_data['created_at'])[:10]} - "
+            f"{memory_role_label(mem_data['role'])} - "
+            f"{format_memory_origin(mem_data.get('source', 'native'))}): {first_line}"
+        )
+    count = len(mem_datas)
+    plural = "memories" if count != 1 else "memory"
+    return (
+        f"[HERE I AM MEMORY RETRIEVAL] {count} {plural} from your past "
+        "conversations surfaced as relevant to this prompt:\n" + "\n".join(lines)
+    )
 
 
 async def _last_assistant_content(

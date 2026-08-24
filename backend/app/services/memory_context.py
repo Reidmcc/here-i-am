@@ -28,6 +28,22 @@ def format_memory_origin(origin: str) -> str:
     return "via Here I Am"
 
 
+def memory_role_label(role: str) -> str:
+    """
+    Provenance label for the original speaker of a memory, as rendered in
+    memory markers ([MEMORY <id> from <date> - <role label> - <origin>]).
+    Shared with the Claude Code retrieval summary so both render one
+    consistent vocabulary.
+    """
+    if role == "assistant":
+        return "originally from you"
+    if role == "human":
+        return "originally from human"
+    if role == "reflection":
+        return "a reflection you saved"
+    return f"originally from {role}"
+
+
 def format_memory_as_context_message(
     memory_id: str,
     content: str,
@@ -58,14 +74,7 @@ def format_memory_as_context_message(
     """
     # Format content with clear markers
     # The short ID lets the entity reference this memory in memory_mark/memory_release
-    if role == "assistant":
-        role_label = "originally from you"
-    elif role == "human":
-        role_label = "originally from human"
-    elif role == "reflection":
-        role_label = "a reflection you saved"
-    else:
-        role_label = f"originally from {role}"
+    role_label = memory_role_label(role)
     short_id = memory_id[:8]
     origin_label = format_memory_origin(origin)
     formatted_content = (
