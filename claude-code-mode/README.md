@@ -28,7 +28,8 @@ native tools cover them.
 
 - The Here I Am backend running locally (`cd backend && ./start.sh`) with
   `CLAUDE_CODE_MODE_ENABLED=true` in its environment/`.env`
-- `python3` on `PATH` (the hooks are dependency-free Python scripts)
+- `python3` on `PATH` (the hooks are dependency-free Python scripts).
+  On Windows that is usually `python` or `py -3` — see [Windows](#windows)
 - Local Claude Code sessions only (CLI or desktop app). Cloud sessions run
   on remote infrastructure and can't reach `localhost` — there the hooks
   silently no-op.
@@ -52,7 +53,7 @@ the `here-i-am` server to an existing one):
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /path/to/here-i-am/claude-code-mode/hooks/session_start.py",
+            "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/session_start.py\"",
             "timeout": 30
           }
         ]
@@ -63,7 +64,7 @@ the `here-i-am` server to an existing one):
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /path/to/here-i-am/claude-code-mode/hooks/user_prompt_submit.py",
+            "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/user_prompt_submit.py\"",
             "timeout": 45
           }
         ]
@@ -74,7 +75,7 @@ the `here-i-am` server to an existing one):
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /path/to/here-i-am/claude-code-mode/hooks/stop.py",
+            "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/stop.py\"",
             "timeout": 45
           }
         ]
@@ -85,7 +86,7 @@ the `here-i-am` server to an existing one):
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /path/to/here-i-am/claude-code-mode/hooks/session_end.py",
+            "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/session_end.py\"",
             "timeout": 5
           }
         ]
@@ -99,12 +100,45 @@ Setting env vars in `.claude/settings.json` (rather than the shell) matters
 for the desktop app, which doesn't inherit the full shell environment when
 launched from the Dock/Finder.
 
+### Windows
+
+Two things differ on Windows, and both produce a hook that never runs:
+
+- **Use forward slashes in the path, and keep the quotes.** Claude Code runs
+  hook commands through a POSIX shell (Git Bash), which treats a lone
+  backslash as an escape character and eats it. An unquoted
+  `python E:\here-i-am\claude-code-mode\hooks\user_prompt_submit.py` reaches
+  Python as `E:here-i-amclaude-code-modehooksuser_prompt_submit.py` — a
+  *drive-relative* path, which Windows then resolves against the current
+  directory on `E:`, i.e. the directory the session is running in:
+
+  ```
+  can't open file 'E:\some\other\project\here-i-amclaude-code-modehooksuser_prompt_submit.py':
+  [Errno 2] No such file or directory
+  ```
+
+  Write the path with forward slashes instead — Python and Windows both
+  accept them, and no shell escaping is involved:
+
+  ```json
+  "command": "python \"E:/here-i-am/claude-code-mode/hooks/session_start.py\""
+  ```
+
+- **`python3` may not exist.** A python.org install provides `python.exe` and
+  `py.exe` but no `python3`; use `python` (or `py -3`). Only Microsoft Store
+  installs ship a `python3` shim.
+
 ## Setup (as a plugin)
 
 The directory is also a Claude Code plugin (`.claude-plugin/plugin.json` +
 `hooks/hooks.json`). Add this repository as a local plugin source and enable
 the `here-i-am` plugin; then set `HIM_ENTITY`/`HIM_BACKEND_URL` in
 `.claude/settings.json` `env` as above.
+
+The plugin's `hooks.json` invokes `python3` and resolves its own location
+through `${CLAUDE_PLUGIN_ROOT}` (quoted, so a Windows path survives the
+shell). On Windows that means the plugin route works only where `python3`
+resolves; otherwise use the manual setup above with `python`.
 
 ## Environment variables
 
