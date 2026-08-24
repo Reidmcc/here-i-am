@@ -40,8 +40,12 @@ def main() -> None:
         )
         return
     session_id = data.get("session_id") or ""
-    prompt = data.get("prompt") or ""
-    if not session_id or not prompt.strip():
+    # Harness blocks (system reminders, task notifications) are not the
+    # human speaking — strip them so they are neither archived under the
+    # human's name nor used as a retrieval query. A prompt that was pure
+    # harness plumbing leaves nothing to record.
+    prompt = hook_util.strip_harness_blocks(data.get("prompt") or "")
+    if not session_id or not prompt:
         return
 
     payload = {
