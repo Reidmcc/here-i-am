@@ -312,6 +312,11 @@ class Settings(BaseSettings):
     # (independent of recent_reflections_enabled, which governs native
     # conversations; 0 disables the injection)
     claude_code_session_reflections_count: int = 3
+    # How many recent reflections to re-inject after a Claude Code session's
+    # context is compacted (the compaction summary paraphrases; these restore
+    # the verbatim ground, including reflections saved just before
+    # compaction; 0 disables)
+    claude_code_post_compact_reflections_count: int = 10
 
     # Moltbook API settings
     # Enable Moltbook tools for AI entities (social network for AI agents)

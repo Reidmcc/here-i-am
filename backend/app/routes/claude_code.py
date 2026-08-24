@@ -14,6 +14,7 @@ session to a plain one rather than breaking it.
 See docs/claude-code-mode.md for the full design.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -30,6 +31,8 @@ from app.database import get_db
 from app.models import Message, MessageRole
 from app.services import claude_code_mcp
 from app.services import claude_code_mode as cc
+from app.services.memory_service import memory_service
+from app.services.notes_vector_service import notes_vector_service
 
 router = APIRouter(prefix="/api/claude-code", tags=["claude-code"])
 
@@ -87,6 +90,17 @@ class LogAssistantResponse(BaseModel):
     deduplicated: bool
 
 
+class SessionEndRequest(BaseModel):
+    session_id: str
+    entity: Optional[str] = None
+    reason: Optional[str] = None  # Claude Code's clear|logout|prompt_input_exit|other
+
+
+class SessionEndResponse(BaseModel):
+    conversation_id: Optional[str]
+    notes_reindex_started: bool
+
+
 def _require_enabled() -> None:
     if not settings.claude_code_mode_enabled:
         raise HTTPException(
@@ -114,9 +128,12 @@ async def session_start(
     Register a Claude Code session and return the entity's context block.
 
     A new conversation gets the full block (identity + system prompt +
-    recent reflections). An existing one — a resumed or compacting session —
-    gets an empty block: its transcript already carries the identity
-    injection, so re-sending it would duplicate context.
+    notes index + recent reflections). An existing conversation whose
+    context was just compacted (source "compact") gets the post-compaction
+    block: notes index reloaded plus the most recent reflections restored
+    verbatim (compaction paraphrases everything else). A plain resume gets
+    an empty block — its transcript already carries the injections, so
+    re-sending them would duplicate context.
     """
     _require_enabled()
     entity = _resolve_entity_or_400(data.entity)
@@ -128,6 +145,8 @@ async def session_start(
     context = ""
     if created:
         context = await cc.build_session_start_context(db, conversation, entity)
+    elif data.source == "compact":
+        context = await cc.build_post_compact_context(db, conversation, entity)
 
     return SessionStartResponse(
         conversation_id=str(conversation.id),
@@ -238,6 +257,53 @@ async def log_assistant(
         message_id=str(assistant_msg.id),
         deduplicated=False,
     )
+
+
+@router.post("/session-end", response_model=SessionEndResponse)
+async def session_end(
+    data: SessionEndRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    A Claude Code session ended. Kicks off a background re-index of the
+    entity's note files into the semantic notes mirror — sessions edit notes
+    directly with Claude Code's file tools, bypassing the write-time
+    vectorization the native notes tools do.
+
+    Deliberately does not create a conversation for an unseen session
+    (nothing to record for a session that never spoke).
+    """
+    _require_enabled()
+    entity = _resolve_entity_or_400(data.entity)
+
+    conversation = await cc.get_conversation_for_session(db, data.session_id)
+
+    reindex_started = False
+    if settings.notes_enabled and memory_service.is_configured(entity_id=entity.index_name):
+        task = asyncio.create_task(_reindex_notes_for_entity(entity.label))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+        reindex_started = True
+
+    return SessionEndResponse(
+        conversation_id=str(conversation.id) if conversation else None,
+        notes_reindex_started=reindex_started,
+    )
+
+
+# Keep references so background reindex tasks aren't garbage-collected mid-run
+_background_tasks: set = set()
+
+
+async def _reindex_notes_for_entity(entity_label: str) -> None:
+    try:
+        summary = await notes_vector_service.reindex_entity_notes(entity_label)
+        logger.info(
+            f"[CC MODE] Session-end notes reindex for '{entity_label}': "
+            f"{summary['indexed']} indexed, {len(summary['errors'])} errors"
+        )
+    except Exception as e:
+        logger.error(f"[CC MODE] Session-end notes reindex failed: {e}")
 
 
 @mcp_router.post("/mcp")

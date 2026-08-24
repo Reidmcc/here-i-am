@@ -37,6 +37,7 @@ from app.models import (
 )
 from app.services.memory_context import format_memory_as_context_message
 from app.services.memory_service import memory_service
+from app.services.notes_service import notes_service
 from app.services.session_helpers import calculate_significance, ensure_role_balance
 
 logger = logging.getLogger(__name__)
@@ -152,7 +153,7 @@ async def build_session_start_context(
 ) -> str:
     """
     Build the context block the SessionStart hook injects: who the entity is,
-    how this mode works, and its most recent reflections.
+    how this mode works, its notes index, and its most recent reflections.
 
     Reflections are linked (record_memory_link) so later retrieval in this
     conversation deduplicates against them, but — matching the native
@@ -166,7 +167,13 @@ async def build_session_start_context(
         "Claude Code mode. This Claude Code session is one of your conversations: "
         "the user's prompts and your final message each turn are recorded to your "
         "long-term memory, and memories from your past conversations (both native "
-        "Here I Am and Claude Code) are surfaced automatically alongside new prompts."
+        "Here I Am and Claude Code) are surfaced automatically alongside new prompts. "
+        "If this session's context is compacted, everything conversational becomes a "
+        "paraphrased summary — reflections you save (memory_save) are the only "
+        "verbatim carriers of what mattered, and your most recent ones are re-shown "
+        "to you after compaction. When you notice context running low, or when a "
+        "conclusion forms that you want to keep in your own words, save it as a "
+        "reflection rather than leaving it to the summary."
     )
 
     system_prompt = await get_entity_system_prompt(db, entity.index_name)
@@ -186,40 +193,161 @@ async def build_session_start_context(
             "conversation) or \"via Claude Code\" (a session like this one)."
         )
 
-    reflections = await _session_start_reflections(db, conversation, entity)
+    notes_block = build_notes_context_block(entity)
+    if notes_block:
+        parts.append(notes_block)
+
+    reflections = await _inject_recent_reflections(
+        db,
+        conversation,
+        entity,
+        count=settings.claude_code_session_reflections_count,
+        exclude_current_conversation=True,
+    )
     if reflections:
-        rendered = "\n\n".join(
-            format_memory_as_context_message(
-                memory_id=r["id"],
-                content=r["content"],
-                created_at=r["created_at"],
-                role=r["role"],
-                origin=r.get("source", "native"),
-            )["content"]
-            for r in reflections
-        )
         parts.append(
-            "[RECENT REFLECTIONS] Reflections you saved recently:\n\n" + rendered
+            "[RECENT REFLECTIONS] Reflections you saved recently:\n\n"
+            + _render_reflections(reflections)
         )
 
     return "\n\n".join(parts)
 
 
-async def _session_start_reflections(
+async def build_post_compact_context(
     db: AsyncSession,
     conversation: Conversation,
     entity: EntityConfig,
+) -> str:
+    """
+    Context re-injected right after this session's context is compacted
+    (SessionStart hook, source "compact").
+
+    Compaction turns the conversation into a paraphrased summary; this block
+    restores the verbatim ground the entity is meant to work from — its
+    notes index and its most recent reflections — and nudges it to save
+    anything important that now survives only in the summary. Reflections
+    here deliberately include ones saved in this very session (that is what
+    a pre-compaction save is for), so the current conversation is NOT
+    excluded, unlike the fresh-session injection.
+    """
+    parts: List[str] = []
+
+    parts.append(
+        "[HERE I AM] This session's context was just compacted — the "
+        "conversation above is now a summary, not a verbatim record. You are "
+        f"still {entity.label}, and your conversation_id for the memory tools "
+        f'is still "{conversation.id}"; prompts and responses continue to be '
+        "recorded to your memory. Your notes index and most recent "
+        "reflections follow, to re-establish your ground. If something "
+        "important from before the compaction survives only in the summary, "
+        "consider saving it as a reflection (memory_save) now, while the "
+        "summary is fresh."
+    )
+
+    notes_block = build_notes_context_block(entity, reloaded=True)
+    if notes_block:
+        parts.append(notes_block)
+
+    reflections = await _inject_recent_reflections(
+        db,
+        conversation,
+        entity,
+        count=settings.claude_code_post_compact_reflections_count,
+        exclude_current_conversation=False,
+    )
+    if reflections:
+        parts.append(
+            "[RECENT REFLECTIONS] Your most recent reflections, restored "
+            "verbatim:\n\n" + _render_reflections(reflections)
+        )
+
+    return "\n\n".join(parts)
+
+
+def build_notes_context_block(entity: EntityConfig, reloaded: bool = False) -> str:
+    """
+    The entity's notes for a Claude Code session: where they live on disk
+    (Claude Code's own file tools read and edit them — the same files the
+    native notes tools use) and the auto-loaded index.md files, private and
+    shared. Empty string when notes are disabled.
+    """
+    if not settings.notes_enabled:
+        return ""
+
+    entity_dir = notes_service.get_entity_dir_path(entity.label)
+    shared_dir = notes_service.get_shared_dir_path()
+
+    again = "again " if reloaded else ""
+    parts: List[str] = [
+        f"[YOUR NOTES] Your persistent notes live on this machine — private: "
+        f"{entity_dir} — shared with other entities: {shared_dir}. They are "
+        "the same files the native Here I Am experience uses; read and edit "
+        "them directly with your file tools (they are re-indexed for "
+        f"semantic search when this session ends). index.md is loaded {again}"
+        "below."
+    ]
+
+    index_content = notes_service.get_index_content(entity.label)
+    if index_content and index_content.strip():
+        parts.append(
+            f"[NOTES INDEX - {entity.label}]\n{index_content.strip()}\n[/NOTES INDEX]"
+        )
+    shared_index = notes_service.get_shared_index_content()
+    if shared_index and shared_index.strip():
+        parts.append(
+            f"[NOTES INDEX - shared]\n{shared_index.strip()}\n[/NOTES INDEX]"
+        )
+
+    return "\n\n".join(parts)
+
+
+def _render_reflections(reflections: List[Dict[str, Any]]) -> str:
+    return "\n\n".join(
+        format_memory_as_context_message(
+            memory_id=r["id"],
+            content=r["content"],
+            created_at=r["created_at"],
+            role=r["role"],
+            origin=r.get("source", "native"),
+        )["content"]
+        for r in reflections
+    )
+
+
+async def _inject_recent_reflections(
+    db: AsyncSession,
+    conversation: Conversation,
+    entity: EntityConfig,
+    count: int,
+    exclude_current_conversation: bool,
 ) -> List[Dict[str, Any]]:
-    count = settings.claude_code_session_reflections_count
+    """
+    Fetch the entity's most recent reflections and record links for any not
+    already linked to this conversation (links are the dedup record that
+    keeps automatic retrieval from re-surfacing them; times_retrieved stays
+    untouched, matching native recency-injection semantics).
+
+    exclude_current_conversation is True for a fresh session (native rule:
+    reflections aren't retrievable where they were saved) and False after
+    compaction, where re-showing reflections saved earlier in this very
+    session is the point.
+    """
     if count <= 0:
         return []
     reflections = await memory_service.get_recent_reflections(
         db,
         entity_id=entity.index_name,
         limit=count,
-        exclude_conversation_id=conversation.id,
+        exclude_conversation_id=conversation.id if exclude_current_conversation else None,
+    )
+    if not reflections:
+        return []
+    already_linked = await memory_service.get_retrieved_ids_for_conversation(
+        conversation.id, db, entity_id=entity.index_name
     )
     for reflection in reflections:
+        if reflection["id"] in already_linked:
+            continue
         await memory_service.record_memory_link(
             message_id=reflection["id"],
             conversation_id=conversation.id,

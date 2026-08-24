@@ -6,7 +6,9 @@ and semantic retrieval no-op — these tests cover the conversation/message
 recording, identity/reflection context, idempotency, entity resolution, the
 feature gate, and the native-chat guard.
 """
+import asyncio
 import uuid
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -341,6 +343,185 @@ class TestNativeChatGuard:
         )
         assert response.status_code == 409
         assert "Claude Code" in response.json()["detail"]
+
+
+@pytest.fixture
+def notes_dir(tmp_path, monkeypatch):
+    """Point the notes service at a temp tree with entity + shared indexes."""
+    from app.services.notes_service import notes_service
+
+    monkeypatch.setattr(notes_service, "_base_dir", tmp_path)
+    entity_dir = tmp_path / "Test Entity"
+    entity_dir.mkdir(parents=True)
+    (entity_dir / "index.md").write_text("My index: current projects.", encoding="utf-8")
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir()
+    (shared_dir / "index.md").write_text("Shared house rules.", encoding="utf-8")
+    return tmp_path
+
+
+class TestSessionStartNotes:
+    async def test_fresh_session_includes_notes_paths_and_indexes(
+        self, async_client, notes_dir
+    ):
+        response = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        context = response.json()["context"]
+        assert "My index: current projects." in context
+        assert "Shared house rules." in context
+        assert str((notes_dir / "Test Entity").resolve()) in context
+        assert str((notes_dir / "shared").resolve()) in context
+
+    async def test_notes_disabled_omits_block(self, async_client, notes_dir, monkeypatch):
+        monkeypatch.setattr(settings, "notes_enabled", False)
+        response = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        assert "[YOUR NOTES]" not in response.json()["context"]
+
+
+class TestPostCompact:
+    async def test_compact_reinjects_notes_and_reflections(
+        self, async_client, db_session, notes_dir
+    ):
+        # A reflection from an earlier conversation (linked at session start)
+        other_conversation = Conversation(entity_id="test-entity")
+        db_session.add(other_conversation)
+        await db_session.commit()
+        earlier_reflection = Message(
+            conversation_id=other_conversation.id,
+            role=MessageRole.REFLECTION,
+            content="An earlier conclusion about gardens.",
+            speaker_entity_id="test-entity",
+        )
+        db_session.add(earlier_reflection)
+        await db_session.commit()
+
+        session_id = str(uuid.uuid4())
+        started = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": session_id}
+        )
+        conversation_id = started.json()["conversation_id"]
+
+        # A reflection saved DURING this session (pre-compaction save)
+        session_reflection = Message(
+            conversation_id=conversation_id,
+            role=MessageRole.REFLECTION,
+            content="Saved just before compaction.",
+            speaker_entity_id="test-entity",
+        )
+        db_session.add(session_reflection)
+        await db_session.commit()
+
+        compacted = await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": session_id, "source": "compact"},
+        )
+        body = compacted.json()
+        assert body["created"] is False
+        context = body["context"]
+        # Notes index reloaded
+        assert "My index: current projects." in context
+        # Both reflections restored — including the one saved in this session
+        assert "Saved just before compaction." in context
+        assert "An earlier conclusion about gardens." in context
+        # The entity is re-told its conversation_id
+        assert conversation_id in context
+
+        # No duplicate links: one per reflection across start + compact
+        result = await db_session.execute(
+            select(ConversationMemoryLink).where(
+                ConversationMemoryLink.conversation_id == conversation_id
+            )
+        )
+        linked_ids = sorted(link.message_id for link in result.scalars().all())
+        assert linked_ids == sorted([earlier_reflection.id, session_reflection.id])
+
+    async def test_plain_resume_still_gets_empty_context(self, async_client, notes_dir):
+        session_id = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": session_id}
+        )
+        resumed = await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": session_id, "source": "resume"},
+        )
+        assert resumed.json()["context"] == ""
+
+    async def test_post_compact_reflection_count_knob(
+        self, async_client, db_session, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "claude_code_post_compact_reflections_count", 1)
+        other_conversation = Conversation(entity_id="test-entity")
+        db_session.add(other_conversation)
+        await db_session.commit()
+        for i in range(3):
+            db_session.add(Message(
+                conversation_id=other_conversation.id,
+                role=MessageRole.REFLECTION,
+                content=f"Reflection number {i}.",
+                speaker_entity_id="test-entity",
+                created_at=datetime(2026, 1, 1 + i),
+            ))
+        await db_session.commit()
+
+        session_id = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": session_id}
+        )
+        compacted = await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": session_id, "source": "compact"},
+        )
+        context = compacted.json()["context"]
+        assert "Reflection number 2." in context  # newest
+        assert "Reflection number 0." not in context
+
+
+class TestSessionEnd:
+    async def test_reindexes_entity_notes_when_configured(
+        self, async_client, monkeypatch
+    ):
+        from app.routes import claude_code as cc_routes
+
+        session_id = str(uuid.uuid4())
+        started = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": session_id}
+        )
+
+        calls = []
+
+        async def fake_reindex(label):
+            calls.append(label)
+            return {"indexed": 2, "errors": []}
+
+        monkeypatch.setattr(
+            cc_routes.memory_service, "is_configured", lambda entity_id=None: True
+        )
+        monkeypatch.setattr(
+            cc_routes.notes_vector_service, "reindex_entity_notes", fake_reindex
+        )
+
+        response = await async_client.post(
+            "/api/claude-code/session-end", json={"session_id": session_id}
+        )
+        body = response.json()
+        assert body["notes_reindex_started"] is True
+        assert body["conversation_id"] == started.json()["conversation_id"]
+
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert calls == ["Test Entity"]
+
+    async def test_no_reindex_when_memory_unconfigured(self, async_client):
+        response = await async_client.post(
+            "/api/claude-code/session-end", json={"session_id": str(uuid.uuid4())}
+        )
+        body = response.json()
+        assert body["notes_reindex_started"] is False
+        # Unseen session: no conversation is created for a session that never spoke
+        assert body["conversation_id"] is None
 
 
 def _rpc(method, request_id=1, params=None):

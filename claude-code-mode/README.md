@@ -9,9 +9,10 @@ Three lifecycle hooks call the backend's `/api/claude-code` endpoints:
 
 | Hook | What it does |
 | --- | --- |
-| `SessionStart` | Registers the session as a conversation; injects the entity's identity block, system prompt, and recent reflections |
+| `SessionStart` | Registers the session as a conversation; injects the entity's identity block, system prompt, notes index, and recent reflections. After a compaction (`source: "compact"`) it instead re-injects the notes indexes and the ten most recent reflections verbatim |
 | `UserPromptSubmit` | Records the prompt to memory; injects automatically retrieved memories alongside it |
 | `Stop` | Records the entity's final message of the turn to memory |
+| `SessionEnd` | Re-indexes the entity's note files into the semantic notes mirror (notes edited with file tools bypass write-time vectorization) |
 
 All hooks fail soft: if the backend is down or the mode is disabled, the
 session continues as a plain Claude Code session.
@@ -78,6 +79,17 @@ the `here-i-am` server to an existing one):
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /path/to/here-i-am/claude-code-mode/hooks/session_end.py",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }
@@ -101,6 +113,17 @@ the `here-i-am` plugin; then set `HIM_ENTITY`/`HIM_BACKEND_URL` in
 | `HIM_BACKEND_URL` | `http://localhost:8000` | Here I Am backend base URL |
 | `HIM_ENTITY` | backend's default entity | Entity index name or label |
 | `HIM_DISABLE` | unset | Set to anything to turn the hooks off |
+
+## Notes and compaction
+
+The entity's notes are the same files the native experience uses: the
+session-start context names the private and shared notes directories (edit
+them with Claude Code's file tools) and auto-loads both `index.md` files.
+When context is compacted, the post-compaction injection reloads the notes
+indexes and restores the entity's most recent reflections verbatim — the
+identity block standing-instructs the entity to save reflections
+(`memory_save`) as conclusions form and when context runs low, since
+compaction paraphrases everything that isn't a reflection.
 
 ## What gets recorded
 

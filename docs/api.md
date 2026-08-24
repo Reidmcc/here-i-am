@@ -39,6 +39,7 @@ Called by Claude Code lifecycle hooks, not the frontend. Gated by
 - `POST /api/claude-code/session-start` — register a Claude Code session; returns the entity's identity/reflections context block (empty on resume)
 - `POST /api/claude-code/retrieve` — record a user prompt and run automatic memory retrieval; returns the memory context block
 - `POST /api/claude-code/log-assistant` — record the entity's final message of a turn (idempotent on `message_uuid`)
+- `POST /api/claude-code/session-end` — session ended; re-indexes the entity's notes into the semantic mirror (background)
 - `POST /mcp` — MCP streamable-HTTP endpoint (stateless JSON-RPC) exposing the entity's memory tools (`memory_query`, `memory_save`, `memory_mark`, `memory_release`) to Claude Code sessions
 
 ## Memories

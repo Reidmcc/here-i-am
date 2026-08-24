@@ -171,6 +171,8 @@ class App {
 
             // Chat input
             messageInput: document.getElementById('message-input'),
+            inputArea: document.querySelector('.input-area'),
+            readonlyNotice: document.getElementById('readonly-notice'),
             inputResizer: document.getElementById('input-resizer'),
             sendBtn: document.getElementById('send-btn'),
             stopBtn: document.getElementById('stop-btn'),
@@ -356,6 +358,7 @@ class App {
             updateHeader: (conv) => this.updateConversationHeader(conv),
             updateMemoriesPanel: () => updateMemoriesPanel(),
             clearMessages: () => clearMessages(),
+            setReadOnlyMode: (readOnly) => this.setReadOnlyMode(readOnly),
         });
 
         // Initialize message module
@@ -1092,6 +1095,8 @@ class App {
             this.elements.conversationTitle.textContent = conversation.title || 'Untitled Conversation';
         }
 
+        const isClaudeCode = conversation.source === 'claude_code';
+
         if (this.elements.conversationMeta) {
             const date = new Date(conversation.created_at).toLocaleDateString();
             let meta = date;
@@ -1101,7 +1106,34 @@ class App {
                 meta = `${entityLabels} • ${date}`;
             }
 
+            if (isClaudeCode) {
+                meta = `Claude Code session • ${meta}`;
+            }
+
             this.elements.conversationMeta.textContent = meta;
+        }
+
+        this.setReadOnlyMode(isClaudeCode);
+    }
+
+    /**
+     * Toggle the read-only presentation for Claude Code conversations:
+     * they are records of external sessions, only continuable from Claude
+     * Code itself, so the input area (and the closing-turn action, which
+     * sends a message) is replaced with a notice.
+     */
+    setReadOnlyMode(readOnly) {
+        if (this.elements.inputArea) {
+            this.elements.inputArea.style.display = readOnly ? 'none' : '';
+        }
+        if (this.elements.inputResizer) {
+            this.elements.inputResizer.style.display = readOnly ? 'none' : '';
+        }
+        if (this.elements.closingTurnBtn) {
+            this.elements.closingTurnBtn.style.display = readOnly ? 'none' : '';
+        }
+        if (this.elements.readonlyNotice) {
+            this.elements.readonlyNotice.style.display = readOnly ? '' : 'none';
         }
     }
 

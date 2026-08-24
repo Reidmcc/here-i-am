@@ -261,6 +261,37 @@ html, body {
     color: var(--text-muted);
 }
 
+/* Badge marking conversations recorded from Claude Code sessions */
+.conv-source-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    margin-right: 4px;
+    border-radius: 8px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--accent);
+    background-color: var(--accent-subtle);
+}
+
+/* Notice shown in place of the input area for read-only Claude Code
+   conversations */
+.readonly-notice {
+    padding: 12px 20px;
+    border-top: 1px solid var(--border-color);
+    background-color: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    text-align: center;
+}
+
+.readonly-notice code {
+    background-color: var(--bg-tertiary);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+}
+
 .conversation-item-preview {
     font-size: 0.8rem;
     color: var(--text-secondary);

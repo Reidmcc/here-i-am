@@ -451,5 +451,55 @@ describe('Conversations Module', () => {
 
             expect(mockElements.conversationList.innerHTML).toContain('Untitled');
         });
+
+        it('should badge Claude Code conversations and not native ones', () => {
+            state.conversations = [
+                { id: 'conv-1', title: 'Native', created_at: '2025-01-01T00:00:00Z', source: 'native' },
+                { id: 'conv-2', title: 'From CC', created_at: '2025-01-02T00:00:00Z', source: 'claude_code' },
+            ];
+
+            renderConversationList();
+
+            const badges = mockElements.conversationList.querySelectorAll('.conv-source-badge');
+            expect(badges.length).toBe(1);
+            expect(badges[0].textContent).toBe('Claude Code');
+            expect(
+                mockElements.conversationList.querySelector('[data-id="conv-2"] .conv-source-badge')
+            ).not.toBeNull();
+        });
+    });
+
+    describe('conversation source tracking', () => {
+        it('loadConversation records the source for read-only gating', async () => {
+            window.api.getConversation = vi.fn(() => Promise.resolve({
+                id: 'conv-cc',
+                title: 'CC session',
+                conversation_type: 'normal',
+                created_at: '2025-01-01T00:00:00Z',
+                source: 'claude_code',
+            }));
+            window.api.getConversationMessages = vi.fn(() => Promise.resolve([]));
+            window.api.getSessionInfo = vi.fn(() => Promise.resolve(null));
+
+            await loadConversation('conv-cc');
+
+            expect(state.currentConversationSource).toBe('claude_code');
+        });
+
+        it('loadConversation defaults missing source to native', async () => {
+            state.currentConversationSource = 'claude_code';
+            window.api.getConversation = vi.fn(() => Promise.resolve({
+                id: 'conv-n',
+                title: 'Native',
+                conversation_type: 'normal',
+                created_at: '2025-01-01T00:00:00Z',
+            }));
+            window.api.getConversationMessages = vi.fn(() => Promise.resolve([]));
+            window.api.getSessionInfo = vi.fn(() => Promise.resolve(null));
+
+            await loadConversation('conv-n');
+
+            expect(state.currentConversationSource).toBe('native');
+        });
     });
 });

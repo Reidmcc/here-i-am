@@ -268,6 +268,26 @@ class NotesVectorService:
                 break
         return matches
 
+    async def _reindex_listing(
+        self, entity_label: str, shared: bool, summary: Dict[str, Any]
+    ) -> None:
+        """Re-vectorize every note file in one folder, accumulating into summary."""
+        listing = notes_service.list_notes(entity_label, shared=shared)
+        if not listing.get("success"):
+            return
+        label_prefix = "shared" if shared else entity_label
+        for file_info in listing["files"]:
+            filename = file_info["filename"]
+            read = notes_service.read_note(entity_label, filename, shared=shared)
+            if not read.get("success"):
+                summary["errors"].append(f"{label_prefix}/{filename}: {read.get('error')}")
+                continue
+            ok = await self.vectorize_note(entity_label, filename, read["content"], shared=shared)
+            if ok:
+                summary["indexed"] += 1
+            else:
+                summary["errors"].append(f"{label_prefix}/{filename}: vectorization failed")
+
     async def reindex_all(self) -> Dict[str, Any]:
         """
         Re-vectorize every note file for every configured entity, plus shared
@@ -281,36 +301,30 @@ class NotesVectorService:
 
         # Private notes per entity
         for entity in settings.get_entities():
-            listing = notes_service.list_notes(entity.label, shared=False)
-            if not listing.get("success"):
-                continue
-            for file_info in listing["files"]:
-                filename = file_info["filename"]
-                read = notes_service.read_note(entity.label, filename, shared=False)
-                if not read.get("success"):
-                    summary["errors"].append(f"{entity.label}/{filename}: {read.get('error')}")
-                    continue
-                ok = await self.vectorize_note(entity.label, filename, read["content"], shared=False)
-                if ok:
-                    summary["indexed"] += 1
-                else:
-                    summary["errors"].append(f"{entity.label}/{filename}: vectorization failed")
+            await self._reindex_listing(entity.label, shared=False, summary=summary)
 
         # Shared notes (indexed into every entity's index)
-        listing = notes_service.list_notes("", shared=True)
-        if listing.get("success"):
-            for file_info in listing["files"]:
-                filename = file_info["filename"]
-                read = notes_service.read_note("", filename, shared=True)
-                if not read.get("success"):
-                    summary["errors"].append(f"shared/{filename}: {read.get('error')}")
-                    continue
-                ok = await self.vectorize_note("", filename, read["content"], shared=True)
-                if ok:
-                    summary["indexed"] += 1
-                else:
-                    summary["errors"].append(f"shared/{filename}: vectorization failed")
+        await self._reindex_listing("", shared=True, summary=summary)
 
+        return summary
+
+    async def reindex_entity_notes(self, entity_label: str) -> Dict[str, Any]:
+        """
+        Re-vectorize one entity's private notes plus the shared notes.
+
+        Claude Code mode's notes bridge: sessions edit note files directly
+        with Claude Code's file tools, bypassing the write-time vectorization
+        that the native notes tools do — so the session-end hook re-indexes
+        this entity's notes to bring the semantic mirror back in sync.
+        """
+        summary = {"indexed": 0, "errors": []}
+
+        if not memory_service.is_configured():
+            summary["errors"].append("Pinecone not configured")
+            return summary
+
+        await self._reindex_listing(entity_label, shared=False, summary=summary)
+        await self._reindex_listing("", shared=True, summary=summary)
         return summary
 
 

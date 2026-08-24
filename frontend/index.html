@@ -75,6 +75,12 @@
                 </div>
             </div>
 
+            <!-- Read-only notice for Claude Code conversations (records of
+                 external sessions; replaces the input area) -->
+            <div class="readonly-notice" id="readonly-notice" style="display: none;">
+                This is a record of a Claude Code session. It can only be continued from Claude Code (<code>claude --resume</code>).
+            </div>
+
             <!-- Draggable divider between conversation content and message entry -->
             <div class="input-resizer" id="input-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize message entry area" title="Drag to resize the message entry area"></div>
 

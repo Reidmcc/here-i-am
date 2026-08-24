@@ -11,6 +11,10 @@ export const state = {
     // Current conversation
     currentConversationId: null,
     conversations: [],
+    // Which experience owns the current conversation: 'native' or
+    // 'claude_code'. Claude Code conversations are read-only records here —
+    // the input area is hidden and message edit/regenerate are disabled.
+    currentConversationSource: 'native',
 
     // Entity state
     selectedEntityId: null,

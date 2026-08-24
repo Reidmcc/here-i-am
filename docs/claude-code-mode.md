@@ -35,6 +35,10 @@ The integration has two channels:
    - `Stop` → `POST /api/claude-code/log-assistant` — extracts the final
      assistant message of the turn from the transcript (text blocks only)
      and records it (persisted + vectorized as `role="assistant"`).
+   - `SessionEnd` → `POST /api/claude-code/session-end` — kicks off a
+     background re-index of the entity's note files into the semantic notes
+     mirror (see "Notes" below). The endpoint returns immediately;
+     SessionEnd hooks run under a tight time budget.
 
    Hooks are shipped in `claude-code-mode/` (also packaged as a Claude Code
    plugin) and **fail soft**: backend down or mode disabled means a plain
@@ -106,8 +110,51 @@ The integration has two channels:
   don't inflate significance. Count is
   `CLAUDE_CODE_SESSION_REFLECTIONS_COUNT` (default 3), independent of the
   native `RECENT_REFLECTIONS_ENABLED` flag.
-- On resume/compact (`session-start` for an already-known session) the
+- On a plain resume (`session-start` for an already-known session) the
   identity block is *not* re-sent — the transcript already carries it.
+
+### Compaction survival
+
+Compaction replaces the conversation with a paraphrased summary; reflections
+are the entity's verbatim carriers across that boundary.
+
+- **The nudge is standing guidance, not a pre-compact message.** Only
+  `SessionStart` / `UserPromptSubmit` / `UserPromptExpansion` hook output
+  reaches the model — `PreCompact` output does not — so nothing can be
+  said to the entity at the moment before compaction. Instead the
+  session-start identity block instructs the entity to save reflections as
+  durable conclusions form and when it notices context running low, and the
+  post-compaction block nudges again (see below) while the summary is
+  fresh.
+- **Post-compaction re-injection.** `SessionStart` fires with
+  `source: "compact"` right after compaction, and its stdout is injected;
+  the backend answers with `build_post_compact_context`: a reorientation
+  header (re-stating the `conversation_id` for the memory tools), the
+  reloaded notes indexes, and the
+  `CLAUDE_CODE_POST_COMPACT_REFLECTIONS_COUNT` (default 10) most recent
+  reflections restored verbatim. Unlike the fresh-session injection, the
+  current conversation is **not** excluded — reflections saved just before
+  compaction are exactly the ones that must come back. Links are recorded
+  only for reflections not already linked (no duplicate rows), and
+  `times_retrieved` stays untouched as with all recency injections.
+
+### Notes
+
+Notes bridge to Claude Code through the filesystem — they are the same
+files the native notes tools use:
+
+- The session-start block (`build_notes_context_block`) tells the entity
+  the absolute paths of its private and shared notes directories, to read
+  and edit with Claude Code's own file tools, and auto-loads the private
+  and shared `index.md`. The post-compaction block reloads both indexes.
+- Edits made with file tools bypass the write-time vectorization the
+  native `notes_write`/`notes_edit` do, so the `SessionEnd` hook triggers
+  `notes_vector_service.reindex_entity_notes` (this entity's private notes
+  plus shared notes) in the background, bringing the `notes_search`
+  semantic mirror back in sync.
+- Native-side correctness is unaffected in the meantime: `notes_read`
+  falls back to disk content on any hash mismatch, and the per-conversation
+  notes seed is frozen anyway.
 - **Provenance labels:** every retrieved memory is labeled with the
   experience it was formed in — `via Here I Am` (native conversation) or
   `via Claude Code` — in `[MEMORY]` markers and `memory_query` output alike.
@@ -125,6 +172,7 @@ The integration has two channels:
 | --- | --- | --- |
 | `CLAUDE_CODE_MODE_ENABLED` | `false` | Gate for the `/api/claude-code` endpoints |
 | `CLAUDE_CODE_SESSION_REFLECTIONS_COUNT` | `3` | Recent reflections injected at session start (0 disables) |
+| `CLAUDE_CODE_POST_COMPACT_REFLECTIONS_COUNT` | `10` | Recent reflections re-injected after compaction (0 disables) |
 
 Hook-side environment (set in `.claude/settings.json` `env`, which the
 desktop app reads even when launched from the Dock): `HIM_BACKEND_URL`
@@ -138,7 +186,11 @@ All under `/api/claude-code`, all gated by `CLAUDE_CODE_MODE_ENABLED`
 
 - `POST /session-start` `{session_id, entity?, cwd?, source?}` →
   `{conversation_id, entity_id, entity_label, created, context}` — full
-  context block only when `created` (fresh session), empty on resume.
+  context block when `created` (fresh session), the post-compaction block
+  when `source` is `"compact"`, empty on a plain resume.
+- `POST /session-end` `{session_id, entity?, reason?}` →
+  `{conversation_id, notes_reindex_started}` — fire-and-forget notes
+  re-index; does not create a conversation for an unseen session.
 - `POST /retrieve` `{session_id, prompt, entity?, cwd?}` →
   `{conversation_id, human_message_id, context, memories_retrieved}`.
 - `POST /log-assistant` `{session_id, content, entity?, cwd?,
@@ -180,6 +232,11 @@ installation (manual `settings.json` or plugin) and requirements.
   `MemoryToolContext` — the native tool loop keeps a module-level current
   context, the MCP path builds one per request), plus memory provenance
   labels (`via Here I Am` / `via Claude Code`) on all retrieved memories.
-- **Phase 3**: polish — PreCompact reflection nudge, optional notes
-  bridging, frontend source badge / read-only transcript view, session-end
-  digest as an alternative memory granularity.
+- **Phase 3 (done)**: compaction survival (standing reflection-save
+  guidance plus post-compaction re-injection of notes indexes and the ten
+  most recent reflections), notes bridging (paths + auto-loaded index.md +
+  session-end re-index), and the frontend source badge / read-only
+  transcript view.
+- **Possible later**: session-end digest as an alternative memory
+  granularity (would require an LLM call from the backend, which this mode
+  otherwise avoids), remote hosting + auth for cloud sessions.
