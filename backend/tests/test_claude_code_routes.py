@@ -479,47 +479,75 @@ class TestPostCompact:
         assert "Reflection number 0." not in context
 
 
-class TestSessionEnd:
-    async def test_reindexes_entity_notes_when_configured(
-        self, async_client, monkeypatch
-    ):
+class TestNotesSync:
+    @pytest.fixture
+    def sync_spy(self, monkeypatch):
+        """Configure memory + record background sync_entity_notes calls."""
         from app.routes import claude_code as cc_routes
-
-        session_id = str(uuid.uuid4())
-        started = await async_client.post(
-            "/api/claude-code/session-start", json={"session_id": session_id}
-        )
 
         calls = []
 
-        async def fake_reindex(label):
+        async def fake_sync(label):
             calls.append(label)
-            return {"indexed": 2, "errors": []}
+            return {"indexed": 0, "removed": 0, "unchanged": 0, "errors": []}
 
         monkeypatch.setattr(
             cc_routes.memory_service, "is_configured", lambda entity_id=None: True
         )
         monkeypatch.setattr(
-            cc_routes.notes_vector_service, "reindex_entity_notes", fake_reindex
+            cc_routes.notes_vector_service, "sync_entity_notes", fake_sync
         )
+        return calls
+
+    async def _drain_background(self):
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    async def test_session_end_runs_final_sync(self, async_client, sync_spy):
+        session_id = str(uuid.uuid4())
+        started = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": session_id}
+        )
+        await self._drain_background()
+        sync_spy.clear()
 
         response = await async_client.post(
             "/api/claude-code/session-end", json={"session_id": session_id}
         )
         body = response.json()
-        assert body["notes_reindex_started"] is True
+        assert body["notes_sync_started"] is True
         assert body["conversation_id"] == started.json()["conversation_id"]
 
-        for _ in range(3):
-            await asyncio.sleep(0)
-        assert calls == ["Test Entity"]
+        await self._drain_background()
+        assert sync_spy == ["Test Entity"]
 
-    async def test_no_reindex_when_memory_unconfigured(self, async_client):
+    async def test_every_recorded_prompt_triggers_sync(self, async_client, sync_spy):
+        """Sessions may never formally end, so freshness rides on prompts."""
+        session_id = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "first"},
+        )
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "second"},
+        )
+        await self._drain_background()
+        assert sync_spy == ["Test Entity", "Test Entity"]
+
+    async def test_session_start_triggers_sync(self, async_client, sync_spy):
+        await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        await self._drain_background()
+        assert sync_spy == ["Test Entity"]
+
+    async def test_no_sync_when_memory_unconfigured(self, async_client):
         response = await async_client.post(
             "/api/claude-code/session-end", json={"session_id": str(uuid.uuid4())}
         )
         body = response.json()
-        assert body["notes_reindex_started"] is False
+        assert body["notes_sync_started"] is False
         # Unseen session: no conversation is created for a session that never spoke
         assert body["conversation_id"] is None
 

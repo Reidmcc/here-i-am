@@ -12,7 +12,7 @@ Three lifecycle hooks call the backend's `/api/claude-code` endpoints:
 | `SessionStart` | Registers the session as a conversation; injects the entity's identity block, system prompt, notes index, and recent reflections. After a compaction (`source: "compact"`) it instead re-injects the notes indexes and the ten most recent reflections verbatim |
 | `UserPromptSubmit` | Records the prompt to memory; injects automatically retrieved memories alongside it |
 | `Stop` | Records the entity's final message of the turn to memory |
-| `SessionEnd` | Re-indexes the entity's note files into the semantic notes mirror (notes edited with file tools bypass write-time vectorization) |
+| `SessionEnd` | Final notes sync (a catch — the same incremental sync already runs in the background on every prompt, since sessions can idle out without ever formally ending) |
 
 All hooks fail soft: if the backend is down or the mode is disabled, the
 session continues as a plain Claude Code session.
@@ -119,6 +119,9 @@ the `here-i-am` plugin; then set `HIM_ENTITY`/`HIM_BACKEND_URL` in
 The entity's notes are the same files the native experience uses: the
 session-start context names the private and shared notes directories (edit
 them with Claude Code's file tools) and auto-loads both `index.md` files.
+The semantic notes index stays fresh automatically — each recorded prompt
+triggers an incremental background sync that re-vectorizes only changed
+files, so nothing depends on the session formally ending.
 When context is compacted, the post-compaction injection reloads the notes
 indexes and restores the entity's most recent reflections verbatim — the
 identity block standing-instructs the entity to save reflections

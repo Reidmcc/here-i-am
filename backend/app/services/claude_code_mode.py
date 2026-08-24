@@ -282,9 +282,8 @@ def build_notes_context_block(entity: EntityConfig, reloaded: bool = False) -> s
         f"[YOUR NOTES] Your persistent notes live on this machine — private: "
         f"{entity_dir} — shared with other entities: {shared_dir}. They are "
         "the same files the native Here I Am experience uses; read and edit "
-        "them directly with your file tools (they are re-indexed for "
-        f"semantic search when this session ends). index.md is loaded {again}"
-        "below."
+        "them directly with your file tools (the semantic notes index is "
+        f"kept in sync automatically). index.md is loaded {again}below."
     ]
 
     index_content = notes_service.get_index_content(entity.label)

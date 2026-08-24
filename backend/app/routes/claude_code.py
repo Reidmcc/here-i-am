@@ -98,7 +98,7 @@ class SessionEndRequest(BaseModel):
 
 class SessionEndResponse(BaseModel):
     conversation_id: Optional[str]
-    notes_reindex_started: bool
+    notes_sync_started: bool
 
 
 def _require_enabled() -> None:
@@ -148,6 +148,10 @@ async def session_start(
     elif data.source == "compact":
         context = await cc.build_post_compact_context(db, conversation, entity)
 
+    # Catch note edits made while the backend wasn't watching (e.g. before
+    # this backend start)
+    _spawn_notes_sync(entity)
+
     return SessionStartResponse(
         conversation_id=str(conversation.id),
         entity_id=entity.index_name,
@@ -195,6 +199,12 @@ async def retrieve(
     )
 
     context, count = await cc.retrieve_for_prompt(db, conversation, entity, prompt)
+
+    # Keep the semantic notes mirror fresh continuously: sessions edit note
+    # files with Claude Code's own tools and may never formally end, so each
+    # recorded prompt triggers an incremental background sync (hash-compare,
+    # only diffs touch Pinecone)
+    _spawn_notes_sync(entity)
 
     return RetrieveResponse(
         conversation_id=str(conversation.id),
@@ -265,45 +275,53 @@ async def session_end(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    A Claude Code session ended. Kicks off a background re-index of the
-    entity's note files into the semantic notes mirror — sessions edit notes
-    directly with Claude Code's file tools, bypassing the write-time
-    vectorization the native notes tools do.
+    A Claude Code session ended. Runs a final background notes sync.
 
-    Deliberately does not create a conversation for an unseen session
-    (nothing to record for a session that never spoke).
+    This is a catch, not the mechanism: SessionEnd only fires on /clear,
+    logout, or exiting the CLI, and a session can simply idle out without
+    ever ending — so the same sync also runs on every recorded prompt
+    (see /retrieve). Deliberately does not create a conversation for an
+    unseen session (nothing to record for a session that never spoke).
     """
     _require_enabled()
     entity = _resolve_entity_or_400(data.entity)
 
     conversation = await cc.get_conversation_for_session(db, data.session_id)
-
-    reindex_started = False
-    if settings.notes_enabled and memory_service.is_configured(entity_id=entity.index_name):
-        task = asyncio.create_task(_reindex_notes_for_entity(entity.label))
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
-        reindex_started = True
+    sync_started = _spawn_notes_sync(entity)
 
     return SessionEndResponse(
         conversation_id=str(conversation.id) if conversation else None,
-        notes_reindex_started=reindex_started,
+        notes_sync_started=sync_started,
     )
 
 
-# Keep references so background reindex tasks aren't garbage-collected mid-run
+# Keep references so background sync tasks aren't garbage-collected mid-run
 _background_tasks: set = set()
 
 
-async def _reindex_notes_for_entity(entity_label: str) -> None:
+def _spawn_notes_sync(entity: EntityConfig) -> bool:
+    """
+    Fire-and-forget incremental notes sync for an entity (see
+    notes_vector_service.sync_entity_notes). Claude Code sessions edit note
+    files with their own file tools, so the semantic mirror is refreshed in
+    the background on every backend contact rather than waiting for a
+    session-end that may never come. Returns whether a sync was started.
+    """
+    if not settings.notes_enabled:
+        return False
+    if not memory_service.is_configured(entity_id=entity.index_name):
+        return False
+    task = asyncio.create_task(_sync_notes_for_entity(entity.label))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return True
+
+
+async def _sync_notes_for_entity(entity_label: str) -> None:
     try:
-        summary = await notes_vector_service.reindex_entity_notes(entity_label)
-        logger.info(
-            f"[CC MODE] Session-end notes reindex for '{entity_label}': "
-            f"{summary['indexed']} indexed, {len(summary['errors'])} errors"
-        )
+        await notes_vector_service.sync_entity_notes(entity_label)
     except Exception as e:
-        logger.error(f"[CC MODE] Session-end notes reindex failed: {e}")
+        logger.error(f"[CC MODE] Notes sync failed for '{entity_label}': {e}")
 
 
 @mcp_router.post("/mcp")

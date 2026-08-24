@@ -35,10 +35,12 @@ The integration has two channels:
    - `Stop` → `POST /api/claude-code/log-assistant` — extracts the final
      assistant message of the turn from the transcript (text blocks only)
      and records it (persisted + vectorized as `role="assistant"`).
-   - `SessionEnd` → `POST /api/claude-code/session-end` — kicks off a
-     background re-index of the entity's note files into the semantic notes
-     mirror (see "Notes" below). The endpoint returns immediately;
-     SessionEnd hooks run under a tight time budget.
+   - `SessionEnd` → `POST /api/claude-code/session-end` — a final
+     background notes sync (see "Notes" below). This is a catch, not the
+     mechanism: SessionEnd only fires on `/clear`, logout, or exiting the
+     CLI, and sessions can idle out without ever formally ending, so the
+     same sync also runs on every recorded prompt. The endpoint returns
+     immediately; SessionEnd hooks run under a tight time budget.
 
    Hooks are shipped in `claude-code-mode/` (also packaged as a Claude Code
    plugin) and **fail soft**: backend down or mode disabled means a plain
@@ -148,10 +150,19 @@ files the native notes tools use:
   and edit with Claude Code's own file tools, and auto-loads the private
   and shared `index.md`. The post-compaction block reloads both indexes.
 - Edits made with file tools bypass the write-time vectorization the
-  native `notes_write`/`notes_edit` do, so the `SessionEnd` hook triggers
-  `notes_vector_service.reindex_entity_notes` (this entity's private notes
-  plus shared notes) in the background, bringing the `notes_search`
-  semantic mirror back in sync.
+  native `notes_write`/`notes_edit` do, so the semantic mirror is kept
+  fresh by **continuous incremental sync**
+  (`notes_vector_service.sync_entity_notes`): every backend contact —
+  session start, each recorded prompt, and session end — spawns a
+  background task that hashes the entity's note files (plus shared)
+  against the content last vectorized, re-vectorizes only diffs, and
+  removes vectors for deleted files. Hash checks are per-prompt cheap;
+  Pinecone is touched only for actual changes. Freshness deliberately does
+  *not* depend on `SessionEnd`, which may never fire for a session that
+  idles out. The hash map is in-memory: a backend restart means one full
+  (idempotent) re-vectorization on the next sync, and deletions made while
+  the backend was down are caught only by a manual
+  `POST /api/notes/reindex`.
 - Native-side correctness is unaffected in the meantime: `notes_read`
   falls back to disk content on any hash mismatch, and the per-conversation
   notes seed is frozen anyway.
@@ -189,8 +200,8 @@ All under `/api/claude-code`, all gated by `CLAUDE_CODE_MODE_ENABLED`
   context block when `created` (fresh session), the post-compaction block
   when `source` is `"compact"`, empty on a plain resume.
 - `POST /session-end` `{session_id, entity?, reason?}` →
-  `{conversation_id, notes_reindex_started}` — fire-and-forget notes
-  re-index; does not create a conversation for an unseen session.
+  `{conversation_id, notes_sync_started}` — final fire-and-forget notes
+  sync; does not create a conversation for an unseen session.
 - `POST /retrieve` `{session_id, prompt, entity?, cwd?}` →
   `{conversation_id, human_message_id, context, memories_retrieved}`.
 - `POST /log-assistant` `{session_id, content, entity?, cwd?,
