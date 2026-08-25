@@ -153,9 +153,15 @@ async def build_tool_context(
             default_entity = settings.get_default_entity()
             entity_id = default_entity.index_name if default_entity else None
 
+        # After a compaction only post-compaction links still represent
+        # in-context content, and only the post-compaction slice of this
+        # conversation is excluded from queries — everything older survives
+        # only as a paraphrased summary and is fair recall again
         exclude_ids = await memory_service.get_retrieved_ids_for_conversation(
-            conversation.id, db, entity_id=entity_id
+            conversation.id, db, entity_id=entity_id,
+            linked_after=conversation.last_compacted_at,
         )
+        last_compacted_at = conversation.last_compacted_at
 
     return MemoryToolContext(
         entity_id=entity_id,
@@ -164,6 +170,7 @@ async def build_tool_context(
         # Claude Code conversations are never rebuilt into context, so links
         # are safe here and make automatic retrieval skip query results
         link_query_results=True,
+        exclude_conversation_after=last_compacted_at,
     ), None
 
 

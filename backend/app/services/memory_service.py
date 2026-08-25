@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from pinecone import Pinecone
@@ -61,6 +61,23 @@ def role_matches_filter(role: Optional[str], role_filter: Optional[str]) -> bool
         return role == ROLE_FILTER_REFLECTION
     is_human = role == ROLE_FILTER_HUMAN
     return is_human if role_filter == ROLE_FILTER_HUMAN else not is_human
+
+
+def created_before(created_at_value: Any, cutoff: datetime) -> bool:
+    """
+    Whether a memory's created_at metadata (ISO string, naive UTC) predates a
+    naive-UTC cutoff. Missing or unparseable timestamps count as NOT before —
+    callers use this to decide whether a same-conversation memory escapes the
+    compaction-boundary exclusion, and an unknown creation time must fail
+    closed (stay excluded) rather than leak a possibly-in-context memory.
+    """
+    try:
+        parsed = datetime.fromisoformat(str(created_at_value))
+    except (TypeError, ValueError):
+        return False
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed < cutoff
 
 
 async def run_pinecone(fn, *args, **kwargs):
@@ -242,6 +259,7 @@ class MemoryService:
         use_cache: bool = True,
         similarity_threshold: Optional[float] = None,
         role_filter: Optional[str] = None,
+        exclude_conversation_after: Optional[datetime] = None,
     ) -> List[Dict[str, Any]]:
         """
         Search for relevant memories using semantic similarity.
@@ -272,6 +290,16 @@ class MemoryService:
                 restriction. Applied as a Pinecone metadata filter so the
                 top_k slots are filled with matching memories rather than
                 shrunk by post-filtering.
+            exclude_conversation_after: Only meaningful together with
+                exclude_conversation_id: narrow that exclusion to memories
+                created at or after this naive-UTC moment. Used for compacted
+                Claude Code conversations, where messages recorded before the
+                last compaction survive in context only as a paraphrased
+                summary and so become eligible for retrieval again. Pinecone
+                cannot range-filter the ISO-string created_at metadata, so
+                with a cutoff the conversation exclusion moves from the
+                Pinecone filter to the Python post-filter (fetch_k headroom
+                absorbs the discarded candidates).
 
         Returns:
             List of memory dicts with id, content, score, metadata
@@ -291,6 +319,9 @@ class MemoryService:
 
         # Normalize exclude_conversation_id to string for consistent comparison
         exclude_conv_id_normalized = str(exclude_conversation_id) if exclude_conversation_id else None
+        # The compaction cutoff only narrows a conversation exclusion
+        if exclude_conv_id_normalized is None:
+            exclude_conversation_after = None
 
         # Check cache first (before exclude_ids filtering, which happens post-query)
         # Cache key doesn't include exclude_ids since we filter after retrieval
@@ -301,6 +332,7 @@ class MemoryService:
                 top_k=top_k * 2,  # Cache the larger fetch_k results
                 exclude_conversation_id=exclude_conv_id_normalized,
                 role_filter=role_filter,
+                exclude_conversation_after=exclude_conversation_after,
             )
             if cached_results is not None:
                 logger.info(f"[MEMORY] Cache HIT for entity={entity_id}")
@@ -340,7 +372,10 @@ class MemoryService:
             # instead of most of them being discarded afterwards.
             metadata_filter = {}
 
-            if exclude_conv_id_normalized:
+            # With a compaction cutoff the exclusion is conditional on
+            # created_at, which Pinecone can't range-filter (ISO strings), so
+            # it happens in the hit loop below instead
+            if exclude_conv_id_normalized and exclude_conversation_after is None:
                 metadata_filter["conversation_id"] = {"$ne": exclude_conv_id_normalized}
                 logger.debug(f"[MEMORY] Excluding conversation_id: {exclude_conv_id_normalized}")
 
@@ -394,9 +429,19 @@ class MemoryService:
                 # Ensure both values are strings for consistent comparison
                 conv_id_str = str(conv_id) if conv_id else None
                 if exclude_conv_id_normalized and conv_id_str == exclude_conv_id_normalized:
-                    # This should not happen if Pinecone filter worked - log at INFO level for debugging
-                    logger.info(f"[MEMORY] SKIP (same conversation fallback): {match_id[:8]}... conv_id={conv_id_str}")
-                    continue
+                    if exclude_conversation_after is None:
+                        # This should not happen if Pinecone filter worked - log at INFO level for debugging
+                        logger.info(f"[MEMORY] SKIP (same conversation fallback): {match_id[:8]}... conv_id={conv_id_str}")
+                        continue
+                    # Compaction boundary: only the post-compaction slice of
+                    # the conversation is still verbatim in context, so only
+                    # it stays excluded
+                    if not created_before(fields.get("created_at"), exclude_conversation_after):
+                        logger.info(
+                            f"[MEMORY] SKIP (same conversation, post-compaction): "
+                            f"{match_id[:8]}... conv_id={conv_id_str}"
+                        )
+                        continue
 
                 all_memories.append({
                     "id": match_id,
@@ -417,6 +462,7 @@ class MemoryService:
                     exclude_conversation_id=exclude_conv_id_normalized,
                     results=all_memories,
                     role_filter=role_filter,
+                    exclude_conversation_after=exclude_conversation_after,
                 )
 
             # Now apply exclude_ids and threshold filtering
@@ -450,6 +496,7 @@ class MemoryService:
         exclude_conversation_id: Optional[str] = None,
         exclude_ids: Optional[Set[str]] = None,
         since: Optional[datetime] = None,
+        exclude_conversation_after: Optional[datetime] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get the most recently created reflection memories, purely by recency.
@@ -479,6 +526,14 @@ class MemoryService:
                 (naive UTC) moment. Backs memory_query's recent mode, where
                 the entity catches up on reflections saved by concurrent
                 sessions after a given point in time.
+            exclude_conversation_after: Only meaningful together with
+                exclude_conversation_id: narrow that exclusion to reflections
+                created at or after this naive-UTC moment. Used for compacted
+                Claude Code conversations — reflections saved there before
+                the last compaction are no longer verbatim in context, so
+                the never-retrievable-where-saved rule stops applying to
+                them (matching the post-compact injection, which re-shows
+                them deliberately).
 
         Returns:
             List of memory dicts (same shape as get_full_memory_content),
@@ -511,7 +566,13 @@ class MemoryService:
             )
         )
         if exclude_conversation_id:
-            query = query.where(Message.conversation_id != str(exclude_conversation_id))
+            if exclude_conversation_after is not None:
+                query = query.where(or_(
+                    Message.conversation_id != str(exclude_conversation_id),
+                    Message.created_at < exclude_conversation_after,
+                ))
+            else:
+                query = query.where(Message.conversation_id != str(exclude_conversation_id))
         if exclude_ids:
             query = query.where(Message.id.not_in([str(mid) for mid in exclude_ids]))
         if since is not None:
@@ -725,6 +786,48 @@ class MemoryService:
             await db.rollback()
             return False
 
+    async def refresh_memory_link_timestamps(
+        self,
+        conversation_id: str,
+        message_ids: List[str],
+        db: AsyncSession,
+        entity_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Bump retrieved_at to now on existing ConversationMemoryLinks.
+
+        Claude Code only: the post-compact injection re-shows reflections
+        that may already be linked, and after a compaction only links newer
+        than last_compacted_at count as "in context" — so re-showing must
+        move the link past that boundary or dedup would immediately treat
+        the just-injected reflection as out of view. Never use this for
+        native conversations: there retrieved_at drives where a session
+        reload re-inserts the memory into the rebuilt context, and moving
+        it would relocate the memory mid-history and bust the prompt cache.
+        """
+        if not message_ids:
+            return True
+        try:
+            query = (
+                update(ConversationMemoryLink)
+                .where(
+                    ConversationMemoryLink.conversation_id == conversation_id,
+                    ConversationMemoryLink.message_id.in_(
+                        [str(mid) for mid in message_ids]
+                    ),
+                )
+                .values(retrieved_at=datetime.utcnow())
+            )
+            if entity_id is not None:
+                query = query.where(ConversationMemoryLink.entity_id == entity_id)
+            await db.execute(query)
+            await db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error refreshing memory link timestamps: {e}")
+            await db.rollback()
+            return False
+
     async def resolve_memory_id_prefixes(
         self,
         db: AsyncSession,
@@ -757,6 +860,7 @@ class MemoryService:
         conversation_id: str,
         db: AsyncSession,
         entity_id: Optional[str] = None,
+        linked_after: Optional[datetime] = None,
     ) -> set:
         """
         Get all message IDs that have been retrieved in a conversation.
@@ -768,6 +872,13 @@ class MemoryService:
             entity_id: Optional entity filter. For multi-entity conversations,
                       this filters to only memories retrieved by that entity.
                       If None, returns all retrieved memories (backward compatible).
+            linked_after: Only count links with retrieved_at strictly after
+                      this naive-UTC moment. Claude Code callers pass the
+                      conversation's last_compacted_at: links from before a
+                      compaction no longer represent in-context content, so
+                      those memories become eligible for retrieval again
+                      (the post-compact injection refreshes the links for
+                      what it re-shows — see refresh_memory_link_timestamps).
 
         Note: Returns string IDs to match Pinecone's string ID format.
         """
@@ -778,6 +889,9 @@ class MemoryService:
         # For multi-entity conversations, filter by entity_id
         if entity_id is not None:
             query = query.where(ConversationMemoryLink.entity_id == entity_id)
+
+        if linked_after is not None:
+            query = query.where(ConversationMemoryLink.retrieved_at > linked_after)
 
         result = await db.execute(query)
         # Convert to strings to match Pinecone's string ID format

@@ -241,3 +241,69 @@ class TestReflectionSourceFilter:
 
             assert mock_service.search_memories.call_args[1]["role_filter"] == "reflection"
         assert "your saved reflections only" in result
+
+
+class TestCompactionBoundaryInQueries:
+    """
+    A compacted Claude Code conversation's MemoryToolContext carries
+    exclude_conversation_after (its last_compacted_at); both query modes must
+    thread it through so the conversation's own pre-compaction memories are
+    eligible again.
+    """
+
+    BOUNDARY = datetime(2026, 8, 25, 12, 0, 0)
+
+    def _cc_ctx(self):
+        return MemoryToolContext(
+            entity_id="test-entity",
+            conversation_id="cc-conversation",
+            link_query_results=True,
+            exclude_conversation_after=self.BOUNDARY,
+        )
+
+    @pytest.mark.asyncio
+    async def test_semantic_mode_passes_the_boundary_to_search(self):
+        with patch("app.services.memory_tools.memory_service") as mock_service:
+            mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_service.search_memories = AsyncMock(return_value=[])
+
+            await query_memories(self._cc_ctx(), "the pre-compaction work")
+
+            call_kwargs = mock_service.search_memories.call_args[1]
+            assert call_kwargs["exclude_conversation_id"] == "cc-conversation"
+            assert call_kwargs["exclude_conversation_after"] == self.BOUNDARY
+
+    @pytest.mark.asyncio
+    async def test_recent_mode_passes_the_boundary(self, mock_db_session):
+        with patch("app.services.memory_tools.memory_service") as mock_service, \
+             patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
+            mock_service.is_configured.return_value = True
+            mock_service.get_recent_reflections = AsyncMock(return_value=[])
+            mock_session_maker.return_value = mock_db_session
+
+            result = await query_memories(self._cc_ctx(), mode="recent")
+
+            call_kwargs = mock_service.get_recent_reflections.call_args[1]
+            assert call_kwargs["exclude_conversation_id"] == "cc-conversation"
+            assert call_kwargs["exclude_conversation_after"] == self.BOUNDARY
+        # The empty-result phrasing reflects that only the post-compaction
+        # slice of this conversation is off limits
+        assert "since its last compaction" in result
+
+    @pytest.mark.asyncio
+    async def test_native_context_leaves_the_boundary_unset(self):
+        """Native conversations never compact: the module-level context built
+        by set_memory_tool_context must carry no boundary."""
+        set_memory_tool_context("test-entity", "test-conversation")
+        with patch("app.services.memory_tools.memory_service") as mock_service:
+            mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_service.search_memories = AsyncMock(return_value=[])
+
+            await _memory_query("anything")
+
+            assert (
+                mock_service.search_memories.call_args[1]["exclude_conversation_after"]
+                is None
+            )

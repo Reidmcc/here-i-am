@@ -227,6 +227,29 @@ async def ensure_conversation(
     return conversation, True
 
 
+async def mark_conversation_compacted(
+    db: AsyncSession, conversation: Conversation
+) -> None:
+    """
+    Stamp the moment this session's context was compacted.
+
+    last_compacted_at is the same-conversation retrieval eligibility
+    boundary: messages recorded and memory links made before it now exist
+    in the session's context only as a paraphrased summary, so retrieval
+    and the memory tools treat them as out of view again — the Claude Code
+    analogue of native context trimming rolling memories out. Must be
+    stamped *before* build_post_compact_context runs, so the links that
+    injection records/refreshes land after the boundary and keep counting
+    as in-context.
+    """
+    conversation.last_compacted_at = datetime.utcnow()
+    await db.commit()
+    logger.info(
+        f"[CC MODE] Conversation {conversation.id[:8]}... marked compacted at "
+        f"{conversation.last_compacted_at.isoformat()}"
+    )
+
+
 async def get_entity_system_prompt(
     db: AsyncSession, entity_index: str
 ) -> Optional[str]:
@@ -350,6 +373,11 @@ async def build_post_compact_context(
     here deliberately include ones saved in this very session (that is what
     a pre-compaction save is for), so the current conversation is NOT
     excluded, unlike the fresh-session injection.
+
+    The caller stamps conversation.last_compacted_at before calling this
+    (mark_conversation_compacted), which resets the retrieval eligibility
+    boundary: the links this injection records or refreshes are the first
+    to land after it.
     """
     parts: List[str] = []
     bulk_parts: List[str] = []
@@ -477,6 +505,19 @@ async def _inject_recent_reflections(
     already_linked = await memory_service.get_retrieved_ids_for_conversation(
         conversation.id, db, entity_id=entity.index_name
     )
+    # Re-shown reflections that are already linked get their link timestamp
+    # bumped: after a compaction only links newer than last_compacted_at
+    # count as in-context, so without the refresh a reflection this very
+    # injection just put back in view would immediately look retrievable
+    # again
+    to_refresh = [r["id"] for r in reflections if r["id"] in already_linked]
+    if to_refresh:
+        await memory_service.refresh_memory_link_timestamps(
+            conversation_id=conversation.id,
+            message_ids=to_refresh,
+            db=db,
+            entity_id=entity.index_name,
+        )
     for reflection in reflections:
         if reflection["id"] in already_linked:
             continue
@@ -521,8 +562,13 @@ async def retrieve_for_prompt(
     archived_ids = await memory_service.get_archived_conversation_ids(
         db, entity_id=entity_index
     )
+    # After a compaction, pre-compaction state stops counting as in-context:
+    # links from before last_compacted_at no longer suppress re-retrieval,
+    # and this conversation's own pre-compaction messages become eligible
+    # candidates (they survive in context only as a paraphrased summary)
     already_retrieved = await memory_service.get_retrieved_ids_for_conversation(
-        conversation.id, db, entity_id=entity_index
+        conversation.id, db, entity_id=entity_index,
+        linked_after=conversation.last_compacted_at,
     )
     is_first_retrieval = len(already_retrieved) == 0
     top_k = (
@@ -537,6 +583,7 @@ async def retrieve_for_prompt(
         query=prompt,
         top_k=FETCH_K_PER_QUERY,
         exclude_conversation_id=conversation.id,
+        exclude_conversation_after=conversation.last_compacted_at,
         entity_id=entity_index,
     )
     assistant_candidates = []
@@ -545,6 +592,7 @@ async def retrieve_for_prompt(
             query=assistant_query,
             top_k=FETCH_K_PER_QUERY,
             exclude_conversation_id=conversation.id,
+            exclude_conversation_after=conversation.last_compacted_at,
             entity_id=entity_index,
         )
 
@@ -675,8 +723,13 @@ async def count_new_sibling_reflections(
     (memory_query mode "recent").
     """
     try:
+        # Post-compaction, sibling reflections pulled in before the
+        # compaction survive only in the summary, so they count as unread
+        # mail again (the post-compact injection freshly links the most
+        # recent ones, which keeps them cleared)
         linked = await memory_service.get_retrieved_ids_for_conversation(
-            conversation.id, db, entity_id=entity.index_name
+            conversation.id, db, entity_id=entity.index_name,
+            linked_after=conversation.last_compacted_at,
         )
         query = (
             select(func.count())

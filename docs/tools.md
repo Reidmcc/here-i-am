@@ -35,7 +35,12 @@ The four memory tools are also exposed over MCP for Claude Code mode
 session's Claude Code conversation; there, `memory_query` results *are*
 linked (`ConversationMemoryLink`), because Claude Code conversations are
 never rebuilt into context — the link is purely the dedup record that keeps
-automatic retrieval from re-surfacing queried memories.
+automatic retrieval from re-surfacing queried memories. In a Claude Code
+conversation that has been compacted, both exclusions narrow to
+post-compaction state (`Conversation.last_compacted_at`): messages and
+links from before the compaction survive in context only as a paraphrased
+summary, so `memory_query` (both modes) and automatic retrieval can
+surface them again.
 
 ## Notes Tools
 

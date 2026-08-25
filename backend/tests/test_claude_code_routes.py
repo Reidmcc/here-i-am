@@ -497,6 +497,39 @@ class TestSiblingReflectionsFlag:
         )
         assert response.json()["new_sibling_reflections"] == 0
 
+    async def test_pre_compaction_links_count_as_unread_again(
+        self, async_client, db_session
+    ):
+        """A sibling reflection pulled in before a compaction survives only
+        in the summary afterwards, so it flags as unread mail again."""
+        session_id, conversation = await self._start_conversation(
+            async_client, db_session
+        )
+        sibling = Conversation(entity_id="test-entity")
+        db_session.add(sibling)
+        await db_session.commit()
+        pulled = await self._add_reflection(
+            db_session, sibling.id, "Pulled before compaction.",
+            created_at=conversation.created_at + timedelta(seconds=5),
+        )
+        db_session.add(ConversationMemoryLink(
+            conversation_id=conversation.id,
+            message_id=pulled.id,
+            entity_id="test-entity",
+            retrieved_at=conversation.created_at + timedelta(seconds=10),
+        ))
+        # The compaction postdates the link
+        conversation.last_compacted_at = (
+            conversation.created_at + timedelta(seconds=20)
+        )
+        await db_session.commit()
+
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "post-compaction prompt"},
+        )
+        assert response.json()["new_sibling_reflections"] == 1
+
 
 class TestLogAssistant:
     async def test_persists_assistant_message(self, async_client, db_session):
@@ -727,6 +760,107 @@ class TestPostCompact:
         )
         assert result.scalar_one().id == body["conversation_id"]
 
+    async def test_compact_stamps_last_compacted_at(
+        self, async_client, db_session, notes_dir
+    ):
+        """The compact session-start stamps the retrieval eligibility
+        boundary, and a later compact advances it."""
+        session_id = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": session_id}
+        )
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "hello"},
+        )
+
+        await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": session_id, "source": "compact"},
+        )
+        db_session.expire_all()
+        result = await db_session.execute(
+            select(Conversation).where(
+                Conversation.external_session_id == session_id
+            )
+        )
+        conversation = result.scalar_one()
+        first_boundary = conversation.last_compacted_at
+        assert first_boundary is not None
+
+        await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": session_id, "source": "compact"},
+        )
+        db_session.expire_all()
+        result = await db_session.execute(
+            select(Conversation).where(
+                Conversation.external_session_id == session_id
+            )
+        )
+        assert result.scalar_one().last_compacted_at > first_boundary
+
+    async def test_reinjection_refreshes_pre_compaction_links(
+        self, async_client, db_session, notes_dir
+    ):
+        """A re-shown reflection whose link predates the compaction gets its
+        link timestamp bumped past the new boundary — otherwise dedup would
+        treat the just-injected reflection as out of view (and eligible for
+        immediate re-retrieval). Still exactly one link per reflection."""
+        other_conversation = Conversation(entity_id="test-entity")
+        db_session.add(other_conversation)
+        await db_session.commit()
+        reflection = Message(
+            conversation_id=other_conversation.id,
+            role=MessageRole.REFLECTION,
+            content="An earlier conclusion.",
+            speaker_entity_id="test-entity",
+        )
+        db_session.add(reflection)
+        await db_session.commit()
+        reflection_id = reflection.id
+
+        session_id = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": session_id}
+        )
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "hello"},
+        )
+        from app.services import claude_code_mode as cc_mode
+        conversation_id = cc_mode.conversation_id_for_session(session_id)
+
+        # Backdate the session-start injection's link (as if the session ran
+        # for a long time before compacting)
+        result = await db_session.execute(
+            select(ConversationMemoryLink).where(
+                ConversationMemoryLink.conversation_id == conversation_id
+            )
+        )
+        link = result.scalar_one()
+        link.retrieved_at = datetime(2026, 1, 1)
+        await db_session.commit()
+
+        await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": session_id, "source": "compact"},
+        )
+        db_session.expire_all()
+        result = await db_session.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+        boundary = result.scalar_one().last_compacted_at
+        result = await db_session.execute(
+            select(ConversationMemoryLink).where(
+                ConversationMemoryLink.conversation_id == conversation_id
+            )
+        )
+        links = result.scalars().all()
+        assert len(links) == 1
+        assert links[0].message_id == reflection_id
+        assert links[0].retrieved_at > boundary
+
     async def test_post_compact_reflection_count_knob(
         self, async_client, db_session, monkeypatch
     ):
@@ -755,6 +889,79 @@ class TestPostCompact:
         bulk = compacted.json()["bulk_context"]
         assert "Reflection number 2." in bulk  # newest
         assert "Reflection number 0." not in bulk
+
+
+class TestRetrievalCompactionBoundary:
+    """retrieve_for_prompt threads last_compacted_at into search and dedup,
+    so pre-compaction state stops counting as in-context."""
+
+    async def test_retrieve_for_prompt_passes_the_boundary(
+        self, cc_mode_enabled, db_session
+    ):
+        from app.services import claude_code_mode as cc_mode
+
+        boundary = datetime(2026, 8, 25, 12, 0, 0)
+        conversation = Conversation(
+            entity_id="test-entity",
+            source=ConversationSource.CLAUDE_CODE.value,
+            external_session_id=str(uuid.uuid4()),
+            last_compacted_at=boundary,
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+
+        entity = cc_mode.resolve_entity(None)
+        with patch("app.services.claude_code_mode.memory_service") as mock_ms:
+            mock_ms.is_configured.return_value = True
+            mock_ms.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_ms.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_ms.search_memories = AsyncMock(return_value=[])
+
+            block, count, summary = await cc_mode.retrieve_for_prompt(
+                db_session, conversation, entity, "a prompt"
+            )
+
+        assert (block, count, summary) == ("", 0, "")
+        assert (
+            mock_ms.get_retrieved_ids_for_conversation.call_args.kwargs["linked_after"]
+            == boundary
+        )
+        search_calls = mock_ms.search_memories.call_args_list
+        assert search_calls
+        for call in search_calls:
+            assert call.kwargs["exclude_conversation_id"] == conversation.id
+            assert call.kwargs["exclude_conversation_after"] == boundary
+
+    async def test_uncompacted_conversation_passes_no_boundary(
+        self, cc_mode_enabled, db_session
+    ):
+        from app.services import claude_code_mode as cc_mode
+
+        conversation = Conversation(
+            entity_id="test-entity",
+            source=ConversationSource.CLAUDE_CODE.value,
+            external_session_id=str(uuid.uuid4()),
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+
+        entity = cc_mode.resolve_entity(None)
+        with patch("app.services.claude_code_mode.memory_service") as mock_ms:
+            mock_ms.is_configured.return_value = True
+            mock_ms.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_ms.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_ms.search_memories = AsyncMock(return_value=[])
+
+            await cc_mode.retrieve_for_prompt(
+                db_session, conversation, entity, "a prompt"
+            )
+
+        assert (
+            mock_ms.get_retrieved_ids_for_conversation.call_args.kwargs["linked_after"]
+            is None
+        )
+        for call in mock_ms.search_memories.call_args_list:
+            assert call.kwargs["exclude_conversation_after"] is None
 
 
 class TestNotesSync:
@@ -1012,6 +1219,58 @@ class TestMcpToolContext:
         assert ctx.entity_id == "test-entity"
         assert ctx.conversation_id == conversation_id
         assert ctx.link_query_results is True
+
+    async def test_compacted_conversation_carries_the_boundary(
+        self, async_client, db_session, test_engine
+    ):
+        """After a compaction the tool context excludes only post-boundary
+        links, and carries the boundary for the same-conversation search
+        exclusion."""
+        from app.services import claude_code_mcp
+
+        boundary = datetime(2026, 8, 25, 12, 0, 0)
+        conversation = Conversation(
+            entity_id="test-entity",
+            source=ConversationSource.CLAUDE_CODE.value,
+            external_session_id=str(uuid.uuid4()),
+            last_compacted_at=boundary,
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+        memory = Message(
+            conversation_id=conversation.id,
+            role=MessageRole.ASSISTANT,
+            content="A memory.",
+        )
+        stale_memory = Message(
+            conversation_id=conversation.id,
+            role=MessageRole.ASSISTANT,
+            content="Another memory.",
+        )
+        db_session.add_all([memory, stale_memory])
+        await db_session.commit()
+        db_session.add(ConversationMemoryLink(
+            conversation_id=conversation.id,
+            message_id=stale_memory.id,
+            entity_id="test-entity",
+            retrieved_at=boundary - timedelta(days=1),
+        ))
+        db_session.add(ConversationMemoryLink(
+            conversation_id=conversation.id,
+            message_id=memory.id,
+            entity_id="test-entity",
+            retrieved_at=boundary + timedelta(days=1),
+        ))
+        await db_session.commit()
+
+        maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        with patch("app.services.claude_code_mcp.async_session_maker", maker):
+            ctx, error = await claude_code_mcp.build_tool_context(conversation.id)
+
+        assert error is None
+        assert ctx.exclude_conversation_after == boundary
+        # Only the post-compaction link still counts as in-context
+        assert ctx.extra_exclude_ids == {memory.id}
 
     async def test_no_conversation_falls_back_to_default_entity(self, cc_mode_enabled):
         from app.services import claude_code_mcp
