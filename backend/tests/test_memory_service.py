@@ -2,7 +2,7 @@
 Unit tests for MemoryService.
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1712,6 +1712,32 @@ class TestGetRecentReflections:
         assert [r["id"] for r in results] == [kept.id]
 
     @pytest.mark.asyncio
+    async def test_exclude_conversation_after_narrows_the_exclusion(self, db_session):
+        """In a compacted Claude Code conversation, own reflections from
+        before the compaction boundary become eligible again; ones saved
+        after it stay excluded."""
+        current_conv = await self._create_conversation(db_session)
+        boundary = datetime(2026, 6, 1)
+        pre_compaction = await self._create_reflection(
+            db_session, current_conv.id,
+            created_at=boundary - timedelta(days=10), content="pre-compaction",
+        )
+        await self._create_reflection(
+            db_session, current_conv.id,
+            created_at=boundary + timedelta(days=10), content="post-compaction",
+        )
+
+        service = MemoryService()
+        results = await service.get_recent_reflections(
+            db_session,
+            entity_id="test-memories",
+            limit=10,
+            exclude_conversation_id=current_conv.id,
+            exclude_conversation_after=boundary,
+        )
+        assert [r["id"] for r in results] == [pre_compaction.id]
+
+    @pytest.mark.asyncio
     async def test_excludes_ids_for_deduplication(self, db_session):
         conv = await self._create_conversation(db_session)
         excluded = await self._create_reflection(
@@ -1865,3 +1891,268 @@ class TestResolveMemoryIdPrefixes:
             db_session, [shared_prefix]
         )
         assert resolved == []
+
+
+class TestCompactionBoundarySearch:
+    """
+    The exclude_conversation_after cutoff: in a compacted Claude Code
+    conversation, only the post-compaction slice of the conversation stays
+    excluded from search — everything older survives in context only as a
+    paraphrased summary and is eligible again.
+    """
+
+    CUTOFF = datetime(2026, 6, 1)
+
+    def _make_service(self, mock_pinecone_index, hits):
+        service = MemoryService()
+
+        mock_cache = MagicMock()
+        mock_cache.get_search_results.return_value = None
+        service._cache_service = mock_cache
+
+        mock_hits = []
+        for hit in hits:
+            mock_hit = MagicMock()
+            mock_hit.to_dict.return_value = hit
+            mock_hits.append(mock_hit)
+
+        mock_result = MagicMock()
+        mock_result.hits = mock_hits
+        mock_search_result = MagicMock()
+        mock_search_result.result = mock_result
+        mock_pinecone_index.search = MagicMock(return_value=mock_search_result)
+
+        service._indexes["default"] = mock_pinecone_index
+        return service, mock_cache
+
+    def _hit(self, memory_id, created_at, conversation_id="conv-current"):
+        return {
+            "_id": memory_id,
+            "_score": 0.9,
+            "fields": {
+                "conversation_id": conversation_id,
+                "created_at": created_at,
+                "role": "assistant",
+                "content_preview": "preview",
+                "times_retrieved": 0,
+            },
+        }
+
+    def _search_filter(self, mock_pinecone_index):
+        return mock_pinecone_index.search.call_args.kwargs["query"].get("filter")
+
+    @pytest.mark.asyncio
+    async def test_pre_compaction_memories_escape_the_exclusion(self, mock_pinecone_index):
+        """Same-conversation hits from before the cutoff are returned; hits
+        from after it (still verbatim in context) stay excluded."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, _ = self._make_service(
+                mock_pinecone_index,
+                [
+                    self._hit("mem-pre", "2026-01-15T12:00:00"),
+                    self._hit("mem-post", "2026-08-01T12:00:00"),
+                    self._hit("mem-other", "2026-08-01T12:00:00", conversation_id="conv-other"),
+                ],
+            )
+
+            results = await service.search_memories(
+                "Query",
+                exclude_conversation_id="conv-current",
+                exclude_conversation_after=self.CUTOFF,
+            )
+
+            assert {r["id"] for r in results} == {"mem-pre", "mem-other"}
+            # The conversation exclusion moved to the Python post-filter, so
+            # no conversation_id condition goes to Pinecone
+            assert self._search_filter(mock_pinecone_index) is None
+
+    @pytest.mark.asyncio
+    async def test_without_cutoff_exclusion_stays_at_pinecone_level(self, mock_pinecone_index):
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, _ = self._make_service(mock_pinecone_index, [])
+
+            await service.search_memories(
+                "Query", exclude_conversation_id="conv-current"
+            )
+
+            assert self._search_filter(mock_pinecone_index) == {
+                "conversation_id": {"$ne": "conv-current"}
+            }
+
+    @pytest.mark.asyncio
+    async def test_unparseable_created_at_stays_excluded(self, mock_pinecone_index):
+        """An unknown creation time fails closed: the memory might still be
+        verbatim in context, so it must not leak past the boundary."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, _ = self._make_service(
+                mock_pinecone_index,
+                [
+                    self._hit("mem-no-timestamp", None),
+                    self._hit("mem-garbled", "not-a-timestamp"),
+                ],
+            )
+
+            results = await service.search_memories(
+                "Query",
+                exclude_conversation_id="conv-current",
+                exclude_conversation_after=self.CUTOFF,
+            )
+
+            assert results == []
+
+    @pytest.mark.asyncio
+    async def test_cutoff_without_conversation_exclusion_is_ignored(self, mock_pinecone_index):
+        """The cutoff only narrows a conversation exclusion; alone it must
+        not perturb the search (or the cache key)."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, mock_cache = self._make_service(
+                mock_pinecone_index, [self._hit("mem-1", "2026-01-15T12:00:00")]
+            )
+
+            results = await service.search_memories(
+                "Query", exclude_conversation_after=self.CUTOFF
+            )
+
+            assert [r["id"] for r in results] == ["mem-1"]
+            assert (
+                mock_cache.get_search_results.call_args.kwargs["exclude_conversation_after"]
+                is None
+            )
+
+    @pytest.mark.asyncio
+    async def test_cutoff_is_part_of_the_cache_key(self, mock_pinecone_index):
+        """A cutoff search widens the raw result set, so it must not share a
+        cache entry with the unconditional exclusion (and vice versa)."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, mock_cache = self._make_service(mock_pinecone_index, [])
+
+            await service.search_memories(
+                "Query",
+                exclude_conversation_id="conv-current",
+                exclude_conversation_after=self.CUTOFF,
+            )
+
+            assert (
+                mock_cache.get_search_results.call_args.kwargs["exclude_conversation_after"]
+                == self.CUTOFF
+            )
+            assert (
+                mock_cache.set_search_results.call_args.kwargs["exclude_conversation_after"]
+                == self.CUTOFF
+            )
+
+    @pytest.mark.asyncio
+    async def test_cached_results_respect_the_cutoff(self, mock_pinecone_index):
+        """Defense in depth: cached raw results are still boundary-filtered
+        on read."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, mock_cache = self._make_service(mock_pinecone_index, [])
+            mock_cache.get_search_results.return_value = [
+                {"id": "mem-pre", "score": 0.9, "role": "assistant",
+                 "conversation_id": "conv-current", "created_at": "2026-01-15T12:00:00"},
+            ]
+
+            results = await service.search_memories(
+                "Query",
+                exclude_conversation_id="conv-current",
+                exclude_conversation_after=self.CUTOFF,
+            )
+
+            assert [r["id"] for r in results] == ["mem-pre"]
+            mock_pinecone_index.search.assert_not_called()
+
+
+class TestCompactionBoundaryLinks:
+    """linked_after filtering and link-timestamp refresh (Claude Code
+    compaction: pre-compaction links stop counting as in-context)."""
+
+    @pytest.mark.asyncio
+    async def test_linked_after_filters_older_links(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        service = MemoryService()
+        boundary = datetime(2026, 6, 1)
+        db_session.add(ConversationMemoryLink(
+            conversation_id=sample_conversation.id,
+            message_id=sample_messages[0].id,
+            retrieved_at=boundary - timedelta(days=1),
+        ))
+        db_session.add(ConversationMemoryLink(
+            conversation_id=sample_conversation.id,
+            message_id=sample_messages[1].id,
+            retrieved_at=boundary + timedelta(days=1),
+        ))
+        await db_session.commit()
+
+        unfiltered = await service.get_retrieved_ids_for_conversation(
+            sample_conversation.id, db_session
+        )
+        assert unfiltered == {sample_messages[0].id, sample_messages[1].id}
+
+        filtered = await service.get_retrieved_ids_for_conversation(
+            sample_conversation.id, db_session, linked_after=boundary
+        )
+        assert filtered == {sample_messages[1].id}
+
+    @pytest.mark.asyncio
+    async def test_refresh_moves_links_past_the_boundary(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        service = MemoryService()
+        boundary = datetime(2026, 6, 1)
+        for msg in sample_messages:
+            db_session.add(ConversationMemoryLink(
+                conversation_id=sample_conversation.id,
+                message_id=msg.id,
+                retrieved_at=boundary - timedelta(days=1),
+            ))
+        await db_session.commit()
+
+        refreshed = await service.refresh_memory_link_timestamps(
+            conversation_id=sample_conversation.id,
+            message_ids=[sample_messages[0].id],
+            db=db_session,
+        )
+        assert refreshed is True
+
+        after = await service.get_retrieved_ids_for_conversation(
+            sample_conversation.id, db_session, linked_after=boundary
+        )
+        assert after == {sample_messages[0].id}
+
+    @pytest.mark.asyncio
+    async def test_refresh_with_no_ids_is_a_noop(self, db_session, sample_conversation):
+        service = MemoryService()
+        assert await service.refresh_memory_link_timestamps(
+            conversation_id=sample_conversation.id, message_ids=[], db=db_session
+        ) is True

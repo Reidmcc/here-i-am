@@ -258,6 +258,7 @@ class CacheService:
         top_k: int,
         exclude_conversation_id: Optional[str],
         role_filter: Optional[str],
+        exclude_conversation_after: Optional[datetime],
     ) -> str:
         """
         Cache key for a memory search.
@@ -265,11 +266,22 @@ class CacheService:
         Every argument that changes which memories Pinecone returns has to be
         part of the key — role_filter included, or a role-restricted search
         would serve its narrowed results to a later unrestricted one (and vice
-        versa) for the length of the TTL. entity_id stays first so
-        invalidate_search_cache_for_entity's prefix match keeps working.
+        versa) for the length of the TTL. Same for the compaction cutoff
+        (exclude_conversation_after), which widens the raw result set to
+        include the excluded conversation's pre-compaction memories.
+        entity_id stays first so invalidate_search_cache_for_entity's prefix
+        match keeps working.
         """
         query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
-        return f"search:{entity_id}:{top_k}:{exclude_conversation_id}:{role_filter}:{query_hash}"
+        cutoff = (
+            exclude_conversation_after.isoformat()
+            if exclude_conversation_after is not None
+            else None
+        )
+        return (
+            f"search:{entity_id}:{top_k}:{exclude_conversation_id}:{cutoff}:"
+            f"{role_filter}:{query_hash}"
+        )
 
     def get_search_results(
         self,
@@ -278,9 +290,13 @@ class CacheService:
         top_k: int,
         exclude_conversation_id: Optional[str] = None,
         role_filter: Optional[str] = None,
+        exclude_conversation_after: Optional[datetime] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """Get cached search results."""
-        key = self._search_key(query, entity_id, top_k, exclude_conversation_id, role_filter)
+        key = self._search_key(
+            query, entity_id, top_k, exclude_conversation_id, role_filter,
+            exclude_conversation_after,
+        )
         return self.search_cache.get(key)
 
     def set_search_results(
@@ -292,9 +308,13 @@ class CacheService:
         results: List[Dict[str, Any]],
         ttl_seconds: Optional[int] = None,
         role_filter: Optional[str] = None,
+        exclude_conversation_after: Optional[datetime] = None,
     ) -> None:
         """Cache search results."""
-        key = self._search_key(query, entity_id, top_k, exclude_conversation_id, role_filter)
+        key = self._search_key(
+            query, entity_id, top_k, exclude_conversation_id, role_filter,
+            exclude_conversation_after,
+        )
         self.search_cache.set(key, results, ttl_seconds)
 
     def invalidate_search_cache_for_entity(self, entity_id: Optional[str]) -> int:

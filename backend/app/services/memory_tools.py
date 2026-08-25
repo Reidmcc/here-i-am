@@ -89,6 +89,13 @@ class MemoryToolContext:
             results. Claude Code mode passes the conversation's
             ConversationMemoryLink set here (its equivalent of "already in
             context").
+        exclude_conversation_after: For compacted Claude Code conversations,
+            the conversation's last_compacted_at. Narrows the
+            same-conversation exclusion to memories created at or after that
+            moment: everything before it survives in context only as a
+            paraphrased summary, so it is eligible for retrieval again.
+            None (always, for native conversations) keeps the exclusion
+            unconditional.
         link_query_results: Record a ConversationMemoryLink for each query
             result. False for native conversations — links drive
             session-reload re-insertion of memories into the rebuilt context,
@@ -105,6 +112,7 @@ class MemoryToolContext:
     last_query_memory_ids: List[str] = field(default_factory=list)
     extra_exclude_ids: Set[str] = field(default_factory=set)
     link_query_results: bool = False
+    exclude_conversation_after: Optional[datetime] = None
 
 
 # Current context for the native tool loop (set by the session manager before
@@ -292,6 +300,7 @@ async def _recent_reflections(
             exclude_conversation_id=ctx.conversation_id,
             exclude_ids=in_context_ids,
             since=since,
+            exclude_conversation_after=ctx.exclude_conversation_after,
         )
         if ctx.link_query_results:
             for mem in memories:
@@ -303,9 +312,15 @@ async def _recent_reflections(
                 )
 
     if not memories:
+        own_reflections_note = (
+            "(Reflections saved in this conversation since its last "
+            "compaction are never returned here.)"
+            if ctx.exclude_conversation_after is not None
+            else "(Reflections saved in this conversation are never returned here.)"
+        )
         return (
             f"No reflections found{since_suffix} that are not already in view. "
-            "(Reflections saved in this conversation are never returned here.)"
+            + own_reflections_note
         )
 
     surfaced_ids = [mem["id"] for mem in memories]
@@ -414,6 +429,9 @@ async def query_memories(
             query=query,
             top_k=num_results * 2,
             exclude_conversation_id=conversation_id,  # Exclude current conversation
+            # In a compacted Claude Code conversation, only the
+            # post-compaction slice of it stays excluded
+            exclude_conversation_after=ctx.exclude_conversation_after,
             exclude_ids=in_context_ids,  # Exclude memories already in context
             entity_id=entity_id,
             use_cache=True,

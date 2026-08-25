@@ -142,6 +142,9 @@ class TestMemoryQuerySearch:
                 query="here i am",
                 top_k=14,  # 2x num_results for archived/released filtering headroom
                 exclude_conversation_id="my-conversation",  # Excludes current conversation
+                # Native conversations never compact, so no boundary narrows
+                # the exclusion
+                exclude_conversation_after=None,
                 exclude_ids=set(),  # No session set -> nothing already in context
                 entity_id="my-entity",
                 use_cache=True,

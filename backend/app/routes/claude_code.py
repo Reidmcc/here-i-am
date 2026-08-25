@@ -188,6 +188,10 @@ async def session_start(
     else:
         conversation_id = str(conversation.id)
         if data.source == "compact":
+            # Stamp the eligibility boundary first: links recorded/refreshed
+            # by the post-compact injection must land after it (see
+            # mark_conversation_compacted)
+            await cc.mark_conversation_compacted(db, conversation)
             context, bulk_context = await cc.build_post_compact_context(
                 db, conversation, entity
             )

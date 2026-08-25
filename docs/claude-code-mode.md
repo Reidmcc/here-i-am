@@ -221,6 +221,32 @@ are the entity's verbatim carriers across that boundary.
   compaction are exactly the ones that must come back. Links are recorded
   only for reflections not already linked (no duplicate rows), and
   `times_retrieved` stays untouched as with all recency injections.
+- **Pre-compaction memory becomes retrievable again.** The compact
+  `session-start` stamps `Conversation.last_compacted_at` (before the
+  re-injection runs), and that stamp is the same-conversation eligibility
+  boundary — the Claude Code analogue of native context trimming rolling
+  memories out of view:
+  - The same-conversation exclusion narrows to messages created **after**
+    the boundary. Messages and reflections recorded before it survive in
+    context only inside the paraphrased summary, so automatic retrieval,
+    semantic `memory_query`, and recent-mode `memory_query` can all
+    surface them again (`exclude_conversation_after` in
+    `search_memories` / `get_recent_reflections`; carried on
+    `MemoryToolContext` for the MCP tools). Pinecone can't range-filter
+    the ISO-string `created_at` metadata, so with a boundary the
+    conversation exclusion moves from the Pinecone filter to the Python
+    post-filter (and joins the search cache key).
+  - Link-based dedup counts only links made after the boundary
+    (`linked_after` in `get_retrieved_ids_for_conversation`): memories
+    pulled into context before the compaction are eligible again, and
+    previously-pulled sibling reflections count as unread mail again. So
+    that this doesn't immediately re-surface what the post-compact
+    injection just re-showed, the injection bumps the link timestamps of
+    already-linked reflections past the boundary
+    (`refresh_memory_link_timestamps` — safe only here; in native
+    conversations `retrieved_at` drives reload re-insertion positions).
+  Native conversations never set `last_compacted_at`, so their exclusion
+  rules are unchanged.
 
 ### Notes
 

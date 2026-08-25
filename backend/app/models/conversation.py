@@ -80,6 +80,17 @@ class Conversation(Base):
     external_session_id: Mapped[Optional[str]] = mapped_column(
         String(100), nullable=True, unique=True, index=True
     )
+    # For source="claude_code": when this session's context was last
+    # compacted (stamped by the source="compact" session-start). This is the
+    # same-conversation retrieval eligibility boundary: messages recorded and
+    # memory links made before it now exist in the session's context only as
+    # a paraphrased summary, so retrieval treats them as out of view again —
+    # the Claude Code analogue of native context trimming rolling memories
+    # out. NULL = never compacted (and always NULL for native conversations,
+    # whose exclusion rules are unconditional).
+    last_compacted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
 
     messages: Mapped[List["Message"]] = relationship(
         "Message", back_populates="conversation", cascade="all, delete-orphan"

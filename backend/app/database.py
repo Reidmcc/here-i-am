@@ -243,6 +243,13 @@ async def run_migrations(conn):
             ))
             print("  ✓ Added external_session_id column for Claude Code session mapping")
 
+        if 'last_compacted_at' not in columns:
+            print("Migrating: Adding 'last_compacted_at' column to conversations table...")
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN last_compacted_at DATETIME"
+            ))
+            print("  ✓ Added last_compacted_at column for Claude Code compaction boundary")
+
 
 async def init_db():
     async with engine.begin() as conn:
