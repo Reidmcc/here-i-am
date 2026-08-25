@@ -407,6 +407,97 @@ class TestRetrieve:
         assert result.scalars().all() == []
 
 
+class TestSiblingReflectionsFlag:
+    """/retrieve's new_sibling_reflections mailbox counter."""
+
+    async def _start_conversation(self, async_client, db_session):
+        """Register a conversation via a first recorded prompt."""
+        session_id = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "opening prompt"},
+        )
+        body = response.json()
+        assert body["new_sibling_reflections"] == 0
+        result = await db_session.execute(
+            select(Conversation).where(Conversation.id == body["conversation_id"])
+        )
+        return session_id, result.scalar_one()
+
+    async def _add_reflection(self, db_session, conversation_id, content, **kwargs):
+        message = Message(
+            conversation_id=conversation_id,
+            role=MessageRole.REFLECTION,
+            content=content,
+            speaker_entity_id="test-entity",
+            **kwargs,
+        )
+        db_session.add(message)
+        await db_session.commit()
+        return message
+
+    async def test_counts_only_new_unlinked_sibling_reflections(
+        self, async_client, db_session
+    ):
+        session_id, conversation = await self._start_conversation(
+            async_client, db_session
+        )
+        sibling = Conversation(entity_id="test-entity")
+        db_session.add(sibling)
+        await db_session.commit()
+
+        after = conversation.created_at + timedelta(seconds=5)
+        before = conversation.created_at - timedelta(days=1)
+        counted = await self._add_reflection(
+            db_session, sibling.id, "Sibling conclusion.", created_at=after
+        )
+        # Predates this conversation: not new mail
+        await self._add_reflection(
+            db_session, sibling.id, "Old conclusion.", created_at=before
+        )
+        # Released: withdrawn from retrieval, so not counted either
+        await self._add_reflection(
+            db_session, sibling.id, "Released conclusion.",
+            created_at=after, memory_status="released",
+        )
+
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "second prompt"},
+        )
+        assert response.json()["new_sibling_reflections"] == 1
+
+        # Linking the reflection into this conversation (what session-start
+        # injection and recent-mode memory_query do) clears the flag
+        db_session.add(ConversationMemoryLink(
+            conversation_id=conversation.id,
+            message_id=counted.id,
+            entity_id="test-entity",
+        ))
+        await db_session.commit()
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "third prompt"},
+        )
+        assert response.json()["new_sibling_reflections"] == 0
+
+    async def test_own_conversation_reflections_not_counted(
+        self, async_client, db_session
+    ):
+        session_id, conversation = await self._start_conversation(
+            async_client, db_session
+        )
+        await self._add_reflection(
+            db_session, conversation.id, "Saved right here.",
+            created_at=conversation.created_at + timedelta(seconds=5),
+        )
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "next prompt"},
+        )
+        assert response.json()["new_sibling_reflections"] == 0
+
+
 class TestLogAssistant:
     async def test_persists_assistant_message(self, async_client, db_session):
         session_id = str(uuid.uuid4())

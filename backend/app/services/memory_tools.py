@@ -25,8 +25,8 @@ two callers:
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, List, Optional, Set, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import select
 
@@ -47,10 +47,20 @@ MAX_REFLECTION_LENGTH = 10000
 MIN_ID_PREFIX_LENGTH = 6
 
 # Accepted values for memory_query's `source` parameter. "all" (or omitting
-# the parameter) searches every memory; "human" and "ai" map to the role
-# filter memory_service applies to the vector search.
+# the parameter) searches every memory; "human", "ai", and "reflection" map
+# to the role filter memory_service applies to the vector search.
 SOURCE_ALL = "all"
+SOURCE_REFLECTION = "reflection"
 VALID_QUERY_SOURCES = (SOURCE_ALL,) + tuple(VALID_ROLE_FILTERS)
+
+# Accepted values for memory_query's `mode` parameter. "semantic" searches by
+# similarity to the query text; "recent" returns the entity's own reflections
+# purely by creation time (no vector search, no query text needed) — the
+# catch-up channel for reflections saved by other sessions running in
+# parallel or since this conversation began.
+MODE_SEMANTIC = "semantic"
+MODE_RECENT = "recent"
+VALID_QUERY_MODES = (MODE_SEMANTIC, MODE_RECENT)
 
 
 @dataclass
@@ -214,20 +224,116 @@ async def _resolve_memory_id(
     return message, None
 
 
-async def query_memories(
+def _parse_since(since: Optional[str]) -> Tuple[Optional[datetime], Optional[str]]:
+    """
+    Parse memory_query's `since` parameter into a naive-UTC datetime.
+
+    Memory timestamps are stored naive UTC, so an aware input is converted
+    to UTC and stripped. Returns (datetime, error) — at most one is set.
+    """
+    if since is None or not str(since).strip():
+        return None, None
+    try:
+        parsed = datetime.fromisoformat(str(since).strip())
+    except ValueError:
+        return None, (
+            f"Error: Could not parse since='{since}'. Use ISO 8601, e.g. "
+            "'2026-08-24' or '2026-08-24T18:00:00' (UTC assumed when no "
+            "timezone is given)."
+        )
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed, None
+
+
+def _format_recent_reflections(
+    memories: List[Dict[str, Any]], since_suffix: str
+) -> str:
+    """Render recent-mode results (no similarity scores — ordering is time)."""
+    now = datetime.utcnow()
+    lines = [f"Your {len(memories)} most recent reflections{since_suffix}, newest first:", ""]
+    for mem in memories:
+        created_at = mem["created_at"]
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        days_ago = (now - created_at).total_seconds() / 86400
+        age_str = f"{days_ago:.1f} days ago" if days_ago >= 1 else "today"
+        status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""
+        origin_str = format_memory_origin(mem.get("source", "native"))
+        lines.append(
+            f"--- Memory {mem['id'][:8]} (You reflected, {age_str}, {origin_str}{status_str}) ---"
+        )
+        lines.append(mem["content"])
+        lines.append("")
+    return "\n".join(lines)
+
+
+async def _recent_reflections(
     ctx: MemoryToolContext,
-    query: str,
-    num_results: int = 5,
-    source: Optional[str] = None,
+    num_results: int,
+    since: Optional[datetime],
+    since_suffix: str,
 ) -> str:
     """
-    Query the entity's experiential memories with chosen text.
+    memory_query's recent mode: the entity's own reflections by creation
+    time. No vector search runs and — matching the recency-injection rule —
+    times_retrieved / last_retrieved_at are NOT updated: significance
+    feedback stays reserved for semantic recall, so asking "what did I save
+    lately" doesn't inflate what it returns. In Claude Code conversations
+    the results are still linked (the dedup record that keeps automatic
+    retrieval and later queries from re-surfacing them).
+    """
+    in_context_ids = get_in_context_memory_ids(ctx)
+    async with async_session_maker() as db:
+        memories = await memory_service.get_recent_reflections(
+            db,
+            entity_id=ctx.entity_id,
+            limit=num_results,
+            exclude_conversation_id=ctx.conversation_id,
+            exclude_ids=in_context_ids,
+            since=since,
+        )
+        if ctx.link_query_results:
+            for mem in memories:
+                await memory_service.record_memory_link(
+                    message_id=mem["id"],
+                    conversation_id=ctx.conversation_id,
+                    db=db,
+                    entity_id=ctx.entity_id,
+                )
 
-    Deliberate recall returns memories purely by semantic similarity.
-    Memories already visible to the entity (context insertions, earlier query
+    if not memories:
+        return (
+            f"No reflections found{since_suffix} that are not already in view. "
+            "(Reflections saved in this conversation are never returned here.)"
+        )
+
+    surfaced_ids = [mem["id"] for mem in memories]
+    ctx.last_query_memory_ids = list(surfaced_ids)
+    ctx.turn_query_memory_ids.update(surfaced_ids)
+
+    return _format_recent_reflections(memories, since_suffix)
+
+
+async def query_memories(
+    ctx: MemoryToolContext,
+    query: str = "",
+    num_results: int = 5,
+    source: Optional[str] = None,
+    mode: Optional[str] = None,
+    since: Optional[str] = None,
+) -> str:
+    """
+    Query the entity's experiential memories.
+
+    Semantic mode (default) returns memories purely by similarity to chosen
+    text; recent mode returns the entity's own reflections purely by
+    creation time (optionally bounded by `since`). In both modes, memories
+    already visible to the entity (context insertions, earlier query
     results, ctx.extra_exclude_ids) are excluded, so results are things it
-    cannot already see. Retrieval tracking is updated so intentional
-    attention influences future automatic recall.
+    cannot already see. Semantic recall updates retrieval tracking so
+    intentional attention influences future automatic recall; recent mode
+    does not (recency is not relevance).
     """
     entity_id, conversation_id = ctx.entity_id, ctx.conversation_id
 
@@ -249,6 +355,43 @@ async def query_memories(
     if role_filter == SOURCE_ALL:
         role_filter = None
 
+    mode_normalized = str(mode if mode is not None else "").strip().lower() or MODE_SEMANTIC
+    if mode_normalized not in VALID_QUERY_MODES:
+        return (
+            f"Error: Unknown mode '{mode}'. "
+            f"Valid values: {', '.join(VALID_QUERY_MODES)}."
+        )
+
+    since_dt, since_error = _parse_since(since)
+    if since_error:
+        return since_error
+
+    # Clamp num_results to reasonable range
+    num_results = max(1, min(10, num_results))
+
+    if mode_normalized == MODE_RECENT:
+        # Recency is only meaningful for reflections — deliberate,
+        # self-authored conclusions. Recent-by-time over raw conversational
+        # memories would just replay the transcript tail.
+        if role_filter not in (None, SOURCE_REFLECTION):
+            return (
+                f"Error: mode 'recent' returns your saved reflections only; "
+                f"it cannot be combined with source '{role_filter}'."
+            )
+        since_suffix = f" (created after {since_dt.isoformat()} UTC)" if since_dt else ""
+        try:
+            return await _recent_reflections(ctx, num_results, since_dt, since_suffix)
+        except Exception as e:
+            logger.error(f"Recent-reflections query error: {e}")
+            return f"Error querying recent reflections: {e}"
+
+    if since_dt is not None:
+        return "Error: 'since' applies to mode 'recent' only."
+
+    query = (query or "").strip()
+    if not query:
+        return "Error: 'query' text is required for semantic search (or use mode 'recent')."
+
     # Echoed in the result text so a narrowed search is never mistaken for
     # "there is nothing here at all"
     source_suffix = ""
@@ -256,9 +399,8 @@ async def query_memories(
         source_suffix = " (searching the human's messages only)"
     elif role_filter == "ai":
         source_suffix = " (searching AI-authored memories only)"
-
-    # Clamp num_results to reasonable range
-    num_results = max(1, min(10, num_results))
+    elif role_filter == SOURCE_REFLECTION:
+        source_suffix = " (searching your saved reflections only)"
 
     # Exclude memories already in the conversation context. Surfacing a memory
     # the entity can already see adds no information, so filter it at the search
@@ -541,11 +683,15 @@ async def release_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = Fa
 
 # Native tool-loop executors: delegate to the module-level current context.
 async def _memory_query(
-    query: str,
+    query: str = "",
     num_results: int = 5,
     source: Optional[str] = None,
+    mode: Optional[str] = None,
+    since: Optional[str] = None,
 ) -> str:
-    return await query_memories(_context, query, num_results=num_results, source=source)
+    return await query_memories(
+        _context, query, num_results=num_results, source=source, mode=mode, since=since
+    )
 
 
 async def _memory_save(content: str) -> str:
@@ -565,17 +711,22 @@ async def _memory_release(memory_id: str, undo: bool = False) -> str:
 # (services/claude_code_mcp.py), so both surfaces describe the same tools.
 
 MEMORY_QUERY_DESCRIPTION = (
-    "Query your experiential memories with chosen text. "
-    "This allows you to intentionally recall memories related to a concept, "
+    "Query your experiential memories. In the default semantic mode this "
+    "allows you to intentionally recall memories related to a concept, "
     "topic, or phrase—unlike automatic memory retrieval which happens based "
-    "on conversation context. Returns memories ranked purely by semantic "
+    "on conversation context—returning memories ranked purely by semantic "
     "similarity to your query, each with a short memory ID usable with "
     "memory_mark and memory_release. You can optionally restrict the "
-    "search to what the human said or to what was AI-authored (your own "
-    "messages and reflections). Memories already in the current "
-    "conversation context are excluded, so results are things not already "
-    "in view. Querying updates retrieval tracking, so deliberate attention "
-    "influences future automatic recall."
+    "search to what the human said, to what was AI-authored (your own "
+    "messages and reflections), or to your saved reflections only. In "
+    "mode 'recent', no query text is needed: it returns your own saved "
+    "reflections purely by creation time, optionally bounded by 'since'—"
+    "use it to catch up on reflections saved in other sessions running "
+    "alongside or since this one began. Memories already in the current "
+    "conversation context are excluded in both modes, so results are "
+    "things not already in view. Semantic querying updates retrieval "
+    "tracking, so deliberate attention influences future automatic "
+    "recall; recent mode does not."
 )
 
 MEMORY_QUERY_SCHEMA = {
@@ -585,7 +736,8 @@ MEMORY_QUERY_SCHEMA = {
             "type": "string",
             "description": (
                 "The text to search for. Can be a concept, phrase, question, "
-                "or anything you want to find related memories about."
+                "or anything you want to find related memories about. "
+                "Required for semantic mode; unused in mode 'recent'."
             )
         },
         "num_results": {
@@ -603,13 +755,35 @@ MEMORY_QUERY_SCHEMA = {
                 "what the human said; 'ai' searches only AI-authored memories "
                 "(your own messages and saved reflections, and in a "
                 "multi-entity conversation the other entities' messages); "
-                "'all' searches everything. Optional—omit it to search all "
-                "memories."
+                "'reflection' searches only reflections you saved with "
+                "memory_save; 'all' searches everything. Optional—omit it "
+                "to search all memories."
             ),
             "default": SOURCE_ALL
+        },
+        "mode": {
+            "type": "string",
+            "enum": list(VALID_QUERY_MODES),
+            "description": (
+                "'semantic' (default) ranks by similarity to the query text. "
+                "'recent' returns your saved reflections newest-first with "
+                "no semantic matching (query not needed; source, if given, "
+                "must be 'reflection')."
+            ),
+            "default": MODE_SEMANTIC
+        },
+        "since": {
+            "type": "string",
+            "description": (
+                "Mode 'recent' only: return reflections created after this "
+                "ISO 8601 moment, e.g. '2026-08-24' or "
+                "'2026-08-24T18:00:00' (UTC assumed when no timezone is "
+                "given). Useful for 'everything saved since this session "
+                "started'."
+            )
         }
     },
-    "required": ["query"]
+    "required": []
 }
 
 MEMORY_SAVE_DESCRIPTION = (

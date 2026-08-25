@@ -30,7 +30,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -655,6 +655,49 @@ def render_retrieval_summary(mem_datas: List[Dict[str, Any]]) -> str:
         f"[HERE I AM MEMORY RETRIEVAL] {count} {plural} from your past "
         "conversations surfaced as relevant to this prompt:\n" + "\n".join(lines)
     )
+
+
+async def count_new_sibling_reflections(
+    db: AsyncSession,
+    conversation: Conversation,
+    entity: EntityConfig,
+) -> int:
+    """
+    Count reflections this entity saved in OTHER conversations since this
+    conversation began, excluding any already linked into this one
+    (session-start injection and recent-mode memory_query both link what
+    they surface, so pulling the mail clears the flag).
+
+    Backs the UserPromptSubmit mailbox flag: a long-running session cannot
+    see what concurrent sessions save, and unretrieved history and genuine
+    novelty feel identical from inside — so the hook prints a one-line
+    count when nonzero and the entity decides whether to pull the content
+    (memory_query mode "recent").
+    """
+    try:
+        linked = await memory_service.get_retrieved_ids_for_conversation(
+            conversation.id, db, entity_id=entity.index_name
+        )
+        query = (
+            select(func.count())
+            .select_from(Message)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(
+                Message.role == MessageRole.REFLECTION,
+                Message.speaker_entity_id == entity.index_name,
+                Message.conversation_id != str(conversation.id),
+                Message.created_at > conversation.created_at,
+                or_(Message.memory_status.is_(None), Message.memory_status != "released"),
+                Conversation.is_archived == False,
+            )
+        )
+        if linked:
+            query = query.where(Message.id.not_in([str(mid) for mid in linked]))
+        result = await db.execute(query)
+        return int(result.scalar() or 0)
+    except Exception as e:
+        logger.warning(f"[CC] Sibling-reflection count failed: {e}")
+        return 0
 
 
 async def _last_assistant_content(
