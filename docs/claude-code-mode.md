@@ -183,6 +183,19 @@ A lived-in entity's session-start payload (index.md + reflections) runs to
   already carries it. A resume of a session with no row (it never spoke, or
   it ran while the backend was down) gets the full block again: arriving
   twice beats never arriving.
+- **Sibling-reflections mailbox flag.** Long-running and concurrent
+  sessions can't see reflections other sessions save after they begin, and
+  unretrieved history and genuine novelty feel identical from inside. So
+  `/retrieve` also returns `new_sibling_reflections` — reflections this
+  entity saved in *other* conversations after this conversation's
+  `created_at`, minus released ones, archived conversations, and anything
+  already linked into this conversation (`count_new_sibling_reflections`) —
+  and the `UserPromptSubmit` hook prints a one-line `[HERE I AM]` notice
+  when it is nonzero. Deliberately count-only: the content is never
+  injected; the entity pulls it with `memory_query` `mode="recent"`
+  (optionally `since`), whose results are linked and therefore clear the
+  flag. Pull, not push — cross-session awareness is a fact the entity is
+  told, not weather it is subjected to.
 
 ### Compaction survival
 
@@ -283,8 +296,9 @@ conversation on first contact; `/session-start` and `/session-end` never do
   sync; does not create a conversation for an unseen session.
 - `POST /retrieve` `{session_id, prompt, entity?, cwd?}` →
   `{conversation_id, human_message_id, context, memories_retrieved,
-  context_summary}` — the summary is the compact inline stand-in the hook
-  prints when it has to spill an oversized `context`.
+  context_summary, new_sibling_reflections}` — the summary is the compact
+  inline stand-in the hook prints when it has to spill an oversized
+  `context`; the sibling count backs the mailbox flag (see Memory above).
 - `POST /log-assistant` `{session_id, content, entity?, cwd?,
   message_uuid?}` → `{conversation_id, message_id, deduplicated}` —
   idempotent on `message_uuid` (the transcript entry's UUID becomes the

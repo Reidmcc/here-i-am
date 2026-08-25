@@ -189,6 +189,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
                 query=arguments.get("query", ""),
                 num_results=arguments.get("num_results", 5),
                 source=arguments.get("source"),
+                mode=arguments.get("mode"),
+                since=arguments.get("since"),
             )
         if name == "memory_save":
             return await memory_tools.save_memory(ctx, arguments.get("content", ""))

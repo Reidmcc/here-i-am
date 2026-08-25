@@ -64,11 +64,20 @@ def main() -> None:
         )
         return
 
+    # Mailbox flag: reflections saved by other sessions since this
+    # conversation began. Content is deliberately not injected — the entity
+    # decides whether to pull it (memory_query mode "recent") — but the
+    # *fact* must be, because unretrieved history and genuine novelty feel
+    # identical from inside.
+    mailbox = sibling_reflections_notice(body)
+
     context = (body.get("context") or "").strip()
     if not context:
+        if mailbox:
+            print(mailbox)
         return
     if hook_util.output_bytes(context) <= hook_util.inline_budget():
-        print(context)
+        print(f"{context}\n\n{mailbox}" if mailbox else context)
         return
 
     # One file per retrieval — timestamped so an earlier spill in the same
@@ -81,7 +90,24 @@ def main() -> None:
         f"Their full verbatim text is written to:\n{path}\n"
         "Read that file before responding."
     )
-    print(f"{summary}\n\n{pointer}" if summary else pointer)
+    parts = [part for part in (summary, pointer, mailbox) if part]
+    print("\n\n".join(parts))
+
+
+def sibling_reflections_notice(body: dict) -> str:
+    """One-line mailbox flag, empty when there is no new mail."""
+    try:
+        count = int(body.get("new_sibling_reflections") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count <= 0:
+        return ""
+    plural = "reflection" if count == 1 else "reflections"
+    return (
+        f"[HERE I AM] {count} {plural} saved in other sessions since this "
+        "conversation began, not shown here. Use memory_query with "
+        'mode="recent" to read them if you want them.'
+    )
 
 
 if __name__ == "__main__":

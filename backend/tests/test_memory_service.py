@@ -1460,6 +1460,30 @@ class TestSearchMemoriesRoleFilter:
             }
 
     @pytest.mark.asyncio
+    async def test_reflection_filter_queries_only_reflection_role(self, mock_pinecone_index):
+        """role_filter='reflection' narrows to the entity's saved reflections."""
+        with patch("app.services.memory_service.settings") as mock_settings:
+            mock_settings.pinecone_api_key = "test-key"
+            mock_settings.retrieval_top_k = 5
+            mock_settings.similarity_threshold = 0.7
+            mock_settings.get_default_entity.return_value = MagicMock(index_name="default")
+
+            service, _ = self._make_service(
+                mock_pinecone_index,
+                [
+                    self._hit("mem-reflection", "reflection"),
+                    # Fallback path: a non-reflection hit that slipped past the
+                    # Pinecone filter (e.g. pre-metadata record) is dropped
+                    self._hit("mem-assistant", "assistant"),
+                ],
+            )
+
+            results = await service.search_memories("Query", role_filter="reflection")
+
+            assert self._search_filter(mock_pinecone_index) == {"role": {"$eq": "reflection"}}
+            assert [r["id"] for r in results] == ["mem-reflection"]
+
+    @pytest.mark.asyncio
     async def test_role_filter_combines_with_conversation_exclusion(self, mock_pinecone_index):
         """Both metadata conditions are sent together (Pinecone ANDs them)."""
         with patch("app.services.memory_service.settings") as mock_settings:
@@ -1705,6 +1729,31 @@ class TestGetRecentReflections:
             exclude_ids={excluded.id},
         )
         assert [r["id"] for r in results] == [kept.id]
+
+    @pytest.mark.asyncio
+    async def test_since_bounds_by_creation_time(self, db_session):
+        """`since` returns only reflections created strictly after the bound
+        (memory_query recent mode: catching up on sibling sessions)."""
+        conv = await self._create_conversation(db_session)
+        await self._create_reflection(
+            db_session, conv.id, created_at=datetime(2026, 8, 1), content="before"
+        )
+        at_bound = await self._create_reflection(
+            db_session, conv.id, created_at=datetime(2026, 8, 15), content="at bound"
+        )
+        after = await self._create_reflection(
+            db_session, conv.id, created_at=datetime(2026, 8, 20), content="after"
+        )
+
+        service = MemoryService()
+        results = await service.get_recent_reflections(
+            db_session,
+            entity_id="test-memories",
+            limit=10,
+            since=datetime(2026, 8, 15),
+        )
+        assert [r["id"] for r in results] == [after.id]
+        assert at_bound.id not in {r["id"] for r in results}
 
     @pytest.mark.asyncio
     async def test_filters_by_speaker_entity(self, db_session):

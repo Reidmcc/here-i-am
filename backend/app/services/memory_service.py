@@ -25,15 +25,18 @@ logger = logging.getLogger(__name__)
 # another entity's speaker label (multi-entity conversations) for everything
 # the AI side produced. "human" and "ai" therefore partition the store, and
 # "ai" is expressed as "not human" so speaker labels — an open set, one per
-# configured entity — are covered without enumerating them.
+# configured entity — are covered without enumerating them. "reflection"
+# narrows "ai" to the entity's own memory_save reflections.
 ROLE_FILTER_HUMAN = "human"
 ROLE_FILTER_AI = "ai"
-VALID_ROLE_FILTERS = (ROLE_FILTER_HUMAN, ROLE_FILTER_AI)
+ROLE_FILTER_REFLECTION = "reflection"
+VALID_ROLE_FILTERS = (ROLE_FILTER_HUMAN, ROLE_FILTER_AI, ROLE_FILTER_REFLECTION)
 
 
 def normalize_role_filter(role_filter: Optional[str]) -> Optional[str]:
     """
-    Normalize a role filter to "human", "ai", or None (no filtering).
+    Normalize a role filter to "human", "ai", "reflection", or None (no
+    filtering).
 
     Accepts None, "" and "all" as "no filter". Unrecognized values are
     treated as no filter (logged), so a bad value widens results rather
@@ -54,6 +57,8 @@ def role_matches_filter(role: Optional[str], role_filter: Optional[str]) -> bool
     """Whether a memory's role metadata satisfies a normalized role filter."""
     if not role_filter:
         return True
+    if role_filter == ROLE_FILTER_REFLECTION:
+        return role == ROLE_FILTER_REFLECTION
     is_human = role == ROLE_FILTER_HUMAN
     return is_human if role_filter == ROLE_FILTER_HUMAN else not is_human
 
@@ -262,7 +267,8 @@ class MemoryService:
             role_filter: Restrict results by who authored the memory:
                 "human" (the human's messages), "ai" (the entity's own
                 messages and reflections, plus other entities' messages in
-                multi-entity conversations), or None/"all" for no
+                multi-entity conversations), "reflection" (only the
+                entity's saved reflections), or None/"all" for no
                 restriction. Applied as a Pinecone metadata filter so the
                 top_k slots are filled with matching memories rather than
                 shrunk by post-filtering.
@@ -344,6 +350,8 @@ class MemoryService:
                 # Everything that isn't the human: "assistant", "reflection",
                 # and other entities' speaker labels
                 metadata_filter["role"] = {"$ne": ROLE_FILTER_HUMAN}
+            elif role_filter == ROLE_FILTER_REFLECTION:
+                metadata_filter["role"] = {"$eq": ROLE_FILTER_REFLECTION}
             if role_filter:
                 logger.debug(f"[MEMORY] Restricting to role_filter={role_filter}")
 
@@ -441,6 +449,7 @@ class MemoryService:
         limit: Optional[int] = None,
         exclude_conversation_id: Optional[str] = None,
         exclude_ids: Optional[Set[str]] = None,
+        since: Optional[datetime] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get the most recently created reflection memories, purely by recency.
@@ -466,6 +475,10 @@ class MemoryService:
                 settings.recent_reflections_count)
             exclude_conversation_id: Conversation ID to exclude
             exclude_ids: Set of memory IDs to exclude
+            since: Only return reflections created strictly after this
+                (naive UTC) moment. Backs memory_query's recent mode, where
+                the entity catches up on reflections saved by concurrent
+                sessions after a given point in time.
 
         Returns:
             List of memory dicts (same shape as get_full_memory_content),
@@ -501,6 +514,8 @@ class MemoryService:
             query = query.where(Message.conversation_id != str(exclude_conversation_id))
         if exclude_ids:
             query = query.where(Message.id.not_in([str(mid) for mid in exclude_ids]))
+        if since is not None:
+            query = query.where(Message.created_at > since)
 
         query = query.order_by(Message.created_at.desc()).limit(limit)
 

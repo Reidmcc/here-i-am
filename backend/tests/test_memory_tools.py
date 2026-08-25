@@ -310,9 +310,14 @@ class TestMemoryQuerySourceFilter:
         schema = service.get_tool("memory_query").input_schema
         source = schema["properties"]["source"]
 
-        assert schema["required"] == ["query"]
-        assert set(source["enum"]) == {"all", "human", "ai"}
+        # Nothing is schema-required: query is needed for semantic mode but
+        # not for mode='recent', so the executor validates per mode
+        assert schema["required"] == []
+        assert set(source["enum"]) == {"all", "human", "ai", "reflection"}
         assert source["default"] == "all"
+        assert set(schema["properties"]["mode"]["enum"]) == {"semantic", "recent"}
+        assert schema["properties"]["mode"]["default"] == "semantic"
+        assert "since" in schema["properties"]
 
 
 class TestMemoryQueryFullContentRetrieval:
@@ -770,7 +775,9 @@ class TestMemoryToolRegistration:
             assert input_schema["type"] == "object"
             assert "query" in input_schema["properties"]
             assert "num_results" in input_schema["properties"]
-            assert "query" in input_schema["required"]
+            # query is validated per mode (semantic requires it, recent
+            # doesn't), so the schema itself requires nothing
+            assert input_schema["required"] == []
 
 
 class TestMemoryQueryErrorHandling:

@@ -90,6 +90,11 @@ class RetrieveResponse(BaseModel):
     # One line per retrieved memory; the hook prints it in place of an
     # oversized `context` it had to spill to a file
     context_summary: str = ""
+    # Reflections the entity saved in other sessions since this conversation
+    # began, not yet surfaced here. The hook prints a one-line mailbox flag
+    # when nonzero; the entity pulls the content with memory_query
+    # mode="recent" if it wants it.
+    new_sibling_reflections: int = 0
 
 
 class LogAssistantRequest(BaseModel):
@@ -242,6 +247,10 @@ async def retrieve(
         db, conversation, entity, prompt
     )
 
+    sibling_reflections = await cc.count_new_sibling_reflections(
+        db, conversation, entity
+    )
+
     # Keep the semantic notes mirror fresh continuously: sessions edit note
     # files with Claude Code's own tools and may never formally end, so each
     # recorded prompt triggers an incremental background sync (hash-compare,
@@ -254,6 +263,7 @@ async def retrieve(
         context=context,
         memories_retrieved=count,
         context_summary=summary,
+        new_sibling_reflections=sibling_reflections,
     )
 
 
