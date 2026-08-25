@@ -190,6 +190,7 @@ class NotesService:
         entity_label: str,
         filename: str,
         shared: bool = False,
+        log_read: bool = True,
     ) -> Dict[str, Any]:
         """
         Read a note file.
@@ -198,6 +199,9 @@ class NotesService:
             entity_label: The entity's display label (ignored if shared=True)
             filename: Name of the file to read
             shared: If True, read from shared folder instead of entity folder
+            log_read: Log a line for this read. Bulk callers (reindex/sync,
+                which sweep every note file) pass False and log a single
+                summary line instead of one line per note.
             
         Returns:
             Dict with 'success', 'content' (if success), and 'error' (if failure)
@@ -222,7 +226,8 @@ class NotesService:
         
         try:
             content = file_path.read_text(encoding='utf-8')
-            logger.info(f"Read note '{filename}' for entity '{entity_label}' ({len(content)} chars)")
+            if log_read:
+                logger.info(f"Read note '{filename}' for entity '{entity_label}' ({len(content)} chars)")
             return {'success': True, 'content': content}
         except OSError as e:
             logger.error(f"Failed to read note '{filename}': {e}")
