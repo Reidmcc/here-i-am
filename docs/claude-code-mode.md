@@ -38,6 +38,18 @@ The integration has two channels:
      automatic retrieval pipeline; the hook's stdout injects the rendered
      `[MEMORY ...]` block into context alongside the prompt (or, when
      oversized, a per-memory summary plus a pointer to the spilled file).
+     Not everything arriving on the prompt channel is the human speaking:
+     harness plumbing (`<system-reminder>`, `<task-notification>` blocks)
+     and inter-session messages from sibling Claude Code sessions
+     (`<cross-session-message>` blocks, delivered by the harness's
+     SendMessage) are stripped before recording
+     (`hook_util.strip_harness_blocks`), so they are neither archived under
+     the human's name nor used as the retrieval query; a prompt that was
+     nothing but plumbing or a peer delivery skips recording and retrieval
+     entirely. Archive-side only — the delivered content still reaches the
+     entity's context, so peer messages can be read and answered; the
+     entity's own replies (SendMessage calls mid-turn) are tool use, which
+     the `Stop` hook's final-message extraction never records.
    - `Stop` → `POST /api/claude-code/log-assistant` — extracts the final
      assistant message of the turn from the transcript (text blocks only)
      and records it (persisted + vectorized as `role="assistant"`).

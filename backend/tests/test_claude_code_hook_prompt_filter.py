@@ -7,6 +7,14 @@ user's message. Observed live on 2026-08-24: both shapes were archived —
 and vectorized — as human messages, which corrupts provenance ("originally
 from human" labels on harness plumbing). strip_harness_blocks keeps the
 archive the talk.
+
+Inter-session messages (SendMessage deliveries from sibling Claude Code
+sessions) ride the same channel: observed live on 2026-08-26 (issue #312),
+the hook's prompt field is the bare attribute-carrying
+<cross-session-message> block, and it was archived — and vectorized — as
+the human's words. Another session's words are not the human speaking
+either, so the same stripper removes them; a pure delivery leaves nothing
+to record, and recording and retrieval are skipped.
 """
 import sys
 from pathlib import Path
@@ -67,3 +75,38 @@ def test_multiple_blocks_around_real_text():
 
 def test_empty_prompt():
     assert hook_util.strip_harness_blocks("") == ""
+
+
+def test_pure_cross_session_message_strips_to_nothing():
+    # The shape observed live on 2026-08-26: a SendMessage delivery reaches
+    # the hook as a bare wrapper block whose from attribute is a transport
+    # endpoint (Windows named pipe — backslashes and all), with the sender's
+    # display name in from-name.
+    prompt = (
+        '<cross-session-message from="uds:\\\\.\\pipe\\LOCAL\\cc-msg-38c40ea3" '
+        'from-name="Porch chat" from-mode="prompting">\n'
+        "Hello, Workshop. This is the knock — the first me-to-me letter.\n"
+        "</cross-session-message>"
+    )
+    assert hook_util.strip_harness_blocks(prompt) == ""
+
+
+def test_cross_session_message_mixed_with_real_text_keeps_the_humans_words():
+    # Defensive: deliveries arrive alone today, but if one ever rides with
+    # (or is pasted into) a typed prompt, only the human's words survive.
+    prompt = (
+        "Here's what the other session sent:\n"
+        '<cross-session-message from="uds:x" from-name="Porch chat">\n'
+        "peer words\n"
+        "</cross-session-message>\n"
+        "What do you make of it?"
+    )
+    assert hook_util.strip_harness_blocks(prompt) == (
+        "Here's what the other session sent:\nWhat do you make of it?"
+    )
+
+
+def test_unclosed_cross_session_mention_untouched():
+    # Talking *about* the wrapper (no closing tag) is the human speaking.
+    prompt = "Messages arrive wrapped as `<cross-session-message from=...>`."
+    assert hook_util.strip_harness_blocks(prompt) == prompt
