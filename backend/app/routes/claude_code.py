@@ -21,7 +21,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -75,11 +75,26 @@ class SessionStartResponse(BaseModel):
     bulk_context: str = ""
 
 
+class PeerMessage(BaseModel):
+    """
+    One inter-session message (a SendMessage delivery from a sibling Claude
+    Code session), extracted from the prompt by the UserPromptSubmit hook.
+    Another session of this entity speaking — recorded under the entity's
+    own name with the sending session marked (issue #312), never as the
+    human's words.
+    """
+    content: str
+    # The sending session's display name (the wrapper's from-name attribute)
+    sender: Optional[str] = None
+
+
 class RetrieveRequest(BaseModel):
     session_id: str
     prompt: str
     entity: Optional[str] = None
     cwd: Optional[str] = None
+    # Inter-session messages that rode in with (or stood in for) the prompt
+    peer_messages: List[PeerMessage] = []
 
 
 class RetrieveResponse(BaseModel):
@@ -95,6 +110,8 @@ class RetrieveResponse(BaseModel):
     # when nonzero; the entity pulls the content with memory_query
     # mode="recent" if it wants it.
     new_sibling_reflections: int = 0
+    # Rows created for peer_messages, in input order
+    peer_message_ids: List[str] = []
 
 
 class LogAssistantRequest(BaseModel):
@@ -216,10 +233,15 @@ async def retrieve(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Record a user prompt and run automatic memory retrieval against it.
+    Record a user turn and run automatic memory retrieval against it.
 
     The prompt is persisted (role=human) and vectorized like a native human
-    message; the returned context block holds the retrieved memories for the
+    message. Inter-session messages the hook extracted from the prompt
+    channel (peer_messages) are recorded separately, under the entity's own
+    name: role=assistant with sibling_session marking the sending session,
+    vectorized as role="sibling" (issue #312 — the archive holds the
+    correspondence with honest provenance instead of omitting it). The
+    returned context block holds the retrieved memories for the
     UserPromptSubmit hook to inject.
     """
     _require_enabled()
@@ -230,7 +252,15 @@ async def retrieve(
     )
 
     prompt = data.prompt or ""
-    if not prompt.strip() or BARE_SLASH_COMMAND.match(prompt.strip()):
+    # The bare-slash-command skip applies to the human's words only: a
+    # sibling's letter is prose from the entity, not harness input
+    record_prompt = bool(prompt.strip()) and not BARE_SLASH_COMMAND.match(
+        prompt.strip()
+    )
+    peer_messages = [
+        peer for peer in (data.peer_messages or []) if (peer.content or "").strip()
+    ]
+    if not record_prompt and not peer_messages:
         return RetrieveResponse(
             conversation_id=str(conversation.id),
             human_message_id=None,
@@ -238,17 +268,37 @@ async def retrieve(
             memories_retrieved=0,
         )
 
-    human_msg = await cc.persist_and_vectorize_message(
-        db,
-        conversation,
-        entity,
-        role=MessageRole.HUMAN,
-        content=prompt,
-        token_count=cc.safe_token_count(prompt),
-    )
+    human_msg = None
+    if record_prompt:
+        human_msg = await cc.persist_and_vectorize_message(
+            db,
+            conversation,
+            entity,
+            role=MessageRole.HUMAN,
+            content=prompt,
+            token_count=cc.safe_token_count(prompt),
+        )
 
+    peer_message_ids: List[str] = []
+    for peer in peer_messages:
+        peer_msg = await cc.persist_and_vectorize_message(
+            db,
+            conversation,
+            entity,
+            role=MessageRole.ASSISTANT,
+            content=peer.content,
+            token_count=cc.safe_token_count(peer.content),
+            sibling_session=(peer.sender or "").strip() or "unknown session",
+        )
+        peer_message_ids.append(str(peer_msg.id))
+
+    # Retrieval runs against the whole turn's new content — the human's
+    # words and/or the sibling's letter (retrieve_for_prompt excludes this
+    # conversation, so the rows just recorded can't surface as results)
+    query_parts = [prompt] if record_prompt else []
+    query_parts.extend(peer.content for peer in peer_messages)
     context, count, summary = await cc.retrieve_for_prompt(
-        db, conversation, entity, prompt
+        db, conversation, entity, "\n\n".join(query_parts)
     )
 
     sibling_reflections = await cc.count_new_sibling_reflections(
@@ -263,11 +313,12 @@ async def retrieve(
 
     return RetrieveResponse(
         conversation_id=str(conversation.id),
-        human_message_id=str(human_msg.id),
+        human_message_id=str(human_msg.id) if human_msg else None,
         context=context,
         memories_retrieved=count,
         context_summary=summary,
         new_sibling_reflections=sibling_reflections,
+        peer_message_ids=peer_message_ids,
     )
 
 

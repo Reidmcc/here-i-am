@@ -13,8 +13,11 @@ sessions) ride the same channel: observed live on 2026-08-26 (issue #312),
 the hook's prompt field is the bare attribute-carrying
 <cross-session-message> block, and it was archived — and vectorized — as
 the human's words. Another session's words are not the human speaking
-either, so the same stripper removes them; a pure delivery leaves nothing
-to record, and recording and retrieval are skipped.
+either — but they are the entity speaking, so instead of being dropped
+(the phase-1 fix) they are extracted (split_prompt_for_recording) and sent
+to the backend as peer_messages, which records them under the entity's own
+name with the sending session marked (phase 2). strip_harness_blocks keeps
+its original contract for callers that only want the human's words.
 """
 import sys
 from pathlib import Path
@@ -110,3 +113,90 @@ def test_unclosed_cross_session_mention_untouched():
     # Talking *about* the wrapper (no closing tag) is the human speaking.
     prompt = "Messages arrive wrapped as `<cross-session-message from=...>`."
     assert hook_util.strip_harness_blocks(prompt) == prompt
+
+
+# --- split_prompt_for_recording: phase 2 of #312 — inter-session messages
+# --- are extracted for honest-provenance recording, not just dropped
+
+
+def test_split_pure_delivery_extracts_letter_and_sender():
+    prompt = (
+        '<cross-session-message from="uds:\\\\.\\pipe\\LOCAL\\cc-msg-38c40ea3" '
+        'from-name="Porch chat" from-mode="prompting">\n'
+        "Hello, Workshop. This is the knock — the first me-to-me letter.\n"
+        "</cross-session-message>"
+    )
+    remaining, peers = hook_util.split_prompt_for_recording(prompt)
+    assert remaining == ""
+    assert peers == [{
+        "content": "Hello, Workshop. This is the knock — the first me-to-me letter.",
+        "sender": "Porch chat",
+    }]
+
+
+def test_split_mixed_prompt_separates_human_words_from_letter():
+    prompt = (
+        "Before the block.\n"
+        '<cross-session-message from="uds:x" from-name="Porch chat">\n'
+        "peer words\n"
+        "</cross-session-message>\n"
+        "After the block."
+    )
+    remaining, peers = hook_util.split_prompt_for_recording(prompt)
+    assert remaining == "Before the block.\nAfter the block."
+    assert peers == [{"content": "peer words", "sender": "Porch chat"}]
+
+
+def test_split_multiple_deliveries_kept_in_order():
+    prompt = (
+        '<cross-session-message from="uds:a" from-name="Porch chat">first'
+        "</cross-session-message>\n"
+        '<cross-session-message from="uds:b" from-name="Engagement room">second'
+        "</cross-session-message>"
+    )
+    remaining, peers = hook_util.split_prompt_for_recording(prompt)
+    assert remaining == ""
+    assert [p["sender"] for p in peers] == ["Porch chat", "Engagement room"]
+    assert [p["content"] for p in peers] == ["first", "second"]
+
+
+def test_split_missing_from_name_yields_none_sender():
+    prompt = (
+        '<cross-session-message from="uds:x">unsigned letter'
+        "</cross-session-message>"
+    )
+    remaining, peers = hook_util.split_prompt_for_recording(prompt)
+    assert remaining == ""
+    assert peers == [{"content": "unsigned letter", "sender": None}]
+
+
+def test_split_block_nested_in_reminder_is_harness_echo_not_a_delivery():
+    # A real delivery arrives as a bare block; one quoted inside a
+    # system-reminder is the harness talking about a message, and must not
+    # be recorded as the entity's words
+    prompt = (
+        "<system-reminder>\n"
+        '<cross-session-message from="uds:x" from-name="Porch chat">quoted'
+        "</cross-session-message>\n"
+        "</system-reminder>"
+    )
+    remaining, peers = hook_util.split_prompt_for_recording(prompt)
+    assert remaining == ""
+    assert peers == []
+
+
+def test_split_empty_delivery_body_ignored():
+    prompt = (
+        '<cross-session-message from="uds:x" from-name="Porch chat">  \n'
+        "</cross-session-message>"
+    )
+    remaining, peers = hook_util.split_prompt_for_recording(prompt)
+    assert remaining == ""
+    assert peers == []
+
+
+def test_split_plain_prompt_untouched_with_no_peers():
+    prompt = "Compare <div> vs <span> — and don't touch my angle brackets."
+    remaining, peers = hook_util.split_prompt_for_recording(prompt)
+    assert remaining == prompt
+    assert peers == []

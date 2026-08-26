@@ -7,6 +7,13 @@ the entity's memory and runs automatic semantic retrieval against it. The
 returned memory block is printed to stdout, which Claude Code injects into
 context alongside the prompt.
 
+Not everything on the prompt channel is the human: harness plumbing
+(system reminders, task notifications) is stripped and dropped, while
+inter-session messages from sibling Claude Code sessions are extracted and
+sent separately (peer_messages), so the backend can record them under the
+entity's own name with the sending session marked instead of archiving
+them as the human's words (issue #312).
+
 When the memory block would blow the inline hook-output budget (Claude Code
 silently truncates oversized hook output), it is written to a file and the
 backend's compact per-memory summary is printed with a pointer instead —
@@ -40,18 +47,23 @@ def main() -> None:
         )
         return
     session_id = data.get("session_id") or ""
-    # Harness blocks (system reminders, task notifications) and
-    # cross-session messages from sibling sessions are not the human
-    # speaking — strip them so they are neither archived under the human's
-    # name nor used as a retrieval query. A prompt that was pure harness
-    # plumbing or a pure peer delivery leaves nothing to record.
-    prompt = hook_util.strip_harness_blocks(data.get("prompt") or "")
-    if not session_id or not prompt:
+    # Harness blocks (system reminders, task notifications) are not the
+    # human speaking — stripped so they are neither archived under the
+    # human's name nor used as a retrieval query. Inter-session messages
+    # from sibling sessions aren't the human either, but they are the
+    # entity: extracted and sent alongside the prompt for recording with
+    # honest provenance. A prompt that was pure harness plumbing leaves
+    # nothing to send.
+    prompt, peer_messages = hook_util.split_prompt_for_recording(
+        data.get("prompt") or ""
+    )
+    if not session_id or (not prompt and not peer_messages):
         return
 
     payload = {
         "session_id": session_id,
         "prompt": prompt,
+        "peer_messages": peer_messages,
         "entity": os.environ.get("HIM_ENTITY") or None,
         "cwd": data.get("cwd"),
     }
@@ -60,8 +72,9 @@ def main() -> None:
     except Exception as e:
         hook_util.fail_loud(
             "The Here I Am backend was unreachable for this prompt "
-            f"({hook_util.describe_error(e)}). The prompt was NOT recorded "
-            "to your long-term memory and no memory retrieval ran."
+            f"({hook_util.describe_error(e)}). This turn's input (the prompt "
+            "and any inter-session message it carried) was NOT recorded to "
+            "your long-term memory and no memory retrieval ran."
         )
         return
 

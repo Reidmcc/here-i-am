@@ -158,6 +158,45 @@ class TestRebuildVectorsFromDatabase:
         assert tool_use.id not in by_id
 
     @pytest.mark.asyncio
+    async def test_sibling_row_rebuilds_as_sibling_role(
+        self, db_session, test_settings
+    ):
+        # An inter-session message recorded in a Claude Code conversation:
+        # ASSISTANT row with sibling_session set. The rebuild must reproduce
+        # the live vectorization rule — role="sibling", sender in metadata —
+        # or a rebuilt index would let the letter pass as this session's own
+        # assistant voice.
+        conv = Conversation(
+            id=str(uuid.uuid4()),
+            title="CC session",
+            entity_id="test-memories",
+            source="claude_code",
+        )
+        db_session.add(conv)
+        letter = Message(
+            id=str(uuid.uuid4()), conversation_id=conv.id,
+            role=MessageRole.ASSISTANT, content="The porch specced it.",
+            sibling_session="Porch chat",
+        )
+        own_reply = Message(
+            id=str(uuid.uuid4()), conversation_id=conv.id,
+            role=MessageRole.ASSISTANT, content="And the workshop built it.",
+        )
+        db_session.add_all([letter, own_reply])
+        await db_session.commit()
+
+        index = FakeIndex()
+        service = make_service({"test-memories": index})
+        with patch("app.services.vector_rebuild_service.settings", test_settings):
+            await service.rebuild_vectors_from_database(db_session, dry_run=False)
+
+        by_id = {r["_id"]: r for r in index.upserted}
+        assert by_id[letter.id]["role"] == "sibling"
+        assert by_id[letter.id]["sibling_session"] == "Porch chat"
+        assert by_id[own_reply.id]["role"] == "assistant"
+        assert "sibling_session" not in by_id[own_reply.id]
+
+    @pytest.mark.asyncio
     async def test_multi_entity_fan_out(self, db_session, test_settings_multi_entity):
         conv = Conversation(
             id=str(uuid.uuid4()),
@@ -318,6 +357,39 @@ class TestRestoreDatabaseFromVectors:
         assert human.content == "Hello"
         assert human.times_retrieved == 2
         assert human.created_at == datetime(2024, 6, 1, 12, 0, 0)
+
+    @pytest.mark.asyncio
+    async def test_sibling_record_restores_provenance_column(
+        self, db_session, test_settings
+    ):
+        conv_id = str(uuid.uuid4())
+        letter_id = str(uuid.uuid4())
+        unsigned_id = str(uuid.uuid4())
+        signed = pinecone_record(letter_id, conv_id, "sibling", "The letter")
+        signed["sibling_session"] = "Porch chat"
+        # A sibling record written without the metadata field (or one that
+        # lost it) still restores as an inter-session message
+        unsigned = pinecone_record(unsigned_id, conv_id, "sibling", "Unsigned")
+        index = FakeIndex(records=[signed, unsigned])
+        service = make_service({"test-memories": index})
+
+        with patch("app.services.vector_rebuild_service.settings", test_settings):
+            result = await service.restore_database_from_vectors(
+                db_session, dry_run=False
+            )
+        assert result["messages_created"] == 2
+
+        letter = (await db_session.execute(
+            select(Message).where(Message.id == letter_id)
+        )).scalar_one()
+        assert letter.role == MessageRole.ASSISTANT
+        assert letter.sibling_session == "Porch chat"
+
+        unsigned_row = (await db_session.execute(
+            select(Message).where(Message.id == unsigned_id)
+        )).scalar_one()
+        assert unsigned_row.role == MessageRole.ASSISTANT
+        assert unsigned_row.sibling_session == "unknown session"
 
     @pytest.mark.asyncio
     async def test_multi_entity_restore_dedupes_label_copies(self, db_session, test_settings_multi_entity):
