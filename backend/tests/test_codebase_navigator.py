@@ -178,12 +178,15 @@ class TestNavigatorCache:
 
     @pytest.fixture
     def cache(self, temp_cache_dir):
-        """Create a cache instance."""
-        return NavigatorCache(
+        """Create a cache instance, closed before the temp dir teardown —
+        Windows cannot delete the SQLite file while the connection is open."""
+        cache = NavigatorCache(
             cache_dir=temp_cache_dir,
             ttl_hours=24,
             enabled=True,
         )
+        yield cache
+        cache.close()
 
     def test_cache_initialization(self, cache, temp_cache_dir):
         """Test cache initializes correctly."""
@@ -302,9 +305,14 @@ class TestNavigatorClient:
             cache_dir=temp_cache_dir,
         )
 
-        assert client._api_key == "test_key"
-        assert client._model == "devstral-small-latest"
-        assert client._cache is not None
+        try:
+            assert client._api_key == "test_key"
+            assert client._model == "devstral-small-latest"
+            assert client._cache is not None
+        finally:
+            # Windows cannot delete the temp dir's SQLite file while the
+            # cache connection is open
+            client.close()
 
     def test_client_requires_api_key(self):
         """Test client raises error without API key."""
