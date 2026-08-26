@@ -152,13 +152,13 @@ class GitHubRepoConfig:
         self.token = token
         self.protected_branches = protected_branches or ["main", "master"]
         self.capabilities = capabilities or ["read", "branch", "commit", "pr", "issue"]
-        # Normalize local_clone_path to handle Windows paths (backslashes)
-        # First normalize backslashes to forward slashes for cross-platform compatibility,
-        # then use Path to resolve the path correctly on the current OS
+        # Normalize local_clone_path to forward slashes on every platform
+        # (str(Path(...)) would re-introduce backslashes on Windows; forward
+        # slashes are valid there, and downstream path filtering matches
+        # against /-separated patterns)
         if local_clone_path:
-            # Convert Windows backslashes to forward slashes first
             normalized = local_clone_path.replace("\\", "/")
-            self.local_clone_path = str(Path(normalized))
+            self.local_clone_path = Path(normalized).as_posix()
         else:
             self.local_clone_path = None
         self.commit_author_name = commit_author_name

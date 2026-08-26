@@ -1688,7 +1688,10 @@ class GitHubService:
                 if entry.name.startswith('.'):
                     continue
 
-                rel_path = str(entry.relative_to(local_root))
+                # as_posix: tree paths use /-separators on every platform,
+                # matching the GitHub API format and the /-separated
+                # gitignore/sensitive-file patterns
+                rel_path = entry.relative_to(local_root).as_posix()
                 is_dir = entry.is_dir()
 
                 # Check if this path should be excluded
@@ -1763,13 +1766,13 @@ class GitHubService:
                 if any(part.startswith('.') for part in parts):
                     continue
 
-                rel_path = str(entry.relative_to(local_root))
+                rel_path = entry.relative_to(local_root).as_posix()
                 is_dir = entry.is_dir()
 
                 # Check if any parent directory was excluded
                 parent_excluded = False
                 for excluded_dir in excluded_dirs:
-                    if rel_path.startswith(excluded_dir + "/") or rel_path.startswith(excluded_dir + "\\"):
+                    if rel_path.startswith(excluded_dir + "/"):
                         parent_excluded = True
                         break
                 if parent_excluded:
