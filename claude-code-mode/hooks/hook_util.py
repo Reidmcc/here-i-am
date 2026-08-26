@@ -50,11 +50,18 @@ DEFAULT_INLINE_BUDGET = 18000
 # Claude Code delivers harness events through the prompt channel: background
 # task notifications arrive as a bare <task-notification> block, and other
 # events ride in a <system-reminder> block prepended to (or standing in for)
-# the user's message. UserPromptSubmit fires for all of them, so without
-# stripping, harness plumbing gets archived — and vectorized — as the
-# human's own words. The archive stays the talk.
+# the user's message. Messages from other Claude Code sessions (SendMessage
+# deliveries) arrive the same way, as a bare attribute-carrying
+# <cross-session-message from="..." from-name="..." from-mode="..."> block —
+# another session's words, not the human's. UserPromptSubmit fires for all
+# of them, so without stripping, harness plumbing and peer messages get
+# archived — and vectorized — as the human's own words. The archive stays
+# the talk. (Stripping is archive-side only: the delivered message itself
+# still reaches the entity's context untouched, so it can read and reply.)
 _HARNESS_BLOCK_RE = re.compile(
-    r"<(system-reminder|task-notification)>.*?</\1>\s*", re.DOTALL
+    r"<(system-reminder|task-notification|cross-session-message)"
+    r"(?:\s[^>]*)?>.*?</\1>\s*",
+    re.DOTALL,
 )
 
 
