@@ -11,7 +11,7 @@ ConversationSession uses these tracking mechanisms for all memory handling.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +28,20 @@ def format_memory_origin(origin: str) -> str:
     return "via Here I Am"
 
 
-def memory_role_label(role: str) -> str:
+def memory_role_label(role: str, sibling_session: Optional[str] = None) -> str:
     """
     Provenance label for the original speaker of a memory, as rendered in
     memory markers ([MEMORY <id> from <date> - <role label> - <origin>]).
     Shared with the Claude Code retrieval summary so both render one
     consistent vocabulary.
+
+    sibling_session marks a message that records an inter-session delivery
+    in a Claude Code conversation: still the entity's own words ("from
+    you"), but authored in the named sibling session rather than the
+    conversation the memory lives in.
     """
+    if sibling_session:
+        return f'originally from you (inter-session message from "{sibling_session}")'
     if role == "assistant":
         return "originally from you"
     if role == "human":
@@ -50,6 +57,7 @@ def format_memory_as_context_message(
     created_at: str,
     role: str,
     origin: str = "native",
+    sibling_session: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Format a memory as a user message for insertion into conversation context.
@@ -68,13 +76,17 @@ def format_memory_as_context_message(
                 into the marker; the reload path resolves the same value from
                 the database, so live and reloaded markers stay identical
                 (prompt-cache stability).
+        sibling_session: The sibling Claude Code session that authored this
+                message, for rows recording an inter-session delivery (see
+                memory_role_label). From the message row, so it reload-renders
+                identically too.
 
     Returns:
         Dict formatted as a conversation context message with memory metadata
     """
     # Format content with clear markers
     # The short ID lets the entity reference this memory in memory_mark/memory_release
-    role_label = memory_role_label(role)
+    role_label = memory_role_label(role, sibling_session)
     short_id = memory_id[:8]
     origin_label = format_memory_origin(origin)
     formatted_content = (

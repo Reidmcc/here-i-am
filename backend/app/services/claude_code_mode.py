@@ -17,12 +17,14 @@ SessionStart for background/utility sessions that never speak, and eager
 registration left a permanent empty row per firing.
 
 Conversations created here carry source="claude_code" and hold only
-HUMAN/ASSISTANT/REFLECTION rows. They are never rebuilt into LLM context
-(Claude Code owns the transcript), so none of the native reload/cache
-invariants — tool exchange persistence, link timestamp anchoring, notes
-seeds, timestamp stamping — apply. Memories, however, are stored through the
-same store_memory path with the same roles, so both modes share one memory
-database and retrieve each other's memories.
+HUMAN/ASSISTANT/REFLECTION rows (an ASSISTANT row with sibling_session set
+records an inter-session message — another session of the same entity
+speaking, vectorized as role="sibling"; see persist_and_vectorize_message).
+They are never rebuilt into LLM context (Claude Code owns the transcript),
+so none of the native reload/cache invariants — tool exchange persistence,
+link timestamp anchoring, notes seeds, timestamp stamping — apply. Memories,
+however, are stored through the same store_memory path with the same roles,
+so both modes share one memory database and retrieve each other's memories.
 """
 
 import logging
@@ -746,6 +748,7 @@ async def retrieve_for_prompt(
             created_at=item["mem_data"]["created_at"],
             role=item["mem_data"]["role"],
             origin=item["mem_data"].get("source", "native"),
+            sibling_session=item["mem_data"].get("sibling_session"),
         )["content"]
         for item in selected
     )
@@ -773,7 +776,7 @@ def render_retrieval_summary(mem_datas: List[Dict[str, Any]]) -> str:
             first_line = first_line[:100].rstrip() + "…"
         lines.append(
             f"- {mem_data['id'][:8]} ({str(mem_data['created_at'])[:10]} - "
-            f"{memory_role_label(mem_data['role'])} - "
+            f"{memory_role_label(mem_data['role'], mem_data.get('sibling_session'))} - "
             f"{format_memory_origin(mem_data.get('source', 'native'))}): {first_line}"
         )
     count = len(mem_datas)
@@ -837,12 +840,16 @@ async def _last_assistant_content(
 ) -> Optional[str]:
     """The entity's most recent response in this conversation, for the
     assistant-side retrieval query (CC conversations hold no tool rows, so a
-    plain role filter is enough)."""
+    plain role filter is enough). Inter-session messages are excluded: they
+    carry role=ASSISTANT but record what a sibling session sent, not what
+    this session last said — and the letter recorded just before retrieval
+    runs would otherwise become its own retrieval query."""
     result = await db.execute(
         select(Message.content)
         .where(
             Message.conversation_id == conversation_id,
             Message.role == MessageRole.ASSISTANT,
+            Message.sibling_session.is_(None),
         )
         .order_by(Message.created_at.desc())
         .limit(1)
@@ -859,6 +866,7 @@ async def persist_and_vectorize_message(
     content: str,
     message_id: Optional[str] = None,
     token_count: Optional[int] = None,
+    sibling_session: Optional[str] = None,
 ) -> Message:
     """
     Persist one conversational message and store it as a memory.
@@ -866,6 +874,14 @@ async def persist_and_vectorize_message(
     message_id lets the Stop hook reuse the transcript entry's UUID as the
     row's primary key, making assistant logging idempotent (the route checks
     for an existing row before calling this).
+
+    sibling_session records an inter-session message (issue #312): a
+    SendMessage delivery from the named sibling Claude Code session. The row
+    keeps the caller's role (ASSISTANT — the words are the entity's own),
+    but the vectorized copy carries role="sibling" so the human-corpus
+    source filter can never match it and the provenance survives a vector
+    rebuild. Retrieval-side, "sibling" behaves like any non-human role:
+    included in the "ai" source filter, no reflection boost.
     """
     message = Message(
         conversation_id=conversation.id,
@@ -873,6 +889,7 @@ async def persist_and_vectorize_message(
         content=content,
         created_at=datetime.utcnow(),
         token_count=token_count,
+        sibling_session=sibling_session,
     )
     if message_id:
         message.id = message_id
@@ -885,9 +902,10 @@ async def persist_and_vectorize_message(
         await memory_service.store_memory(
             message_id=str(message.id),
             conversation_id=str(conversation.id),
-            role=role.value,
+            role="sibling" if sibling_session else role.value,
             content=content,
             created_at=message.created_at,
             entity_id=entity.index_name,
+            sibling_session=sibling_session,
         )
     return message

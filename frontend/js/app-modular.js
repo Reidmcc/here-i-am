@@ -1075,6 +1075,13 @@ class App {
                 }
             }
 
+            // Inter-session messages in Claude Code conversations: the
+            // entity's own words, but sent from a sibling session — label
+            // the bubble so the transcript shows the channel.
+            if (msg.sibling_session) {
+                options.speakerLabel = `From sibling session "${msg.sibling_session}"`;
+            }
+
             // Only add actions to the latest assistant message
             if (msg.role === 'assistant' && msg.id === latestAssistantId) {
                 options.isLatestAssistant = true;

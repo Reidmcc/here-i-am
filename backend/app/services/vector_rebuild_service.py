@@ -97,6 +97,9 @@ class VectorRebuildService:
           closing-turn framings are skipped — they were never vectorized).
         - Assistant messages go to the speaker's index as role="assistant"
           and to other participants' indexes under the speaker's label.
+        - Assistant rows recording an inter-session message (sibling_session
+          set; Claude Code conversations only) go out as role="sibling" with
+          the sender's name in metadata, matching the live recording path.
         - Reflections go only to the saving entity's index (role="reflection").
         - times_retrieved metadata is restored from the SQL value.
 
@@ -217,7 +220,14 @@ class VectorRebuildService:
                 if not (msg.content or "").strip():
                     result["skipped"]["empty_content"] += 1
                     continue
-                if len(participants) == 1:
+                if msg.sibling_session:
+                    # Inter-session message in a Claude Code conversation
+                    # (always single-entity): vectorized as role="sibling",
+                    # never as the conversation's own assistant voice
+                    self._plan_record(
+                        plans, participants[0], msg, "sibling", msg.content
+                    )
+                elif len(participants) == 1:
                     self._plan_record(plans, participants[0], msg, "assistant", msg.content)
                 else:
                     speaker = msg.speaker_entity_id
@@ -329,7 +339,7 @@ class VectorRebuildService:
         """Add one Pinecone record (store_memory's exact shape) to a plan."""
         if index_name not in plans:
             return  # Participant exists but isn't targeted by this rebuild
-        plans[index_name].append({
+        record = {
             "_id": str(msg.id),
             "text": content,
             "conversation_id": str(msg.conversation_id),
@@ -337,7 +347,11 @@ class VectorRebuildService:
             "role": role,
             "content_preview": content[:200],
             "times_retrieved": msg.times_retrieved or 0,
-        })
+        }
+        # Matches store_memory: only set when present (no null metadata)
+        if role == "sibling" and msg.sibling_session:
+            record["sibling_session"] = msg.sibling_session
+        plans[index_name].append(record)
 
     # ------------------------------------------------------------------
     # Pinecone → SQL
@@ -524,6 +538,7 @@ class VectorRebuildService:
                         and (record["role"] == MessageRole.REFLECTION or conv_is_multi)
                         else None
                     ),
+                    sibling_session=record.get("sibling_session"),
                 )
             )
 
@@ -552,9 +567,9 @@ class VectorRebuildService:
         The same message ID can appear in several indexes: human messages fan
         out to every participant, and assistant messages exist as
         role="assistant" in the speaker's index plus label-role copies in the
-        others. The authoritative record (assistant/human/reflection role)
-        wins over a label copy; a label copy is still recoverable alone by
-        resolving the label back to an entity.
+        others. The authoritative record (assistant/human/reflection/sibling
+        role) wins over a label copy; a label copy is still recoverable alone
+        by resolving the label back to an entity.
         """
         conversation_id = str(metadata.get("conversation_id") or "")
         if not conversation_id:
@@ -582,12 +597,21 @@ class VectorRebuildService:
         except (TypeError, ValueError):
             times_retrieved = 0
 
+        sibling_session = None
         if raw_role == "human":
             role, speaker, authoritative = MessageRole.HUMAN, None, True
         elif raw_role == "assistant":
             role, speaker, authoritative = MessageRole.ASSISTANT, index_name, True
         elif raw_role == "reflection":
             role, speaker, authoritative = MessageRole.REFLECTION, index_name, True
+        elif raw_role == "sibling":
+            # An inter-session message recorded in a Claude Code
+            # conversation: an ASSISTANT row whose sibling_session column
+            # marks the sending session (kept in the record metadata)
+            role, speaker, authoritative = MessageRole.ASSISTANT, index_name, True
+            sibling_session = (
+                str(metadata.get("sibling_session") or "") or "unknown session"
+            )
         else:
             # A label-role copy of another entity's assistant message
             role = MessageRole.ASSISTANT
@@ -615,6 +639,7 @@ class VectorRebuildService:
                 existing["times_retrieved"] if existing else 0,
             ),
             "speaker_entity_id": speaker,
+            "sibling_session": sibling_session,
             "preview_only": preview_only,
             "authoritative": authoritative,
         }

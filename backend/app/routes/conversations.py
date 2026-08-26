@@ -159,6 +159,9 @@ class MessageResponse(BaseModel):
     # For multi-entity conversations: which entity spoke this message
     speaker_entity_id: Optional[str] = None
     speaker_label: Optional[str] = None  # Human-readable label for the speaker
+    # For Claude Code conversations: the sibling session that sent this
+    # message, when it records an inter-session delivery
+    sibling_session: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -577,6 +580,7 @@ async def get_conversation_messages(
             last_retrieved_at=msg.last_retrieved_at,
             speaker_entity_id=msg.speaker_entity_id,
             speaker_label=get_entity_label(msg.speaker_entity_id) if msg.speaker_entity_id else None,
+            sibling_session=msg.sibling_session,
         )
         for msg in messages
     ]

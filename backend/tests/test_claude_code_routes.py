@@ -407,6 +407,200 @@ class TestRetrieve:
         assert result.scalars().all() == []
 
 
+class TestPeerMessages:
+    """
+    Inter-session messages (issue #312 phase 2): SendMessage deliveries the
+    UserPromptSubmit hook extracts from the prompt channel arrive as
+    peer_messages and are recorded under the entity's own name — an
+    ASSISTANT row with sibling_session marking the sender — never as the
+    human's words.
+    """
+
+    async def test_pure_delivery_records_sibling_row_not_human(
+        self, async_client, db_session
+    ):
+        session_id = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": session_id,
+                "prompt": "",
+                "peer_messages": [
+                    {"content": "Hello, Workshop. The porch specced it.",
+                     "sender": "Porch chat"},
+                ],
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["human_message_id"] is None
+        assert len(body["peer_message_ids"]) == 1
+
+        result = await db_session.execute(
+            select(Message).where(Message.id == body["peer_message_ids"][0])
+        )
+        message = result.scalar_one()
+        assert message.role == MessageRole.ASSISTANT
+        assert message.sibling_session == "Porch chat"
+        assert message.content == "Hello, Workshop. The porch specced it."
+        assert message.conversation_id == body["conversation_id"]
+
+    async def test_mixed_prompt_records_human_and_sibling_separately(
+        self, async_client, db_session
+    ):
+        session_id = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": session_id,
+                "prompt": "Here's what arrived — thoughts?",
+                "peer_messages": [
+                    {"content": "peer words", "sender": "Porch chat"},
+                ],
+            },
+        )
+        body = response.json()
+        assert body["human_message_id"] is not None
+        assert len(body["peer_message_ids"]) == 1
+
+        human = (await db_session.execute(
+            select(Message).where(Message.id == body["human_message_id"])
+        )).scalar_one()
+        assert human.role == MessageRole.HUMAN
+        assert human.sibling_session is None
+        assert human.content == "Here's what arrived — thoughts?"
+
+        peer = (await db_session.execute(
+            select(Message).where(Message.id == body["peer_message_ids"][0])
+        )).scalar_one()
+        assert peer.role == MessageRole.ASSISTANT
+        assert peer.sibling_session == "Porch chat"
+
+    async def test_peer_message_vectorized_with_sibling_role(
+        self, async_client
+    ):
+        session_id = str(uuid.uuid4())
+        with patch("app.services.claude_code_mode.memory_service") as mock_memory:
+            mock_memory.is_configured.return_value = True
+            mock_memory.store_memory = AsyncMock(return_value=True)
+            # retrieve_for_prompt runs against the same (mocked) service
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
+            mock_memory.search_memories = AsyncMock(return_value=[])
+            response = await async_client.post(
+                "/api/claude-code/retrieve",
+                json={
+                    "session_id": session_id,
+                    "prompt": "",
+                    "peer_messages": [
+                        {"content": "letter text", "sender": "Porch chat"},
+                    ],
+                },
+            )
+        assert response.status_code == 200
+        # The human-corpus filter keys on role metadata, so the vectorized
+        # copy must never carry role="human" — or "assistant", which would
+        # make the letter indistinguishable from this session's own voice
+        store_call = mock_memory.store_memory.await_args_list[0]
+        assert store_call.kwargs["role"] == "sibling"
+        assert store_call.kwargs["sibling_session"] == "Porch chat"
+
+    async def test_unnamed_sender_still_marked_as_sibling(
+        self, async_client, db_session
+    ):
+        session_id = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": session_id,
+                "prompt": "",
+                "peer_messages": [{"content": "anonymous knock"}],
+            },
+        )
+        body = response.json()
+        message = (await db_session.execute(
+            select(Message).where(Message.id == body["peer_message_ids"][0])
+        )).scalar_one()
+        # NULL means "not an inter-session message", so a missing sender
+        # must still produce a non-NULL marker
+        assert message.sibling_session == "unknown session"
+
+    async def test_blank_peer_content_alone_records_nothing(
+        self, async_client, db_session
+    ):
+        session_id = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": session_id,
+                "prompt": "",
+                "peer_messages": [{"content": "   ", "sender": "Porch chat"}],
+            },
+        )
+        body = response.json()
+        assert body["human_message_id"] is None
+        assert body["peer_message_ids"] == []
+
+        result = await db_session.execute(
+            select(Message).join(
+                Conversation, Conversation.id == Message.conversation_id
+            ).where(Conversation.external_session_id == session_id)
+        )
+        assert result.scalars().all() == []
+
+    async def test_bare_slash_prompt_with_letter_records_only_the_letter(
+        self, async_client, db_session
+    ):
+        # The slash-command skip is about harness input from the human's
+        # channel; a sibling's letter riding alongside is still conversation
+        session_id = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": session_id,
+                "prompt": "/compact",
+                "peer_messages": [
+                    {"content": "letter text", "sender": "Porch chat"},
+                ],
+            },
+        )
+        body = response.json()
+        assert body["human_message_id"] is None
+        assert len(body["peer_message_ids"]) == 1
+
+    async def test_last_assistant_content_skips_sibling_rows(
+        self, async_client, db_session
+    ):
+        from app.services import claude_code_mode as cc
+
+        session_id = str(uuid.uuid4())
+        first = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "opening prompt"},
+        )
+        conversation_id = first.json()["conversation_id"]
+        await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={"session_id": session_id, "content": "my own last reply"},
+        )
+        # A letter arrives after the entity's reply
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": session_id,
+                "prompt": "",
+                "peer_messages": [
+                    {"content": "sibling letter", "sender": "Porch chat"},
+                ],
+            },
+        )
+
+        # The assistant-side retrieval query must be this session's own
+        # voice, not the letter that just arrived
+        content = await cc._last_assistant_content(db_session, conversation_id)
+        assert content == "my own last reply"
+
+
 class TestSiblingReflectionsFlag:
     """/retrieve's new_sibling_reflections mailbox counter."""
 
