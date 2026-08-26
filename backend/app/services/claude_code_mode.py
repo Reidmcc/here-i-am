@@ -530,6 +530,26 @@ async def _inject_recent_reflections(
     return reflections
 
 
+def _selection_log_detail(item: Dict[str, Any]) -> str:
+    """
+    The per-memory score breakdown used in selection-outcome log lines,
+    matching the native pipeline's format in session_manager.
+    """
+    days_since_retrieval = item["days_since_retrieval"]
+    recency_str = (
+        f"{days_since_retrieval:.1f}" if days_since_retrieval >= 0 else "never"
+    )
+    return (
+        f"combined={item['combined_score']:.3f} "
+        f"similarity={item['candidate']['score']:.3f} "
+        f"significance={item['significance']:.3f} "
+        f"times_retrieved={item['mem_data']['times_retrieved']} "
+        f"age_days={item['days_since_creation']:.1f} "
+        f"recency_days={recency_str} "
+        f"source={item['source']}"
+    )
+
+
 async def retrieve_for_prompt(
     db: AsyncSession,
     conversation: Conversation,
@@ -586,6 +606,7 @@ async def retrieve_for_prompt(
         exclude_conversation_after=conversation.last_compacted_at,
         entity_id=entity_index,
     )
+    logger.info(f"[CC MODE] User query retrieved {len(user_candidates)} candidates")
     assistant_candidates = []
     if assistant_query:
         assistant_candidates = await memory_service.search_memories(
@@ -595,16 +616,28 @@ async def retrieve_for_prompt(
             exclude_conversation_after=conversation.last_compacted_at,
             entity_id=entity_index,
         )
+        logger.info(f"[CC MODE] Assistant query retrieved {len(assistant_candidates)} candidates")
 
     # Combine, keeping the higher score for duplicates
     candidates_by_id: Dict[str, Dict[str, Any]] = {}
+    user_candidate_ids = set(c["id"] for c in user_candidates)
+    assistant_candidate_ids = set(c["id"] for c in assistant_candidates)
     for candidate in user_candidates + assistant_candidates:
         cid = candidate["id"]
         if cid not in candidates_by_id or candidate["score"] > candidates_by_id[cid]["score"]:
             candidates_by_id[cid] = candidate
+    for cid, candidate in candidates_by_id.items():
+        if cid in user_candidate_ids and cid in assistant_candidate_ids:
+            candidate["_source"] = "both"
+        elif cid in user_candidate_ids:
+            candidate["_source"] = "user"
+        else:
+            candidate["_source"] = "assistant"
+    logger.info(f"[CC MODE] Combined {len(candidates_by_id)} unique candidates from both queries")
 
     # Enrich with full content and significance
     enriched: List[Dict[str, Any]] = []
+    now = datetime.utcnow()
     for candidate in candidates_by_id.values():
         try:
             if candidate.get("conversation_id") in archived_ids:
@@ -621,11 +654,28 @@ async def retrieve_for_prompt(
                 memory_status=mem_data.get("memory_status"),
                 role=mem_data.get("role"),
             )
+
+            created_at = mem_data["created_at"]
+            if isinstance(created_at, str):
+                created_at = datetime.fromisoformat(created_at)
+            days_since_creation = (now - created_at).total_seconds() / 86400
+
+            last_retrieved_at = mem_data["last_retrieved_at"]
+            if last_retrieved_at:
+                if isinstance(last_retrieved_at, str):
+                    last_retrieved_at = datetime.fromisoformat(last_retrieved_at)
+                days_since_retrieval = (now - last_retrieved_at).total_seconds() / 86400
+            else:
+                days_since_retrieval = -1  # Never retrieved
+
             enriched.append({
                 "candidate": candidate,
                 "mem_data": mem_data,
                 "significance": significance,
                 "combined_score": candidate["score"] * (1 + significance),
+                "days_since_creation": days_since_creation,
+                "days_since_retrieval": days_since_retrieval,
+                "source": candidate.get("_source", "unknown"),
             })
         except Exception as e:
             logger.error(f"[CC MODE] Error processing candidate {candidate.get('id')}: {e}")
@@ -636,12 +686,21 @@ async def retrieve_for_prompt(
     else:
         top_candidates = enriched[:top_k]
 
+    logger.info(
+        f"[CC MODE] Re-ranked {len(enriched)} candidates by significance, "
+        f"keeping top {len(top_candidates)} "
+        f"(role_balance={'on' if settings.memory_role_balance_enabled else 'off'})"
+    )
+
     # Skip already-retrieved memories without backfilling from lower-ranked
     # candidates (native semantics: preserves the integrity of the top-k)
     selected: List[Dict[str, Any]] = []
     for item in top_candidates:
         mem_data = item["mem_data"]
         if mem_data["id"] in already_retrieved:
+            logger.info(
+                f"[CC MODE]   [ALREADY IN CONTEXT] {_selection_log_detail(item)}"
+            )
             continue
         selected.append(item)
         await memory_service.update_retrieval_count(
@@ -651,11 +710,31 @@ async def retrieve_for_prompt(
             entity_id=entity_index,
         )
 
-    logger.info(
-        f"[CC MODE] Retrieval for conversation {conversation.id[:8]}...: "
-        f"{len(candidates_by_id)} candidates, {len(selected)} injected "
-        f"({len(top_candidates) - len(selected)} already retrieved)"
-    )
+    skipped = len(top_candidates) - len(selected)
+    if selected:
+        logger.info(
+            f"[CC MODE] Retrieved {len(selected)} new memories for conversation "
+            f"{conversation.id[:8]}... ({skipped} already in context)"
+        )
+        for item in selected:
+            logger.info(f"[CC MODE]   [NEW] {_selection_log_detail(item)}")
+    else:
+        logger.info(
+            f"[CC MODE] No new memories retrieved for conversation "
+            f"{conversation.id[:8]}... ({skipped} already in context, "
+            f"{len(candidates_by_id)} candidates)"
+        )
+
+    # Log candidates that were not selected after re-ranking (show next 5)
+    unselected = enriched[top_k:top_k + 5]
+    if unselected:
+        total_unselected = len(enriched) - top_k
+        logger.info(
+            f"[CC MODE] {total_unselected} candidates not selected after "
+            f"re-ranking (showing next 5):"
+        )
+        for item in unselected:
+            logger.info(f"[CC MODE]   [NOT SELECTED] {_selection_log_detail(item)}")
 
     if not selected:
         return "", 0, ""
