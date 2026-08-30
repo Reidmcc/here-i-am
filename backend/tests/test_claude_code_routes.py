@@ -406,6 +406,51 @@ class TestRetrieve:
         )
         assert result.scalars().all() == []
 
+    async def test_record_nothing_tick_still_counts_sibling_reflections(
+        self, async_client, db_session
+    ):
+        """A wakeup tick the hook dropped (issue #318) arrives as an empty
+        prompt. Nothing may be recorded, but the mailbox count still runs —
+        a loop session can go hours on ticks alone and must still learn of
+        sibling reflections."""
+        session_id = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "opening prompt"},
+        )
+        conversation_id = response.json()["conversation_id"]
+        result = await db_session.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+        conversation = result.scalar_one()
+
+        sibling = Conversation(entity_id="test-entity")
+        db_session.add(sibling)
+        await db_session.commit()
+        db_session.add(Message(
+            conversation_id=sibling.id,
+            role=MessageRole.REFLECTION,
+            content="Sibling conclusion.",
+            speaker_entity_id="test-entity",
+            created_at=conversation.created_at + timedelta(seconds=5),
+        ))
+        await db_session.commit()
+
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": ""},
+        )
+        body = response.json()
+        assert body["human_message_id"] is None
+        assert body["context"] == ""
+        assert body["new_sibling_reflections"] == 1
+
+        result = await db_session.execute(
+            select(Message).where(Message.conversation_id == conversation_id)
+        )
+        contents = [m.content for m in result.scalars().all()]
+        assert contents == ["opening prompt"]
+
 
 class TestPeerMessages:
     """

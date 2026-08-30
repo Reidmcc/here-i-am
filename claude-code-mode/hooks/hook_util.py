@@ -73,6 +73,22 @@ _CROSS_SESSION_RE = re.compile(
 )
 _FROM_NAME_RE = re.compile(r'\bfrom-name="([^"]*)"')
 
+# Self-scheduled wakeup prompts (ScheduleWakeup dynamic loops, send_later
+# reminders) fire back through the prompt channel verbatim — the harness
+# gives the hook no marker separating a timer-fired prompt from a typed one
+# (issue #318). So the convention is a sentinel the entity writes into its
+# own scheduled prompts: a prompt whose user-authored part begins with
+# [WAKEUP] (optionally after a slash command, since a dynamic /loop re-fires
+# its whole input) is the entity's alarm clock going off, not anyone
+# speaking — repeated many times and closer to a tool action than to talk.
+# It is not recorded at all: not archived, not vectorized, not used as a
+# retrieval query. The prompt itself still reaches the session's context
+# unchanged (hooks only add; they don't rewrite the prompt), and the turn's
+# work — the assistant response the Stop hook records, reflections saved —
+# keeps its normal provenance.
+WAKEUP_SENTINEL = "[WAKEUP]"
+_WAKEUP_RE = re.compile(r"^\s*(?:/\S+\s+)?\[WAKEUP\]")
+
 
 def strip_harness_blocks(prompt: str) -> str:
     """The prompt with harness-injected blocks removed; empty string when
@@ -104,6 +120,14 @@ def split_prompt_for_recording(prompt: str):
 
     remaining = _CROSS_SESSION_RE.sub(_capture, without_plumbing)
     return remaining.strip(), peer_messages
+
+
+def is_wakeup_prompt(text: str) -> bool:
+    """Whether text is a self-scheduled wakeup prompt (the [WAKEUP] sentinel
+    convention — see WAKEUP_SENTINEL above). Callers pass the user-authored
+    part of the prompt, i.e. split_prompt_for_recording's first element, so
+    a sentinel arriving behind harness plumbing is still recognized."""
+    return bool(_WAKEUP_RE.match(text))
 
 
 def read_hook_input():
