@@ -16,7 +16,9 @@ them as the human's words (issue #312). Self-scheduled wakeup prompts —
 marked by the entity with the [WAKEUP] sentinel, since the harness marks
 them with nothing (issue #318) — are dropped from recording too, though
 the backend is still pinged so notes sync and the mailbox flag survive a
-wakeup-driven loop session.
+wakeup-driven loop session. Every recorded prompt's output ends with a
+one-line reminder of the sentinel convention, so it is in view on any
+turn where the entity might schedule a prompt to itself.
 
 When the memory block would blow the inline hook-output budget (Claude Code
 silently truncates oversized hook output), it is written to a file and the
@@ -106,14 +108,21 @@ def main() -> None:
     # *fact* must be, because unretrieved history and genuine novelty feel
     # identical from inside.
     mailbox = sibling_reflections_notice(body)
+    # Standing reminder of the sentinel convention, with every recorded
+    # message: the entity can schedule a prompt to itself on any turn, and
+    # a tick scheduled without the sentinel pollutes the archive once per
+    # firing. Skipped on wakeup ticks themselves — a sentinel that just
+    # worked needs no advertisement.
+    reminder = "" if wakeup else wakeup_sentinel_reminder()
+    tail = [part for part in (mailbox, reminder) if part]
 
     context = (body.get("context") or "").strip()
     if not context:
-        if mailbox:
-            print(mailbox)
+        if tail:
+            print("\n\n".join(tail))
         return
     if hook_util.output_bytes(context) <= hook_util.inline_budget():
-        print(f"{context}\n\n{mailbox}" if mailbox else context)
+        print("\n\n".join([context, *tail]))
         return
 
     # One file per retrieval — timestamped so an earlier spill in the same
@@ -126,8 +135,17 @@ def main() -> None:
         f"Their full verbatim text is written to:\n{path}\n"
         "Read that file before responding."
     )
-    parts = [part for part in (summary, pointer, mailbox) if part]
+    parts = [part for part in (summary, pointer, *tail) if part]
     print("\n\n".join(parts))
+
+
+def wakeup_sentinel_reminder() -> str:
+    """One-line standing reminder of the [WAKEUP] convention (issue #318)."""
+    return (
+        "[HERE I AM] Scheduling a prompt to your own session (a wakeup, "
+        f"loop tick, or reminder)? Start it with {hook_util.WAKEUP_SENTINEL} "
+        "so the fired prompt is not archived as the human's words."
+    )
 
 
 def sibling_reflections_notice(body: dict) -> str:

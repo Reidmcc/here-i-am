@@ -74,7 +74,13 @@ def test_sentinel_behind_harness_plumbing_recognized_after_split():
 # --- Hook behavior: what a wakeup tick sends (and doesn't send)
 
 
-def run_hook(prompt: str, tmp_path, body: dict = None, unreachable: bool = False):
+def run_hook(
+    prompt: str,
+    tmp_path,
+    body: dict = None,
+    unreachable: bool = False,
+    extra_env: dict = None,
+):
     """Run user_prompt_submit.main() with post_backend stubbed.
 
     Returns (stdout, payload) — payload is what the hook POSTed, or None
@@ -99,7 +105,7 @@ def run_hook(prompt: str, tmp_path, body: dict = None, unreachable: bool = False
         "import user_prompt_submit\n"
         "user_prompt_submit.main()\n"
     )
-    env = {**os.environ}
+    env = {**os.environ, **(extra_env or {})}
     env.pop("HIM_DISABLE", None)
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -170,3 +176,55 @@ def test_unreachable_backend_notice_is_accurate_for_a_tick(tmp_path):
     assert "[HERE I AM]" in out
     assert "wakeup tick" in out
     assert "NOT recorded" not in out
+
+
+# --- The standing sentinel reminder: the convention only works if the
+# --- entity remembers it on the turn where it schedules a prompt
+
+
+def test_reminder_printed_with_every_recorded_prompt(tmp_path):
+    out, _ = run_hook("hello", tmp_path)
+    assert "Start it with [WAKEUP]" in out
+
+
+def test_reminder_rides_alongside_context_and_mailbox(tmp_path):
+    out, _ = run_hook(
+        "hello",
+        tmp_path,
+        body={"context": "[MEMORY] something", "new_sibling_reflections": 2},
+    )
+    assert "[MEMORY] something" in out
+    assert "2 reflections saved in other sessions" in out
+    assert "Start it with [WAKEUP]" in out
+
+
+def test_reminder_survives_spill_branch(tmp_path):
+    out, _ = run_hook(
+        "hello",
+        tmp_path,
+        body={
+            "context": "[MEMORY] " + ("x" * 30000),
+            "context_summary": "- abc12345: snippet",
+        },
+        extra_env={
+            "HIM_INLINE_BUDGET": "1000",
+            "TMPDIR": str(tmp_path),
+            "TEMP": str(tmp_path),
+            "TMP": str(tmp_path),
+        },
+    )
+    assert "too large to inject inline" in out
+    assert "Start it with [WAKEUP]" in out
+
+
+def test_reminder_not_printed_on_wakeup_ticks(tmp_path):
+    # A sentinel that just worked needs no advertisement — ticks stay
+    # output-silent (test_wakeup_tick_records_nothing_but_pings_backend
+    # asserts the fully-empty case; this one adds a mailbox flag)
+    out, _ = run_hook(
+        "[WAKEUP] tick",
+        tmp_path,
+        body={"context": "", "new_sibling_reflections": 1},
+    )
+    assert "1 reflection saved in other sessions" in out
+    assert "Start it with [WAKEUP]" not in out

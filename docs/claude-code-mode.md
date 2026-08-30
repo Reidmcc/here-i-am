@@ -293,6 +293,12 @@ riding in with a tick is still extracted and recorded. Prompts scheduled
 without the sentinel record as before — archiving a self-reminder is the
 entity's choice, made per prompt.
 
+A convention only works if it is in view on the turn where a prompt gets
+scheduled, which can be any turn — so the hook ends every recorded
+prompt's output with a one-line reminder of the sentinel
+(`wakeup_sentinel_reminder`), alongside the mailbox flag. Wakeup ticks
+themselves skip it: a sentinel that just worked needs no advertisement.
+
 ### Compaction survival
 
 Compaction replaces the conversation with a paraphrased summary; reflections
