@@ -12,7 +12,11 @@ Not everything on the prompt channel is the human: harness plumbing
 inter-session messages from sibling Claude Code sessions are extracted and
 sent separately (peer_messages), so the backend can record them under the
 entity's own name with the sending session marked instead of archiving
-them as the human's words (issue #312).
+them as the human's words (issue #312). Self-scheduled wakeup prompts —
+marked by the entity with the [WAKEUP] sentinel, since the harness marks
+them with nothing (issue #318) — are dropped from recording too, though
+the backend is still pinged so notes sync and the mailbox flag survive a
+wakeup-driven loop session.
 
 When the memory block would blow the inline hook-output budget (Claude Code
 silently truncates oversized hook output), it is written to a file and the
@@ -57,7 +61,15 @@ def main() -> None:
     prompt, peer_messages = hook_util.split_prompt_for_recording(
         data.get("prompt") or ""
     )
-    if not session_id or (not prompt and not peer_messages):
+    # A self-scheduled wakeup prompt (the [WAKEUP] sentinel convention,
+    # issue #318) is the entity's own timer firing, not anyone speaking:
+    # dropped from recording and retrieval entirely. The backend is still
+    # pinged so the notes sync and the sibling-reflections mailbox keep
+    # running through a long wakeup-driven loop session.
+    wakeup = hook_util.is_wakeup_prompt(prompt)
+    if wakeup:
+        prompt = ""
+    if not session_id or (not prompt and not peer_messages and not wakeup):
         return
 
     payload = {
@@ -70,6 +82,16 @@ def main() -> None:
     try:
         body = hook_util.post_backend("/api/claude-code/retrieve", payload, timeout=30)
     except Exception as e:
+        if not prompt and not peer_messages:
+            # Wakeup tick: nothing was going to be recorded, so the loss is
+            # only the mailbox check and the background notes sync
+            hook_util.fail_loud(
+                "The Here I Am backend was unreachable for this wakeup tick "
+                f"({hook_util.describe_error(e)}). Nothing needed recording, "
+                "but no notes sync ran and new sibling reflections were not "
+                "checked."
+            )
+            return
         hook_util.fail_loud(
             "The Here I Am backend was unreachable for this prompt "
             f"({hook_util.describe_error(e)}). This turn's input (the prompt "

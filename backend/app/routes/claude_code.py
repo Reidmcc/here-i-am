@@ -261,11 +261,21 @@ async def retrieve(
         peer for peer in (data.peer_messages or []) if (peer.content or "").strip()
     ]
     if not record_prompt and not peer_messages:
+        # Nothing to record — a bare slash command, or a self-scheduled
+        # wakeup tick the hook dropped (issue #318: the entity's own timer
+        # firing is not talk, so it never enters the archive). Wakeup-driven
+        # loop sessions can run for hours on ticks alone, so the mailbox
+        # count and the incremental notes sync still run here.
+        sibling_reflections = await cc.count_new_sibling_reflections(
+            db, conversation, entity
+        )
+        _spawn_notes_sync(entity)
         return RetrieveResponse(
             conversation_id=str(conversation.id),
             human_message_id=None,
             context="",
             memories_retrieved=0,
+            new_sibling_reflections=sibling_reflections,
         )
 
     human_msg = None

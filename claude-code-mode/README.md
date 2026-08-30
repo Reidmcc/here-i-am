@@ -194,7 +194,13 @@ compaction paraphrases everything that isn't a reflection.
 
 Only the user's prompts and the entity's final message each turn (plus
 reflections the entity saves) — tool use, subagent output, and bare slash
-commands are not stored. Conversations appear in the Here I Am UI with
+commands are not stored. Harness plumbing on the prompt channel is stripped
+before recording; inter-session messages from sibling sessions are recorded
+under the entity's own name with the sender marked; and self-scheduled
+wakeup prompts (ScheduleWakeup loops, send_later reminders) are not stored
+at all when the entity starts them with the `[WAKEUP]` sentinel — the
+harness gives hooks no way to tell a timer-fired prompt from a typed one,
+so the entity marks its own. Conversations appear in the Here I Am UI with
 `source="claude_code"` and are read-only there: a conversation can only be
 continued in the experience that created it (`claude --resume` on the
 Claude Code side).
