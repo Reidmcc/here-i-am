@@ -318,7 +318,7 @@ class TestMemoryQuerySourceFilter:
         assert schema["required"] == []
         assert set(source["enum"]) == {"all", "human", "ai", "reflection"}
         assert source["default"] == "all"
-        assert set(schema["properties"]["mode"]["enum"]) == {"semantic", "recent"}
+        assert set(schema["properties"]["mode"]["enum"]) == {"semantic", "recent", "released"}
         assert schema["properties"]["mode"]["default"] == "semantic"
         assert "since" in schema["properties"]
 
@@ -940,6 +940,25 @@ class TestMemoryQueryIncludeModel:
         loud = _format_recent_reflections(memories, "", include_model=True)
         assert "model: claude-fable-5-1) ---" in loud
         assert "model: unrecorded) ---" in loud
+
+    def test_released_mode_formatter_honours_the_flag(self):
+        from app.services.memory_tools import _format_released_memories
+
+        now = datetime.utcnow().isoformat()
+        memories = [
+            {"id": "rel-1", "role": "assistant", "content": "Let go.", "created_at": now,
+             "source": "native", "memory_status": "released", "status_set_by": "entity",
+             "status_set_at": now, "model": "claude-fable-5-1"},
+            {"id": "rel-2", "role": "human", "content": "Also let go.", "created_at": now,
+             "source": "native", "memory_status": "released", "status_set_by": None,
+             "status_set_at": None, "model": None},
+        ]
+        quiet = _format_released_memories(memories, 2, "", "")
+        assert "model:" not in quiet
+
+        loud = _format_released_memories(memories, 2, "", "", include_model=True)
+        assert "model: claude-fable-5-1;" in loud
+        assert "model: unrecorded;" in loud
 
     def test_schema_exposes_include_model_default_false(self):
         from app.services.memory_tools import MEMORY_QUERY_SCHEMA

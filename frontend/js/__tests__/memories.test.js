@@ -15,6 +15,7 @@ import {
     searchMemories,
     checkForOrphans,
     cleanupOrphans,
+    statusProvenance,
 } from '../modules/memories.js';
 
 describe('Memories Module', () => {
@@ -525,5 +526,36 @@ describe('Memories Module', () => {
 
             expect(window.api.cleanupOrphanedRecords).toHaveBeenCalledWith('entity-1', false);
         });
+    });
+});
+
+describe('statusProvenance', () => {
+    it('attributes a status to the entity with its time', () => {
+        const text = statusProvenance({
+            memory_status: 'released',
+            status_set_by: 'entity',
+            status_set_at: '2026-09-01T14:02:00',
+        });
+        expect(text).toMatch(/^released by the entity on /);
+        expect(text).toContain(new Date('2026-09-01T14:02:00').toLocaleString());
+    });
+
+    it('names the researcher as you', () => {
+        const text = statusProvenance({
+            memory_status: 'pinned',
+            status_set_by: 'researcher',
+            status_set_at: '2026-09-02T09:30:00',
+        });
+        expect(text).toMatch(/^pinned by you \(researcher\) on /);
+    });
+
+    it('marks statuses that predate provenance', () => {
+        expect(statusProvenance({ memory_status: 'released', status_set_by: null, status_set_at: null }))
+            .toBe('released before provenance was recorded');
+    });
+
+    it('omits the time when only the setter is known', () => {
+        expect(statusProvenance({ memory_status: 'pinned', status_set_by: 'entity', status_set_at: null }))
+            .toBe('pinned by the entity');
     });
 });

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from pinecone import Pinecone
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -16,8 +16,21 @@ from app.models import (
     Message,
     MessageRole,
 )
+from app.services.memory_context import format_status_change_notice
 
 logger = logging.getLogger(__name__)
+
+
+# Who wrote a memory's status (Message.status_set_by): the entity through its
+# memory_mark / memory_release tools, or the researcher through the status
+# override route. Recorded on every write, including clears, so a reversal of
+# the entity's choice is attributed and reportable.
+STATUS_SET_BY_ENTITY = "entity"
+STATUS_SET_BY_RESEARCHER = "researcher"
+VALID_STATUS_SETTERS = (STATUS_SET_BY_ENTITY, STATUS_SET_BY_RESEARCHER)
+
+# Only these roles are vectorized, so only they can be memories with a status
+MEMORY_ROLES = (MessageRole.HUMAN, MessageRole.ASSISTANT, MessageRole.REFLECTION)
 
 
 # Role filters accepted by search_memories. Memories carry a "role" metadata
@@ -667,6 +680,8 @@ class MemoryService:
                 "times_retrieved": message.times_retrieved,
                 "last_retrieved_at": message.last_retrieved_at.isoformat() if message.last_retrieved_at else None,
                 "memory_status": message.memory_status,
+                "status_set_by": message.status_set_by,
+                "status_set_at": message.status_set_at.isoformat() if message.status_set_at else None,
                 # Which experience the memory was formed in ("native" or
                 # "claude_code") — rendered into memory markers and tool
                 # output so the entity can see a memory's provenance
@@ -1134,6 +1149,8 @@ class MemoryService:
         message_id: str,
         status: Optional[str],
         db: AsyncSession,
+        *,
+        set_by: str,
     ) -> bool:
         """
         Set or clear a memory's status ("pinned", "released", or None).
@@ -1142,26 +1159,303 @@ class MemoryService:
         Released memories are excluded from retrieval (but kept in storage,
         so the status can be reversed).
 
+        set_by ("entity" or "researcher") is recorded with the write time
+        on the row (status_set_by / status_set_at) — for clears as much as
+        for sets, since a researcher clearing the entity's release is
+        exactly the change the entity's session-start notice must report.
+
         The status lives in SQL (source of truth); retrieval paths read it via
         get_full_memory_content, so we invalidate that cache here.
         """
         if status not in (None, "pinned", "released"):
             raise ValueError(f"Invalid memory status: {status}")
+        if set_by not in VALID_STATUS_SETTERS:
+            raise ValueError(f"Invalid status setter: {set_by}")
 
         try:
             await db.execute(
                 update(Message)
                 .where(Message.id == message_id)
-                .values(memory_status=status)
+                .values(
+                    memory_status=status,
+                    status_set_by=set_by,
+                    status_set_at=datetime.utcnow(),
+                )
             )
             await db.commit()
             self.cache.invalidate_memory_content(str(message_id))
-            logger.info(f"[MEMORY] Set memory_status={status} for {str(message_id)[:8]}...")
+            logger.info(
+                f"[MEMORY] Set memory_status={status} for {str(message_id)[:8]}... (by {set_by})"
+            )
             return True
         except Exception as e:
             logger.error(f"Error setting memory status: {e}")
             await db.rollback()
             return False
+
+    def _entity_experience_clause(self, entity_id: str):
+        """
+        Filter (for a query joined to Conversation) selecting the
+        conversations that make up this entity's experience: its own
+        single-entity conversations, multi-entity conversations it
+        participates in, and — for the default entity — legacy conversations
+        with a NULL entity_id. The same three cases
+        get_archived_conversation_ids enumerates.
+        """
+        participant = select(ConversationEntity.conversation_id).where(
+            ConversationEntity.entity_id == entity_id
+        )
+        clauses = [
+            Conversation.entity_id == entity_id,
+            and_(
+                Conversation.entity_id == "multi-entity",
+                Conversation.id.in_(participant),
+            ),
+        ]
+        default_entity = settings.get_default_entity()
+        if default_entity and default_entity.index_name == entity_id:
+            clauses.append(Conversation.entity_id.is_(None))
+        return or_(*clauses)
+
+    @staticmethod
+    def _sql_role_clause(role_filter: Optional[str]):
+        """
+        The SQL-side equivalent of search_memories' Pinecone role filter:
+        "human" is the human's rows, "reflection" the entity's memory_save
+        rows, and "ai" everything else (assistant rows, including other
+        entities' in multi-entity conversations and inter-session letters).
+        None matches every memory role.
+        """
+        role_filter = normalize_role_filter(role_filter)
+        if role_filter == ROLE_FILTER_HUMAN:
+            return Message.role == MessageRole.HUMAN
+        if role_filter == ROLE_FILTER_REFLECTION:
+            return Message.role == MessageRole.REFLECTION
+        if role_filter == ROLE_FILTER_AI:
+            return Message.role != MessageRole.HUMAN
+        return Message.role.in_(MEMORY_ROLES)
+
+    def _released_conditions(self, entity_id: str, role_filter: Optional[str]) -> list:
+        return [
+            Message.memory_status == "released",
+            Message.role.in_(MEMORY_ROLES),
+            self._sql_role_clause(role_filter),
+            self._entity_experience_clause(entity_id),
+        ]
+
+    async def get_released_memories(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        limit: int,
+        exclude_conversation_id: Optional[str] = None,
+        exclude_ids: Optional[Set[str]] = None,
+        since: Optional[datetime] = None,
+        role_filter: Optional[str] = None,
+        exclude_conversation_after: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        The entity's released memories, most recently released first.
+
+        Backs memory_query mode="released": the entity's own review channel
+        for what it (or the researcher) withdrew from retrieval, so a release
+        is reversible by the one who can still see it. Pure SQL — released
+        memories are excluded from vector retrieval, and this is curation,
+        not recall, so nothing here touches times_retrieved.
+
+        Whoever released a memory, it is listed (status_set_by says who);
+        legacy releases with no recorded release time sort last, and are
+        excluded when `since` is given (it bounds the release time,
+        status_set_at). Exclusions mirror get_recent_reflections: the
+        current conversation (narrowed to its post-compaction slice via
+        exclude_conversation_after) and any ids already in view.
+        """
+        if limit <= 0:
+            return []
+
+        query = (
+            select(Message, Conversation.source)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(*self._released_conditions(entity_id, role_filter))
+        )
+        if exclude_conversation_id:
+            if exclude_conversation_after is not None:
+                query = query.where(or_(
+                    Message.conversation_id != str(exclude_conversation_id),
+                    Message.created_at < exclude_conversation_after,
+                ))
+            else:
+                query = query.where(Message.conversation_id != str(exclude_conversation_id))
+        if exclude_ids:
+            query = query.where(Message.id.not_in([str(mid) for mid in exclude_ids]))
+        if since is not None:
+            query = query.where(Message.status_set_at > since)
+
+        query = query.order_by(
+            Message.status_set_at.desc().nulls_last(),
+            Message.created_at.desc(),
+        ).limit(limit)
+
+        result = await db.execute(query)
+        rows = result.all()
+        memories = [
+            {
+                "id": str(m.id),
+                "conversation_id": str(m.conversation_id),
+                "role": m.role.value,
+                "content": m.content,
+                "created_at": m.created_at.isoformat(),
+                "times_retrieved": m.times_retrieved,
+                "last_retrieved_at": m.last_retrieved_at.isoformat() if m.last_retrieved_at else None,
+                "memory_status": m.memory_status,
+                "status_set_by": m.status_set_by,
+                "status_set_at": m.status_set_at.isoformat() if m.status_set_at else None,
+                "source": conversation_source or "native",
+                "model": m.model,
+            }
+            for m, conversation_source in rows
+        ]
+        logger.info(
+            f"[MEMORY] Released memories: found {len(memories)} for entity={entity_id} (limit={limit})"
+        )
+        return memories
+
+    async def count_released_memories(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        role_filter: Optional[str] = None,
+    ) -> int:
+        """How many of the entity's memories are currently released (no exclusions)."""
+        query = (
+            select(func.count(Message.id))
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(*self._released_conditions(entity_id, role_filter))
+        )
+        result = await db.execute(query)
+        return int(result.scalar_one() or 0)
+
+    async def get_last_session_anchor(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        exclude_conversation_id: Optional[str] = None,
+    ) -> Optional[datetime]:
+        """
+        The moment the entity's previous session began speaking: the
+        created_at of its first assistant message in the most recent other
+        conversation where it spoke. None when it has never spoken.
+
+        This is the "since your last session" boundary for the
+        researcher-change notice. A session's notice is injected just before
+        its first response, so anchoring on that response's time means a
+        change made before it was reported by that session and a change made
+        during it is reported by the next — each change once, and never
+        silently. Conversations without a response (an unspoken native tab,
+        a Claude Code session that only fired SessionStart) never had a
+        first turn to notify, so they cannot be the anchor.
+        """
+        # An inter-session letter is recorded as an assistant row too
+        # (sibling_session set) but is a delivery, not a turn this
+        # conversation's session took — it never carried a first-turn notice
+        spoke = and_(
+            Message.sibling_session.is_(None),
+            or_(
+                Message.speaker_entity_id.is_(None),
+                Message.speaker_entity_id == entity_id,
+            ),
+        )
+        conditions = [
+            Message.role == MessageRole.ASSISTANT,
+            spoke,
+            self._entity_experience_clause(entity_id),
+        ]
+        if exclude_conversation_id:
+            conditions.append(Message.conversation_id != str(exclude_conversation_id))
+
+        latest = (
+            select(Message.conversation_id)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(*conditions)
+            .order_by(Message.created_at.desc())
+            .limit(1)
+        )
+        row = (await db.execute(latest)).first()
+        if row is None:
+            return None
+
+        first_response = select(func.min(Message.created_at)).where(
+            Message.conversation_id == row[0],
+            Message.role == MessageRole.ASSISTANT,
+            spoke,
+        )
+        return (await db.execute(first_response)).scalar_one_or_none()
+
+    async def get_researcher_status_changes(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        since: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Memories of this entity whose status was last written by the
+        researcher (set or cleared), optionally only after `since`, oldest
+        change first. Each dict carries the current status and when the
+        researcher wrote it, plus enough content for a snippet.
+        """
+        conditions = [
+            Message.status_set_by == STATUS_SET_BY_RESEARCHER,
+            Message.role.in_(MEMORY_ROLES),
+            self._entity_experience_clause(entity_id),
+        ]
+        if since is not None:
+            conditions.append(Message.status_set_at > since)
+        query = (
+            select(Message, Conversation.source)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(*conditions)
+            .order_by(Message.status_set_at.asc(), Message.created_at.asc())
+        )
+        rows = (await db.execute(query)).all()
+        return [
+            {
+                "id": str(m.id),
+                "role": m.role.value,
+                "content": m.content,
+                "created_at": m.created_at.isoformat(),
+                "memory_status": m.memory_status,
+                "status_set_by": m.status_set_by,
+                "status_set_at": m.status_set_at,
+                "source": conversation_source or "native",
+            }
+            for m, conversation_source in rows
+        ]
+
+    async def build_status_change_notice(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        exclude_conversation_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        The session-start notice of researcher-set status changes since the
+        entity's last session (see get_last_session_anchor), or None when
+        there are none. Silence means nothing changed: the notice is the
+        entity's only way of learning that a choice about its own memory was
+        made or reversed on its behalf, so it must never be swallowed —
+        callers treat a failure here as loud, not as "no changes".
+        """
+        anchor = await self.get_last_session_anchor(
+            db, entity_id, exclude_conversation_id=exclude_conversation_id
+        )
+        changes = await self.get_researcher_status_changes(db, entity_id, since=anchor)
+        if not changes:
+            return None
+        logger.info(
+            f"[MEMORY] Status notice: {len(changes)} researcher-set change(s) for "
+            f"entity={entity_id} since {anchor.isoformat() if anchor else 'ever'}"
+        )
+        return format_status_change_notice(changes)
 
     async def delete_memory(self, message_id: str, entity_id: Optional[str] = None) -> bool:
         """

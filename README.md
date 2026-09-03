@@ -45,7 +45,7 @@ While Here I Am can be used with no memory features enabled, this is not recomme
 - Optional memory role balance (ensures both human and assistant memories in retrieval)
 - Memory query tool: Entities can deliberately search their memories beyond automatic retrieval
 - Self-authored reflections: Entities can save memories in their own words via `memory_save`
-- Memory agency: Entities can pin memories (exempt from age-based decay) or release them from retrieval via `memory_mark`/`memory_release`; the researcher can view and override these choices
+- Memory agency: Entities can pin memories (exempt from age-based decay) or release them from retrieval via `memory_mark`/`memory_release`, and review and undo their own releases (`memory_query` mode `released`); the researcher can view and override these choices, but every status write is attributed, and a researcher override is reported to the entity at the start of its next session
 - Closing turn: An open final turn the entity can use before a conversation ends (single-entity conversations)
 - Context awareness: `context_status` tool reports approximate context fullness; a `[CONTEXT NOTICE]` is injected when trimming occurs
 - Memory browser with semantic search, reflections section, and click-to-expand full memory text

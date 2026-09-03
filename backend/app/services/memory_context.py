@@ -11,6 +11,7 @@ ConversationSession uses these tracking mechanisms for all memory handling.
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,51 @@ def format_memory_origin(origin: str) -> str:
     if origin == "claude_code":
         return "via Claude Code"
     return "via Here I Am"
+
+
+def memory_snippet(content: str, max_length: int = 80) -> str:
+    """Whitespace-collapsed opening of a memory, for one-line listings."""
+    collapsed = " ".join((content or "").split())
+    if len(collapsed) <= max_length:
+        return collapsed
+    return collapsed[: max_length - 1].rstrip() + "…"
+
+
+def format_status_change_notice(
+    changes: List[Dict[str, Any]], snippet_length: int = 80
+) -> str:
+    """
+    The session-start notice of researcher-set memory status changes since
+    the entity's last session: one header, one line per change (short id,
+    role, the status the memory now has, when the researcher set it, and a
+    snippet), and where to review or undo. Shared by the native first-turn
+    injection and the Claude Code identity block so both modes speak the
+    same notice. Never rendered when there are no changes — silence means
+    nothing was changed on the entity's behalf.
+    """
+    count = len(changes)
+    noun = "memory" if count == 1 else "memories"
+    lines = [
+        "[MEMORY STATUS NOTICE] Since your last session the researcher changed "
+        f"the status of {count} of your {noun}:"
+    ]
+    for change in changes:
+        status = change.get("memory_status")
+        outcome = f"now {status}" if status else "status cleared (now normal)"
+        set_at = change.get("status_set_at")
+        if isinstance(set_at, str):
+            set_at = datetime.fromisoformat(set_at)
+        when = f" on {set_at.strftime('%Y-%m-%d %H:%M')} UTC" if set_at else ""
+        snippet = memory_snippet(change.get("content", ""), snippet_length)
+        lines.append(
+            f'- {str(change["id"])[:8]} ({memory_role_label(change.get("role", ""))}): '
+            f'{outcome}{when}: "{snippet}"'
+        )
+    lines.append(
+        'Released memories, whoever released them, are listed by memory_query mode="released"; '
+        "undo a release with memory_release undo=true, a pin with memory_mark undo=true."
+    )
+    return "\n".join(lines)
 
 
 def memory_role_label(role: str, sibling_session: Optional[str] = None) -> str:

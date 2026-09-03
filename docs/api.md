@@ -47,8 +47,8 @@ Called by Claude Code lifecycle hooks, not the frontend. Gated by
 - `GET /api/memories/{id}` — get specific memory
 - `POST /api/memories/search` — semantic search
 - `GET /api/memories/stats` — memory statistics
-- `GET /api/memories/overrides` — list memories with pinned/released status
-- `PUT /api/memories/{id}/status` — override a memory's pinned/released status (researcher emergency option)
+- `GET /api/memories/overrides` — list memories with pinned/released status, each with `status_set_by` (`entity` / `researcher`, null before provenance was recorded) and `status_set_at`
+- `PUT /api/memories/{id}/status` — override a memory's pinned/released status (researcher emergency option). Attributed to the researcher and reported to the entity at the start of its next session
 - `GET /api/memories/orphans` — list orphaned memory records
 - `POST /api/memories/orphans/cleanup` — clean up orphaned records
 - `POST /api/memories/query-links/cleanup` — one-time removal of stale memory-links recorded by `memory_query` before it stopped creating them (they bust prompt caching on session reload); body optional, a bare POST is a dry run — send `{"dry_run": false}` to delete
