@@ -1328,7 +1328,10 @@ class TestMcpEndpoint:
     async def test_tools_list(self, async_client):
         response = await async_client.post("/mcp", json=_rpc("tools/list"))
         tools = {t["name"]: t for t in response.json()["result"]["tools"]}
-        assert set(tools) == {"memory_query", "memory_save", "memory_mark", "memory_release"}
+        assert set(tools) == {
+            "memory_query", "memory_save", "memory_mark", "memory_release",
+            "declare_room", "retire_room",
+        }
         # Every tool takes the MCP-only conversation_id parameter
         for tool in tools.values():
             assert "conversation_id" in tool["inputSchema"]["properties"]

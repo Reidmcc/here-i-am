@@ -52,6 +52,11 @@ from app.services.memory_context import (
 )
 from app.services.memory_service import memory_service
 from app.services.notes_service import notes_service
+from app.services.rooms_registry import (
+    RegistryWriteError,
+    SessionObservation,
+    rooms_registry,
+)
 from app.services.session_helpers import calculate_significance, ensure_role_balance
 
 logger = logging.getLogger(__name__)
@@ -349,6 +354,16 @@ async def build_session_start_context(
         if notice:
             parts.append(notice)
 
+    if rooms_registry_enabled():
+        parts.append(
+            "[ROOMS REGISTRY] Your standing sessions' current addresses live in "
+            "rooms.md in your private notes (record: rooms.json). If this "
+            "session is one of your standing rooms, declare it once with the "
+            "declare_room MCP tool (same conversation_id); the hooks then keep "
+            "its roster name and last-seen current across renames, resumes, "
+            "and compactions. Look sisters up there, not in the roster."
+        )
+
     notes_paths = build_notes_paths_block(entity)
     if notes_paths:
         parts.append(notes_paths)
@@ -437,6 +452,118 @@ async def build_post_compact_context(
         )
 
     return "\n\n".join(parts), "\n\n".join(bulk_parts)
+
+
+def rooms_registry_enabled() -> bool:
+    """The rooms registry lives in the notes directory, so it needs notes
+    on as well as its own flag."""
+    return bool(settings.notes_enabled and settings.claude_code_rooms_registry_enabled)
+
+
+def observe_rooms_for_hook(
+    entity: EntityConfig,
+    session_id: str,
+    *,
+    cwd: Optional[str],
+    transcript_path: Optional[str],
+    sessions: List[Dict[str, Any]],
+    session_start: bool,
+) -> Tuple[str, str]:
+    """
+    Feed a hook's live-session snapshot to the rooms registry (issue #323)
+    and phrase the outcome for the hook to print, as (notice, error).
+
+    The observing session's own entry is completed from what its stdin
+    carried (cwd, transcript path) — the snapshot may lack it entirely when
+    the harness's per-process registry isn't readable, and the row should
+    still record what the hook did see. Nothing else is inferred.
+
+    notice: one line worth telling the entity — at session start, which
+    room this session is registered as and its current roster name; at
+    prompt time, any roster rename the snapshot revealed (its own or a
+    sister's), since that is exactly the drift the registry exists to
+    catch. error: a write failure, phrased for a hand-write — the registry
+    being unwritable must never be silent (the #305 rule: spill and point).
+    Both empty when nothing happened.
+    """
+    if not rooms_registry_enabled():
+        return "", ""
+
+    observations: List[SessionObservation] = []
+    own: Optional[SessionObservation] = None
+    for raw in sessions or []:
+        obs = SessionObservation.from_dict(raw)
+        if obs is None:
+            continue
+        if obs.session_id == session_id:
+            own = obs
+        else:
+            observations.append(obs)
+    if own is None:
+        own = SessionObservation(session_id=session_id)
+    if own.cwd is None and cwd:
+        own.cwd = cwd
+    if own.transcript_path is None and transcript_path:
+        own.transcript_path = transcript_path
+    observations.append(own)
+
+    try:
+        outcome = rooms_registry.observe(
+            entity.label, session_id, observations, session_start=session_start
+        )
+    except RegistryWriteError as e:
+        return "", _rooms_write_error_text(e)
+    except Exception as e:  # never let the registry break a hook endpoint
+        logger.error(f"[ROOMS] Observation failed: {e}")
+        return "", (
+            "The rooms registry could not be updated this turn "
+            f"({e.__class__.__name__}: {e}). Check rooms.json in your notes."
+        )
+
+    if session_start:
+        row = outcome.own_row
+        if row is None:
+            return "", ""
+        name = row.get("name")
+        name_text = (
+            f"roster name now \"{name}\" ({row.get('name_source') or 'source unknown'})"
+            if name
+            else "roster name not observed"
+        )
+        return (
+            f"[ROOMS REGISTRY] This session is registered as the "
+            f"{row.get('room')} — {name_text}; rooms.md refreshed."
+        ), ""
+
+    if not outcome.renamed:
+        return "", ""
+    data = rooms_registry.load(entity.label)
+    changes = []
+    for renamed_session, (old, new) in outcome.renamed.items():
+        row = rooms_registry.find_row(data, renamed_session)
+        room = (row or {}).get("room") or renamed_session[:8]
+        who = "this session" if renamed_session == session_id else room
+        was = f' (was "{old}")' if old else ""
+        changes.append(f'{who}: now "{new}"{was}')
+    return (
+        "[ROOMS REGISTRY] Roster name change recorded — "
+        + "; ".join(changes)
+        + "; rooms.md refreshed."
+    ), ""
+
+
+def _rooms_write_error_text(error: RegistryWriteError) -> str:
+    row_text = (
+        f" The row it was writing: {rooms_registry.describe_row(error.row)}."
+        if error.row
+        else ""
+    )
+    return (
+        f"The rooms registry could not be written at {error.path} ({error}). "
+        f"Its rows are NOT refreshed.{row_text} Write it into rooms.md by hand "
+        "if it matters this turn, and tell the user the notes directory is "
+        "not writable."
+    )
 
 
 def build_notes_paths_block(entity: EntityConfig) -> str:

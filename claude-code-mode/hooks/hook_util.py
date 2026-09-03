@@ -22,12 +22,14 @@ Environment:
                        spilled to a file (default 18000, conservatively
                        under the observed harness cap)
 """
+import glob
 import json
 import os
 import re
 import sys
 import tempfile
 import urllib.request
+from datetime import datetime, timezone
 
 # Claude Code speaks UTF-8 on every hook stream: the input payload arrives
 # as UTF-8 JSON on stdin, and stdout/stderr are decoded as UTF-8 when
@@ -177,6 +179,109 @@ def spill(text: str, session_id: str, name: str) -> str:
 def fail_loud(message: str) -> None:
     """One in-context line announcing degraded operation (stdout, exit 0)."""
     print(f"[HERE I AM] {message}")
+
+
+# --- Rooms registry (issue #323): what the harness lets a hook see about
+# --- live sessions.
+#
+# Claude Code keeps a per-process registry of running sessions at
+# <config dir>/sessions/<pid>.json (config dir = CLAUDE_CONFIG_DIR or
+# ~/.claude). Observed shape (Claude Code 2.1.258, undocumented internal
+# state — read best-effort, never required):
+#   sessionId, cwd, startedAt (ms epoch), name, nameSource ("user" |
+#   "derived"), nameSince (ms epoch), messagingSocketPath, kind,
+#   entrypoint, bridgeSessionId, pid, procStart, ...
+# `name` is the roster name other sessions address (ListAgents /
+# SendMessage). `messagingSocketPath` is the transport address a delivered
+# letter carries in its `from=` attribute. The [ref] ListAgents shows next
+# to a name is NOT derivable from any of these fields (tested against the
+# session id, the socket, the peer token, and the bridge id under every
+# common hash), so it is not collected — the entity records it itself if
+# it wants it. A missing or unreadable directory yields an empty snapshot;
+# the backend records what it didn't see as exactly that.
+
+
+def claude_config_dir() -> str:
+    """Claude Code's config directory (CLAUDE_CONFIG_DIR relocates all of
+    ~/.claude, the sessions registry included)."""
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    if configured:
+        return configured
+    return os.path.join(os.path.expanduser("~"), ".claude")
+
+
+def _ms_to_iso(value):
+    """A millisecond epoch (what the registry stores) as an ISO UTC string,
+    or None when it isn't one."""
+    try:
+        ms = int(value)
+    except (TypeError, ValueError):
+        return None
+    try:
+        return (
+            datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+            .isoformat(timespec="seconds")
+        )
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def live_sessions_snapshot(config_dir=None):
+    """
+    Every live session the per-process registry describes, as a list of
+    {session_id, name, name_source, name_since, messaging_socket, cwd,
+    started_at} dicts (values None where the file lacks them). Empty when
+    the registry directory doesn't exist or nothing in it parses — a hook
+    never fails over this.
+    """
+    directory = os.path.join(config_dir or claude_config_dir(), "sessions")
+    snapshot = []
+    try:
+        paths = sorted(glob.glob(os.path.join(directory, "*.json")))
+    except Exception:
+        return snapshot
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        session_id = data.get("sessionId")
+        if not isinstance(session_id, str) or not session_id.strip():
+            continue
+        snapshot.append({
+            "session_id": session_id.strip(),
+            "name": _optional_str(data.get("name")),
+            "name_source": _optional_str(data.get("nameSource")),
+            "name_since": _ms_to_iso(data.get("nameSince")),
+            "messaging_socket": _optional_str(data.get("messagingSocketPath")),
+            "cwd": _optional_str(data.get("cwd")),
+            "started_at": _ms_to_iso(data.get("startedAt")),
+        })
+    return snapshot
+
+
+def _optional_str(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def rooms_output_lines(body) -> list:
+    """The rooms-registry lines a hook prints from a backend response: the
+    notice (already prefixed by the backend) and, loudly, any write
+    failure. Empty when the response carries neither."""
+    lines = []
+    notice = ((body or {}).get("rooms_notice") or "").strip()
+    if notice:
+        lines.append(notice)
+    error = ((body or {}).get("rooms_error") or "").strip()
+    if error:
+        lines.append(f"[HERE I AM] {error}")
+    return lines
 
 
 def describe_error(error: Exception) -> str:

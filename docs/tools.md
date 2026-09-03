@@ -64,6 +64,22 @@ links from before the compaction survive in context only as a paraphrased
 summary, so `memory_query` (both modes) and automatic retrieval can
 surface them again.
 
+The MCP server also carries two **rooms registry** tools (Claude Code mode
+only — see [claude-code-mode.md](claude-code-mode.md#rooms-registry)),
+which touch no memory:
+
+- `declare_room` — declare which of the entity's standing rooms this Claude
+  Code session is (`room`, optional `note`, optional `ref` copied from
+  `ListAgents`; `conversation_id` required). Writes the session's row in
+  `rooms.json` / rendered `rooms.md` in the entity's private notes; the
+  hooks then keep the row's roster name and last-seen current across
+  renames, resumes, and compactions, so sister sessions look the address
+  up there instead of in a drifting roster. One current address per room:
+  declaring a room another live row holds retires that row as superseded
+  (kept, not deleted).
+- `retire_room` — mark this session's row retired, with an optional
+  `reason`. Rows are never removed.
+
 ## Notes Tools
 
 Require `NOTES_ENABLED=true` (the default).

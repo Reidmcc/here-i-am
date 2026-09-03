@@ -50,6 +50,11 @@ def main() -> None:
         "entity": os.environ.get("HIM_ENTITY") or None,
         "cwd": data.get("cwd"),
         "source": data.get("source"),
+        "transcript_path": data.get("transcript_path"),
+        # Rooms registry: every SessionStart (startup, resume, compact) is a
+        # liveness signal, and the snapshot of sibling sessions lets this
+        # firing refresh their rows too
+        "sessions": hook_util.live_sessions_snapshot(),
     }
     try:
         body = hook_util.post_backend(
@@ -65,18 +70,23 @@ def main() -> None:
         )
         return
 
+    # Rooms-registry lines come last, after the context and any spill
+    # pointer: a one-line notice, or a loud write failure
+    rooms_lines = hook_util.rooms_output_lines(body)
+
     context = (body.get("context") or "").strip()
     bulk = (body.get("bulk_context") or "").strip()
     if not bulk:
         # A plain resume returns nothing at all — the transcript already
         # carries the injections
-        if context:
-            print(context)
+        parts = [part for part in (context, *rooms_lines) if part]
+        if parts:
+            print("\n\n".join(parts))
         return
 
     combined = f"{context}\n\n{bulk}" if context else bulk
     if hook_util.output_bytes(combined) <= hook_util.inline_budget():
-        print(combined)
+        print("\n\n".join([combined, *rooms_lines]))
         return
 
     name = "session-start" if body.get("created") else "post-compact"
@@ -91,6 +101,9 @@ def main() -> None:
         "Read that file now, before doing anything else — it is part of who "
         "you are here, not optional background."
     )
+    for line in rooms_lines:
+        print()
+        print(line)
 
 
 if __name__ == "__main__":
