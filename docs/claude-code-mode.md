@@ -55,7 +55,14 @@ The integration has two channels:
      that was nothing but plumbing skips recording and retrieval entirely;
      a wakeup tick still pings `/retrieve` with an empty prompt so the
      notes sync and the mailbox flag keep running through a loop session.
-     None of this touches what the harness delivers to the session's
+     An empty retrieval is never silent (issue #326): whenever no memory
+     block is printed, the hook prints one line saying why — `matched: 0`
+     when a search ran and nothing surfaced (or `matched: 0 new` with the
+     count of matches suppressed as already in context), a "no automatic
+     retrieval ran" line for a wakeup tick, a bare slash command, or pure
+     plumbing, and distinct lines for memory-unconfigured and for a search
+     that failed after the prompt was recorded (see "Retrieval stamps"
+     below). None of this touches what the harness delivers to the session's
      context — the message itself still arrives and can be answered; the
      entity's own replies (SendMessage calls mid-turn) are tool use, which
      the `Stop` hook's final-message extraction never records.
@@ -313,6 +320,51 @@ prompt's output with a one-line reminder of the sentinel
 (`wakeup_sentinel_reminder`), alongside the mailbox flag. Wakeup ticks
 themselves skip it: a sentinel that just worked needs no advertisement.
 
+### Retrieval stamps
+
+A wakeup tick runs no automatic retrieval, and neither does a prompt that
+matched nothing — and before issue #326 both were silent, so from inside a
+session they were the same experience. A loop session produced the
+near-miss that motivates the fix (2026-08-29): a self drafted from an
+impression because nothing had surfaced, without registering that nothing
+had been *asked*. Prompt discipline (query before drafting) was the
+stopgap; the fix belongs at the hook line, where silence can stamp itself.
+
+`/retrieve` now reports `retrieval_status` — `ran` (with
+`already_in_context`, the matches that made the re-ranked top-k but were
+suppressed as already linked here), `skipped` (nothing to query: a wakeup
+tick's empty prompt or a bare slash command), `unconfigured` (memory is off
+for the entity), or `failed` (the search raised; `retrieval_error` says
+why). Whenever the hook prints no memory block it prints exactly one line
+keyed on that status (`empty_retrieval_stamp`), each with distinct text:
+
+- `[HERE I AM MEMORY RETRIEVAL] matched: 0 (retrieval ran; nothing surfaced
+  above threshold).` — or `matched: 0 new (retrieval ran; N matches already
+  in context).`, which is a different fact: what matched is already in
+  front of the entity.
+- `[HERE I AM] No automatic retrieval ran for this prompt (wakeup tick); use
+  memory_query if you need recall.` — the reason varies: `wakeup tick`
+  (the hook knows it dropped the sentinel), `nothing to query, e.g. a bare
+  slash command` (the backend's record-nothing path), or `harness plumbing
+  only, nothing to record` (the hook never called the backend).
+- `[HERE I AM] No automatic retrieval ran: memory is not configured for
+  this entity.`
+- `[HERE I AM] Memory retrieval FAILED for this prompt (...). This turn's
+  input was recorded, but no memories were searched; ...` — the route
+  catches a retrieval exception instead of returning a 500, because the
+  prompt was committed before the search ran and the hook's
+  backend-unreachable notice ("NOT recorded") would otherwise lie. The
+  mailbox count and notes sync still run on that path.
+- A backend that predates the field gets its own line (`Retrieval outcome
+  not reported ... the backend predates this hook`), so a pull without a
+  backend restart is visible rather than silent.
+
+The backend decides whether a search happened; the hook adds only what it
+alone knows (a sentinel it dropped, a prompt that was pure plumbing). A
+letter-only turn is a query in its own right, so it gets `matched: 0`, not
+the skipped line. The lines are short on purpose — they land in context on
+every tick of a loop.
+
 ### Compaction survival
 
 Compaction replaces the conversation with a paraphrased summary; reflections
@@ -438,7 +490,8 @@ conversation on first contact; `/session-start` and `/session-end` never do
   sync; does not create a conversation for an unseen session.
 - `POST /retrieve` `{session_id, prompt, entity?, cwd?, peer_messages?}` →
   `{conversation_id, human_message_id, context, memories_retrieved,
-  context_summary, new_sibling_reflections, peer_message_ids}` — the
+  context_summary, new_sibling_reflections, peer_message_ids,
+  retrieval_status, retrieval_error, already_in_context}` — the
   summary is the compact inline stand-in the hook prints when it has to
   spill an oversized `context`; the sibling count backs the mailbox flag
   (see Memory above). `peer_messages` is a list of `{content, sender?}`
@@ -446,7 +499,10 @@ conversation on first contact; `/session-start` and `/session-end` never do
   recorded with honest provenance (see "Inter-session messages" above);
   `human_message_id` is null on a letter-only turn. A record-nothing call
   (bare slash command, or a wakeup tick's empty prompt) still returns the
-  sibling count and spawns the notes sync.
+  sibling count and spawns the notes sync, with `retrieval_status`
+  `skipped`; otherwise the status is `ran`, `unconfigured`, or `failed`
+  (a retrieval exception after the rows were committed — reported, not
+  raised; see "Retrieval stamps" above).
 - `POST /log-assistant` `{session_id, content, entity?, cwd?,
   message_uuid?, model?}` → `{conversation_id, message_id, deduplicated}` —
   idempotent on `message_uuid` (the transcript entry's UUID becomes the

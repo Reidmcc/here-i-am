@@ -112,6 +112,18 @@ class RetrieveResponse(BaseModel):
     new_sibling_reflections: int = 0
     # Rows created for peer_messages, in input order
     peer_message_ids: List[str] = []
+    # Whether automatic retrieval happened (issue #326): "ran" (context and
+    # memories_retrieved say what it found), "skipped" (nothing to query —
+    # a wakeup tick's empty prompt or a bare slash command), "unconfigured"
+    # (memory is off for this entity), or "failed" (the search raised;
+    # retrieval_error says why — the prompt was still recorded). The hook
+    # prints a distinct one-liner for each empty outcome, so its silence
+    # never has to be read as "nothing matched".
+    retrieval_status: str = cc.RETRIEVAL_RAN
+    retrieval_error: str = ""
+    # Matches that made the re-ranked top-k but were already linked into
+    # this conversation (suppressed without backfill, like native mode)
+    already_in_context: int = 0
 
 
 class LogAssistantRequest(BaseModel):
@@ -280,6 +292,7 @@ async def retrieve(
             context="",
             memories_retrieved=0,
             new_sibling_reflections=sibling_reflections,
+            retrieval_status=cc.RETRIEVAL_SKIPPED,
         )
 
     human_msg = None
@@ -311,9 +324,24 @@ async def retrieve(
     # conversation, so the rows just recorded can't surface as results)
     query_parts = [prompt] if record_prompt else []
     query_parts.extend(peer.content for peer in peer_messages)
-    context, count, summary = await cc.retrieve_for_prompt(
-        db, conversation, entity, "\n\n".join(query_parts)
-    )
+    try:
+        retrieval = await cc.retrieve_for_prompt(
+            db, conversation, entity, "\n\n".join(query_parts)
+        )
+    except Exception as e:
+        # The turn's rows are already committed above, so a 500 here would
+        # make the hook's unreachable-backend notice ("NOT recorded") lie.
+        # Report the failure in the response instead: the hook prints it as
+        # its own distinct line, and the mailbox count and notes sync below
+        # still run.
+        logger.exception(
+            f"[CC MODE] Automatic retrieval failed for conversation "
+            f"{str(conversation.id)[:8]}...: {e}"
+        )
+        retrieval = cc.RetrievalResult(
+            status=cc.RETRIEVAL_FAILED,
+            error=f"{e.__class__.__name__}: {e}"[:300],
+        )
 
     sibling_reflections = await cc.count_new_sibling_reflections(
         db, conversation, entity
@@ -328,11 +356,14 @@ async def retrieve(
     return RetrieveResponse(
         conversation_id=str(conversation.id),
         human_message_id=str(human_msg.id) if human_msg else None,
-        context=context,
-        memories_retrieved=count,
-        context_summary=summary,
+        context=retrieval.context,
+        memories_retrieved=retrieval.count,
+        context_summary=retrieval.summary,
         new_sibling_reflections=sibling_reflections,
         peer_message_ids=peer_message_ids,
+        retrieval_status=retrieval.status,
+        retrieval_error=retrieval.error,
+        already_in_context=retrieval.already_in_context,
     )
 
 

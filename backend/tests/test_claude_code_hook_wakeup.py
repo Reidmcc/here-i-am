@@ -125,12 +125,19 @@ def run_hook(
 
 def test_wakeup_tick_records_nothing_but_pings_backend(tmp_path):
     out, payload = run_hook(
-        "[WAKEUP] Continue the standing Substack engagement loop.", tmp_path
+        "[WAKEUP] Continue the standing Substack engagement loop.",
+        tmp_path,
+        body={"context": "", "retrieval_status": "skipped"},
     )
     assert payload is not None, "backend must still be pinged on a tick"
     assert payload["prompt"] == ""
     assert payload["peer_messages"] == []
-    assert out.strip() == ""
+    # A tick's only output is the no-retrieval stamp (issue #326): the
+    # silence that caused the 08-29 near-miss now says what it is
+    assert out.strip() == (
+        "[HERE I AM] No automatic retrieval ran for this prompt (wakeup "
+        "tick); use memory_query if you need recall."
+    )
 
 
 def test_wakeup_tick_still_prints_mailbox_flag(tmp_path):

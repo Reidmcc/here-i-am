@@ -1130,6 +1130,132 @@ class TestPostCompact:
         assert "Reflection number 0." not in bulk
 
 
+class TestRetrievalStatus:
+    """/retrieve reports whether automatic retrieval happened (issue #326),
+    so the hook can stamp an empty result instead of staying silent: "ran"
+    with nothing found, "skipped" (nothing to query), "unconfigured", or
+    "failed" — the last without losing the rows already recorded."""
+
+    @staticmethod
+    def _configured_service(mock_memory, search=None, linked=None, full=None):
+        mock_memory.is_configured.return_value = True
+        mock_memory.store_memory = AsyncMock(return_value=True)
+        mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+        mock_memory.get_retrieved_ids_for_conversation = AsyncMock(
+            return_value=linked or set()
+        )
+        mock_memory.search_memories = AsyncMock(return_value=search or [])
+        mock_memory.get_full_memory_content = AsyncMock(return_value=full)
+        mock_memory.update_retrieval_count = AsyncMock()
+
+    async def test_unconfigured_memory_is_reported_as_such(self, async_client):
+        # Pinecone is unconfigured in the test environment: no search ran
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": str(uuid.uuid4()), "prompt": "hello"},
+        )
+        body = response.json()
+        assert body["retrieval_status"] == "unconfigured"
+        assert body["memories_retrieved"] == 0
+        assert body["human_message_id"] is not None  # still recorded
+
+    async def test_search_that_finds_nothing_is_ran_not_skipped(self, async_client):
+        with patch("app.services.claude_code_mode.memory_service") as mock_memory:
+            self._configured_service(mock_memory, search=[])
+            response = await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": str(uuid.uuid4()), "prompt": "hello"},
+            )
+        body = response.json()
+        assert body["retrieval_status"] == "ran"
+        assert body["memories_retrieved"] == 0
+        assert body["already_in_context"] == 0
+        assert body["context"] == ""
+
+    async def test_matches_already_in_context_are_counted(self, async_client):
+        # One candidate matches, but it is already linked into this
+        # conversation: suppressed without backfill, and the response says
+        # so — "0 new" is a different fact from "nothing matched"
+        candidate = {"id": "mem-1", "score": 0.9, "conversation_id": "elsewhere"}
+        full = {
+            "id": "mem-1",
+            "content": "a remembered thing",
+            "created_at": datetime.utcnow() - timedelta(days=1),
+            "last_retrieved_at": None,
+            "times_retrieved": 0,
+            "role": "human",
+            "memory_status": None,
+            "source": "native",
+        }
+        with patch("app.services.claude_code_mode.memory_service") as mock_memory:
+            self._configured_service(
+                mock_memory, search=[candidate], linked={"mem-1"}, full=full
+            )
+            response = await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": str(uuid.uuid4()), "prompt": "hello"},
+            )
+        body = response.json()
+        assert body["retrieval_status"] == "ran"
+        assert body["memories_retrieved"] == 0
+        assert body["already_in_context"] == 1
+        assert body["context"] == ""
+        mock_memory.update_retrieval_count.assert_not_awaited()
+
+    async def test_record_nothing_path_is_skipped(self, async_client):
+        for prompt in ("", "/compact"):
+            response = await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": str(uuid.uuid4()), "prompt": prompt},
+            )
+            body = response.json()
+            assert body["retrieval_status"] == "skipped", prompt
+            assert body["human_message_id"] is None
+
+    async def test_letter_only_turn_runs_retrieval(self, async_client):
+        # A sibling's letter is a query in its own right, not a skip
+        with patch("app.services.claude_code_mode.memory_service") as mock_memory:
+            self._configured_service(mock_memory, search=[])
+            response = await async_client.post(
+                "/api/claude-code/retrieve",
+                json={
+                    "session_id": str(uuid.uuid4()),
+                    "prompt": "",
+                    "peer_messages": [{"content": "letter text", "sender": "Porch"}],
+                },
+            )
+        assert response.json()["retrieval_status"] == "ran"
+        assert mock_memory.search_memories.await_count >= 1
+
+    async def test_retrieval_failure_is_reported_not_raised(
+        self, async_client, db_session
+    ):
+        # The prompt is committed before the search runs; a 500 here would
+        # make the hook's unreachable-backend notice claim it was never
+        # recorded. The route reports the failure in the response instead.
+        session_id = str(uuid.uuid4())
+        with patch("app.services.claude_code_mode.memory_service") as mock_memory:
+            self._configured_service(mock_memory)
+            mock_memory.search_memories = AsyncMock(
+                side_effect=RuntimeError("pinecone down")
+            )
+            response = await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": session_id, "prompt": "hello"},
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["retrieval_status"] == "failed"
+        assert "RuntimeError: pinecone down" in body["retrieval_error"]
+        assert body["memories_retrieved"] == 0
+        assert body["context"] == ""
+        assert body["human_message_id"] is not None
+        row = (await db_session.execute(
+            select(Message).where(Message.id == body["human_message_id"])
+        )).scalar_one()
+        assert row.content == "hello"
+
+
 class TestRetrievalCompactionBoundary:
     """retrieve_for_prompt threads last_compacted_at into search and dedup,
     so pre-compaction state stops counting as in-context."""
@@ -1156,11 +1282,12 @@ class TestRetrievalCompactionBoundary:
             mock_ms.get_retrieved_ids_for_conversation = AsyncMock(return_value=set())
             mock_ms.search_memories = AsyncMock(return_value=[])
 
-            block, count, summary = await cc_mode.retrieve_for_prompt(
+            retrieval = await cc_mode.retrieve_for_prompt(
                 db_session, conversation, entity, "a prompt"
             )
 
-        assert (block, count, summary) == ("", 0, "")
+        assert (retrieval.context, retrieval.count, retrieval.summary) == ("", 0, "")
+        assert retrieval.status == cc_mode.RETRIEVAL_RAN
         assert (
             mock_ms.get_retrieved_ids_for_conversation.call_args.kwargs["linked_after"]
             == boundary

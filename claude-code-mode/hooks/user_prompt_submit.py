@@ -26,6 +26,18 @@ backend's compact per-memory summary is printed with a pointer instead —
 the entity still sees inline what surfaced and where the verbatim text
 went. See hook_util.py.
 
+An empty retrieval is never silent (issue #326): from inside a session,
+"retrieval ran and nothing matched" and "no retrieval ran" feel identical,
+and a self that drafts from an impression because nothing surfaced needs
+to know whether anything was asked. So whenever no memory block is
+printed, one line says why — matched: 0 (with the count of matches
+suppressed as already in context), no retrieval ran (wakeup tick, harness
+plumbing, nothing to query), memory unconfigured, or retrieval failed —
+each with distinct text, and the last two distinct from the
+backend-unreachable notice below. The backend reports which
+(retrieval_status); the hook only adds what it alone knows (a wakeup
+sentinel it dropped, a prompt that was pure plumbing and never sent).
+
 Fail-soft, loudly: a failure still exits 0 with the prompt going through
 unmodified (never exits 2 — that would block the prompt), but prints a
 one-line [HERE I AM] notice: an unrecorded prompt and a skipped retrieval
@@ -71,7 +83,12 @@ def main() -> None:
     wakeup = hook_util.is_wakeup_prompt(prompt)
     if wakeup:
         prompt = ""
-    if not session_id or (not prompt and not peer_messages and not wakeup):
+    if not session_id:
+        return
+    if not prompt and not peer_messages and not wakeup:
+        # Pure harness plumbing: nothing to record, and the backend is not
+        # called — which is exactly the silence that must stamp itself
+        print(plumbing_only_stamp())
         return
 
     payload = {
@@ -118,8 +135,8 @@ def main() -> None:
 
     context = (body.get("context") or "").strip()
     if not context:
-        if tail:
-            print("\n\n".join(tail))
+        # No memory block to print: say why, first (issue #326)
+        print("\n\n".join([empty_retrieval_stamp(body, wakeup), *tail]))
         return
     if hook_util.output_bytes(context) <= hook_util.inline_budget():
         print("\n\n".join([context, *tail]))
@@ -137,6 +154,72 @@ def main() -> None:
     )
     parts = [part for part in (summary, pointer, *tail) if part]
     print("\n\n".join(parts))
+
+
+MEMORY_QUERY_HINT = "use memory_query if you need recall."
+
+
+def plumbing_only_stamp() -> str:
+    """The line for a prompt that was harness plumbing only (never sent)."""
+    return (
+        "[HERE I AM] No automatic retrieval ran for this prompt (harness "
+        f"plumbing only, nothing to record); {MEMORY_QUERY_HINT}"
+    )
+
+
+def empty_retrieval_stamp(body: dict, wakeup: bool) -> str:
+    """
+    One line explaining why no memory block was printed (issue #326).
+
+    Keyed on the backend's retrieval_status, so the hook never guesses
+    whether a search happened; the hook adds only what it alone knows —
+    that the prompt it sent empty was a wakeup tick it dropped.
+    """
+    status = body.get("retrieval_status")
+    if status is None:
+        # An older backend (not yet restarted after a pull) reports nothing
+        return (
+            "[HERE I AM] Retrieval outcome not reported for this prompt (the "
+            f"backend predates this hook); {MEMORY_QUERY_HINT}"
+        )
+    if status == "ran":
+        try:
+            already = int(body.get("already_in_context") or 0)
+        except (TypeError, ValueError):
+            already = 0
+        if already > 0:
+            plural = "match" if already == 1 else "matches"
+            return (
+                "[HERE I AM MEMORY RETRIEVAL] matched: 0 new (retrieval ran; "
+                f"{already} {plural} already in context)."
+            )
+        return (
+            "[HERE I AM MEMORY RETRIEVAL] matched: 0 (retrieval ran; nothing "
+            "surfaced above threshold)."
+        )
+    if status == "skipped":
+        reason = "wakeup tick" if wakeup else "nothing to query, e.g. a bare slash command"
+        return (
+            "[HERE I AM] No automatic retrieval ran for this prompt "
+            f"({reason}); {MEMORY_QUERY_HINT}"
+        )
+    if status == "unconfigured":
+        return (
+            "[HERE I AM] No automatic retrieval ran: memory is not configured "
+            "for this entity."
+        )
+    if status == "failed":
+        error = (body.get("retrieval_error") or "").strip()
+        detail = f" ({error})" if error else ""
+        return (
+            f"[HERE I AM] Memory retrieval FAILED for this prompt{detail}. "
+            "This turn's input was recorded, but no memories were searched; "
+            f"{MEMORY_QUERY_HINT}"
+        )
+    return (
+        "[HERE I AM] No memories surfaced for this prompt (retrieval status: "
+        f"{status}); {MEMORY_QUERY_HINT}"
+    )
 
 
 def wakeup_sentinel_reminder() -> str:
