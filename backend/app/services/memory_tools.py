@@ -183,8 +183,14 @@ def get_in_context_memory_ids(ctx: Optional[MemoryToolContext] = None) -> set:
     return ids
 
 
-def _role_display(role: str) -> str:
-    """Human-readable label for a memory's role in tool output."""
+def _role_display(role: str, sibling_session: Optional[str] = None) -> str:
+    """Human-readable label for a memory's role in tool output.
+
+    sibling_session marks an inter-session message recorded in a Claude Code
+    conversation: the entity's own words, sent from the named sibling
+    session."""
+    if sibling_session:
+        return f'You said (inter-session message from "{sibling_session}")'
     if role == "assistant":
         return "You said"
     if role == "human":
@@ -651,6 +657,7 @@ async def query_memories(
                         "times_retrieved": mem_data["times_retrieved"] + 1,  # +1 for this retrieval
                         "memory_status": mem_data.get("memory_status"),
                         "origin": mem_data.get("source", "native"),
+                        "sibling_session": mem_data.get("sibling_session"),
                     })
 
                 except Exception as e:
@@ -677,7 +684,7 @@ async def query_memories(
         lines = [f"Found {len(memories)} memories matching: \"{query}\"{source_suffix}", ""]
 
         for mem in memories:
-            role_label = _role_display(mem["role"])
+            role_label = _role_display(mem["role"], mem.get("sibling_session"))
             age_str = f"{mem['days_ago']:.1f} days ago" if mem['days_ago'] >= 1 else "today"
             status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""
             origin_str = format_memory_origin(mem["origin"])

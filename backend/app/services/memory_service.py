@@ -207,6 +207,7 @@ class MemoryService:
         content: str,
         created_at: datetime,
         entity_id: Optional[str] = None,
+        sibling_session: Optional[str] = None,
     ) -> bool:
         """
         Store a message as a memory in the vector database.
@@ -221,6 +222,10 @@ class MemoryService:
             content: Message content
             created_at: When the message was created
             entity_id: The Pinecone index name. If None, uses default entity.
+            sibling_session: For role="sibling" records (inter-session
+                messages in Claude Code conversations): the sending session's
+                display name, kept in metadata so restore-from-vectors can
+                recover the provenance column.
 
         Returns True if successful, False otherwise.
         """
@@ -243,18 +248,22 @@ class MemoryService:
         try:
             # Use Pinecone's integrated inference - upsert_records passes raw text
             # and Pinecone generates embeddings using the index's configured model
+            record = {
+                "_id": message_id,
+                "text": content,  # Pinecone will embed this using llama-text-embed-v2
+                "conversation_id": conversation_id,
+                "created_at": created_at.isoformat(),
+                "role": role,
+                "content_preview": content_preview,
+                "times_retrieved": 0,
+            }
+            # Only set when present — Pinecone metadata fields can't be null
+            if sibling_session:
+                record["sibling_session"] = sibling_session
             await run_pinecone(
                 index.upsert_records,
                 namespace="",
-                records=[{
-                    "_id": message_id,
-                    "text": content,  # Pinecone will embed this using llama-text-embed-v2
-                    "conversation_id": conversation_id,
-                    "created_at": created_at.isoformat(),
-                    "role": role,
-                    "content_preview": content_preview,
-                    "times_retrieved": 0,
-                }]
+                records=[record],
             )
             logger.debug("store_memory: Successfully upserted to Pinecone")
             return True
@@ -668,6 +677,10 @@ class MemoryService:
                 # "claude_code") — rendered into memory markers and tool
                 # output so the entity can see a memory's provenance
                 "source": conversation_source or "native",
+                # Inter-session provenance: the sibling Claude Code session
+                # that authored this message, when it records a SendMessage
+                # delivery (None everywhere else) — rendered into role labels
+                "sibling_session": message.sibling_session,
             }
             # Cache the result
             if use_cache:
@@ -1328,9 +1341,15 @@ class MemoryService:
         a Claude Code session that only fired SessionStart) never had a
         first turn to notify, so they cannot be the anchor.
         """
-        spoke = or_(
-            Message.speaker_entity_id.is_(None),
-            Message.speaker_entity_id == entity_id,
+        # An inter-session letter is recorded as an assistant row too
+        # (sibling_session set) but is a delivery, not a turn this
+        # conversation's session took — it never carried a first-turn notice
+        spoke = and_(
+            Message.sibling_session.is_(None),
+            or_(
+                Message.speaker_entity_id.is_(None),
+                Message.speaker_entity_id == entity_id,
+            ),
         )
         conditions = [
             Message.role == MessageRole.ASSISTANT,

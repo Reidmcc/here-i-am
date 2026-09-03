@@ -87,6 +87,35 @@ class TestFormatMemoryAsContextMessage:
         assert "via Claude Code" in result["content"]
         assert "via Here I Am" not in result["content"]
 
+    def test_sibling_session_label(self):
+        """An inter-session message names its sending session: the entity's
+        own words, marked with the channel they arrived through."""
+        result = format_memory_as_context_message(
+            memory_id="mem-5",
+            content="The letter's text.",
+            created_at="2026-08-26",
+            role="assistant",
+            origin="claude_code",
+            sibling_session="Porch chat",
+        )
+        assert (
+            'originally from you (inter-session message from "Porch chat")'
+            in result["content"]
+        )
+
+    def test_no_sibling_session_keeps_plain_label(self):
+        """sibling_session=None must not change the existing marker text
+        (reload byte-stability: markers are rebuilt from the DB)."""
+        result = format_memory_as_context_message(
+            memory_id="mem-6",
+            content="Content",
+            created_at="2024-01-01",
+            role="assistant",
+            sibling_session=None,
+        )
+        assert "originally from you - via Here I Am" in result["content"]
+        assert "inter-session" not in result["content"]
+
 
 # ============================================================
 # Tests for MemoryContextTracker

@@ -198,6 +198,13 @@ async def run_migrations(conn):
         ))
         print("  ✓ Added status provenance columns (who set a memory's status, and when)")
 
+    if 'sibling_session' not in columns:
+        print("Migrating: Adding 'sibling_session' column to messages table...")
+        await conn.execute(text(
+            "ALTER TABLE messages ADD COLUMN sibling_session VARCHAR(200)"
+        ))
+        print("  ✓ Added sibling_session column for inter-session message provenance")
+
     # Check if entity_id column exists in conversation_memory_links table
     result = await conn.execute(text(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_memory_links'"

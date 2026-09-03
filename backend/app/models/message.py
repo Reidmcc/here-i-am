@@ -62,6 +62,16 @@ class Message(Base):
     # For AI responses in multi-entity, this is the entity that generated the response
     speaker_entity_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
+    # Inter-session provenance for Claude Code conversations: the display
+    # name of the sibling Claude Code session whose SendMessage delivery this
+    # message records (issue #312). The words are the entity's own — the row
+    # keeps role=ASSISTANT — but they were authored in a different session
+    # than the conversation they landed in, and that channel must stay
+    # visible in the record. NULL everywhere else. Non-NULL also switches the
+    # vectorized role to "sibling" (see claude_code_mode
+    # .persist_and_vectorize_message).
+    sibling_session: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
 
     @property

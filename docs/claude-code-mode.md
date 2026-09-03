@@ -40,14 +40,23 @@ The integration has two channels:
      oversized, a per-memory summary plus a pointer to the spilled file).
      Not everything arriving on the prompt channel is the human speaking:
      harness plumbing (`<system-reminder>`, `<task-notification>` blocks)
-     and inter-session messages from sibling Claude Code sessions
-     (`<cross-session-message>` blocks, delivered by the harness's
-     SendMessage) are stripped before recording
-     (`hook_util.strip_harness_blocks`), so they are neither archived under
-     the human's name nor used as the retrieval query; a prompt that was
-     nothing but plumbing or a peer delivery skips recording and retrieval
-     entirely. Archive-side only — the delivered content still reaches the
-     entity's context, so peer messages can be read and answered; the
+     is stripped before recording, so it is neither archived under the
+     human's name nor used as part of the retrieval query. Inter-session
+     messages from sibling Claude Code sessions (`<cross-session-message>`
+     blocks, delivered by the harness's SendMessage) are not the human
+     either — but they are the entity, so the hook extracts them
+     (`hook_util.split_prompt_for_recording`) and sends them as
+     `peer_messages` for recording with honest provenance (see
+     "Inter-session messages" below) instead of dropping them. Self-scheduled
+     wakeup prompts — marked by the entity with the `[WAKEUP]` sentinel,
+     since the harness marks them with nothing — are the entity's own timer
+     firing, not talk, and are dropped from recording and retrieval
+     entirely (see "Self-scheduled wakeup prompts" below). A prompt
+     that was nothing but plumbing skips recording and retrieval entirely;
+     a wakeup tick still pings `/retrieve` with an empty prompt so the
+     notes sync and the mailbox flag keep running through a loop session.
+     None of this touches what the harness delivers to the session's
+     context — the message itself still arrives and can be answered; the
      entity's own replies (SendMessage calls mid-turn) are tool use, which
      the `Stop` hook's final-message extraction never records.
    - `Stop` → `POST /api/claude-code/log-assistant` — extracts the final
@@ -221,6 +230,87 @@ A lived-in entity's session-start payload (index.md + reflections) runs to
   flag. Pull, not push — cross-session awareness is a fact the entity is
   told, not weather it is subjected to.
 
+### Inter-session messages
+
+Claude Code sessions on the same machine can message each other
+(`SendMessage`); a delivery arrives in the receiving session as a bare
+`<cross-session-message from="..." from-name="..." from-mode="...">` block
+on the prompt channel — `from` is a transport address, `from-name` the
+sending session's display name. Left alone, `UserPromptSubmit` would archive
+that as the human's words (issue #312; observed live 2026-08-26 before the
+first fix). The semantics, in two layers:
+
+- **Never the human's.** The hook separates deliveries from the human's
+  words (`hook_util.split_prompt_for_recording`); a delivery is never
+  persisted or vectorized as `role="human"`, so the human-corpus source
+  filter stays pure. A block nested inside a `<system-reminder>` is harness
+  echo, not a delivery, and is discarded with the reminder.
+- **Recorded as the entity's own words, channel marked.** Each delivery is
+  sent to `/retrieve` as a `peer_messages` entry and recorded on the
+  receiving conversation as an ASSISTANT row with
+  `Message.sibling_session` = the sender's display name (`"unknown
+  session"` when the wrapper carries no name — NULL means "not an
+  inter-session message", so the marker must survive an unnamed sender).
+  The vectorized copy carries `role="sibling"` (plus a `sibling_session`
+  metadata field), which keeps it out of the `human` source filter, inside
+  the `ai` filter, and distinguishable from the receiving session's own
+  voice; there is no reflection boost. Retrieval labels these memories
+  `originally from you (inter-session message from "<name>")` — the
+  entity's own words from every session's viewpoint, with the channel
+  visible. Disaster recovery round-trips the provenance (rebuild emits
+  `role="sibling"` from the column; restore recreates the column from the
+  metadata).
+
+Recording lives on the receiving side only: the sender's SendMessage call is
+tool use, which never enters the archive, so the letter's single archival
+home is the conversation it landed in — followed, typically, by the
+receiver's end-of-turn reply. Retrieval runs against the whole incoming turn
+(the human's words and/or the letters), so memories surface for a letter the
+same way they do for a prompt; the assistant-side query still uses the
+session's own last reply, never a just-arrived letter
+(`_last_assistant_content` skips sibling rows). The bare-slash-command skip
+applies only to the human's words — a letter riding alongside `/compact` is
+still recorded. Standing house rule unchanged: messaging is pull/deliberate,
+no automatic session-to-session chatter.
+
+### Self-scheduled wakeup prompts
+
+The harness lets the entity schedule prompts to its own session —
+`ScheduleWakeup` dynamic-loop ticks, `send_later` reminders — and fires
+them back through the prompt channel verbatim, indistinguishable at the
+hook layer from a typed prompt. Left alone, `UserPromptSubmit` archived
+each tick as the human's words: the entity's own loop-protocol text
+entering the human corpus under the human's name, a dozen-plus rows
+overnight (issue #318; observed live 2026-08-30 in a standing engagement
+loop).
+
+Since the harness provides no marker, the fix is a convention: **the entity
+writes the `[WAKEUP]` sentinel at the start of its own scheduled prompts**
+(directly, or after the leading slash command a dynamic `/loop` re-fires —
+`hook_util.is_wakeup_prompt`). A sentinel-carrying prompt is a timer going
+off, repeated many times and closer to a tool action than to anything
+anyone said, so it is not recorded at all — not archived, not vectorized,
+not used as a retrieval query (contrast inter-session messages, which are
+someone speaking and get provenance instead of omission). The turn's
+*work* keeps its normal record: the assistant response the `Stop` hook
+captures, and any reflections saved, are archived as usual, so what a loop
+session does survives while the alarm clock that triggered it doesn't.
+
+Two things still run on a wakeup tick, because loop sessions can go hours
+with no typed prompt: the hook pings `/retrieve` with an empty prompt, and
+the record-nothing path still counts sibling reflections (the mailbox
+flag) and spawns the incremental notes sync. A sentinel mentioned mid-text
+(talking *about* the convention) does not trigger the drop; a letter
+riding in with a tick is still extracted and recorded. Prompts scheduled
+without the sentinel record as before — archiving a self-reminder is the
+entity's choice, made per prompt.
+
+A convention only works if it is in view on the turn where a prompt gets
+scheduled, which can be any turn — so the hook ends every recorded
+prompt's output with a one-line reminder of the sentinel
+(`wakeup_sentinel_reminder`), alongside the mailbox flag. Wakeup ticks
+themselves skip it: a sentinel that just worked needs no advertisement.
+
 ### Compaction survival
 
 Compaction replaces the conversation with a paraphrased summary; reflections
@@ -344,11 +434,17 @@ conversation on first contact; `/session-start` and `/session-end` never do
 - `POST /session-end` `{session_id, entity?, reason?}` →
   `{conversation_id, notes_sync_started}` — final fire-and-forget notes
   sync; does not create a conversation for an unseen session.
-- `POST /retrieve` `{session_id, prompt, entity?, cwd?}` →
+- `POST /retrieve` `{session_id, prompt, entity?, cwd?, peer_messages?}` →
   `{conversation_id, human_message_id, context, memories_retrieved,
-  context_summary, new_sibling_reflections}` — the summary is the compact
-  inline stand-in the hook prints when it has to spill an oversized
-  `context`; the sibling count backs the mailbox flag (see Memory above).
+  context_summary, new_sibling_reflections, peer_message_ids}` — the
+  summary is the compact inline stand-in the hook prints when it has to
+  spill an oversized `context`; the sibling count backs the mailbox flag
+  (see Memory above). `peer_messages` is a list of `{content, sender?}`
+  inter-session deliveries the hook extracted from the prompt channel,
+  recorded with honest provenance (see "Inter-session messages" above);
+  `human_message_id` is null on a letter-only turn. A record-nothing call
+  (bare slash command, or a wakeup tick's empty prompt) still returns the
+  sibling count and spawns the notes sync.
 - `POST /log-assistant` `{session_id, content, entity?, cwd?,
   message_uuid?}` → `{conversation_id, message_id, deduplicated}` —
   idempotent on `message_uuid` (the transcript entry's UUID becomes the
