@@ -80,6 +80,9 @@ def main() -> None:
         "peer_messages": peer_messages,
         "entity": os.environ.get("HIM_ENTITY") or None,
         "cwd": data.get("cwd"),
+        # Rooms registry: a prompt anywhere (a wakeup tick included) is a
+        # chance to catch a roster rename in any live session
+        "sessions": hook_util.live_sessions_snapshot(),
     }
     try:
         body = hook_util.post_backend("/api/claude-code/retrieve", payload, timeout=30)
@@ -114,7 +117,8 @@ def main() -> None:
     # firing. Skipped on wakeup ticks themselves — a sentinel that just
     # worked needs no advertisement.
     reminder = "" if wakeup else wakeup_sentinel_reminder()
-    tail = [part for part in (mailbox, reminder) if part]
+    # Rooms registry: a rename observed this turn, or a loud write failure
+    tail = [part for part in (mailbox, *hook_util.rooms_output_lines(body), reminder) if part]
 
     context = (body.get("context") or "").strip()
     if not context:

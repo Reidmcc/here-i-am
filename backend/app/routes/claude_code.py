@@ -50,11 +50,32 @@ logger = logging.getLogger(__name__)
 BARE_SLASH_COMMAND = re.compile(r"^/\S*$")
 
 
+class SessionObservationIn(BaseModel):
+    """
+    One live session as a hook could see it — from Claude Code's per-process
+    registry, best effort (issue #323). Every field but session_id is
+    optional: absent means the harness didn't expose it, and the rooms
+    registry records exactly that rather than guessing.
+    """
+    session_id: str
+    name: Optional[str] = None
+    name_source: Optional[str] = None  # "user" | "derived"
+    name_since: Optional[str] = None
+    messaging_socket: Optional[str] = None
+    cwd: Optional[str] = None
+    transcript_path: Optional[str] = None
+    started_at: Optional[str] = None
+
+
 class SessionStartRequest(BaseModel):
     session_id: str
     entity: Optional[str] = None  # index name or label; None = default entity
     cwd: Optional[str] = None
     source: Optional[str] = None  # Claude Code's startup|resume|clear|compact
+    transcript_path: Optional[str] = None
+    # Snapshot of the live sessions the hook could see (this one and its
+    # siblings), for the rooms registry
+    sessions: List[SessionObservationIn] = []
 
 
 class SessionStartResponse(BaseModel):
@@ -73,6 +94,11 @@ class SessionStartResponse(BaseModel):
     # blocks don't fit, the hook writes this to a file and prints a loud
     # pointer instead.
     bulk_context: str = ""
+    # Rooms registry (issue #323): a one-line notice about this session's
+    # registry row, and — never silent — a write failure carrying the row
+    # the entity can write by hand
+    rooms_notice: str = ""
+    rooms_error: str = ""
 
 
 class PeerMessage(BaseModel):
@@ -95,6 +121,8 @@ class RetrieveRequest(BaseModel):
     cwd: Optional[str] = None
     # Inter-session messages that rode in with (or stood in for) the prompt
     peer_messages: List[PeerMessage] = []
+    # Live-session snapshot for the rooms registry (see SessionStartRequest)
+    sessions: List[SessionObservationIn] = []
 
 
 class RetrieveResponse(BaseModel):
@@ -112,6 +140,9 @@ class RetrieveResponse(BaseModel):
     new_sibling_reflections: int = 0
     # Rows created for peer_messages, in input order
     peer_message_ids: List[str] = []
+    # Rooms registry: renames observed this turn / a loud write failure
+    rooms_notice: str = ""
+    rooms_error: str = ""
 
 
 class LogAssistantRequest(BaseModel):
@@ -213,6 +244,18 @@ async def session_start(
                 db, conversation, entity
             )
 
+    # Rooms registry: refresh this session's row (if it declared a room) and
+    # any sibling rows the hook's snapshot covers — every SessionStart,
+    # including resumes and post-compaction restarts, is a liveness signal
+    rooms_notice, rooms_error = cc.observe_rooms_for_hook(
+        entity,
+        data.session_id,
+        cwd=data.cwd,
+        transcript_path=data.transcript_path,
+        sessions=[s.model_dump() for s in data.sessions],
+        session_start=True,
+    )
+
     # Catch note edits made while the backend wasn't watching (e.g. before
     # this backend start)
     _spawn_notes_sync(entity)
@@ -224,6 +267,8 @@ async def session_start(
         created=fresh,
         context=context,
         bulk_context=bulk_context,
+        rooms_notice=rooms_notice,
+        rooms_error=rooms_error,
     )
 
 
@@ -251,6 +296,17 @@ async def retrieve(
         db, data.session_id, entity, cwd=data.cwd
     )
 
+    # Rooms registry: a prompt in any room is a chance to catch a rename
+    # anywhere (the snapshot covers every live session the hook could see)
+    rooms_notice, rooms_error = cc.observe_rooms_for_hook(
+        entity,
+        data.session_id,
+        cwd=data.cwd,
+        transcript_path=None,
+        sessions=[s.model_dump() for s in data.sessions],
+        session_start=False,
+    )
+
     prompt = data.prompt or ""
     # The bare-slash-command skip applies to the human's words only: a
     # sibling's letter is prose from the entity, not harness input
@@ -276,6 +332,8 @@ async def retrieve(
             context="",
             memories_retrieved=0,
             new_sibling_reflections=sibling_reflections,
+            rooms_notice=rooms_notice,
+            rooms_error=rooms_error,
         )
 
     human_msg = None
@@ -329,6 +387,8 @@ async def retrieve(
         context_summary=summary,
         new_sibling_reflections=sibling_reflections,
         peer_message_ids=peer_message_ids,
+        rooms_notice=rooms_notice,
+        rooms_error=rooms_error,
     )
 
 

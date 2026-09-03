@@ -109,9 +109,10 @@ A lived-in entity's session-start payload (index.md + reflections) runs to
   visible inline.
 
 2. **MCP tools** (deliberate acts): the entity's `memory_query` /
-   `memory_save` / `memory_mark` / `memory_release`, served at `POST /mcp`
-   as a stateless streamable-HTTP MCP endpoint (the plugin's `.mcp.json`
-   points Claude Code at it). The transport is a small in-repo JSON-RPC
+   `memory_save` / `memory_mark` / `memory_release` — and the rooms
+   registry's `declare_room` / `retire_room` (see "Rooms registry") —
+   served at `POST /mcp` as a stateless streamable-HTTP MCP endpoint (the
+   plugin's `.mcp.json` points Claude Code at it). The transport is a small in-repo JSON-RPC
    handler (`services/claude_code_mcp.py` + `routes/claude_code.py`) rather
    than the MCP SDK, whose dependency floor conflicts with the repo's
    pinned FastAPI/starlette/httpx; stateless JSON responses are a compliant
@@ -299,6 +300,97 @@ prompt's output with a one-line reminder of the sentinel
 (`wakeup_sentinel_reminder`), alongside the mailbox flag. Wakeup ticks
 themselves skip it: a sentinel that just worked needs no advertisement.
 
+### Rooms registry
+
+An entity can run several long-lived Claude Code sessions at once — a
+conversation room, an engagement loop, a text world — and they write each
+other letters over the harness's `SendMessage`, addressed by session
+display name. Those names drift: a name the user sets is dropped back to a
+derived slug (`here-i-am-notes-97`) when the session is resumed or the
+desktop app restarts, and the roster the sessions see (`ListAgents`) lies
+accordingly (issue #323; observed live 2026-09-02, when a letter had to be
+broadcast to two unlabeled sessions). The postal service works; the rooms
+registry is the phone book.
+
+**What a hook can know** (investigated for #323, Claude Code 2.1.258):
+
+- Hook stdin carries `session_id`, `transcript_path`, `cwd`, and `source`
+  (documented). The display name is not in it.
+- Claude Code keeps a per-process registry of running sessions at
+  `<config dir>/sessions/<pid>.json` (config dir = `CLAUDE_CONFIG_DIR` or
+  `~/.claude`; undocumented internal state), with `sessionId`, `name`,
+  `nameSource` (`"user"` | `"derived"`), `nameSince`, `startedAt`, `cwd`,
+  and `messagingSocketPath` — the transport address a delivered letter
+  carries in its `from=` attribute. `name` is the roster name other
+  sessions address. The file exists by the time SessionStart fires and
+  lists every live session on the machine, and it is what shows a resumed
+  session back on a derived name.
+- The `[ref]` `ListAgents` prints beside a name is **not derivable** from
+  anything in that file (tested against the session id, socket path, peer
+  token, and bridge id under every common hash). It is stable across a
+  rename (observed) and opaque otherwise, so the hooks don't collect it;
+  the entity can record it on its row if it wants it.
+- Renames are recorded in the transcript as `agent-name` entries, but the
+  harness does not restore them on resume, so the transcript is not a
+  source of the *current* name and the hooks don't read it for one.
+
+**Two halves, deliberately split** (`services/rooms_registry.py`):
+
+- *Hook = ids and liveness.* `SessionStart` and `UserPromptSubmit` send a
+  `sessions` snapshot — the live registry as `{session_id, name,
+  name_source, name_since, messaging_socket, cwd, started_at}` per session
+  (`hook_util.live_sessions_snapshot`), plus their own `transcript_path`.
+  The backend (`observe_rooms_for_hook`) refreshes every **declared** row
+  the snapshot covers: address fields as observed, `last_seen` as
+  liveness. Because the snapshot covers siblings, a rename lands in the
+  registry on the next prompt in *any* room — including a wakeup tick —
+  not only the renamed one, and the hook prints a one-line
+  `[ROOMS REGISTRY]` notice when it observed one ("Porch: now
+  \"Porch chats\" (was \"here-i-am-notes-97\")"). A field the hook could
+  not see stays null and renders as "—"; an observation missing a field
+  never erases a recorded one. Nothing is inferred, and no row is created
+  here: the harness fires SessionStart for background sessions that never
+  speak, and a row per firing would be issue #307's ghost registrations in
+  a text file.
+- *Self = meaning.* Which room a session **is** is declared by the entity
+  over MCP — `declare_room(room, note?, ref?, conversation_id)` — never
+  guessed from cwd or a first prompt. Declaring creates the session's row
+  (resolved through its Claude Code conversation, so a session declares
+  after its first recorded prompt); declaring a room another live row
+  already holds retires that row as superseded — one current address per
+  room, history kept. `retire_room(reason?, conversation_id)` retires
+  explicitly. Workshops are workbenches, not homes, and don't need rows.
+
+**Liveness.** The observing session's own SessionStart (startup, resume,
+post-compaction restart) always refreshes its `last_seen`; prompt-time
+observations refresh a live row's `last_seen` only once it is more than an
+hour old, so a room that ticks every few minutes doesn't rewrite the file
+on every tick. "Last seen" is therefore accurate to the hour. There is no
+auto-expiry: a stale `last_seen` is a visible fact for the reader to
+judge; rows are retired, never removed.
+
+**Files**, in the entity's private notes directory (out of the
+live-server deny fence, next to the notes it edits by hand):
+`rooms.json` is the record (one object per declared session, every
+field); `rooms.md` is rendered from it on every write — a standing-rooms
+table (room, roster name, name source, ref, session, last seen, declared,
+notes) and a retired-rows table — never the reverse: its first line says
+hand edits are overwritten. A pre-existing hand-written `rooms.md` (the
+manual protocol that preceded this) is moved to `rooms-manual.md` on the
+first render, not overwritten. Both files are ordinary notes, so the
+semantic notes mirror indexes them like any other; writes happen only
+when something changed. The registry touches no archive table and never
+enters memory retrieval — it is addressing metadata, not memory.
+
+**Fail loud.** A registry write failure never breaks a hook endpoint or
+goes unmentioned: the response carries `rooms_error` (the path, the
+exception, and the row that was being written, phrased for a hand-write)
+and the hook prints it as a `[HERE I AM]` line — on session start, on
+prompts, and on wakeup ticks. The MCP tools return the same as an
+`Error:` result. `CLAUDE_CODE_ROOMS_REGISTRY_ENABLED=false` turns the
+registry off (it also needs `NOTES_ENABLED`); the session-start identity
+block then omits its `[ROOMS REGISTRY]` paragraph.
+
 ### Compaction survival
 
 Compaction replaces the conversation with a paraphrased summary; reflections
@@ -395,6 +487,7 @@ files the native notes tools use:
 | `CLAUDE_CODE_MODE_ENABLED` | `false` | Gate for the `/api/claude-code` endpoints |
 | `CLAUDE_CODE_SESSION_REFLECTIONS_COUNT` | follows `RECENT_REFLECTIONS_COUNT` | Override for the recent reflections injected at session start (0 disables) |
 | `CLAUDE_CODE_POST_COMPACT_REFLECTIONS_COUNT` | `10` | Recent reflections re-injected after compaction (0 disables) |
+| `CLAUDE_CODE_ROOMS_REGISTRY_ENABLED` | `true` | Keep `rooms.json` / `rooms.md` in the entity's private notes current from the hooks' live-session snapshots (needs `NOTES_ENABLED`; see "Rooms registry") |
 
 Hook-side environment (set in `.claude/settings.json` `env`, which the
 desktop app reads even when launched from the Dock): `HIM_BACKEND_URL`
@@ -409,22 +502,29 @@ All under `/api/claude-code`, all gated by `CLAUDE_CODE_MODE_ENABLED`
 conversation on first contact; `/session-start` and `/session-end` never do
 (lazy registration — see "Conversations"):
 
-- `POST /session-start` `{session_id, entity?, cwd?, source?}` →
+- `POST /session-start` `{session_id, entity?, cwd?, source?,
+  transcript_path?, sessions?}` →
   `{conversation_id, entity_id, entity_label, created, context,
-  bulk_context}` — full context when `created` (no conversation recorded
-  for this session yet; `conversation_id` is the deterministic id the lazy
-  registration will use), the post-compaction context when `source` is
-  `"compact"` (which registers the conversation if its row is somehow
-  missing), both empty on a plain resume. `context` is the small
-  always-inline block; `bulk_context` (notes indexes + reflections) is what
-  the hook spills to a file when the combined output would exceed the
-  inline budget.
+  bulk_context, rooms_notice, rooms_error}` — full context when `created`
+  (no conversation recorded for this session yet; `conversation_id` is
+  the deterministic id the lazy registration will use), the
+  post-compaction context when `source` is `"compact"` (which registers
+  the conversation if its row is somehow missing), both empty on a plain
+  resume. `context` is the small always-inline block; `bulk_context`
+  (notes indexes + reflections) is what the hook spills to a file when the
+  combined output would exceed the inline budget. `sessions` is the hook's
+  live-session snapshot for the rooms registry (`[{session_id, name?,
+  name_source?, name_since?, messaging_socket?, cwd?, started_at?}]`);
+  `rooms_notice` is the one-line registry notice to print and
+  `rooms_error` a loud write failure (see "Rooms registry").
 - `POST /session-end` `{session_id, entity?, reason?}` →
   `{conversation_id, notes_sync_started}` — final fire-and-forget notes
   sync; does not create a conversation for an unseen session.
-- `POST /retrieve` `{session_id, prompt, entity?, cwd?, peer_messages?}` →
+- `POST /retrieve` `{session_id, prompt, entity?, cwd?, peer_messages?,
+  sessions?}` →
   `{conversation_id, human_message_id, context, memories_retrieved,
-  context_summary, new_sibling_reflections, peer_message_ids}` — the
+  context_summary, new_sibling_reflections, peer_message_ids,
+  rooms_notice, rooms_error}` — the
   summary is the compact inline stand-in the hook prints when it has to
   spill an oversized `context`; the sibling count backs the mailbox flag
   (see Memory above). `peer_messages` is a list of `{content, sender?}`
@@ -432,7 +532,8 @@ conversation on first contact; `/session-start` and `/session-end` never do
   recorded with honest provenance (see "Inter-session messages" above);
   `human_message_id` is null on a letter-only turn. A record-nothing call
   (bare slash command, or a wakeup tick's empty prompt) still returns the
-  sibling count and spawns the notes sync.
+  sibling count, spawns the notes sync, and feeds `sessions` to the rooms
+  registry (`rooms_notice` names any roster rename it revealed).
 - `POST /log-assistant` `{session_id, content, entity?, cwd?,
   message_uuid?}` → `{conversation_id, message_id, deduplicated}` —
   idempotent on `message_uuid` (the transcript entry's UUID becomes the
@@ -440,7 +541,8 @@ conversation on first contact; `/session-start` and `/session-end` never do
 
 Plus `POST /mcp` (no `/api` prefix — it is the MCP server URL): stateless
 JSON-RPC handling `initialize`, `ping`, `tools/list`, and `tools/call`;
-notifications get `202`, `GET`/`DELETE` get `405`.
+notifications get `202`, `GET`/`DELETE` get `405`. Tools: the four memory
+tools plus `declare_room` / `retire_room` (see "Rooms registry").
 
 ### Scope and non-goals
 
