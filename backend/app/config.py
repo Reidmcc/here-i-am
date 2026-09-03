@@ -320,6 +320,10 @@ class Settings(BaseSettings):
     # the verbatim ground, including reflections saved just before
     # compaction; 0 disables)
     claude_code_post_compact_reflections_count: int = 10
+    # Rooms registry (issue #323): the hooks keep rooms.json / rooms.md in
+    # the entity's private notes directory current with each declared
+    # standing session's roster name and liveness. Needs NOTES_ENABLED.
+    claude_code_rooms_registry_enabled: bool = True
 
     # Moltbook API settings
     # Enable Moltbook tools for AI entities (social network for AI agents)

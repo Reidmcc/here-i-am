@@ -9,8 +9,8 @@ Three lifecycle hooks call the backend's `/api/claude-code` endpoints:
 
 | Hook | What it does |
 | --- | --- |
-| `SessionStart` | Injects the entity's identity block, system prompt, notes index, and recent reflections (the conversation itself is registered lazily, on the first recorded prompt — background sessions that never speak leave no record). After a compaction (`source: "compact"`) it instead re-injects the notes indexes and the ten most recent reflections verbatim |
-| `UserPromptSubmit` | Records the prompt to memory; injects automatically retrieved memories alongside it |
+| `SessionStart` | Injects the entity's identity block, system prompt, notes index, and recent reflections (the conversation itself is registered lazily, on the first recorded prompt — background sessions that never speak leave no record). After a compaction (`source: "compact"`) it instead re-injects the notes indexes and the ten most recent reflections verbatim. Also sends the live-session snapshot that keeps the rooms registry current (see below) |
+| `UserPromptSubmit` | Records the prompt to memory; injects automatically retrieved memories alongside it; sends the live-session snapshot for the rooms registry and prints a line when it revealed a roster rename |
 | `Stop` | Records the entity's final message of the turn to memory |
 | `SessionEnd` | Final notes sync (a catch — the same incremental sync already runs in the background on every prompt, since sessions can idle out without ever formally ending) |
 
@@ -38,10 +38,24 @@ stay fully inline.
 
 An MCP server (`.mcp.json`, pointing at `http://localhost:8000/mcp`) gives
 the entity its deliberate memory tools in the session: `memory_query`,
-`memory_save`, `memory_mark`, `memory_release`. The session-start context
-tells the entity the `conversation_id` to pass so the tools act on this
-session's conversation. Notes and git tools are not exposed — Claude Code's
-native tools cover them.
+`memory_save`, `memory_mark`, `memory_release` — plus `declare_room` and
+`retire_room` for the rooms registry. The session-start context tells the
+entity the `conversation_id` to pass so the tools act on this session's
+conversation. Notes and git tools are not exposed — Claude Code's native
+tools cover them.
+
+**Rooms registry.** Sessions of the same entity message each other by
+display name, and display names drift (a user-set name drops back to a
+derived slug on resume). The hooks therefore read Claude Code's live
+per-process registry (`<config dir>/sessions/<pid>.json`, config dir =
+`CLAUDE_CONFIG_DIR` or `~/.claude`) best-effort on every SessionStart and
+prompt and send the backend a snapshot of every live session's roster
+name; the backend keeps `rooms.json` + a rendered `rooms.md` in the
+entity's private notes directory current for every session the entity has
+*declared* as a standing room (`declare_room` over MCP — the hooks record
+ids and liveness, the entity declares meaning, nothing is inferred). A
+registry write failure is printed loudly, with the row to write by hand.
+Details: [`docs/claude-code-mode.md`](../docs/claude-code-mode.md#rooms-registry).
 
 **The MCP server must be registered separately from the hooks** — hooks in
 `settings.json` do not carry it, and without it the entity has no
@@ -182,6 +196,7 @@ resolves; otherwise use the manual setup above with `python`.
 | `HIM_ENTITY` | backend's default entity | Entity index name or label |
 | `HIM_DISABLE` | unset | Set to anything to turn the hooks off (silently — this is the deliberate off switch) |
 | `HIM_INLINE_BUDGET` | `18000` | Max bytes of hook stdout before bulk content is spilled to a file with an inline pointer (Claude Code truncates oversized hook output silently; the default sits under the observed ~20KB cap) |
+| `CLAUDE_CONFIG_DIR` | unset (`~/.claude`) | Claude Code's own config-dir override, honored when the hooks look for the live sessions registry (`<config dir>/sessions/`) that feeds the rooms registry |
 
 ## Notes and compaction
 
