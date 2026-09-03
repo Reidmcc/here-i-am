@@ -1803,3 +1803,65 @@ class TestSafeTokenCount:
         monkeypatch.setattr(singleton, "count_tokens", lambda text, model=None: 7)
 
         assert cc_mode.safe_token_count("some prompt text") == 7
+
+
+class TestLogAssistantModel:
+    """
+    The Stop hook carries the transcript entry's model to /log-assistant
+    (issue #321); the row records it verbatim, and its absence is NULL.
+    """
+
+    async def test_model_recorded_on_the_row(self, async_client, db_session):
+        response = await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={
+                "session_id": str(uuid.uuid4()),
+                "content": "Attributed.",
+                "model": "claude-fable-5-1",
+            },
+        )
+        assert response.status_code == 200
+        row = (await db_session.execute(
+            select(Message).where(Message.id == response.json()["message_id"])
+        )).scalar_one()
+        assert row.model == "claude-fable-5-1"
+
+    async def test_missing_or_blank_model_stays_null(self, async_client, db_session):
+        for payload in (
+            {"session_id": str(uuid.uuid4()), "content": "Older hook."},
+            {"session_id": str(uuid.uuid4()), "content": "Blank.", "model": "   "},
+        ):
+            response = await async_client.post("/api/claude-code/log-assistant", json=payload)
+            row = (await db_session.execute(
+                select(Message).where(Message.id == response.json()["message_id"])
+            )).scalar_one()
+            assert row.model is None
+
+    async def test_human_prompt_and_letters_are_never_attributed(self, async_client, db_session):
+        session_id = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": session_id,
+                "prompt": "A typed prompt.",
+                "peer_messages": [{"content": "A letter.", "sender": "Porch"}],
+            },
+        )
+        assert response.status_code == 200
+        rows = (await db_session.execute(
+            select(Message).join(
+                Conversation, Conversation.id == Message.conversation_id
+            ).where(Conversation.external_session_id == session_id)
+        )).scalars().all()
+        assert len(rows) == 2
+        assert all(row.model is None for row in rows)
+
+    async def test_mcp_tool_listing_exposes_include_model(self, async_client):
+        response = await async_client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        )
+        tools = {t["name"]: t for t in response.json()["result"]["tools"]}
+        prop = tools["memory_query"]["inputSchema"]["properties"]["include_model"]
+        assert prop["type"] == "boolean"
+        assert prop["default"] is False

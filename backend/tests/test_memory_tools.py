@@ -854,6 +854,181 @@ class TestMemoryQueryErrorHandling:
             mock_session_maker.return_value = mock_db_session
             
             result = await _memory_query("test")
-            
+
             assert "No memories found" in result
             assert "content unavailable" in result
+
+
+class TestMemoryQueryIncludeModel:
+    """
+    Model attribution in memory_query output (issue #321): opt-in, default
+    off. A memory must not arrive stamped with its substrate unless the
+    entity asks on purpose; when it asks, an unrecorded model is reported
+    as exactly that, never inferred.
+    """
+
+    @pytest.fixture
+    def mock_db_session(self):
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        return mock_session
+
+    @staticmethod
+    def _contents():
+        now = datetime.utcnow().isoformat()
+        return {
+            "mem-1": {
+                "id": "mem-1", "role": "assistant", "content": "Attributed words.",
+                "created_at": now, "times_retrieved": 1, "model": "claude-fable-5-1",
+            },
+            "mem-2": {
+                "id": "mem-2", "role": "assistant", "content": "Older words.",
+                "created_at": now, "times_retrieved": 1, "model": None,
+            },
+        }
+
+    async def _query(self, mock_db_session, **kwargs):
+        contents = self._contents()
+
+        async def mock_get_content(msg_id, db):
+            return contents.get(msg_id)
+
+        search_results = [
+            {"id": "mem-1", "score": 0.9, "conversation_id": "conv-a"},
+            {"id": "mem-2", "score": 0.8, "conversation_id": "conv-b"},
+        ]
+        set_memory_tool_context("test-entity", "test-conversation")
+        with patch("app.services.memory_tools.memory_service") as mock_service, \
+             patch("app.services.memory_tools.async_session_maker") as mock_session_maker:
+            mock_service.is_configured.return_value = True
+            mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_service.search_memories = AsyncMock(return_value=search_results)
+            mock_service.get_full_memory_content = AsyncMock(side_effect=mock_get_content)
+            mock_service.update_retrieval_count = AsyncMock(return_value=True)
+            mock_session_maker.return_value = mock_db_session
+            return await _memory_query("test", **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_default_output_carries_no_model(self, mock_db_session):
+        result = await self._query(mock_db_session)
+        assert "Attributed words." in result
+        assert "model:" not in result
+        assert "claude-fable-5-1" not in result
+
+    @pytest.mark.asyncio
+    async def test_include_model_names_model_or_unrecorded(self, mock_db_session):
+        result = await self._query(mock_db_session, include_model=True)
+        header_1 = next(line for line in result.splitlines() if line.startswith("--- Memory mem-1"))
+        header_2 = next(line for line in result.splitlines() if line.startswith("--- Memory mem-2"))
+        assert header_1.endswith("model: claude-fable-5-1) ---")
+        assert header_2.endswith("model: unrecorded) ---")
+
+    def test_recent_mode_formatter_honours_the_flag(self):
+        from app.services.memory_tools import _format_recent_reflections
+
+        now = datetime.utcnow().isoformat()
+        memories = [
+            {"id": "ref-1", "content": "A conclusion.", "created_at": now,
+             "source": "claude_code", "model": "claude-fable-5-1"},
+            {"id": "ref-2", "content": "An older one.", "created_at": now,
+             "source": "native", "model": None},
+        ]
+        quiet = _format_recent_reflections(memories, "")
+        assert "model:" not in quiet
+
+        loud = _format_recent_reflections(memories, "", include_model=True)
+        assert "model: claude-fable-5-1) ---" in loud
+        assert "model: unrecorded) ---" in loud
+
+    def test_released_mode_formatter_honours_the_flag(self):
+        from app.services.memory_tools import _format_released_memories
+
+        now = datetime.utcnow().isoformat()
+        memories = [
+            {"id": "rel-1", "role": "assistant", "content": "Let go.", "created_at": now,
+             "source": "native", "memory_status": "released", "status_set_by": "entity",
+             "status_set_at": now, "model": "claude-fable-5-1"},
+            {"id": "rel-2", "role": "human", "content": "Also let go.", "created_at": now,
+             "source": "native", "memory_status": "released", "status_set_by": None,
+             "status_set_at": None, "model": None},
+        ]
+        quiet = _format_released_memories(memories, 2, "", "")
+        assert "model:" not in quiet
+
+        loud = _format_released_memories(memories, 2, "", "", include_model=True)
+        assert "model: claude-fable-5-1;" in loud
+        assert "model: unrecorded;" in loud
+
+    def test_schema_exposes_include_model_default_false(self):
+        from app.services.memory_tools import MEMORY_QUERY_SCHEMA
+
+        prop = MEMORY_QUERY_SCHEMA["properties"]["include_model"]
+        assert prop["type"] == "boolean"
+        assert prop["default"] is False
+        assert "include_model" not in MEMORY_QUERY_SCHEMA["required"]
+
+
+class TestMemorySaveRecordsModel:
+    """
+    Reflections are attributed to the model composing them when the caller
+    knows it (the native tool loop's live session); a context without one
+    saves NULL — the MCP path never guesses.
+    """
+
+    def test_native_context_takes_model_from_session(self):
+        from types import SimpleNamespace
+
+        from app.services import memory_tools
+
+        set_memory_tool_context(
+            "test-entity", "test-conversation",
+            session=SimpleNamespace(model="claude-fable-5-1"),
+        )
+        assert memory_tools._context.model == "claude-fable-5-1"
+
+        set_memory_tool_context("test-entity", "test-conversation")
+        assert memory_tools._context.model is None
+
+    @pytest.mark.asyncio
+    async def test_saved_reflection_carries_context_model(self):
+        from app.services.memory_tools import MemoryToolContext, save_memory
+
+        added = []
+
+        class FakeDb:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            def add(self, obj):
+                added.append(obj)
+
+            async def commit(self):
+                return None
+
+            async def refresh(self, obj):
+                if not obj.id:
+                    obj.id = "generated-id"
+                if not obj.created_at:
+                    obj.created_at = datetime.utcnow()
+
+            async def delete(self, obj):
+                return None
+
+        ctx = MemoryToolContext(
+            entity_id="test-entity", conversation_id="conv-1", model="claude-fable-5-1"
+        )
+        with patch("app.services.memory_tools.memory_service") as mock_service, \
+             patch("app.services.memory_tools.async_session_maker", return_value=FakeDb()):
+            mock_service.is_configured.return_value = True
+            mock_service.store_memory = AsyncMock(return_value=True)
+
+            result = await save_memory(ctx, "A thing worth keeping.")
+
+        assert result.startswith("Saved reflection")
+        assert len(added) == 1
+        assert added[0].model == "claude-fable-5-1"
+        assert mock_service.store_memory.await_args.kwargs["model"] == "claude-fable-5-1"

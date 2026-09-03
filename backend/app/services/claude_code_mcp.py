@@ -198,6 +198,7 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
                 source=arguments.get("source"),
                 mode=arguments.get("mode"),
                 since=arguments.get("since"),
+                include_model=bool(arguments.get("include_model", False)),
             )
         if name == "memory_save":
             return await memory_tools.save_memory(ctx, arguments.get("content", ""))

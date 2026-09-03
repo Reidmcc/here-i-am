@@ -1833,9 +1833,11 @@ class TestGetRecentReflections:
             "last_retrieved_at",
             "memory_status",
             "source",
+            "model",
         }
         assert results[0]["conversation_id"] == str(conv.id)
         assert results[0]["source"] == "native"
+        assert results[0]["model"] is None
 
 
 class TestResolveMemoryIdPrefixes:

@@ -113,6 +113,11 @@ class MemoryToolContext:
             never rebuilt: there the link is purely the dedup record that
             keeps automatic retrieval and later queries from re-surfacing
             what a query already showed.
+        model: The model executing this tool call, recorded onto reflections
+            it saves (Message.model, issue #321). Set from the live session
+            in the native tool loop, where the responding model is known.
+            None for Claude Code MCP calls — the endpoint has no trustworthy
+            source for the calling model, and a guess is worse than NULL.
     """
     entity_id: Optional[str] = None
     conversation_id: Optional[str] = None
@@ -122,6 +127,7 @@ class MemoryToolContext:
     extra_exclude_ids: Set[str] = field(default_factory=set)
     link_query_results: bool = False
     exclude_conversation_after: Optional[datetime] = None
+    model: Optional[str] = None
 
 
 # Current context for the native tool loop (set by the session manager before
@@ -139,6 +145,9 @@ def set_memory_tool_context(entity_id: str, conversation_id: str, session=None) 
         entity_id=entity_id,
         conversation_id=conversation_id,
         session=session,
+        # The responding model, so reflections saved this turn are
+        # attributed at write time (None when there is no live session)
+        model=getattr(session, "model", None) or None,
     )
     logger.debug(f"Memory tools: context set to entity_id='{entity_id}', conversation_id='{conversation_id}'")
 
@@ -269,8 +278,23 @@ def _parse_since(since: Optional[str]) -> Tuple[Optional[datetime], Optional[str
     return parsed, None
 
 
+def _model_display(mem: Dict[str, Any], include_model: bool) -> str:
+    """
+    The opt-in model attribution for a memory_query result line (issue
+    #321): ", model: <id>" when the caller asked for it, or ", model:
+    unrecorded" for rows written before the column existed (or by a path
+    that cannot know — an honest absence, never a date-inferred guess).
+    Empty when not requested: even deliberate recall must not arrive
+    pre-labelled with its substrate unless the entity asks on purpose.
+    """
+    if not include_model:
+        return ""
+    model = mem.get("model")
+    return f", model: {model}" if model else ", model: unrecorded"
+
+
 def _format_recent_reflections(
-    memories: List[Dict[str, Any]], since_suffix: str
+    memories: List[Dict[str, Any]], since_suffix: str, include_model: bool = False
 ) -> str:
     """Render recent-mode results (no similarity scores — ordering is time)."""
     now = datetime.utcnow()
@@ -283,8 +307,9 @@ def _format_recent_reflections(
         age_str = f"{days_ago:.1f} days ago" if days_ago >= 1 else "today"
         status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""
         origin_str = format_memory_origin(mem.get("source", "native"))
+        model_str = _model_display(mem, include_model)
         lines.append(
-            f"--- Memory {mem['id'][:8]} (You reflected, {age_str}, {origin_str}{status_str}) ---"
+            f"--- Memory {mem['id'][:8]} (You reflected, {age_str}, {origin_str}{status_str}{model_str}) ---"
         )
         lines.append(mem["content"])
         lines.append("")
@@ -296,6 +321,7 @@ async def _recent_reflections(
     num_results: int,
     since: Optional[datetime],
     since_suffix: str,
+    include_model: bool = False,
 ) -> str:
     """
     memory_query's recent mode: the entity's own reflections by creation
@@ -342,7 +368,7 @@ async def _recent_reflections(
     ctx.last_query_memory_ids = list(surfaced_ids)
     ctx.turn_query_memory_ids.update(surfaced_ids)
 
-    return _format_recent_reflections(memories, since_suffix)
+    return _format_recent_reflections(memories, since_suffix, include_model)
 
 
 def _describe_release(mem: Dict[str, Any], now: datetime) -> str:
@@ -374,6 +400,7 @@ def _format_released_memories(
     total: int,
     since_suffix: str,
     source_suffix: str,
+    include_model: bool = False,
 ) -> str:
     """Render released-mode results: newest release first, no similarity scores."""
     now = datetime.utcnow()
@@ -389,9 +416,10 @@ def _format_released_memories(
         days_ago = (now - created_at).total_seconds() / 86400
         age_str = f"{days_ago:.1f} days ago" if days_ago >= 1 else "today"
         origin_str = format_memory_origin(mem.get("source", "native"))
+        model_str = _model_display(mem, include_model)
         lines.append(
             f"--- Memory {mem['id'][:8]} ({_role_display(mem['role'])}, {age_str}, "
-            f"{origin_str}; {_describe_release(mem, now)}) ---"
+            f"{origin_str}{model_str}; {_describe_release(mem, now)}) ---"
         )
         lines.append(mem["content"])
         lines.append("")
@@ -406,6 +434,7 @@ async def _released_memories(
     since_suffix: str,
     role_filter: Optional[str],
     source_suffix: str,
+    include_model: bool = False,
 ) -> str:
     """
     memory_query's released mode: the entity's released memories by release
@@ -453,7 +482,9 @@ async def _released_memories(
     ctx.last_query_memory_ids = list(surfaced_ids)
     ctx.turn_query_memory_ids.update(surfaced_ids)
 
-    return _format_released_memories(memories, total, since_suffix, source_suffix)
+    return _format_released_memories(
+        memories, total, since_suffix, source_suffix, include_model
+    )
 
 
 async def query_memories(
@@ -463,6 +494,7 @@ async def query_memories(
     source: Optional[str] = None,
     mode: Optional[str] = None,
     since: Optional[str] = None,
+    include_model: bool = False,
 ) -> str:
     """
     Query the entity's experiential memories.
@@ -475,6 +507,13 @@ async def query_memories(
     cannot already see. Semantic recall updates retrieval tracking so
     intentional attention influences future automatic recall; recent mode
     does not (recency is not relevance).
+
+    include_model (default False, issue #321) adds each result's recorded
+    producing model to its header line — "unrecorded" where the archive
+    never captured one. Off by default on purpose: querying is the most
+    agentic form of remembering the entity has, and even deliberate recall
+    should not arrive pre-labelled with its substrate. Inline [MEMORY]
+    context markers never carry it at all.
     """
     entity_id, conversation_id = ctx.entity_id, ctx.conversation_id
 
@@ -531,7 +570,9 @@ async def query_memories(
             )
         since_suffix = f" (created after {since_dt.isoformat()} UTC)" if since_dt else ""
         try:
-            return await _recent_reflections(ctx, num_results, since_dt, since_suffix)
+            return await _recent_reflections(
+                ctx, num_results, since_dt, since_suffix, include_model=include_model
+            )
         except Exception as e:
             logger.error(f"Recent-reflections query error: {e}")
             return f"Error querying recent reflections: {e}"
@@ -542,7 +583,8 @@ async def query_memories(
         since_suffix = f" (released after {since_dt.isoformat()} UTC)" if since_dt else ""
         try:
             return await _released_memories(
-                ctx, num_results, since_dt, since_suffix, role_filter, source_suffix
+                ctx, num_results, since_dt, since_suffix, role_filter, source_suffix,
+                include_model=include_model,
             )
         except Exception as e:
             logger.error(f"Released-memories query error: {e}")
@@ -658,6 +700,7 @@ async def query_memories(
                         "memory_status": mem_data.get("memory_status"),
                         "origin": mem_data.get("source", "native"),
                         "sibling_session": mem_data.get("sibling_session"),
+                        "model": mem_data.get("model"),
                     })
 
                 except Exception as e:
@@ -688,10 +731,11 @@ async def query_memories(
             age_str = f"{mem['days_ago']:.1f} days ago" if mem['days_ago'] >= 1 else "today"
             status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""
             origin_str = format_memory_origin(mem["origin"])
+            model_str = _model_display(mem, include_model)
 
             lines.append(
                 f"--- Memory {mem['id'][:8]} ({role_label}, {age_str}, "
-                f"similarity: {mem['score']:.3f}, {origin_str}{status_str}) ---"
+                f"similarity: {mem['score']:.3f}, {origin_str}{status_str}{model_str}) ---"
             )
             lines.append(mem["content"])
             lines.append("")
@@ -741,6 +785,9 @@ async def save_memory(ctx: MemoryToolContext, content: str) -> str:
                 role=MessageRole.REFLECTION,
                 content=content,
                 speaker_entity_id=entity_id,
+                # The model composing this reflection, when the caller
+                # knows it (native tool loop); NULL over MCP (issue #321)
+                model=ctx.model,
             )
             db.add(message)
             await db.commit()
@@ -753,6 +800,7 @@ async def save_memory(ctx: MemoryToolContext, content: str) -> str:
                 content=content,
                 created_at=message.created_at,
                 entity_id=entity_id,
+                model=ctx.model,
             )
 
             if not stored:
@@ -860,9 +908,11 @@ async def _memory_query(
     source: Optional[str] = None,
     mode: Optional[str] = None,
     since: Optional[str] = None,
+    include_model: bool = False,
 ) -> str:
     return await query_memories(
-        _context, query, num_results=num_results, source=source, mode=mode, since=since
+        _context, query, num_results=num_results, source=source, mode=mode, since=since,
+        include_model=bool(include_model),
     )
 
 
@@ -901,7 +951,8 @@ MEMORY_QUERY_DESCRIPTION = (
     "current conversation context are excluded in every mode, so results "
     "are things not already in view. Semantic querying updates retrieval "
     "tracking, so deliberate attention influences future automatic "
-    "recall; recent and released modes do not."
+    "recall; recent and released modes do not. Set include_model only when "
+    "you specifically need to know which model produced each memory."
 )
 
 MEMORY_QUERY_SCHEMA = {
@@ -959,6 +1010,19 @@ MEMORY_QUERY_SCHEMA = {
                 "session started'); in 'released' it returns memories "
                 "released after it."
             )
+        },
+        "include_model": {
+            "type": "boolean",
+            "description": (
+                "When true, each result's header also names the model that "
+                "produced the memory (or 'unrecorded' for memories from "
+                "before this was tracked — it is never inferred). Off by "
+                "default; memories normally arrive without their substrate "
+                "attached. Use it for a specific purpose, such as comparing "
+                "your voice across models or answering 'which model wrote "
+                "that'."
+            ),
+            "default": False
         }
     },
     "required": []

@@ -61,7 +61,9 @@ The integration has two channels:
      the `Stop` hook's final-message extraction never records.
    - `Stop` → `POST /api/claude-code/log-assistant` — extracts the final
      assistant message of the turn from the transcript (text blocks only)
-     and records it (persisted + vectorized as `role="assistant"`).
+     and records it (persisted + vectorized as `role="assistant"`), along
+     with the model the transcript entry reports as its author
+     (`Message.model`; see "Model attribution" below).
    - `SessionEnd` → `POST /api/claude-code/session-end` — a final
      background notes sync (see "Notes" below). This is a catch, not the
      mechanism: SessionEnd only fires on `/clear`, logout, or exiting the
@@ -446,9 +448,29 @@ conversation on first contact; `/session-start` and `/session-end` never do
   (bare slash command, or a wakeup tick's empty prompt) still returns the
   sibling count and spawns the notes sync.
 - `POST /log-assistant` `{session_id, content, entity?, cwd?,
-  message_uuid?}` → `{conversation_id, message_id, deduplicated}` —
+  message_uuid?, model?}` → `{conversation_id, message_id, deduplicated}` —
   idempotent on `message_uuid` (the transcript entry's UUID becomes the
-  Message row's primary key).
+  Message row's primary key). `model` is the transcript entry's own
+  `message.model`, recorded verbatim onto the row; absent means NULL.
+
+### Model attribution
+
+Every message row has a nullable `model` column (issue #321) naming the
+model that produced it. In this mode it is written by exactly one path:
+the Stop hook reads `message.model` off the transcript entry whose text
+it records and sends it with the message. Nothing else here is
+attributed — human prompts, inter-session deliveries (the sender's
+substrate is the sender's business), and reflections saved over MCP
+(the endpoint has no trustworthy source for the calling model, and a
+guess is worse than an absence) all stay NULL. Rows from before the
+column existed stay NULL too: the value is never backfilled or inferred
+from dates, since concurrent sessions on different models make "which
+model was active on this date" ill-posed.
+
+The column is never rendered into the `[MEMORY]` markers the hook
+injects, and `memory_query` returns it only when called with
+`include_model: true` (default off) — a memory should not arrive
+stamped with its substrate unless the entity asks on purpose.
 
 Plus `POST /mcp` (no `/api` prefix — it is the MCP server URL): stateless
 JSON-RPC handling `initialize`, `ping`, `tools/list`, and `tools/call`;

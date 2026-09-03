@@ -38,7 +38,7 @@ Called by Claude Code lifecycle hooks, not the frontend. Gated by
 
 - `POST /api/claude-code/session-start` — returns the entity's identity/reflections context block for a starting session (empty on resume); does not create the conversation row (registration is lazy)
 - `POST /api/claude-code/retrieve` — record a user prompt (registering the session's conversation on first contact) and run automatic memory retrieval; returns the memory context block. `peer_messages` carries inter-session messages (SendMessage deliveries from sibling sessions), recorded as the entity's own words with the sending session marked (`Message.sibling_session`, vectorized `role="sibling"`)
-- `POST /api/claude-code/log-assistant` — record the entity's final message of a turn (idempotent on `message_uuid`)
+- `POST /api/claude-code/log-assistant` — record the entity's final message of a turn (idempotent on `message_uuid`; optional `model` = the transcript entry's producing model, stored on the row)
 - `POST /api/claude-code/session-end` — session ended; re-indexes the entity's notes into the semantic mirror (background)
 - `POST /mcp` — MCP streamable-HTTP endpoint (stateless JSON-RPC) exposing the entity's memory tools (`memory_query`, `memory_save`, `memory_mark`, `memory_release`) to Claude Code sessions
 

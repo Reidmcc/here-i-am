@@ -72,6 +72,21 @@ class Message(Base):
     # .persist_and_vectorize_message).
     sibling_session: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 
+    # The model that produced this message (issue #321): the provider model
+    # id as the request/transcript reported it, e.g. "claude-fable-5-1".
+    # Written forward-only at persist time by the native chat routes (the
+    # responding session's model), the native memory_save tool, and the
+    # Claude Code Stop hook (from the transcript entry). NULL means "not
+    # recorded" — every row from before this column, every human message,
+    # every tool result, and Claude Code reflections (the MCP endpoint has
+    # no trustworthy source for the calling model). It is NEVER backfilled:
+    # substrate history was serial and single-model only until it wasn't,
+    # and painting inferred models onto old rows would be confabulation in
+    # schema form. It is also never rendered into inline memory markers —
+    # a memory must not arrive stamped with its substrate — and reaches the
+    # entity only through memory_query's opt-in include_model.
+    model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
 
     @property

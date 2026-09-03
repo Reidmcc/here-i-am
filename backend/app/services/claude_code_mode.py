@@ -887,6 +887,7 @@ async def persist_and_vectorize_message(
     message_id: Optional[str] = None,
     token_count: Optional[int] = None,
     sibling_session: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> Message:
     """
     Persist one conversational message and store it as a memory.
@@ -894,6 +895,12 @@ async def persist_and_vectorize_message(
     message_id lets the Stop hook reuse the transcript entry's UUID as the
     row's primary key, making assistant logging idempotent (the route checks
     for an existing row before calling this).
+
+    model is the model that produced the message (issue #321), carried by
+    the Stop hook from the transcript entry that holds the text. None for
+    everything else recorded here — human prompts, inter-session
+    deliveries (the sender's substrate is not this row's business), and
+    anything the hook could not attribute.
 
     sibling_session records an inter-session message (issue #312): a
     SendMessage delivery from the named sibling Claude Code session. The row
@@ -910,6 +917,7 @@ async def persist_and_vectorize_message(
         created_at=datetime.utcnow(),
         token_count=token_count,
         sibling_session=sibling_session,
+        model=model,
     )
     if message_id:
         message.id = message_id
@@ -927,5 +935,6 @@ async def persist_and_vectorize_message(
             created_at=message.created_at,
             entity_id=entity.index_name,
             sibling_session=sibling_session,
+            model=model,
         )
     return message

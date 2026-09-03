@@ -43,6 +43,10 @@ class MemoryResponse(BaseModel):
     # null for a status set before provenance was recorded
     status_set_by: Optional[str] = None
     status_set_at: Optional[datetime] = None
+    # The model that produced the memory (issue #321); None = not recorded.
+    # The researcher's lookup — the memory browser shows it, the entity's
+    # inline markers never do.
+    model: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -171,6 +175,7 @@ async def list_memories(
             "memory_status": msg.memory_status,
             "status_set_by": msg.status_set_by,
             "status_set_at": msg.status_set_at,
+            "model": msg.model,
         })
 
     # Sort
@@ -692,6 +697,7 @@ async def list_memory_overrides(
             memory_status=msg.memory_status,
             status_set_by=msg.status_set_by,
             status_set_at=msg.status_set_at,
+            model=msg.model,
         )
         for msg in messages
     ]
@@ -772,6 +778,7 @@ async def get_memory(
         memory_status=message.memory_status,
         status_set_by=message.status_set_by,
         status_set_at=message.status_set_at,
+        model=message.model,
     )
 
 

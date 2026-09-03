@@ -693,6 +693,33 @@ class TestExportConversation:
         assert data["messages"][1]["content"] == "Hi there!"
 
     @pytest.mark.asyncio
+    async def test_export_carries_model_attribution(self, async_client, test_engine):
+        """Message.model (issue #321) exports verbatim; unrecorded is null."""
+        async_session = async_sessionmaker(
+            test_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        conv_id = str(uuid.uuid4())
+        async with async_session() as session:
+            session.add(Conversation(id=conv_id, title="Attributed", entity_id="test-entity"))
+            await session.flush()
+            session.add(Message(
+                id=str(uuid.uuid4()), conversation_id=conv_id,
+                role=MessageRole.HUMAN, content="Hello!",
+            ))
+            session.add(Message(
+                id=str(uuid.uuid4()), conversation_id=conv_id,
+                role=MessageRole.ASSISTANT, content="Hi there!",
+                model="claude-fable-5-1",
+            ))
+            await session.commit()
+
+        response = await async_client.get(f"/api/conversations/{conv_id}/export")
+        assert response.status_code == 200
+        messages = response.json()["messages"]
+        assert messages[0]["model"] is None
+        assert messages[1]["model"] == "claude-fable-5-1"
+
+    @pytest.mark.asyncio
     async def test_export_nonexistent_conversation(self, async_client):
         """Test exporting a non-existent conversation."""
         fake_id = str(uuid.uuid4())

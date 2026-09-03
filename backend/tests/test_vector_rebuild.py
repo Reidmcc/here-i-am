@@ -531,3 +531,67 @@ class TestRestoreDatabaseFromVectors:
             select(Message).where(Message.id == msg_id)
         )).scalar_one()
         assert msg.content == "Preview text"
+
+
+class TestModelAttributionRoundTrip:
+    """
+    Message.model (issue #321) is mirrored into Pinecone metadata purely so
+    disaster recovery can round-trip the column. Rebuild writes it only
+    where the row has one (no null metadata), restore reads it back, and an
+    unattributed record restores as NULL — never inferred.
+    """
+
+    @pytest.mark.asyncio
+    async def test_rebuild_mirrors_model_only_when_recorded(self, db_session, test_settings):
+        conv = Conversation(
+            id=str(uuid.uuid4()), title="Attributed", entity_id="test-memories",
+        )
+        db_session.add(conv)
+        tagged = Message(
+            id=str(uuid.uuid4()), conversation_id=conv.id,
+            role=MessageRole.ASSISTANT, content="Written on 5.1.",
+            model="claude-fable-5-1",
+        )
+        untagged = Message(
+            id=str(uuid.uuid4()), conversation_id=conv.id,
+            role=MessageRole.ASSISTANT, content="Written before the column.",
+        )
+        human = Message(
+            id=str(uuid.uuid4()), conversation_id=conv.id,
+            role=MessageRole.HUMAN, content="A prompt.",
+        )
+        db_session.add_all([tagged, untagged, human])
+        await db_session.commit()
+
+        index = FakeIndex()
+        service = make_service({"test-memories": index})
+        with patch("app.services.vector_rebuild_service.settings", test_settings):
+            await service.rebuild_vectors_from_database(db_session, dry_run=False)
+
+        by_id = {r["_id"]: r for r in index.upserted}
+        assert by_id[tagged.id]["model"] == "claude-fable-5-1"
+        assert "model" not in by_id[untagged.id]
+        assert "model" not in by_id[human.id]
+
+    @pytest.mark.asyncio
+    async def test_restore_recovers_model_column(self, db_session, test_settings):
+        conv_id = str(uuid.uuid4())
+        tagged_id = str(uuid.uuid4())
+        untagged_id = str(uuid.uuid4())
+        tagged = pinecone_record(tagged_id, conv_id, "assistant", "Written on 5.1.")
+        tagged["model"] = "claude-fable-5-1"
+        untagged = pinecone_record(untagged_id, conv_id, "assistant", "Older.")
+        index = FakeIndex(records=[tagged, untagged])
+        service = make_service({"test-memories": index})
+
+        with patch("app.services.vector_rebuild_service.settings", test_settings):
+            result = await service.restore_database_from_vectors(db_session, dry_run=False)
+        assert result["messages_created"] == 2
+
+        rows = {
+            m.id: m for m in (await db_session.execute(
+                select(Message).where(Message.conversation_id == conv_id)
+            )).scalars().all()
+        }
+        assert rows[tagged_id].model == "claude-fable-5-1"
+        assert rows[untagged_id].model is None
