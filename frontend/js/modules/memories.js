@@ -461,6 +461,19 @@ export async function loadReflections() {
 // =========================================================================
 
 /**
+ * Who set a memory's status and when, for the overrides list.
+ * Statuses written before provenance was recorded carry neither.
+ */
+export function statusProvenance(mem) {
+    if (!mem.status_set_by) {
+        return `${mem.memory_status} before provenance was recorded`;
+    }
+    const who = mem.status_set_by === 'researcher' ? 'you (researcher)' : 'the entity';
+    const when = mem.status_set_at ? ` on ${new Date(mem.status_set_at).toLocaleString()}` : '';
+    return `${mem.memory_status} by ${who}${when}`;
+}
+
+/**
  * Load memories with an entity-set status (pinned or released)
  */
 export async function loadMemoryOverrides() {
@@ -489,7 +502,8 @@ export async function loadMemoryOverrides() {
                     </span>
                     <span class="memory-list-item-stats">
                         ${new Date(mem.created_at).toLocaleDateString()} &middot;
-                        Retrieved ${mem.times_retrieved}&times;
+                        Retrieved ${mem.times_retrieved}&times; &middot;
+                        ${escapeHtml(statusProvenance(mem))}
                         <button class="secondary-btn small remove-status-btn" data-memory-id="${mem.id}">
                             Remove ${mem.memory_status === 'pinned' ? 'pin' : 'release'}
                         </button>

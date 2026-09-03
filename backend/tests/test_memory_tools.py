@@ -318,7 +318,7 @@ class TestMemoryQuerySourceFilter:
         assert schema["required"] == []
         assert set(source["enum"]) == {"all", "human", "ai", "reflection"}
         assert source["default"] == "all"
-        assert set(schema["properties"]["mode"]["enum"]) == {"semantic", "recent"}
+        assert set(schema["properties"]["mode"]["enum"]) == {"semantic", "recent", "released"}
         assert schema["properties"]["mode"]["default"] == "semantic"
         assert "since" in schema["properties"]
 

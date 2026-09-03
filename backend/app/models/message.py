@@ -46,6 +46,17 @@ class Message(Base):
     #   "released" - excluded from memory retrieval (still stored, reversible)
     memory_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
+    # Provenance of the most recent memory_status write (set or clear):
+    #   status_set_by - "entity" (memory_mark / memory_release tools) or
+    #                   "researcher" (PUT /api/memories/{id}/status)
+    #   status_set_at - when it was written (naive UTC)
+    # NULL on both means the status predates provenance tracking (or was
+    # never set). Researcher-set changes are what the entity's session-start
+    # notice reports; the entity's own releases are reviewable through
+    # memory_query mode="released".
+    status_set_by: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    status_set_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     # For multi-entity conversations: tracks which entity spoke this message
     # NULL for single-entity conversations or human messages in multi-entity
     # For AI responses in multi-entity, this is the entity that generated the response

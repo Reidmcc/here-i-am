@@ -87,7 +87,7 @@ class TestRecentModeValidation:
             mock_service.is_configured.return_value = True
             result = await _memory_query("q", since="2026-08-24")
         assert "Error" in result
-        assert "mode 'recent' only" in result
+        assert "modes 'recent' and 'released' only" in result
 
     @pytest.mark.asyncio
     async def test_unparseable_since_rejected(self):

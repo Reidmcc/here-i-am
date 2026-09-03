@@ -199,6 +199,18 @@ A lived-in entity's session-start payload (index.md + reflections) runs to
   does *not* gate this: a Claude Code session start always injects, because
   reflections are what survive compaction. To turn it off for this mode
   only, set `CLAUDE_CODE_SESSION_REFLECTIONS_COUNT=0`.
+- **Researcher-change notice.** The fresh-session identity block also
+  carries a `[MEMORY STATUS NOTICE]` when the researcher set or cleared a
+  pinned/released status on any of the entity's memories since its last
+  session (`memory_service.build_status_change_notice`): one line per
+  change with the short id, the status the memory now has, when, and a
+  snippet. "Last session" is anchored on the entity's first response in its
+  most recent other conversation, native or Claude Code, so each change is
+  reported once and never silently dropped; a session that never spoke is
+  not an anchor. Inline, never bulk, and a failed check is reported in
+  place of the notice — silence is reserved for "nothing changed". Not
+  re-sent on a plain resume or after a compaction. The same notice is
+  injected on the entity's first turn of a native conversation.
 - On a plain resume (`session-start` for a session that already has a
   conversation) the identity block is *not* re-sent — the transcript
   already carries it. A resume of a session with no row (it never spoke, or
