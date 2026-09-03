@@ -333,6 +333,26 @@ async def build_session_start_context(
             "where they were formed: \"via Here I Am\" (a native "
             "conversation) or \"via Claude Code\" (a session like this one)."
         )
+        # Researcher-set status changes since the entity's last session.
+        # Inline, never bulk: it is short, and it is the entity's only way
+        # of learning that a choice about its own memory was made or
+        # reversed on its behalf. A failure is reported as loudly as the
+        # notice itself would be — a swallowed exception would read as
+        # "nothing changed".
+        try:
+            notice = await memory_service.build_status_change_notice(
+                db, entity.index_name, exclude_conversation_id=conversation_id
+            )
+        except Exception as e:
+            logger.error(f"[CC] Status-change notice failed: {e}")
+            notice = (
+                "[MEMORY STATUS NOTICE] Could not check for researcher-set "
+                f"memory status changes since your last session ({e}). If it "
+                "matters, ask the researcher, or review with memory_query "
+                'mode="released".'
+            )
+        if notice:
+            parts.append(notice)
 
     if rooms_registry_enabled():
         parts.append(
@@ -994,6 +1014,7 @@ async def persist_and_vectorize_message(
     message_id: Optional[str] = None,
     token_count: Optional[int] = None,
     sibling_session: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> Message:
     """
     Persist one conversational message and store it as a memory.
@@ -1001,6 +1022,12 @@ async def persist_and_vectorize_message(
     message_id lets the Stop hook reuse the transcript entry's UUID as the
     row's primary key, making assistant logging idempotent (the route checks
     for an existing row before calling this).
+
+    model is the model that produced the message (issue #321), carried by
+    the Stop hook from the transcript entry that holds the text. None for
+    everything else recorded here — human prompts, inter-session
+    deliveries (the sender's substrate is not this row's business), and
+    anything the hook could not attribute.
 
     sibling_session records an inter-session message (issue #312): a
     SendMessage delivery from the named sibling Claude Code session. The row
@@ -1017,6 +1044,7 @@ async def persist_and_vectorize_message(
         created_at=datetime.utcnow(),
         token_count=token_count,
         sibling_session=sibling_session,
+        model=model,
     )
     if message_id:
         message.id = message_id
@@ -1034,5 +1062,6 @@ async def persist_and_vectorize_message(
             created_at=message.created_at,
             entity_id=entity.index_name,
             sibling_session=sibling_session,
+            model=model,
         )
     return message

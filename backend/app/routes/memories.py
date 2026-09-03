@@ -12,6 +12,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import Conversation, Message, MessageRole
 from app.services import memory_service, vector_rebuild_service
+from app.services.memory_service import STATUS_SET_BY_RESEARCHER
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,14 @@ class MemoryResponse(BaseModel):
     last_retrieved_at: Optional[datetime]
     significance: float
     memory_status: Optional[str] = None
+    # Who last wrote memory_status ("entity" / "researcher") and when; both
+    # null for a status set before provenance was recorded
+    status_set_by: Optional[str] = None
+    status_set_at: Optional[datetime] = None
+    # The model that produced the memory (issue #321); None = not recorded.
+    # The researcher's lookup — the memory browser shows it, the entity's
+    # inline markers never do.
+    model: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -164,6 +173,9 @@ async def list_memories(
             "last_retrieved_at": msg.last_retrieved_at,
             "significance": significance,
             "memory_status": msg.memory_status,
+            "status_set_by": msg.status_set_by,
+            "status_set_at": msg.status_set_at,
+            "model": msg.model,
         })
 
     # Sort
@@ -683,6 +695,9 @@ async def list_memory_overrides(
                 msg.times_retrieved, msg.created_at, msg.last_retrieved_at, msg.memory_status, msg.role.value
             ),
             memory_status=msg.memory_status,
+            status_set_by=msg.status_set_by,
+            status_set_at=msg.status_set_at,
+            model=msg.model,
         )
         for msg in messages
     ]
@@ -698,7 +713,9 @@ async def set_memory_status(
     Set or clear a memory's status: "pinned", "released", or null (normal).
 
     This can override the entity's own memory_mark/memory_release choices;
-    intended as an emergency/maintenance option.
+    intended as an emergency/maintenance option. The write is attributed to
+    the researcher (status_set_by / status_set_at), and the entity is told
+    about it at the start of its next session.
     """
     if data.status not in (None, "pinned", "released"):
         raise HTTPException(status_code=400, detail="status must be 'pinned', 'released', or null")
@@ -708,11 +725,19 @@ async def set_memory_status(
     if not message:
         raise HTTPException(status_code=404, detail="Memory not found")
 
-    success = await memory_service.set_memory_status(memory_id, data.status, db)
+    success = await memory_service.set_memory_status(
+        memory_id, data.status, db, set_by=STATUS_SET_BY_RESEARCHER
+    )
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update memory status")
 
-    return {"id": memory_id, "memory_status": data.status}
+    await db.refresh(message)
+    return {
+        "id": memory_id,
+        "memory_status": data.status,
+        "status_set_by": message.status_set_by,
+        "status_set_at": message.status_set_at,
+    }
 
 
 # NOTE: Parameterized routes must come AFTER static routes to avoid matching
@@ -751,6 +776,9 @@ async def get_memory(
         last_retrieved_at=message.last_retrieved_at,
         significance=significance,
         memory_status=message.memory_status,
+        status_set_by=message.status_set_by,
+        status_set_at=message.status_set_at,
+        model=message.model,
     )
 
 

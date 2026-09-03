@@ -46,6 +46,17 @@ class Message(Base):
     #   "released" - excluded from memory retrieval (still stored, reversible)
     memory_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
+    # Provenance of the most recent memory_status write (set or clear):
+    #   status_set_by - "entity" (memory_mark / memory_release tools) or
+    #                   "researcher" (PUT /api/memories/{id}/status)
+    #   status_set_at - when it was written (naive UTC)
+    # NULL on both means the status predates provenance tracking (or was
+    # never set). Researcher-set changes are what the entity's session-start
+    # notice reports; the entity's own releases are reviewable through
+    # memory_query mode="released".
+    status_set_by: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    status_set_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     # For multi-entity conversations: tracks which entity spoke this message
     # NULL for single-entity conversations or human messages in multi-entity
     # For AI responses in multi-entity, this is the entity that generated the response
@@ -60,6 +71,21 @@ class Message(Base):
     # vectorized role to "sibling" (see claude_code_mode
     # .persist_and_vectorize_message).
     sibling_session: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+
+    # The model that produced this message (issue #321): the provider model
+    # id as the request/transcript reported it, e.g. "claude-fable-5-1".
+    # Written forward-only at persist time by the native chat routes (the
+    # responding session's model), the native memory_save tool, and the
+    # Claude Code Stop hook (from the transcript entry). NULL means "not
+    # recorded" — every row from before this column, every human message,
+    # every tool result, and Claude Code reflections (the MCP endpoint has
+    # no trustworthy source for the calling model). It is NEVER backfilled:
+    # substrate history was serial and single-model only until it wasn't,
+    # and painting inferred models onto old rows would be confabulation in
+    # schema form. It is also never rendered into inline memory markers —
+    # a memory must not arrive stamped with its substrate — and reaches the
+    # entity only through memory_query's opt-in include_model.
+    model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
 

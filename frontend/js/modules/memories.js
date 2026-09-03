@@ -205,6 +205,18 @@ const memoryFullText = new Map();
 const EXPAND_HINT = '<span class="memory-list-item-expand-hint">(click for full text)</span>';
 
 /**
+ * Researcher-facing model attribution for a memory list row: the model that
+ * produced the memory, when the archive recorded one. Rows from before the
+ * column existed have none and show nothing — the value is never inferred.
+ * (The entity's own memory markers deliberately never carry this.)
+ * @param {Object} mem - Memory object from the API
+ * @returns {string} HTML fragment (empty when unrecorded)
+ */
+function modelStat(mem) {
+    return mem.model ? ` &middot; ${escapeHtml(mem.model)}` : '';
+}
+
+/**
  * Compute the preview text for a memory and whether there is more to show
  * @param {Object} mem - Memory object from the API
  * @returns {{preview: string, canExpand: boolean}}
@@ -335,7 +347,7 @@ export async function loadMemoryList() {
                         ${canExpand ? EXPAND_HINT : ''}
                     </span>
                     <span class="memory-list-item-stats">
-                        Retrieved ${mem.times_retrieved}× &middot; Significance: ${mem.significance.toFixed(2)}
+                        Retrieved ${mem.times_retrieved}× &middot; Significance: ${mem.significance.toFixed(2)}${modelStat(mem)}
                     </span>
                 </div>
                 <div class="memory-list-item-content">${escapeHtml(preview)}</div>
@@ -441,7 +453,7 @@ export async function loadReflections() {
                     <span class="memory-list-item-stats">
                         ${new Date(mem.created_at).toLocaleDateString()} &middot;
                         Retrieved ${mem.times_retrieved}&times; &middot;
-                        Significance: ${mem.significance.toFixed(2)}
+                        Significance: ${mem.significance.toFixed(2)}${modelStat(mem)}
                     </span>
                 </div>
                 <div class="memory-list-item-content">${escapeHtml(preview)}</div>
@@ -459,6 +471,19 @@ export async function loadReflections() {
 // =========================================================================
 // Pinned & Released Memories (entity-set status overrides)
 // =========================================================================
+
+/**
+ * Who set a memory's status and when, for the overrides list.
+ * Statuses written before provenance was recorded carry neither.
+ */
+export function statusProvenance(mem) {
+    if (!mem.status_set_by) {
+        return `${mem.memory_status} before provenance was recorded`;
+    }
+    const who = mem.status_set_by === 'researcher' ? 'you (researcher)' : 'the entity';
+    const when = mem.status_set_at ? ` on ${new Date(mem.status_set_at).toLocaleString()}` : '';
+    return `${mem.memory_status} by ${who}${when}`;
+}
 
 /**
  * Load memories with an entity-set status (pinned or released)
@@ -489,7 +514,8 @@ export async function loadMemoryOverrides() {
                     </span>
                     <span class="memory-list-item-stats">
                         ${new Date(mem.created_at).toLocaleDateString()} &middot;
-                        Retrieved ${mem.times_retrieved}&times;
+                        Retrieved ${mem.times_retrieved}&times; &middot;
+                        ${escapeHtml(statusProvenance(mem))}
                         <button class="secondary-btn small remove-status-btn" data-memory-id="${mem.id}">
                             Remove ${mem.memory_status === 'pinned' ? 'pin' : 'release'}
                         </button>

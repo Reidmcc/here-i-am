@@ -151,6 +151,10 @@ class LogAssistantRequest(BaseModel):
     entity: Optional[str] = None
     cwd: Optional[str] = None
     message_uuid: Optional[str] = None  # transcript entry UUID, for idempotency
+    # The model that wrote the message, as the transcript entry reports it
+    # (issue #321). Optional: an older hook, or an entry without one,
+    # records NULL — never a guess.
+    model: Optional[str] = None
 
 
 class LogAssistantResponse(BaseModel):
@@ -438,6 +442,7 @@ async def log_assistant(
         content=content,
         message_id=data.message_uuid,
         token_count=cc.safe_token_count(content),
+        model=(data.model or "").strip()[:100] or None,
     )
 
     return LogAssistantResponse(

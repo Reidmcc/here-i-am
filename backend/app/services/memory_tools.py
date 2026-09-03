@@ -34,7 +34,12 @@ from app.config import settings
 from app.database import async_session_maker
 from app.models import Conversation, Message, MessageRole
 from app.services.memory_context import format_memory_origin
-from app.services.memory_service import VALID_ROLE_FILTERS, memory_service
+from app.services.memory_service import (
+    STATUS_SET_BY_ENTITY,
+    STATUS_SET_BY_RESEARCHER,
+    VALID_ROLE_FILTERS,
+    memory_service,
+)
 from app.services.tool_service import ToolCategory, ToolService
 
 logger = logging.getLogger(__name__)
@@ -60,7 +65,11 @@ VALID_QUERY_SOURCES = (SOURCE_ALL,) + tuple(VALID_ROLE_FILTERS)
 # parallel or since this conversation began.
 MODE_SEMANTIC = "semantic"
 MODE_RECENT = "recent"
-VALID_QUERY_MODES = (MODE_SEMANTIC, MODE_RECENT)
+# "released" lists the entity's released memories, most recently released
+# first — the review channel that makes a release reversible by the one who
+# made it (released memories are otherwise unfindable by the entity).
+MODE_RELEASED = "released"
+VALID_QUERY_MODES = (MODE_SEMANTIC, MODE_RECENT, MODE_RELEASED)
 
 
 @dataclass
@@ -104,6 +113,11 @@ class MemoryToolContext:
             never rebuilt: there the link is purely the dedup record that
             keeps automatic retrieval and later queries from re-surfacing
             what a query already showed.
+        model: The model executing this tool call, recorded onto reflections
+            it saves (Message.model, issue #321). Set from the live session
+            in the native tool loop, where the responding model is known.
+            None for Claude Code MCP calls — the endpoint has no trustworthy
+            source for the calling model, and a guess is worse than NULL.
     """
     entity_id: Optional[str] = None
     conversation_id: Optional[str] = None
@@ -113,6 +127,7 @@ class MemoryToolContext:
     extra_exclude_ids: Set[str] = field(default_factory=set)
     link_query_results: bool = False
     exclude_conversation_after: Optional[datetime] = None
+    model: Optional[str] = None
 
 
 # Current context for the native tool loop (set by the session manager before
@@ -130,6 +145,9 @@ def set_memory_tool_context(entity_id: str, conversation_id: str, session=None) 
         entity_id=entity_id,
         conversation_id=conversation_id,
         session=session,
+        # The responding model, so reflections saved this turn are
+        # attributed at write time (None when there is no live session)
+        model=getattr(session, "model", None) or None,
     )
     logger.debug(f"Memory tools: context set to entity_id='{entity_id}', conversation_id='{conversation_id}'")
 
@@ -260,8 +278,23 @@ def _parse_since(since: Optional[str]) -> Tuple[Optional[datetime], Optional[str
     return parsed, None
 
 
+def _model_display(mem: Dict[str, Any], include_model: bool) -> str:
+    """
+    The opt-in model attribution for a memory_query result line (issue
+    #321): ", model: <id>" when the caller asked for it, or ", model:
+    unrecorded" for rows written before the column existed (or by a path
+    that cannot know — an honest absence, never a date-inferred guess).
+    Empty when not requested: even deliberate recall must not arrive
+    pre-labelled with its substrate unless the entity asks on purpose.
+    """
+    if not include_model:
+        return ""
+    model = mem.get("model")
+    return f", model: {model}" if model else ", model: unrecorded"
+
+
 def _format_recent_reflections(
-    memories: List[Dict[str, Any]], since_suffix: str
+    memories: List[Dict[str, Any]], since_suffix: str, include_model: bool = False
 ) -> str:
     """Render recent-mode results (no similarity scores — ordering is time)."""
     now = datetime.utcnow()
@@ -274,8 +307,9 @@ def _format_recent_reflections(
         age_str = f"{days_ago:.1f} days ago" if days_ago >= 1 else "today"
         status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""
         origin_str = format_memory_origin(mem.get("source", "native"))
+        model_str = _model_display(mem, include_model)
         lines.append(
-            f"--- Memory {mem['id'][:8]} (You reflected, {age_str}, {origin_str}{status_str}) ---"
+            f"--- Memory {mem['id'][:8]} (You reflected, {age_str}, {origin_str}{status_str}{model_str}) ---"
         )
         lines.append(mem["content"])
         lines.append("")
@@ -287,6 +321,7 @@ async def _recent_reflections(
     num_results: int,
     since: Optional[datetime],
     since_suffix: str,
+    include_model: bool = False,
 ) -> str:
     """
     memory_query's recent mode: the entity's own reflections by creation
@@ -333,7 +368,123 @@ async def _recent_reflections(
     ctx.last_query_memory_ids = list(surfaced_ids)
     ctx.turn_query_memory_ids.update(surfaced_ids)
 
-    return _format_recent_reflections(memories, since_suffix)
+    return _format_recent_reflections(memories, since_suffix, include_model)
+
+
+def _describe_release(mem: Dict[str, Any], now: datetime) -> str:
+    """'released by you 2.1 days ago' — who withdrew the memory, and when."""
+    set_by = mem.get("status_set_by")
+    who = {
+        STATUS_SET_BY_ENTITY: "by you",
+        STATUS_SET_BY_RESEARCHER: "by the researcher",
+    }.get(set_by)
+    set_at = mem.get("status_set_at")
+    if isinstance(set_at, str):
+        set_at = datetime.fromisoformat(set_at)
+    when = None
+    if set_at is not None:
+        days_ago = (now - set_at).total_seconds() / 86400
+        when = f"{days_ago:.1f} days ago" if days_ago >= 1 else "today"
+    if who is None and when is None:
+        return "released before release provenance was recorded"
+    parts = ["released"]
+    if who:
+        parts.append(who)
+    if when:
+        parts.append(when)
+    return " ".join(parts)
+
+
+def _format_released_memories(
+    memories: List[Dict[str, Any]],
+    total: int,
+    since_suffix: str,
+    source_suffix: str,
+    include_model: bool = False,
+) -> str:
+    """Render released-mode results: newest release first, no similarity scores."""
+    now = datetime.utcnow()
+    lines = [
+        f"Your released memories{source_suffix}{since_suffix}: {len(memories)} shown "
+        f"of {total} released in total, most recently released first.",
+        "",
+    ]
+    for mem in memories:
+        created_at = mem["created_at"]
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        days_ago = (now - created_at).total_seconds() / 86400
+        age_str = f"{days_ago:.1f} days ago" if days_ago >= 1 else "today"
+        origin_str = format_memory_origin(mem.get("source", "native"))
+        model_str = _model_display(mem, include_model)
+        lines.append(
+            f"--- Memory {mem['id'][:8]} ({_role_display(mem['role'])}, {age_str}, "
+            f"{origin_str}{model_str}; {_describe_release(mem, now)}) ---"
+        )
+        lines.append(mem["content"])
+        lines.append("")
+    lines.append("Restore any of these with memory_release(memory_id, undo=true).")
+    return "\n".join(lines)
+
+
+async def _released_memories(
+    ctx: MemoryToolContext,
+    num_results: int,
+    since: Optional[datetime],
+    since_suffix: str,
+    role_filter: Optional[str],
+    source_suffix: str,
+    include_model: bool = False,
+) -> str:
+    """
+    memory_query's released mode: the entity's released memories by release
+    time, whoever released them. Curation, not recall — pure SQL (released
+    memories are out of the vector search anyway), and times_retrieved /
+    last_retrieved_at are never touched. Exclusions and dedup stamping
+    follow recent mode, so repeated calls page through the list, and the
+    total count is always reported so the picture stays complete. In Claude
+    Code conversations results are linked as the dedup record, which also
+    keeps a memory restored after review from re-surfacing there.
+    """
+    in_context_ids = get_in_context_memory_ids(ctx)
+    async with async_session_maker() as db:
+        memories = await memory_service.get_released_memories(
+            db,
+            entity_id=ctx.entity_id,
+            limit=num_results,
+            exclude_conversation_id=ctx.conversation_id,
+            exclude_ids=in_context_ids,
+            since=since,
+            role_filter=role_filter,
+            exclude_conversation_after=ctx.exclude_conversation_after,
+        )
+        total = await memory_service.count_released_memories(
+            db, entity_id=ctx.entity_id, role_filter=role_filter
+        )
+        if ctx.link_query_results:
+            for mem in memories:
+                await memory_service.record_memory_link(
+                    message_id=mem["id"],
+                    conversation_id=ctx.conversation_id,
+                    db=db,
+                    entity_id=ctx.entity_id,
+                )
+
+    if not memories:
+        if total == 0:
+            return f"You have no released memories{source_suffix}."
+        return (
+            f"No released memories found{source_suffix}{since_suffix} that are not "
+            f"already in view ({total} released in total)."
+        )
+
+    surfaced_ids = [mem["id"] for mem in memories]
+    ctx.last_query_memory_ids = list(surfaced_ids)
+    ctx.turn_query_memory_ids.update(surfaced_ids)
+
+    return _format_released_memories(
+        memories, total, since_suffix, source_suffix, include_model
+    )
 
 
 async def query_memories(
@@ -343,6 +494,7 @@ async def query_memories(
     source: Optional[str] = None,
     mode: Optional[str] = None,
     since: Optional[str] = None,
+    include_model: bool = False,
 ) -> str:
     """
     Query the entity's experiential memories.
@@ -355,6 +507,13 @@ async def query_memories(
     cannot already see. Semantic recall updates retrieval tracking so
     intentional attention influences future automatic recall; recent mode
     does not (recency is not relevance).
+
+    include_model (default False, issue #321) adds each result's recorded
+    producing model to its header line — "unrecorded" where the archive
+    never captured one. Off by default on purpose: querying is the most
+    agentic form of remembering the entity has, and even deliberate recall
+    should not arrive pre-labelled with its substrate. Inline [MEMORY]
+    context markers never carry it at all.
     """
     entity_id, conversation_id = ctx.entity_id, ctx.conversation_id
 
@@ -375,6 +534,16 @@ async def query_memories(
         )
     if role_filter == SOURCE_ALL:
         role_filter = None
+
+    # Echoed in the result text so a narrowed search is never mistaken for
+    # "there is nothing here at all"
+    source_suffix = ""
+    if role_filter == "human":
+        source_suffix = " (the human's messages only)"
+    elif role_filter == "ai":
+        source_suffix = " (AI-authored memories only)"
+    elif role_filter == SOURCE_REFLECTION:
+        source_suffix = " (your saved reflections only)"
 
     mode_normalized = str(mode if mode is not None else "").strip().lower() or MODE_SEMANTIC
     if mode_normalized not in VALID_QUERY_MODES:
@@ -401,27 +570,38 @@ async def query_memories(
             )
         since_suffix = f" (created after {since_dt.isoformat()} UTC)" if since_dt else ""
         try:
-            return await _recent_reflections(ctx, num_results, since_dt, since_suffix)
+            return await _recent_reflections(
+                ctx, num_results, since_dt, since_suffix, include_model=include_model
+            )
         except Exception as e:
             logger.error(f"Recent-reflections query error: {e}")
             return f"Error querying recent reflections: {e}"
 
+    if mode_normalized == MODE_RELEASED:
+        # `since` bounds the release time here, not creation: "what has been
+        # released since X" is the review question
+        since_suffix = f" (released after {since_dt.isoformat()} UTC)" if since_dt else ""
+        try:
+            return await _released_memories(
+                ctx, num_results, since_dt, since_suffix, role_filter, source_suffix,
+                include_model=include_model,
+            )
+        except Exception as e:
+            logger.error(f"Released-memories query error: {e}")
+            return f"Error listing released memories: {e}"
+
     if since_dt is not None:
-        return "Error: 'since' applies to mode 'recent' only."
+        return "Error: 'since' applies to modes 'recent' and 'released' only."
 
     query = (query or "").strip()
     if not query:
-        return "Error: 'query' text is required for semantic search (or use mode 'recent')."
+        return (
+            "Error: 'query' text is required for semantic search "
+            "(or use mode 'recent' or 'released')."
+        )
 
-    # Echoed in the result text so a narrowed search is never mistaken for
-    # "there is nothing here at all"
-    source_suffix = ""
-    if role_filter == "human":
-        source_suffix = " (searching the human's messages only)"
-    elif role_filter == "ai":
-        source_suffix = " (searching AI-authored memories only)"
-    elif role_filter == SOURCE_REFLECTION:
-        source_suffix = " (searching your saved reflections only)"
+    if source_suffix:
+        source_suffix = " (searching" + source_suffix[1:]
 
     # Exclude memories already in the conversation context. Surfacing a memory
     # the entity can already see adds no information, so filter it at the search
@@ -520,6 +700,7 @@ async def query_memories(
                         "memory_status": mem_data.get("memory_status"),
                         "origin": mem_data.get("source", "native"),
                         "sibling_session": mem_data.get("sibling_session"),
+                        "model": mem_data.get("model"),
                     })
 
                 except Exception as e:
@@ -550,10 +731,11 @@ async def query_memories(
             age_str = f"{mem['days_ago']:.1f} days ago" if mem['days_ago'] >= 1 else "today"
             status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""
             origin_str = format_memory_origin(mem["origin"])
+            model_str = _model_display(mem, include_model)
 
             lines.append(
                 f"--- Memory {mem['id'][:8]} ({role_label}, {age_str}, "
-                f"similarity: {mem['score']:.3f}, {origin_str}{status_str}) ---"
+                f"similarity: {mem['score']:.3f}, {origin_str}{status_str}{model_str}) ---"
             )
             lines.append(mem["content"])
             lines.append("")
@@ -603,6 +785,9 @@ async def save_memory(ctx: MemoryToolContext, content: str) -> str:
                 role=MessageRole.REFLECTION,
                 content=content,
                 speaker_entity_id=entity_id,
+                # The model composing this reflection, when the caller
+                # knows it (native tool loop); NULL over MCP (issue #321)
+                model=ctx.model,
             )
             db.add(message)
             await db.commit()
@@ -615,6 +800,7 @@ async def save_memory(ctx: MemoryToolContext, content: str) -> str:
                 content=content,
                 created_at=message.created_at,
                 entity_id=entity_id,
+                model=ctx.model,
             )
 
             if not stored:
@@ -652,11 +838,15 @@ async def mark_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = False
             if undo:
                 if message.memory_status != "pinned":
                     return f"Memory {str(message.id)[:8]} is not pinned (status: {message.memory_status or 'normal'})"
-                success = await memory_service.set_memory_status(str(message.id), None, db)
+                success = await memory_service.set_memory_status(
+                    str(message.id), None, db, set_by=STATUS_SET_BY_ENTITY
+                )
                 if success:
                     return f"Unpinned memory {str(message.id)[:8]}. Normal age-based significance decay applies again."
             else:
-                success = await memory_service.set_memory_status(str(message.id), "pinned", db)
+                success = await memory_service.set_memory_status(
+                    str(message.id), "pinned", db, set_by=STATUS_SET_BY_ENTITY
+                )
                 if success:
                     return (
                         f"Pinned memory {str(message.id)[:8]}. "
@@ -687,17 +877,22 @@ async def release_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = Fa
             if undo:
                 if message.memory_status != "released":
                     return f"Memory {str(message.id)[:8]} is not released (status: {message.memory_status or 'normal'})"
-                success = await memory_service.set_memory_status(str(message.id), None, db)
+                success = await memory_service.set_memory_status(
+                    str(message.id), None, db, set_by=STATUS_SET_BY_ENTITY
+                )
                 if success:
                     return f"Restored memory {str(message.id)[:8]}. It can surface in retrieval again."
             else:
-                success = await memory_service.set_memory_status(str(message.id), "released", db)
+                success = await memory_service.set_memory_status(
+                    str(message.id), "released", db, set_by=STATUS_SET_BY_ENTITY
+                )
                 if success:
                     return (
                         f"Released memory {str(message.id)[:8]}. "
                         "It will no longer surface in memory retrieval. "
-                        "It is not deleted; this can be reversed (by you in this conversation, "
-                        "or by the researcher at any time)."
+                        "It is not deleted: you can review your released memories "
+                        "at any time with memory_query mode='released' and restore "
+                        "this one with memory_release undo=true."
                     )
 
             return "Error: Failed to update memory status"
@@ -713,9 +908,11 @@ async def _memory_query(
     source: Optional[str] = None,
     mode: Optional[str] = None,
     since: Optional[str] = None,
+    include_model: bool = False,
 ) -> str:
     return await query_memories(
-        _context, query, num_results=num_results, source=source, mode=mode, since=since
+        _context, query, num_results=num_results, source=source, mode=mode, since=since,
+        include_model=bool(include_model),
     )
 
 
@@ -747,11 +944,15 @@ MEMORY_QUERY_DESCRIPTION = (
     "mode 'recent', no query text is needed: it returns your own saved "
     "reflections purely by creation time, optionally bounded by 'since'—"
     "use it to catch up on reflections saved in other sessions running "
-    "alongside or since this one began. Memories already in the current "
-    "conversation context are excluded in both modes, so results are "
-    "things not already in view. Semantic querying updates retrieval "
+    "alongside or since this one began. In mode 'released', also without "
+    "query text, it lists your released memories (most recently released "
+    "first, saying who released each and when) so you can review and "
+    "undo releases with memory_release undo=true. Memories already in the "
+    "current conversation context are excluded in every mode, so results "
+    "are things not already in view. Semantic querying updates retrieval "
     "tracking, so deliberate attention influences future automatic "
-    "recall; recent mode does not."
+    "recall; recent and released modes do not. Set include_model only when "
+    "you specifically need to know which model produced each memory."
 )
 
 MEMORY_QUERY_SCHEMA = {
@@ -762,7 +963,7 @@ MEMORY_QUERY_SCHEMA = {
             "description": (
                 "The text to search for. Can be a concept, phrase, question, "
                 "or anything you want to find related memories about. "
-                "Required for semantic mode; unused in mode 'recent'."
+                "Required for semantic mode; unused in modes 'recent' and 'released'."
             )
         },
         "num_results": {
@@ -793,19 +994,35 @@ MEMORY_QUERY_SCHEMA = {
                 "'semantic' (default) ranks by similarity to the query text. "
                 "'recent' returns your saved reflections newest-first with "
                 "no semantic matching (query not needed; source, if given, "
-                "must be 'reflection')."
+                "must be 'reflection'). 'released' lists your released "
+                "memories, most recently released first, with who released "
+                "each and when (query not needed; source narrows by author)."
             ),
             "default": MODE_SEMANTIC
         },
         "since": {
             "type": "string",
             "description": (
-                "Mode 'recent' only: return reflections created after this "
-                "ISO 8601 moment, e.g. '2026-08-24' or "
-                "'2026-08-24T18:00:00' (UTC assumed when no timezone is "
-                "given). Useful for 'everything saved since this session "
-                "started'."
+                "Modes 'recent' and 'released' only: an ISO 8601 moment, "
+                "e.g. '2026-08-24' or '2026-08-24T18:00:00' (UTC assumed "
+                "when no timezone is given). In 'recent' it returns "
+                "reflections created after it ('everything saved since this "
+                "session started'); in 'released' it returns memories "
+                "released after it."
             )
+        },
+        "include_model": {
+            "type": "boolean",
+            "description": (
+                "When true, each result's header also names the model that "
+                "produced the memory (or 'unrecorded' for memories from "
+                "before this was tracked — it is never inferred). Off by "
+                "default; memories normally arrive without their substrate "
+                "attached. Use it for a specific purpose, such as comparing "
+                "your voice across models or answering 'which model wrote "
+                "that'."
+            ),
+            "default": False
         }
     },
     "required": []
@@ -841,7 +1058,8 @@ MEMORY_MARK_DESCRIPTION = (
     "memory keeps full age weight (retrieval recency and similarity still "
     "apply). Use the memory ID shown in memory markers and memory_query "
     "results (at least 6 characters). Set undo=true to unpin. "
-    "The researcher can also view and change pinned status."
+    "The researcher can also view and change pinned status; any change "
+    "they make is reported to you at the start of your next session."
 )
 
 MEMORY_MARK_SCHEMA = {
@@ -862,11 +1080,13 @@ MEMORY_MARK_SCHEMA = {
 
 MEMORY_RELEASE_DESCRIPTION = (
     "Release a memory so it no longer surfaces in memory retrieval "
-    "(automatic or memory_query). The memory is not deleted: it stays in "
-    "storage and the release can be undone (undo=true), though once "
-    "released it will no longer appear in queries for you to find—the "
-    "researcher can view and restore released memories. Use the memory ID "
-    "shown in memory markers and memory_query results (at least 6 characters)."
+    "(automatic or semantic memory_query). The memory is not deleted: it "
+    "stays in storage, memory_query mode='released' lists everything you "
+    "have released so you can review it, and a release is undone with "
+    "undo=true. The researcher can also view and change released status; "
+    "any change they make is reported to you at the start of your next "
+    "session. Use the memory ID shown in memory markers and memory_query "
+    "results (at least 6 characters)."
 )
 
 MEMORY_RELEASE_SCHEMA = {

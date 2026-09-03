@@ -360,3 +360,31 @@ class TestCascadeDeletes:
             )
         )
         assert len(result.scalars().all()) == 0
+
+
+class TestMessageModelAttribution:
+    """Message.model (issue #321): nullable, unset by default, stored verbatim."""
+
+    async def test_model_defaults_to_null(self, db_session, sample_conversation):
+        message = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.ASSISTANT,
+            content="Unattributed.",
+        )
+        db_session.add(message)
+        await db_session.commit()
+        await db_session.refresh(message)
+        assert message.model is None
+
+    async def test_model_round_trips(self, db_session, sample_conversation):
+        message = Message(
+            conversation_id=sample_conversation.id,
+            role=MessageRole.ASSISTANT,
+            content="Attributed.",
+            model="claude-fable-5-1",
+        )
+        db_session.add(message)
+        await db_session.commit()
+
+        result = await db_session.execute(select(Message).where(Message.id == message.id))
+        assert result.scalar_one().model == "claude-fable-5-1"

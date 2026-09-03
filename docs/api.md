@@ -38,17 +38,17 @@ Called by Claude Code lifecycle hooks, not the frontend. Gated by
 
 - `POST /api/claude-code/session-start` — returns the entity's identity/reflections context block for a starting session (empty on resume); does not create the conversation row (registration is lazy). `sessions` (the hook's live-session snapshot) refreshes the rooms registry; the response's `rooms_notice` / `rooms_error` are printed by the hook
 - `POST /api/claude-code/retrieve` — record a user prompt (registering the session's conversation on first contact) and run automatic memory retrieval; returns the memory context block. `peer_messages` carries inter-session messages (SendMessage deliveries from sibling sessions), recorded as the entity's own words with the sending session marked (`Message.sibling_session`, vectorized `role="sibling"`). `sessions` refreshes the rooms registry as on session-start (`rooms_notice` names any roster rename revealed)
-- `POST /api/claude-code/log-assistant` — record the entity's final message of a turn (idempotent on `message_uuid`)
+- `POST /api/claude-code/log-assistant` — record the entity's final message of a turn (idempotent on `message_uuid`; optional `model` = the transcript entry's producing model, stored on the row)
 - `POST /api/claude-code/session-end` — session ended; re-indexes the entity's notes into the semantic mirror (background)
-- `POST /mcp` — MCP streamable-HTTP endpoint (stateless JSON-RPC) exposing the entity's memory tools (`memory_query`, `memory_save`, `memory_mark`, `memory_release`) to Claude Code sessions
+- `POST /mcp` — MCP streamable-HTTP endpoint (stateless JSON-RPC) exposing the entity's memory tools (`memory_query`, `memory_save`, `memory_mark`, `memory_release`) and the rooms registry tools (`declare_room`, `retire_room`) to Claude Code sessions
 
 ## Memories
 - `GET /api/memories/` — list memories (supports `entity_id` filter, sorting)
 - `GET /api/memories/{id}` — get specific memory
 - `POST /api/memories/search` — semantic search
 - `GET /api/memories/stats` — memory statistics
-- `GET /api/memories/overrides` — list memories with pinned/released status
-- `PUT /api/memories/{id}/status` — override a memory's pinned/released status (researcher emergency option)
+- `GET /api/memories/overrides` — list memories with pinned/released status, each with `status_set_by` (`entity` / `researcher`, null before provenance was recorded) and `status_set_at`
+- `PUT /api/memories/{id}/status` — override a memory's pinned/released status (researcher emergency option). Attributed to the researcher and reported to the entity at the start of its next session
 - `GET /api/memories/orphans` — list orphaned memory records
 - `POST /api/memories/orphans/cleanup` — clean up orphaned records
 - `POST /api/memories/query-links/cleanup` — one-time removal of stale memory-links recorded by `memory_query` before it stopped creating them (they bust prompt caching on session reload); body optional, a bare POST is a dry run — send `{"dry_run": false}` to delete

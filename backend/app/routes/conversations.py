@@ -162,6 +162,9 @@ class MessageResponse(BaseModel):
     # For Claude Code conversations: the sibling session that sent this
     # message, when it records an inter-session delivery
     sibling_session: Optional[str] = None
+    # The model that produced the message (issue #321); None = not recorded.
+    # Researcher-facing only — the frontend does not render it inline.
+    model: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -581,6 +584,7 @@ async def get_conversation_messages(
             speaker_entity_id=msg.speaker_entity_id,
             speaker_label=get_entity_label(msg.speaker_entity_id) if msg.speaker_entity_id else None,
             sibling_session=msg.sibling_session,
+            model=msg.model,
         )
         for msg in messages
     ]
@@ -808,6 +812,9 @@ async def export_conversation(
                 "content": msg.content,
                 "created_at": msg.created_at.isoformat(),
                 "times_retrieved": msg.times_retrieved,
+                # Substrate provenance (None when never recorded); the seed
+                # import reads it back so a round trip keeps the column
+                "model": msg.model,
             }
             for msg in messages
         ],
@@ -919,6 +926,11 @@ async def import_seed_conversation(
             message_kwargs["id"] = msg_id
         if created_at is not None:
             message_kwargs["created_at"] = created_at
+        # Only an explicit, recorded attribution is carried over: an export
+        # without the field (or a human row) imports as NULL, never inferred
+        exported_model = msg_data.get("model")
+        if role == MessageRole.ASSISTANT and isinstance(exported_model, str) and exported_model.strip():
+            message_kwargs["model"] = exported_model.strip()[:100]
 
         message = Message(**message_kwargs)
         db.add(message)
