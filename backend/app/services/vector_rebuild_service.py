@@ -351,6 +351,8 @@ class VectorRebuildService:
         # Matches store_memory: only set when present (no null metadata)
         if role == "sibling" and msg.sibling_session:
             record["sibling_session"] = msg.sibling_session
+        if msg.model:
+            record["model"] = msg.model
         plans[index_name].append(record)
 
     # ------------------------------------------------------------------
@@ -539,6 +541,7 @@ class VectorRebuildService:
                         else None
                     ),
                     sibling_session=record.get("sibling_session"),
+                    model=record.get("model"),
                 )
             )
 
@@ -618,6 +621,11 @@ class VectorRebuildService:
             speaker = label_to_index.get(raw_role)
             authoritative = False
 
+        # The producing model rides along as metadata on every copy of the
+        # record (store_memory mirrors Message.model); absent means the row
+        # was never attributed, and restore keeps it NULL rather than guess.
+        model = str(metadata.get("model") or "").strip() or None
+
         existing = recovered.get(record_id)
         if existing is not None:
             # Track the highest retrieval count across copies; each index
@@ -640,6 +648,7 @@ class VectorRebuildService:
             ),
             "speaker_entity_id": speaker,
             "sibling_session": sibling_session,
+            "model": model,
             "preview_only": preview_only,
             "authoritative": authoritative,
         }

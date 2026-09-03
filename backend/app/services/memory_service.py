@@ -195,6 +195,7 @@ class MemoryService:
         created_at: datetime,
         entity_id: Optional[str] = None,
         sibling_session: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> bool:
         """
         Store a message as a memory in the vector database.
@@ -213,6 +214,9 @@ class MemoryService:
                 messages in Claude Code conversations): the sending session's
                 display name, kept in metadata so restore-from-vectors can
                 recover the provenance column.
+            model: The model that produced the message (Message.model),
+                mirrored into metadata purely so restore-from-vectors can
+                recover the column. Retrieval never reads it from here.
 
         Returns True if successful, False otherwise.
         """
@@ -247,6 +251,8 @@ class MemoryService:
             # Only set when present — Pinecone metadata fields can't be null
             if sibling_session:
                 record["sibling_session"] = sibling_session
+            if model:
+                record["model"] = model
             await run_pinecone(
                 index.upsert_records,
                 namespace="",
@@ -603,6 +609,9 @@ class MemoryService:
                 "last_retrieved_at": m.last_retrieved_at.isoformat() if m.last_retrieved_at else None,
                 "memory_status": m.memory_status,
                 "source": conversation_source or "native",
+                # Substrate provenance — surfaced only on explicit request
+                # (memory_query include_model), never in context markers
+                "model": m.model,
             }
             for m, conversation_source in rows
         ]
@@ -666,6 +675,10 @@ class MemoryService:
                 # that authored this message, when it records a SendMessage
                 # delivery (None everywhere else) — rendered into role labels
                 "sibling_session": message.sibling_session,
+                # Which model produced the message (None = not recorded).
+                # Carried for memory_query's opt-in include_model only —
+                # the marker renderer deliberately never reads it.
+                "model": message.model,
             }
             # Cache the result
             if use_cache:

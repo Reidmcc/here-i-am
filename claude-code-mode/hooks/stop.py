@@ -32,17 +32,32 @@ import urllib.request
 import hook_util  # noqa: F401 — imported for its UTF-8 stdio reconfigure
 
 
+def entry_model(entry: dict):
+    """
+    The model that produced a transcript entry, as the entry reports it
+    (message.model on assistant entries), or None. The value is recorded
+    verbatim into the archive's model column (issue #321) — read, never
+    inferred, so a missing field stays a NULL rather than a guess.
+    """
+    message = entry.get("message") or {}
+    model = message.get("model") if isinstance(message, dict) else None
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return None
+
+
 def last_assistant_text(transcript_path: str):
     """
     The final assistant message of the turn: the last transcript entry of
     type "assistant" whose message carries at least one non-empty text
-    block. Returns (text, entry_uuid) or (None, None).
+    block. Returns (text, entry_uuid, model) or (None, None, None) — model
+    is the entry's own attribution (see entry_model), None when absent.
     """
     try:
         with open(transcript_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
     except Exception:
-        return None, None
+        return None, None, None
 
     for line in reversed(lines):
         line = line.strip()
@@ -68,8 +83,8 @@ def last_assistant_text(transcript_path: str):
             continue
         text = "\n\n".join(t for t in texts if t and t.strip()).strip()
         if text:
-            return text, entry.get("uuid")
-    return None, None
+            return text, entry.get("uuid"), entry_model(entry)
+    return None, None, None
 
 
 def main() -> None:
@@ -84,7 +99,7 @@ def main() -> None:
     if not session_id or not transcript_path:
         return
 
-    text, entry_uuid = last_assistant_text(transcript_path)
+    text, entry_uuid, model = last_assistant_text(transcript_path)
     if not text:
         return
 
@@ -94,6 +109,9 @@ def main() -> None:
         "entity": os.environ.get("HIM_ENTITY") or None,
         "cwd": data.get("cwd"),
         "message_uuid": entry_uuid,
+        # Which model wrote the message — from the transcript entry itself,
+        # the one place it is knowable at write time (issue #321)
+        "model": model,
     }
     base = os.environ.get("HIM_BACKEND_URL", "http://localhost:8000").rstrip("/")
     request = urllib.request.Request(

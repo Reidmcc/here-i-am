@@ -38,6 +38,10 @@ class MemoryResponse(BaseModel):
     last_retrieved_at: Optional[datetime]
     significance: float
     memory_status: Optional[str] = None
+    # The model that produced the memory (issue #321); None = not recorded.
+    # The researcher's lookup — the memory browser shows it, the entity's
+    # inline markers never do.
+    model: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -164,6 +168,7 @@ async def list_memories(
             "last_retrieved_at": msg.last_retrieved_at,
             "significance": significance,
             "memory_status": msg.memory_status,
+            "model": msg.model,
         })
 
     # Sort
@@ -683,6 +688,7 @@ async def list_memory_overrides(
                 msg.times_retrieved, msg.created_at, msg.last_retrieved_at, msg.memory_status, msg.role.value
             ),
             memory_status=msg.memory_status,
+            model=msg.model,
         )
         for msg in messages
     ]
@@ -751,6 +757,7 @@ async def get_memory(
         last_retrieved_at=message.last_retrieved_at,
         significance=significance,
         memory_status=message.memory_status,
+        model=message.model,
     )
 
 

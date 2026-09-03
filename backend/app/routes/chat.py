@@ -376,13 +376,17 @@ async def send_message(
     )
     db.add(human_msg)
 
-    # Assistant message (with speaker_entity_id for multi-entity)
+    # Assistant message (with speaker_entity_id for multi-entity). The model
+    # that wrote it is recorded at write time (issue #321) — the only moment
+    # it is knowable.
+    model_used = response.get("model") or session.model
     assistant_msg = Message(
         conversation_id=data.conversation_id,
         role=MessageRole.ASSISTANT,
         content=response["content"],
         token_count=assistant_token_count(response["content"], response.get("usage")),
         speaker_entity_id=responding_entity_id if is_multi_entity else None,
+        model=model_used,
     )
     db.add(assistant_msg)
 
@@ -419,6 +423,7 @@ async def send_message(
                         content=response["content"],
                         created_at=assistant_msg.created_at,
                         entity_id=entity_id,
+                        model=model_used,
                     )
                 else:
                     await memory_service.store_memory(
@@ -428,6 +433,7 @@ async def send_message(
                         content=response["content"],
                         created_at=assistant_msg.created_at,
                         entity_id=entity_id,
+                        model=model_used,
                     )
         else:
             # Standard single-entity conversation
@@ -446,6 +452,7 @@ async def send_message(
                 content=response["content"],
                 created_at=assistant_msg.created_at,
                 entity_id=session.entity_id,
+                model=model_used,
             )
 
     return ChatResponse(
@@ -708,6 +715,7 @@ async def stream_message(data: ChatRequest):
                             token_count=llm_service.count_tokens(tool_use_content),
                             speaker_entity_id=responding_entity_id if is_multi_entity else None,
                             created_at=next_turn_time(),
+                            model=model_used,
                         )
                         db.add(tool_use_msg)
                         tool_exchange_msgs.append(tool_use_msg)
@@ -731,6 +739,9 @@ async def stream_message(data: ChatRequest):
                     token_count=assistant_token_count(full_content, usage_data, tool_exchanges),
                     speaker_entity_id=responding_entity_id if is_multi_entity else None,
                     created_at=next_turn_time(),
+                    # Recorded at write time — the only moment it is
+                    # knowable (issue #321)
+                    model=model_used,
                 )
                 db.add(assistant_msg)
 
@@ -772,6 +783,7 @@ async def stream_message(data: ChatRequest):
                                     content=full_content,
                                     created_at=assistant_msg.created_at,
                                     entity_id=entity_id,
+                                    model=model_used,
                                 )
                             else:
                                 await memory_service.store_memory(
@@ -781,6 +793,7 @@ async def stream_message(data: ChatRequest):
                                     content=full_content,
                                     created_at=assistant_msg.created_at,
                                     entity_id=entity_id,
+                                    model=model_used,
                                 )
                     else:
                         # Standard single-entity conversation.
@@ -803,6 +816,7 @@ async def stream_message(data: ChatRequest):
                             content=full_content,
                             created_at=assistant_msg.created_at,
                             entity_id=session.entity_id,
+                            model=model_used,
                         )
 
                 # Send stored event with message IDs
@@ -1179,6 +1193,7 @@ async def regenerate_response(data: RegenerateRequest):
                             token_count=llm_service.count_tokens(tool_use_content),
                             speaker_entity_id=responding_entity_id if is_multi_entity else None,
                             created_at=next_turn_time(),
+                            model=model_used,
                         )
                         db.add(tool_use_msg)
                         tool_exchange_msgs.append(tool_use_msg)
@@ -1203,6 +1218,7 @@ async def regenerate_response(data: RegenerateRequest):
                     token_count=assistant_token_count(full_content, usage_data, tool_exchanges),
                     speaker_entity_id=responding_entity_id if is_multi_entity else None,
                     created_at=next_turn_time(),
+                    model=model_used,
                 )
                 db.add(assistant_msg)
 
@@ -1228,6 +1244,7 @@ async def regenerate_response(data: RegenerateRequest):
                                     content=full_content,
                                     created_at=assistant_msg.created_at,
                                     entity_id=entity_id,
+                                    model=model_used,
                                 )
                             else:
                                 await memory_service.store_memory(
@@ -1237,6 +1254,7 @@ async def regenerate_response(data: RegenerateRequest):
                                     content=full_content,
                                     created_at=assistant_msg.created_at,
                                     entity_id=entity_id,
+                                    model=model_used,
                                 )
                     else:
                         await memory_service.store_memory(
@@ -1246,6 +1264,7 @@ async def regenerate_response(data: RegenerateRequest):
                             content=full_content,
                             created_at=assistant_msg.created_at,
                             entity_id=session.entity_id,
+                            model=model_used,
                         )
 
                 # Send stored event with message IDs

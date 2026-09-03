@@ -195,6 +195,15 @@ async def run_migrations(conn):
         ))
         print("  ✓ Added sibling_session column for inter-session message provenance")
 
+    if 'model' not in columns:
+        print("Migrating: Adding 'model' column to messages table...")
+        await conn.execute(text(
+            "ALTER TABLE messages ADD COLUMN model VARCHAR(100)"
+        ))
+        # Forward-only by design (issue #321): existing rows stay NULL,
+        # meaning "before this was recorded" — never inferred from dates.
+        print("  ✓ Added model column (forward-only, no backfill)")
+
     # Check if entity_id column exists in conversation_memory_links table
     result = await conn.execute(text(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_memory_links'"

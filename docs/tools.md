@@ -28,6 +28,18 @@ Every retrieved memory — in `[MEMORY]` context markers and in `memory_query`
 results — is labeled with the experience it was formed in: `via Here I Am`
 (a native conversation) or `via Claude Code` (a Claude Code mode session).
 
+What a memory is *not* labeled with, unless asked, is the model that
+produced it. The archive records that (`Message.model`, issue #321) at
+write time and forward-only — assistant messages and reflections from the
+native chat flow, and the entity's turns in Claude Code mode via the Stop
+hook; NULL for everything before the column existed, for human messages,
+and for reflections saved over MCP, and never inferred from dates. It is
+never rendered into `[MEMORY]` context markers. `memory_query` takes an
+optional `include_model` (boolean, **default false**) that, in either
+mode, appends `model: <id>` (or `model: unrecorded`) to each result's
+header line — for a specific purpose such as comparing the entity's voice
+across substrates, not as a standing label.
+
 The four memory tools are also exposed over MCP for Claude Code mode
 (`POST /mcp`, gated by `CLAUDE_CODE_MODE_ENABLED` — see
 [claude-code-mode.md](claude-code-mode.md)). The MCP variants take an extra
