@@ -740,6 +740,45 @@ class SessionManager:
         )
         return result.first() is None
 
+    async def _inject_status_change_notice(
+        self, session: ConversationSession, db: AsyncSession
+    ) -> None:
+        """
+        On the responding entity's first turn, tell it about memory status
+        changes the researcher made since its last session
+        (memory_service.build_status_change_notice). Silent when there are
+        none.
+
+        The notice is a context-only message like [CONTEXT NOTICE]: not
+        persisted, not vectorized, absent from the [MEMORY] markers. It is
+        therefore not rebuilt on a session reload — a one-time notice, at
+        the cost of one prompt-cache re-write when a conversation that
+        carried one is reloaded. Rare by design: overrides are the
+        researcher's emergency option. A failure is reported in place of the
+        notice rather than swallowed, because silence here means "nothing
+        changed".
+        """
+        try:
+            notice = await memory_service.build_status_change_notice(
+                db, session.entity_id, exclude_conversation_id=session.conversation_id
+            )
+        except Exception as e:
+            logger.error(f"[MEMORY] Status-change notice failed: {e}")
+            notice = (
+                "[MEMORY STATUS NOTICE] Could not check for researcher-set "
+                f"memory status changes since your last session ({e}). If it "
+                "matters, ask the researcher, or review with memory_query "
+                'mode="released".'
+            )
+        if not notice:
+            return
+        session.conversation_context.append({
+            "role": "user",
+            "content": notice,
+            "is_context_notice": True,
+        })
+        logger.info("[MEMORY] Status notice: injected researcher-change notice on first turn")
+
     async def _inject_recent_reflections(
         self,
         session: ConversationSession,
@@ -939,13 +978,10 @@ class SessionManager:
             # context yet); multi-entity means the first turn *this entity*
             # speaks, so each participant gets its own recent reflections
             # when it first responds. Checked before any memory insertion
-            # mutates the context, and used only to gate recent-reflection
-            # injection below (skip the check — it can hit the DB — when the
-            # feature is off); later turns are unaffected.
-            is_first_turn = (
-                settings.recent_reflections_enabled
-                and await self._is_entity_first_turn(session, db)
-            )
+            # mutates the context, and used only to gate the first-turn
+            # injections below (recent reflections, the researcher-change
+            # status notice); later turns are unaffected.
+            is_first_turn = await self._is_entity_first_turn(session, db)
 
             # Fetch 10 candidates per query, then combine and re-rank by significance
             fetch_k_per_query = 10
@@ -1145,6 +1181,11 @@ class SessionManager:
                     )
                 else:
                     logger.info("[MEMORY] Recent reflections: skipped (not the responding entity's first turn)")
+
+            # Also on the first turn: tell the entity about researcher-set
+            # memory status changes since its last session
+            if is_first_turn:
+                await self._inject_status_change_notice(session, db)
 
             # Log memory retrieval summary
             if new_memories:
@@ -1373,13 +1414,10 @@ class SessionManager:
             # context yet); multi-entity means the first turn *this entity*
             # speaks, so each participant gets its own recent reflections
             # when it first responds. Checked before any memory insertion
-            # mutates the context, and used only to gate recent-reflection
-            # injection below (skip the check — it can hit the DB — when the
-            # feature is off); later turns are unaffected.
-            is_first_turn = (
-                settings.recent_reflections_enabled
-                and await self._is_entity_first_turn(session, db)
-            )
+            # mutates the context, and used only to gate the first-turn
+            # injections below (recent reflections, the researcher-change
+            # status notice); later turns are unaffected.
+            is_first_turn = await self._is_entity_first_turn(session, db)
 
             # Fetch 10 candidates per query, then combine and re-rank by significance
             fetch_k_per_query = 10
@@ -1577,6 +1615,11 @@ class SessionManager:
                     )
                 else:
                     logger.info("[MEMORY] Recent reflections: skipped (not the responding entity's first turn)")
+
+            # Also on the first turn: tell the entity about researcher-set
+            # memory status changes since its last session
+            if is_first_turn:
+                await self._inject_status_change_notice(session, db)
 
             # Log memory retrieval summary
             if new_memories:

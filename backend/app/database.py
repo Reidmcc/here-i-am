@@ -188,6 +188,16 @@ async def run_migrations(conn):
         ))
         print("  ✓ Added memory_status column for pinned/released memories")
 
+    if 'status_set_by' not in columns:
+        print("Migrating: Adding 'status_set_by' / 'status_set_at' columns to messages table...")
+        await conn.execute(text(
+            "ALTER TABLE messages ADD COLUMN status_set_by VARCHAR(20)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE messages ADD COLUMN status_set_at DATETIME"
+        ))
+        print("  ✓ Added status provenance columns (who set a memory's status, and when)")
+
     # Check if entity_id column exists in conversation_memory_links table
     result = await conn.execute(text(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_memory_links'"
