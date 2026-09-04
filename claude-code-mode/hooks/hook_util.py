@@ -26,6 +26,7 @@ import glob
 import json
 import os
 import re
+import socket
 import sys
 import tempfile
 import urllib.request
@@ -286,3 +287,18 @@ def rooms_output_lines(body) -> list:
 
 def describe_error(error: Exception) -> str:
     return f"{error.__class__.__name__}: {error}"
+
+
+def never_reached_backend(error: Exception) -> bool:
+    """
+    Whether a failed request provably never reached the backend — the
+    connection was refused or the host didn't resolve — as opposed to a
+    failure that may have landed after the server did work (an HTTP error,
+    a timeout, a dropped connection). Only the first kind lets a hook say
+    "NOT recorded" without checking.
+    """
+    reason = getattr(error, "reason", None)
+    for candidate in (error, reason):
+        if isinstance(candidate, (ConnectionRefusedError, socket.gaierror)):
+            return True
+    return False

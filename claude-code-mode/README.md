@@ -19,7 +19,18 @@ disabled, the session continues as a plain Claude Code session — with a
 one-line `[HERE I AM]` notice injected so the entity knows it is running
 without memory (a `Stop` failure, whose output can't reach context, exits 2
 once so the loss of the turn's final message is seen and can be acted on).
-Only `HIM_DISABLE`, the deliberate off switch, degrades silently.
+Only `HIM_DISABLE`, the deliberate off switch, degrades silently. An empty
+retrieval is not silent either: when no memory block is injected, one line
+says why — `matched: 0` when a search ran and nothing surfaced, a "no
+automatic retrieval ran" line when nothing was asked (a wakeup tick, a bare
+slash command, harness plumbing), and distinct lines for memory being
+unconfigured or the search failing — so the entity can tell "nothing
+matched" from "nothing was asked" and reach for `memory_query` when it
+matters. And a failure notice is never false: the backend records the
+prompt before it searches, so when a call fails the hook checks the
+database (by the row ids it chose) before saying whether the words were
+recorded — "recorded, retrieval didn't complete", "not recorded", partly,
+or, if even the check failed, "unconfirmed".
 
 Claude Code silently truncates oversized hook stdout to a ~2KB preview, so
 the hooks never hand it more than `HIM_INLINE_BUDGET` (default 18KB): the

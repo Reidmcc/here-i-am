@@ -125,12 +125,19 @@ def run_hook(
 
 def test_wakeup_tick_records_nothing_but_pings_backend(tmp_path):
     out, payload = run_hook(
-        "[WAKEUP] Continue the standing Substack engagement loop.", tmp_path
+        "[WAKEUP] Continue the standing Substack engagement loop.",
+        tmp_path,
+        body={"context": "", "retrieval_status": "skipped"},
     )
     assert payload is not None, "backend must still be pinged on a tick"
     assert payload["prompt"] == ""
     assert payload["peer_messages"] == []
-    assert out.strip() == ""
+    # A tick's only output is the no-retrieval stamp (issue #326): the
+    # silence that caused the 08-29 near-miss now says what it is
+    assert out.strip() == (
+        "[HERE I AM] No automatic retrieval ran for this prompt (wakeup "
+        "tick); use memory_query if you need recall."
+    )
 
 
 def test_wakeup_tick_still_prints_mailbox_flag(tmp_path):
@@ -151,9 +158,14 @@ def test_wakeup_with_peer_message_still_records_the_letter(tmp_path):
     )
     _, payload = run_hook(prompt, tmp_path)
     assert payload["prompt"] == ""
-    assert payload["peer_messages"] == [
-        {"content": "letter words", "sender": "Porch chat"}
-    ]
+    assert len(payload["peer_messages"]) == 1
+    peer = payload["peer_messages"][0]
+    assert (peer["content"], peer["sender"]) == ("letter words", "Porch chat")
+    # The hook names the row it is asking for (a UUID), so it can verify
+    # the recording after a failed call
+    import uuid
+
+    assert uuid.UUID(peer["message_id"])
 
 
 def test_typed_prompt_still_sent_verbatim(tmp_path):
