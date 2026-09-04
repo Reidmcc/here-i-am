@@ -44,8 +44,13 @@ def run_hook(prompt: str, body=None, unreachable: bool = False, extra_env=None):
     """
     stdin_payload = json.dumps({"session_id": "stamp-test", "prompt": prompt})
     marker = "BACKEND-CALLED"
+    # "unreachable" means the connection was refused — the one failure the
+    # hook may report as unrecorded without checking /recorded
     stub_tail = (
-        "    raise OSError('backend down')\n" if unreachable else "    return body\n"
+        "    import urllib.error\n"
+        "    raise urllib.error.URLError(ConnectionRefusedError('refused'))\n"
+        if unreachable
+        else "    return body\n"
     )
     code = (
         "import io, json, sys\n"

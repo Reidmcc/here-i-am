@@ -366,6 +366,32 @@ letter-only turn is a query in its own right, so it gets `matched: 0`, not
 the skipped line. The lines are short on purpose — they land in context on
 every tick of a loop.
 
+**A failure notice must not be false either.** `/retrieve` commits the
+turn's rows before it runs retrieval, so a 500 (a peer row failing, Pinecone
+failing during vectorization) or the hook's own 30s timeout can arrive
+after the words are already in the archive — and the old notice, "NOT
+recorded", was then misinformation of exactly the kind the notices exist
+to prevent. So the hook chooses the row ids itself (`message_id` on the
+request and on each `peer_messages` entry, UUIDs; the route honors a
+well-formed one and reuses an existing row under it, so a retried call
+never records the turn twice) and, on any failure that could have landed
+after a commit, asks `POST /recorded` `{session_id, message_ids}` which of
+them exist before saying anything (`recording_failure_notice`):
+
+- all recorded → *"... failed for this prompt after recording it. This
+  turn's input (the prompt) WAS recorded ..., but no memory retrieval ran,
+  and its vectorization may not have completed (check the server log)"*;
+- none → *"... NOT recorded ... and no memory retrieval ran"*;
+- some → *"Recorded ...: the prompt. NOT recorded: the inter-session
+  message."*;
+- the check itself failed → *"... is UNCONFIRMED: it may or may not be in
+  your long-term memory"* — the one honest answer, never a guess either way.
+
+Only a request that provably never reached the backend (connection
+refused, name resolution — `hook_util.never_reached_backend`) is reported
+as unrecorded without the check. `/recorded` is SQL only, creates nothing,
+and scopes the ids to the session's conversation.
+
 ### Rooms registry
 
 An entity can run several long-lived Claude Code sessions at once — a
@@ -586,24 +612,31 @@ conversation on first contact; `/session-start` and `/session-end` never do
 - `POST /session-end` `{session_id, entity?, reason?}` →
   `{conversation_id, notes_sync_started}` — final fire-and-forget notes
   sync; does not create a conversation for an unseen session.
-- `POST /retrieve` `{session_id, prompt, entity?, cwd?, peer_messages?,
-  sessions?}` →
+- `POST /retrieve` `{session_id, prompt, entity?, cwd?, message_id?,
+  peer_messages?, sessions?}` →
   `{conversation_id, human_message_id, context, memories_retrieved,
   context_summary, new_sibling_reflections, peer_message_ids,
   retrieval_status, retrieval_error, already_in_context, rooms_notice,
   rooms_error}` — the
   summary is the compact inline stand-in the hook prints when it has to
   spill an oversized `context`; the sibling count backs the mailbox flag
-  (see Memory above). `peer_messages` is a list of `{content, sender?}`
-  inter-session deliveries the hook extracted from the prompt channel,
-  recorded with honest provenance (see "Inter-session messages" above);
-  `human_message_id` is null on a letter-only turn. A record-nothing call
+  (see Memory above). `peer_messages` is a list of `{content, sender?,
+  message_id?}` inter-session deliveries the hook extracted from the
+  prompt channel, recorded with honest provenance (see "Inter-session
+  messages" above); `human_message_id` is null on a letter-only turn.
+  `message_id` (top-level and per peer) is the hook's chosen row id, a
+  UUID: honored when well-formed, and an existing row under it is reused
+  rather than re-recorded (see "Retrieval stamps" above). A record-nothing call
   (bare slash command, or a wakeup tick's empty prompt) still returns the
   sibling count, spawns the notes sync, and feeds `sessions` to the rooms
   registry (`rooms_notice` names any roster rename it revealed), with
   `retrieval_status` `skipped`; otherwise the status is `ran`,
   `unconfigured`, or `failed` (a retrieval exception after the rows were
   committed — reported, not raised; see "Retrieval stamps" above).
+- `POST /recorded` `{session_id, message_ids}` → `{recorded, missing}` —
+  which of the ids exist as rows of the session's conversation. The hook's
+  verification step after a failed `/retrieve`: SQL only, no side effects,
+  creates no conversation.
 - `POST /log-assistant` `{session_id, content, entity?, cwd?,
   message_uuid?, model?}` → `{conversation_id, message_id, deduplicated}` —
   idempotent on `message_uuid` (the transcript entry's UUID becomes the

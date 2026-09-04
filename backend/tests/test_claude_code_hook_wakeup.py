@@ -158,9 +158,14 @@ def test_wakeup_with_peer_message_still_records_the_letter(tmp_path):
     )
     _, payload = run_hook(prompt, tmp_path)
     assert payload["prompt"] == ""
-    assert payload["peer_messages"] == [
-        {"content": "letter words", "sender": "Porch chat"}
-    ]
+    assert len(payload["peer_messages"]) == 1
+    peer = payload["peer_messages"][0]
+    assert (peer["content"], peer["sender"]) == ("letter words", "Porch chat")
+    # The hook names the row it is asking for (a UUID), so it can verify
+    # the recording after a failed call
+    import uuid
+
+    assert uuid.UUID(peer["message_id"])
 
 
 def test_typed_prompt_still_sent_verbatim(tmp_path):

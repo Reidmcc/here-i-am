@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -112,6 +113,9 @@ class PeerMessage(BaseModel):
     content: str
     # The sending session's display name (the wrapper's from-name attribute)
     sender: Optional[str] = None
+    # Row id chosen by the hook (a UUID), so it can verify recording after a
+    # failed call and so a retry is idempotent; see RetrieveRequest.message_id
+    message_id: Optional[str] = None
 
 
 class RetrieveRequest(BaseModel):
@@ -119,6 +123,14 @@ class RetrieveRequest(BaseModel):
     prompt: str
     entity: Optional[str] = None
     cwd: Optional[str] = None
+    # Row id for the prompt's human message, chosen by the hook (a UUID).
+    # The hook needs to know, after a failed call, whether the row it sent
+    # was committed before the failure — a 500 or a timeout can land after
+    # the commit, and "NOT recorded" would then be false. With the id in
+    # hand it asks /recorded instead of inferring. The same id makes a
+    # retried call idempotent (an existing row is reused, never
+    # re-recorded). Invalid or absent: the row gets a generated id.
+    message_id: Optional[str] = None
     # Inter-session messages that rode in with (or stood in for) the prompt
     peer_messages: List[PeerMessage] = []
     # Live-session snapshot for the rooms registry (see SessionStartRequest)
@@ -353,28 +365,39 @@ async def retrieve(
             rooms_error=rooms_error,
         )
 
+    # Rows are persisted under the ids the hook chose (when valid), and a
+    # row that already exists under that id is reused: a hook retrying
+    # after a timeout must not record the turn twice. The route can still
+    # fail after a commit (vectorization, a later peer row, the search); the
+    # hook then verifies what landed through /recorded instead of guessing.
     human_msg = None
     if record_prompt:
-        human_msg = await cc.persist_and_vectorize_message(
-            db,
-            conversation,
-            entity,
-            role=MessageRole.HUMAN,
-            content=prompt,
-            token_count=cc.safe_token_count(prompt),
-        )
+        human_msg = await _existing_message(db, conversation, _valid_uuid(data.message_id))
+        if human_msg is None:
+            human_msg = await cc.persist_and_vectorize_message(
+                db,
+                conversation,
+                entity,
+                role=MessageRole.HUMAN,
+                content=prompt,
+                message_id=_valid_uuid(data.message_id),
+                token_count=cc.safe_token_count(prompt),
+            )
 
     peer_message_ids: List[str] = []
     for peer in peer_messages:
-        peer_msg = await cc.persist_and_vectorize_message(
-            db,
-            conversation,
-            entity,
-            role=MessageRole.ASSISTANT,
-            content=peer.content,
-            token_count=cc.safe_token_count(peer.content),
-            sibling_session=(peer.sender or "").strip() or "unknown session",
-        )
+        peer_msg = await _existing_message(db, conversation, _valid_uuid(peer.message_id))
+        if peer_msg is None:
+            peer_msg = await cc.persist_and_vectorize_message(
+                db,
+                conversation,
+                entity,
+                role=MessageRole.ASSISTANT,
+                content=peer.content,
+                message_id=_valid_uuid(peer.message_id),
+                token_count=cc.safe_token_count(peer.content),
+                sibling_session=(peer.sender or "").strip() or "unknown session",
+            )
         peer_message_ids.append(str(peer_msg.id))
 
     # Retrieval runs against the whole turn's new content — the human's
@@ -424,6 +447,80 @@ async def retrieve(
         already_in_context=retrieval.already_in_context,
         rooms_notice=rooms_notice,
         rooms_error=rooms_error,
+    )
+
+
+def _valid_uuid(value: Optional[str]) -> Optional[str]:
+    """The value as a canonical UUID string, or None if it isn't one — a
+    hook-chosen row id is honored only when it is well-formed."""
+    if not value:
+        return None
+    try:
+        return str(uuid.UUID(str(value).strip()))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+async def _existing_message(
+    db: AsyncSession, conversation, message_id: Optional[str]
+) -> Optional[Message]:
+    """A row already recorded under message_id in this conversation (a
+    retried hook call), or None."""
+    if not message_id:
+        return None
+    result = await db.execute(
+        select(Message).where(
+            Message.id == message_id,
+            Message.conversation_id == str(conversation.id),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+class RecordedRequest(BaseModel):
+    session_id: str
+    message_ids: List[str] = []
+
+
+class RecordedResponse(BaseModel):
+    # Of the ids asked about, those that exist as rows of this session's
+    # conversation, and those that don't
+    recorded: List[str] = []
+    missing: List[str] = []
+
+
+@router.post("/recorded", response_model=RecordedResponse)
+async def recorded(
+    data: RecordedRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Which of these message ids were recorded for this session.
+
+    The UserPromptSubmit hook's verification step: when /retrieve fails
+    (a 500, a timeout, a dropped connection), the hook cannot tell from the
+    error whether the rows it sent were committed first — and telling the
+    entity its words were NOT recorded when they were is exactly the false
+    information the hooks exist to prevent. So the hook chooses the row ids
+    up front and asks here. SQL only, no side effects, creates nothing;
+    ids are scoped to the session's conversation so a stray id from
+    elsewhere reads as missing.
+    """
+    _require_enabled()
+    wanted = [mid for mid in (_valid_uuid(m) for m in data.message_ids) if mid]
+    if not wanted:
+        return RecordedResponse(recorded=[], missing=list(data.message_ids))
+    conversation_id = cc.conversation_id_for_session(data.session_id)
+    result = await db.execute(
+        select(Message.id).where(
+            Message.id.in_(wanted),
+            Message.conversation_id == conversation_id,
+        )
+    )
+    found = {row[0] for row in result.all()}
+    return RecordedResponse(
+        recorded=[mid for mid in wanted if mid in found],
+        missing=[mid for mid in data.message_ids if _valid_uuid(mid) not in found],
     )
 
 

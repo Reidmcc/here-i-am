@@ -26,7 +26,11 @@ automatic retrieval ran" line when nothing was asked (a wakeup tick, a bare
 slash command, harness plumbing), and distinct lines for memory being
 unconfigured or the search failing — so the entity can tell "nothing
 matched" from "nothing was asked" and reach for `memory_query` when it
-matters.
+matters. And a failure notice is never false: the backend records the
+prompt before it searches, so when a call fails the hook checks the
+database (by the row ids it chose) before saying whether the words were
+recorded — "recorded, retrieval didn't complete", "not recorded", partly,
+or, if even the check failed, "unconfirmed".
 
 Claude Code silently truncates oversized hook stdout to a ~2KB preview, so
 the hooks never hand it more than `HIM_INLINE_BUDGET` (default 18KB): the

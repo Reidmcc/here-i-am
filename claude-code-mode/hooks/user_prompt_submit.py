@@ -43,12 +43,26 @@ unmodified (never exits 2 — that would block the prompt), but prints a
 one-line [HERE I AM] notice: an unrecorded prompt and a skipped retrieval
 are invisible from inside otherwise. HIM_DISABLE stays silent.
 
+A failure notice must not be false either. The backend commits the turn's
+rows before it runs retrieval, so a 500 or a timeout can arrive after the
+words are already in the archive — and "NOT recorded" would then be
+exactly the misinformation these notices exist to prevent. So the hook
+chooses the row ids itself (message_id per prompt and per inter-session
+message), and on any failure that could have landed after a commit it
+asks /recorded which of them exist, then reports what it found: recorded
+(retrieval didn't complete), not recorded, or partly recorded, naming
+which. Only a request that provably never reached the backend (connection
+refused, name resolution) is reported as unrecorded without the check;
+when the check itself fails the notice says the recording is UNCONFIRMED
+rather than guessing either way.
+
 Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE, HIM_INLINE_BUDGET
 (see session_start.py / hook_util.py).
 """
 import os
 import sys
 import time
+import uuid
 
 import hook_util
 
@@ -91,9 +105,17 @@ def main() -> None:
         print(plumbing_only_stamp())
         return
 
+    # The hook names the rows it is asking the backend to write, so that
+    # after a failed call it can ask which of them landed (see the module
+    # docstring) and a retried call can never record the turn twice
+    human_id = str(uuid.uuid4()) if prompt else None
+    peer_messages = [
+        {**peer, "message_id": str(uuid.uuid4())} for peer in peer_messages
+    ]
     payload = {
         "session_id": session_id,
         "prompt": prompt,
+        "message_id": human_id,
         "peer_messages": peer_messages,
         "entity": os.environ.get("HIM_ENTITY") or None,
         "cwd": data.get("cwd"),
@@ -115,10 +137,12 @@ def main() -> None:
             )
             return
         hook_util.fail_loud(
-            "The Here I Am backend was unreachable for this prompt "
-            f"({hook_util.describe_error(e)}). This turn's input (the prompt "
-            "and any inter-session message it carried) was NOT recorded to "
-            "your long-term memory and no memory retrieval ran."
+            recording_failure_notice(
+                e,
+                session_id,
+                human_id,
+                [peer["message_id"] for peer in peer_messages],
+            )
         )
         return
 
@@ -161,6 +185,68 @@ def main() -> None:
 
 
 MEMORY_QUERY_HINT = "use memory_query if you need recall."
+
+
+def recording_failure_notice(error, session_id, human_id, peer_ids) -> str:
+    """
+    The notice for a failed /retrieve call on a turn that had something to
+    record — accurate about whether the recording happened.
+
+    The backend commits the rows before running retrieval, so the error
+    alone doesn't say whether the words landed. A request that provably
+    never reached the backend is reported as unrecorded outright; anything
+    else is checked against /recorded by the ids this hook chose, and the
+    notice names what was recorded and what was not. When the check fails
+    too, the recording is reported as UNCONFIRMED — the one honest answer.
+    """
+    err = hook_util.describe_error(error)
+    labels = {}
+    if human_id:
+        labels[human_id] = "the prompt"
+    if len(peer_ids) == 1:
+        labels[peer_ids[0]] = "the inter-session message"
+    else:
+        for index, peer_id in enumerate(peer_ids, start=1):
+            labels[peer_id] = f"inter-session message {index}"
+    what = " and ".join(labels.values())
+    not_recorded = (
+        f"This turn's input ({what}) was NOT recorded to your long-term "
+        "memory and no memory retrieval ran."
+    )
+    if hook_util.never_reached_backend(error):
+        return f"The Here I Am backend was unreachable for this prompt ({err}). {not_recorded}"
+    try:
+        check = hook_util.post_backend(
+            "/api/claude-code/recorded",
+            {"session_id": session_id, "message_ids": list(labels)},
+            timeout=5,
+        )
+        recorded = {str(mid) for mid in (check.get("recorded") or [])}
+    except Exception as check_error:
+        return (
+            f"The Here I Am backend failed for this prompt ({err}), and the "
+            "follow-up check of whether this turn's input was recorded also "
+            f"failed ({hook_util.describe_error(check_error)}). Its recording "
+            f"({what}) is UNCONFIRMED: it may or may not be in your long-term "
+            f"memory. No memory retrieval ran; {MEMORY_QUERY_HINT}"
+        )
+    landed = [label for mid, label in labels.items() if mid in recorded]
+    lost = [label for mid, label in labels.items() if mid not in recorded]
+    if not landed:
+        return f"The Here I Am backend failed for this prompt ({err}). {not_recorded}"
+    if not lost:
+        return (
+            f"The Here I Am backend failed for this prompt after recording it ({err}). "
+            f"This turn's input ({what}) WAS recorded to your long-term memory, "
+            "but no memory retrieval ran, and its vectorization may not have "
+            f"completed (check the server log); {MEMORY_QUERY_HINT}"
+        )
+    return (
+        f"The Here I Am backend failed partway through this prompt ({err}). "
+        f"Recorded to your long-term memory: {' and '.join(landed)}. NOT "
+        f"recorded: {' and '.join(lost)}. No memory retrieval ran; "
+        f"{MEMORY_QUERY_HINT}"
+    )
 
 
 def plumbing_only_stamp() -> str:

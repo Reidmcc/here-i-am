@@ -1256,6 +1256,104 @@ class TestRetrievalStatus:
         assert row.content == "hello"
 
 
+class TestRecordingVerification:
+    """Hook-chosen row ids (issue #326): /retrieve honors a well-formed
+    message_id, reuses an existing row under it (a retried call never
+    records twice), and /recorded says which ids exist for the session —
+    the hook's way of telling "recorded, then failed" from "not recorded"
+    without inferring it from an error."""
+
+    async def test_hook_chosen_message_id_is_honored(self, async_client):
+        wanted = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": str(uuid.uuid4()), "prompt": "hello", "message_id": wanted},
+        )
+        assert response.json()["human_message_id"] == wanted
+
+    async def test_retry_with_same_id_records_once(self, async_client, db_session):
+        session_id = str(uuid.uuid4())
+        wanted = str(uuid.uuid4())
+        payload = {"session_id": session_id, "prompt": "hello", "message_id": wanted}
+        first = await async_client.post("/api/claude-code/retrieve", json=payload)
+        second = await async_client.post("/api/claude-code/retrieve", json=payload)
+        assert first.json()["human_message_id"] == wanted
+        assert second.json()["human_message_id"] == wanted
+        assert second.json()["retrieval_status"] in ("ran", "unconfigured")
+        rows = (await db_session.execute(
+            select(Message).where(Message.role == MessageRole.HUMAN, Message.content == "hello")
+        )).scalars().all()
+        assert len(rows) == 1
+
+    async def test_malformed_message_id_gets_a_generated_one(self, async_client):
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": str(uuid.uuid4()), "prompt": "hello", "message_id": "not-a-uuid"},
+        )
+        got = response.json()["human_message_id"]
+        assert got != "not-a-uuid"
+        assert uuid.UUID(got)
+
+    async def test_peer_message_id_honored_and_idempotent(self, async_client, db_session):
+        session_id = str(uuid.uuid4())
+        wanted = str(uuid.uuid4())
+        payload = {
+            "session_id": session_id,
+            "prompt": "",
+            "peer_messages": [
+                {"content": "letter", "sender": "Porch", "message_id": wanted}
+            ],
+        }
+        first = await async_client.post("/api/claude-code/retrieve", json=payload)
+        second = await async_client.post("/api/claude-code/retrieve", json=payload)
+        assert first.json()["peer_message_ids"] == [wanted]
+        assert second.json()["peer_message_ids"] == [wanted]
+        rows = (await db_session.execute(
+            select(Message).where(Message.sibling_session == "Porch")
+        )).scalars().all()
+        assert len(rows) == 1
+
+    async def test_recorded_reports_ids_scoped_to_the_session(self, async_client):
+        session_id = str(uuid.uuid4())
+        landed = str(uuid.uuid4())
+        never = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "hello", "message_id": landed},
+        )
+        response = await async_client.post(
+            "/api/claude-code/recorded",
+            json={"session_id": session_id, "message_ids": [landed, never]},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"recorded": [landed], "missing": [never]}
+
+        # The same id asked about under another session reads as missing
+        other = await async_client.post(
+            "/api/claude-code/recorded",
+            json={"session_id": str(uuid.uuid4()), "message_ids": [landed]},
+        )
+        assert other.json() == {"recorded": [], "missing": [landed]}
+
+    async def test_recorded_tolerates_garbage_ids(self, async_client):
+        response = await async_client.post(
+            "/api/claude-code/recorded",
+            json={"session_id": str(uuid.uuid4()), "message_ids": ["nope", ""]},
+        )
+        assert response.json() == {"recorded": [], "missing": ["nope", ""]}
+
+    async def test_recorded_creates_no_conversation(self, async_client, db_session):
+        session_id = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/recorded",
+            json={"session_id": session_id, "message_ids": [str(uuid.uuid4())]},
+        )
+        rows = (await db_session.execute(
+            select(Conversation).where(Conversation.external_session_id == session_id)
+        )).scalars().all()
+        assert rows == []
+
+
 class TestRetrievalCompactionBoundary:
     """retrieve_for_prompt threads last_compacted_at into search and dedup,
     so pre-compaction state stops counting as in-context."""
