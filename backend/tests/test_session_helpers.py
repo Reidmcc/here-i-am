@@ -19,6 +19,7 @@ from app.services.session_helpers import (
     add_cache_control_to_tool_result,
     build_memory_queries,
     calculate_significance,
+    drop_in_context_reflections,
     ensure_role_balance,
     estimate_prompt_tokens,
     get_message_content_text,
@@ -572,3 +573,53 @@ class TestMakeLinkTimestamper:
         next_link_time = make_link_timestamper(None)
         assert next_link_time() is None
         assert next_link_time() is None
+
+
+# ============================================================
+# Tests for drop_in_context_reflections (issue #328)
+# ============================================================
+
+class TestDropInContextReflections:
+    """In-context reflections leave the ranked pool before the top-k cut;
+    in-context verbatim memories stay (and hold their slot downstream)."""
+
+    def _make_candidate(self, role, score, mem_id):
+        return {
+            "mem_data": {"role": role, "id": mem_id},
+            "combined_score": score,
+        }
+
+    def test_in_context_reflections_are_dropped_in_rank_order(self):
+        pool = [
+            self._make_candidate("reflection", 0.95, "r1"),
+            self._make_candidate("human", 0.9, "h1"),
+            self._make_candidate("reflection", 0.85, "r2"),
+            self._make_candidate("assistant", 0.8, "a1"),
+        ]
+        remaining, dropped = drop_in_context_reflections(pool, {"r1", "r2"})
+        assert [c["mem_data"]["id"] for c in remaining] == ["h1", "a1"]
+        assert [c["mem_data"]["id"] for c in dropped] == ["r1", "r2"]
+
+    def test_in_context_verbatim_stays_in_the_pool(self):
+        pool = [
+            self._make_candidate("human", 0.9, "h1"),
+            self._make_candidate("assistant", 0.8, "a1"),
+        ]
+        remaining, dropped = drop_in_context_reflections(pool, {"h1", "a1"})
+        assert [c["mem_data"]["id"] for c in remaining] == ["h1", "a1"]
+        assert dropped == []
+
+    def test_reflections_not_in_context_stay_retrievable(self):
+        pool = [
+            self._make_candidate("reflection", 0.95, "r1"),
+            self._make_candidate("human", 0.9, "h1"),
+        ]
+        remaining, dropped = drop_in_context_reflections(pool, {"h1"})
+        assert [c["mem_data"]["id"] for c in remaining] == ["r1", "h1"]
+        assert dropped == []
+
+    def test_empty_inputs(self):
+        assert drop_in_context_reflections([], {"r1"}) == ([], [])
+        pool = [self._make_candidate("reflection", 0.9, "r1")]
+        remaining, dropped = drop_in_context_reflections(pool, set())
+        assert len(remaining) == 1 and dropped == []

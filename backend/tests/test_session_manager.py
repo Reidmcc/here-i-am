@@ -3983,3 +3983,122 @@ class TestNoteStampTracking:
 
         tool_results = [m for m in session.conversation_context if m.get("is_tool_result")]
         assert all("note_stamps" not in m for m in tool_results)
+
+
+
+class TestInContextReflectionDedup:
+    """Issue #328, native pipeline: an in-context reflection the pull ranks
+    highly leaves the candidate pool before the top-k cut (the next-ranked
+    memory moves up); an in-context verbatim memory still holds its slot."""
+
+    @staticmethod
+    def _memory(mem_id, role):
+        return {
+            "id": mem_id,
+            "conversation_id": "old-conv",
+            "role": role,
+            "content": f"content of {mem_id}",
+            "created_at": "2024-01-01",
+            "times_retrieved": 0,
+            "last_retrieved_at": None,
+        }
+
+    @classmethod
+    def _hits(cls, ranked):
+        return [
+            {
+                "id": mem_id,
+                "score": 0.95 - 0.01 * i,
+                "conversation_id": "old-conv",
+                "created_at": "2024-01-01",
+                "role": role,
+                "last_retrieved_at": None,
+            }
+            for i, (mem_id, role) in enumerate(ranked)
+        ]
+
+    async def _two_turns(self, db_session, sample_conversation, first_turn, second_turn):
+        """Retrieve first_turn on turn one (so it is in context), then see
+        what second_turn yields on turn two. Returns turn two's new ids."""
+        manager = SessionManager()
+        full = {mem_id: self._memory(mem_id, role) for mem_id, role in first_turn + second_turn}
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.search_memories = AsyncMock(return_value=self._hits(first_turn))
+            mock_memory.get_full_memory_content = AsyncMock(
+                side_effect=lambda mem_id, db: full.get(mem_id)
+            )
+            mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
+
+            mock_llm.build_messages.return_value = []
+            mock_llm.send_message = AsyncMock(return_value={
+                "content": "Response",
+                "model": "claude-sonnet-4-5-20250929",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "stop_reason": "end_turn",
+            })
+            mock_llm.count_tokens = MagicMock(return_value=50)
+
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.context_token_limit = 150000
+            mock_settings.significance_half_life_days = 60
+            mock_settings.recency_boost_strength = 1.0
+            mock_settings.reflection_significance_multiplier = 1.0
+            mock_settings.significance_floor = 0.01
+            mock_settings.retrieval_candidate_multiplier = 2
+            mock_settings.initial_retrieval_top_k = 5
+            mock_settings.retrieval_top_k = 5
+            mock_settings.memory_role_balance_enabled = True
+            mock_settings.recent_reflections_enabled = False
+
+            session = manager.create_session(sample_conversation.id)
+            first = await manager.process_message(session, "First", db_session)
+            assert [m["id"] for m in first["new_memories_retrieved"]] == [
+                mem_id for mem_id, _ in first_turn
+            ]
+
+            mock_memory.search_memories = AsyncMock(return_value=self._hits(second_turn))
+            second = await manager.process_message(session, "Second", db_session)
+            return [m["id"] for m in second["new_memories_retrieved"]]
+
+    @pytest.mark.asyncio
+    async def test_in_context_reflection_does_not_consume_a_slot(
+        self, db_session, sample_conversation
+    ):
+        verbatim = [
+            ("verb-1", "human"), ("verb-2", "assistant"), ("verb-3", "human"),
+            ("verb-4", "assistant"), ("verb-5", "human"),
+        ]
+        new_ids = await self._two_turns(
+            db_session,
+            sample_conversation,
+            first_turn=[("refl-1", "reflection")],
+            second_turn=[("refl-1", "reflection")] + verbatim,
+        )
+        # The reflection is in context: it leaves the pool and all five
+        # verbatim memories arrive, not four
+        assert new_ids == [mem_id for mem_id, _ in verbatim]
+
+    @pytest.mark.asyncio
+    async def test_in_context_verbatim_still_holds_its_slot(
+        self, db_session, sample_conversation
+    ):
+        verbatim = [
+            ("verb-1", "human"), ("verb-2", "assistant"), ("verb-3", "human"),
+            ("verb-4", "assistant"), ("verb-5", "human"),
+        ]
+        new_ids = await self._two_turns(
+            db_session,
+            sample_conversation,
+            first_turn=[("verb-0", "assistant")],
+            second_turn=[("verb-0", "assistant")] + verbatim,
+        )
+        # verb-0 makes the top five and holds its slot: four arrive, no backfill
+        assert new_ids == ["verb-1", "verb-2", "verb-3", "verb-4"]

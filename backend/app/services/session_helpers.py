@@ -11,7 +11,7 @@ import itertools
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from app.config import settings
 
@@ -144,6 +144,43 @@ def calculate_significance(
         significance *= settings.reflection_significance_multiplier
 
     return significance
+
+
+def drop_in_context_reflections(
+    enriched_candidates: List[Dict[str, Any]],
+    in_context_ids: Set[str],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Remove already-in-context reflections from the ranked candidate pool
+    before the top-k cut (issue #328).
+
+    Automatic retrieval skips memories that are already in context without
+    backfilling their slots from lower-ranked candidates — otherwise a long
+    conversation fills with ever-weaker matches. Reflections are the
+    exception: they reach the entity by guaranteed channels (the most
+    recent ones on waking, the sibling mailbox for the rest), so when the
+    semantic pull ranks one of them highly it would only block the verbatim
+    memory ranked just below it. Dropping them from the pool *before* the
+    cut lets the next-ranked candidate move up; an in-context verbatim
+    memory stays in the pool and still consumes its slot.
+
+    Args:
+        enriched_candidates: Candidates sorted by combined_score descending,
+            each carrying {"mem_data": {"id": ..., "role": ...}, ...}
+        in_context_ids: Memory IDs the entity can already see
+
+    Returns:
+        (remaining candidates in rank order, the reflections dropped)
+    """
+    remaining: List[Dict[str, Any]] = []
+    dropped: List[Dict[str, Any]] = []
+    for item in enriched_candidates:
+        mem_data = item["mem_data"]
+        if mem_data.get("role") == "reflection" and mem_data["id"] in in_context_ids:
+            dropped.append(item)
+        else:
+            remaining.append(item)
+    return remaining, dropped
 
 
 def ensure_role_balance(

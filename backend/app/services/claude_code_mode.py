@@ -58,7 +58,11 @@ from app.services.rooms_registry import (
     SessionObservation,
     rooms_registry,
 )
-from app.services.session_helpers import calculate_significance, ensure_role_balance
+from app.services.session_helpers import (
+    calculate_significance,
+    drop_in_context_reflections,
+    ensure_role_balance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,15 +87,20 @@ class RetrievalResult:
     context is the rendered [HERE I AM MEMORY RETRIEVAL] block (empty when
     nothing was selected); summary is the compact per-memory stand-in the
     hook prints when it has to spill an oversized block. already_in_context
-    counts matches that made the re-ranked top-k but were suppressed as
-    already linked into this conversation — the difference between "nothing
-    matched" and "everything that matched is already in front of you".
+    counts verbatim matches that made the re-ranked top-k but were
+    suppressed as already linked into this conversation (they hold their
+    slot — no backfill) — the difference between "nothing matched" and
+    "everything that matched is already in front of you".
+    in_context_reflections_skipped counts already-linked reflections the
+    pull ranked highly and dropped from the pool *before* the cut, so they
+    held no slot (issue #328).
     """
     status: str
     context: str = ""
     count: int = 0
     summary: str = ""
     already_in_context: int = 0
+    in_context_reflections_skipped: int = 0
     error: str = ""
 
 
@@ -738,8 +747,9 @@ async def retrieve_for_prompt(
     Automatic semantic retrieval for a user prompt, mirroring the native
     pipeline in session_manager.process_message: search on the prompt and the
     entity's previous response, combine candidates, re-rank by
-    similarity * (1 + significance), apply role balance, then skip
-    already-retrieved memories without backfill.
+    similarity * (1 + significance), drop already-retrieved *reflections*
+    from the pool (they hold no slot — issue #328), apply role balance, then
+    skip already-retrieved verbatim memories without backfill.
 
     Selected memories get update_retrieval_count (link + times_retrieved), so
     deliberate significance dynamics work identically to native mode, and the
@@ -753,9 +763,10 @@ async def retrieve_for_prompt(
     sees inline *what* surfaced and *where* the verbatim text went). The
     status says whether a search happened at all: RETRIEVAL_UNCONFIGURED
     when memory is off for this entity, else RETRIEVAL_RAN — with an empty
-    block when nothing qualified, and already_in_context counting the
-    matches suppressed as already linked here. Exceptions propagate; the
-    route turns them into RETRIEVAL_FAILED.
+    block when nothing qualified, already_in_context counting the verbatim
+    matches suppressed as already linked here, and
+    in_context_reflections_skipped the reflections dropped before the cut.
+    Exceptions propagate; the route turns them into RETRIEVAL_FAILED.
     """
     entity_index = entity.index_name
     if not memory_service.is_configured(entity_id=entity_index):
@@ -863,6 +874,20 @@ async def retrieve_for_prompt(
             logger.error(f"[CC MODE] Error processing candidate {candidate.get('id')}: {e}")
 
     enriched.sort(key=lambda x: x["combined_score"], reverse=True)
+
+    # Already-linked reflections leave the pool before the cut, so they
+    # hold no slot and the next-ranked candidate moves up (issue #328);
+    # already-linked verbatim memories stay and are skipped below without
+    # backfill, so a long conversation doesn't fill with weaker matches
+    enriched, skipped_reflections = drop_in_context_reflections(
+        enriched, already_retrieved
+    )
+    for item in skipped_reflections:
+        logger.info(
+            f"[CC MODE]   [IN-CONTEXT REFLECTION SKIPPED] "
+            f"{_selection_log_detail(item)}"
+        )
+
     if settings.memory_role_balance_enabled:
         top_candidates = ensure_role_balance(enriched, top_k)
     else:
@@ -896,7 +921,8 @@ async def retrieve_for_prompt(
     if selected:
         logger.info(
             f"[CC MODE] Retrieved {len(selected)} new memories for conversation "
-            f"{conversation.id[:8]}... ({skipped} already in context)"
+            f"{conversation.id[:8]}... ({skipped} already in context, "
+            f"{len(skipped_reflections)} in-context reflections skipped)"
         )
         for item in selected:
             logger.info(f"[CC MODE]   [NEW] {_selection_log_detail(item)}")
@@ -904,6 +930,7 @@ async def retrieve_for_prompt(
         logger.info(
             f"[CC MODE] No new memories retrieved for conversation "
             f"{conversation.id[:8]}... ({skipped} already in context, "
+            f"{len(skipped_reflections)} in-context reflections skipped, "
             f"{len(candidates_by_id)} candidates)"
         )
 
@@ -919,7 +946,11 @@ async def retrieve_for_prompt(
             logger.info(f"[CC MODE]   [NOT SELECTED] {_selection_log_detail(item)}")
 
     if not selected:
-        return RetrievalResult(status=RETRIEVAL_RAN, already_in_context=skipped)
+        return RetrievalResult(
+            status=RETRIEVAL_RAN,
+            already_in_context=skipped,
+            in_context_reflections_skipped=len(skipped_reflections),
+        )
 
     rendered = "\n\n".join(
         format_memory_as_context_message(
@@ -943,6 +974,7 @@ async def retrieve_for_prompt(
         count=len(selected),
         summary=summary,
         already_in_context=skipped,
+        in_context_reflections_skipped=len(skipped_reflections),
     )
 
 

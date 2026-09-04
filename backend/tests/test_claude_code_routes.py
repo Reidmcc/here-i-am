@@ -2093,3 +2093,139 @@ class TestLogAssistantModel:
         prop = tools["memory_query"]["inputSchema"]["properties"]["include_model"]
         assert prop["type"] == "boolean"
         assert prop["default"] is False
+
+
+class TestInContextReflectionDedup:
+    """Issue #328: an already-linked reflection the pull ranks highly leaves
+    the candidate pool before the top-k cut, so it holds no slot and the
+    next-ranked verbatim memory arrives; an already-linked verbatim memory
+    still holds its slot (no backfill), as before."""
+
+    @staticmethod
+    def _memory(mem_id, role):
+        return {
+            "id": mem_id,
+            "content": f"content of {mem_id}",
+            "created_at": datetime.utcnow() - timedelta(days=1),
+            "last_retrieved_at": None,
+            "times_retrieved": 0,
+            "role": role,
+            "memory_status": None,
+            "source": "native",
+        }
+
+    @classmethod
+    def _pool(cls, ranked):
+        """ranked: [(id, role), ...] best first -> (search hits, full rows)."""
+        hits, full = [], {}
+        for i, (mem_id, role) in enumerate(ranked):
+            hits.append({
+                "id": mem_id,
+                "score": 0.95 - 0.01 * i,
+                "conversation_id": "elsewhere",
+                "role": role,
+            })
+            full[mem_id] = cls._memory(mem_id, role)
+        return hits, full
+
+    @staticmethod
+    def _configure(mock_memory, hits, full, linked):
+        mock_memory.is_configured.return_value = True
+        mock_memory.store_memory = AsyncMock(return_value=True)
+        mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+        mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set(linked))
+        mock_memory.search_memories = AsyncMock(return_value=hits)
+        mock_memory.get_full_memory_content = AsyncMock(
+            side_effect=lambda mem_id, db: full.get(mem_id)
+        )
+        mock_memory.update_retrieval_count = AsyncMock()
+
+    @staticmethod
+    def _retrieved_ids(mock_memory):
+        return [call.args[0] for call in mock_memory.update_retrieval_count.await_args_list]
+
+    async def _retrieve(self, async_client, monkeypatch, ranked, linked):
+        monkeypatch.setattr(settings, "retrieval_top_k", 5)
+        monkeypatch.setattr(settings, "initial_retrieval_top_k", 5)
+        hits, full = self._pool(ranked)
+        with patch("app.services.claude_code_mode.memory_service") as mock_memory:
+            self._configure(mock_memory, hits, full, linked)
+            response = await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": str(uuid.uuid4()), "prompt": "hello"},
+            )
+            retrieved = self._retrieved_ids(mock_memory)
+        assert response.status_code == 200
+        return response.json(), retrieved
+
+    async def test_in_context_reflections_do_not_consume_slots(self, async_client, monkeypatch):
+        # Top five holds two in-context reflections: five verbatim arrive, not three
+        ranked = [
+            ("refl-1", "reflection"), ("refl-2", "reflection"),
+            ("verb-1", "human"), ("verb-2", "assistant"), ("verb-3", "human"),
+            ("verb-4", "assistant"), ("verb-5", "human"),
+        ]
+        body, retrieved = await self._retrieve(
+            async_client, monkeypatch, ranked, linked={"refl-1", "refl-2"}
+        )
+        assert body["retrieval_status"] == "ran"
+        assert body["memories_retrieved"] == 5
+        assert retrieved == ["verb-1", "verb-2", "verb-3", "verb-4", "verb-5"]
+        assert body["in_context_reflections_skipped"] == 2
+        assert body["already_in_context"] == 0
+        assert "refl-1" not in body["context"]
+
+    async def test_in_context_verbatim_still_holds_slots(self, async_client, monkeypatch):
+        # Top five holds two in-context verbatim memories: three arrive (unchanged)
+        ranked = [
+            ("verb-1", "human"), ("verb-2", "assistant"), ("verb-3", "human"),
+            ("verb-4", "assistant"), ("verb-5", "human"),
+            ("verb-6", "assistant"), ("verb-7", "human"),
+        ]
+        body, retrieved = await self._retrieve(
+            async_client, monkeypatch, ranked, linked={"verb-1", "verb-2"}
+        )
+        assert body["memories_retrieved"] == 3
+        assert retrieved == ["verb-3", "verb-4", "verb-5"]
+        assert body["already_in_context"] == 2
+        assert body["in_context_reflections_skipped"] == 0
+
+    async def test_mixed_case_reports_both_counts(self, async_client, monkeypatch):
+        ranked = [
+            ("refl-1", "reflection"), ("verb-1", "human"), ("verb-2", "assistant"),
+            ("verb-3", "human"), ("verb-4", "assistant"), ("verb-5", "human"),
+            ("verb-6", "assistant"),
+        ]
+        body, retrieved = await self._retrieve(
+            async_client, monkeypatch, ranked, linked={"refl-1", "verb-1"}
+        )
+        # Pool after the reflection leaves: verb-1..verb-6; top five is
+        # verb-1..verb-5; verb-1 holds its slot
+        assert body["memories_retrieved"] == 4
+        assert retrieved == ["verb-2", "verb-3", "verb-4", "verb-5"]
+        assert body["already_in_context"] == 1
+        assert body["in_context_reflections_skipped"] == 1
+
+    async def test_reflection_not_yet_in_context_is_still_retrieved(self, async_client, monkeypatch):
+        # Only *in-context* reflections leave the pool; a fresh one competes as before
+        ranked = [
+            ("refl-1", "reflection"), ("verb-1", "human"), ("verb-2", "assistant"),
+            ("verb-3", "human"), ("verb-4", "assistant"), ("verb-5", "human"),
+        ]
+        body, retrieved = await self._retrieve(
+            async_client, monkeypatch, ranked, linked=set()
+        )
+        assert body["memories_retrieved"] == 5
+        assert retrieved[0] == "refl-1"
+        assert body["in_context_reflections_skipped"] == 0
+
+    async def test_all_matches_in_context_reflections_reports_zero_new(self, async_client, monkeypatch):
+        ranked = [("refl-1", "reflection"), ("refl-2", "reflection")]
+        body, retrieved = await self._retrieve(
+            async_client, monkeypatch, ranked, linked={"refl-1", "refl-2"}
+        )
+        assert body["memories_retrieved"] == 0
+        assert body["context"] == ""
+        assert retrieved == []
+        assert body["in_context_reflections_skipped"] == 2
+        assert body["already_in_context"] == 0
