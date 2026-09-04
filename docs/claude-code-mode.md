@@ -58,7 +58,10 @@ The integration has two channels:
      An empty retrieval is never silent (issue #326): whenever no memory
      block is printed, the hook prints one line saying why — `matched: 0`
      when a search ran and nothing surfaced (or `matched: 0 new` with the
-     count of matches suppressed as already in context), a "no automatic
+     count of matches suppressed as already in context — by kind, since
+     in-context reflections hold no slot while verbatim matches do, issue
+     #328; the same counts follow a printed block whenever either is
+     nonzero), a "no automatic
      retrieval ran" line for a wakeup tick, a bare slash command, or pure
      plumbing, and distinct lines for memory-unconfigured and for a search
      that failed after the prompt was recorded (see "Retrieval stamps"
@@ -187,8 +190,13 @@ A lived-in entity's session-start payload (index.md + reflections) runs to
 - Retrieval (`retrieve_for_prompt` in `services/claude_code_mode.py`)
   mirrors the native pipeline: search on the prompt *and* the entity's
   previous response (10 candidates each), combine, enrich with
-  significance, re-rank, apply role balance, then skip already-retrieved
-  memories **without backfill**. Selected memories get
+  significance, re-rank, drop already-retrieved *reflections* from the
+  pool, apply role balance, then skip already-retrieved verbatim memories
+  **without backfill**. The split is issue #328: a reflection already in
+  context (shown on waking, or announced by the mailbox) holds no slot —
+  it leaves the ranked pool before the cut, so the next-ranked candidate
+  moves up — while an in-context verbatim memory keeps its slot, so a long
+  session doesn't fill with ever-weaker matches. Selected memories get
   `update_retrieval_count` (link + `times_retrieved`), so significance
   dynamics behave identically to native mode.
 - Dedup is DB-backed (`ConversationMemoryLink` via
@@ -332,8 +340,10 @@ had been *asked*. Prompt discipline (query before drafting) was the
 stopgap; the fix belongs at the hook line, where silence can stamp itself.
 
 `/retrieve` now reports `retrieval_status` — `ran` (with
-`already_in_context`, the matches that made the re-ranked top-k but were
-suppressed as already linked here), `skipped` (nothing to query: a wakeup
+`already_in_context`, the verbatim matches that made the re-ranked top-k
+but were suppressed as already linked here, and
+`in_context_reflections_skipped`, the already-linked reflections dropped
+from the pool before the cut — issue #328), `skipped` (nothing to query: a wakeup
 tick's empty prompt or a bare slash command), `unconfigured` (memory is off
 for the entity), or `failed` (the search raised; `retrieval_error` says
 why). Whenever the hook prints no memory block it prints exactly one line
@@ -342,7 +352,13 @@ keyed on that status (`empty_retrieval_stamp`), each with distinct text:
 - `[HERE I AM MEMORY RETRIEVAL] matched: 0 (retrieval ran; nothing surfaced
   above threshold).` — or `matched: 0 new (retrieval ran; N matches already
   in context).`, which is a different fact: what matched is already in
-  front of the entity.
+  front of the entity. When in-context reflections were skipped the line
+  carries both counts by kind: `matched: 0 new (retrieval ran; 2
+  in-context reflections skipped; in-context verbatim held 3 slots).`
+- After a printed block, one line reports the dedup whenever either count
+  is nonzero (`dedup_stamp`): `matched: 3 new (2 in-context reflections
+  skipped; in-context verbatim held 0 slots).` — so the effect of issue
+  #328 is visible from inside the session. Nothing suppressed, no line.
 - `[HERE I AM] No automatic retrieval ran for this prompt (wakeup tick); use
   memory_query if you need recall.` — the reason varies: `wakeup tick`
   (the hook knows it dropped the sentinel), `nothing to query, e.g. a bare
@@ -616,8 +632,8 @@ conversation on first contact; `/session-start` and `/session-end` never do
   peer_messages?, sessions?}` →
   `{conversation_id, human_message_id, context, memories_retrieved,
   context_summary, new_sibling_reflections, peer_message_ids,
-  retrieval_status, retrieval_error, already_in_context, rooms_notice,
-  rooms_error}` — the
+  retrieval_status, retrieval_error, already_in_context,
+  in_context_reflections_skipped, rooms_notice, rooms_error}` — the
   summary is the compact inline stand-in the hook prints when it has to
   spill an oversized `context`; the sibling count backs the mailbox flag
   (see Memory above). `peer_messages` is a list of `{content, sender?,

@@ -268,3 +268,128 @@ def test_wakeup_stamp_precedes_mailbox_and_skips_reminder():
     assert got[0].startswith(NO_RETRIEVAL)
     assert "1 reflection saved in other sessions" in got[1]
     assert len(got) == 2
+
+
+# --- dedup by kind (issue #328): reflections skip free, verbatim hold slots
+
+
+def test_zero_new_with_reflections_skipped_reports_both_counts():
+    out, _ = run_hook(
+        "hello",
+        body={
+            "context": "",
+            "retrieval_status": "ran",
+            "already_in_context": 3,
+            "in_context_reflections_skipped": 2,
+        },
+    )
+    assert lines(out)[0] == (
+        "[HERE I AM MEMORY RETRIEVAL] matched: 0 new (retrieval ran; "
+        "2 in-context reflections skipped; in-context verbatim held 3 slots)."
+    )
+
+
+def test_zero_new_with_only_reflections_skipped():
+    out, _ = run_hook(
+        "hello",
+        body={"context": "", "retrieval_status": "ran", "in_context_reflections_skipped": 1},
+    )
+    assert lines(out)[0] == (
+        "[HERE I AM MEMORY RETRIEVAL] matched: 0 new (retrieval ran; "
+        "1 in-context reflection skipped; in-context verbatim held 0 slots)."
+    )
+    assert MATCHED_ZERO not in out
+
+
+def test_surfaced_block_is_followed_by_dedup_line_when_reflections_skipped():
+    out, _ = run_hook(
+        "hello",
+        body={
+            "context": "[MEMORY] something",
+            "memories_retrieved": 3,
+            "retrieval_status": "ran",
+            "already_in_context": 0,
+            "in_context_reflections_skipped": 2,
+        },
+    )
+    got = lines(out)
+    assert got[0] == "[MEMORY] something"
+    assert got[1] == (
+        "[HERE I AM MEMORY RETRIEVAL] matched: 3 new (2 in-context reflections "
+        "skipped; in-context verbatim held 0 slots)."
+    )
+    assert "Start it with [WAKEUP]" in got[2]
+
+
+def test_surfaced_block_is_followed_by_dedup_line_when_verbatim_held_a_slot():
+    out, _ = run_hook(
+        "hello",
+        body={
+            "context": "[MEMORY] something",
+            "memories_retrieved": 4,
+            "retrieval_status": "ran",
+            "already_in_context": 1,
+        },
+    )
+    got = lines(out)
+    assert got[1] == (
+        "[HERE I AM MEMORY RETRIEVAL] matched: 4 new (0 in-context reflections "
+        "skipped; in-context verbatim held 1 slot)."
+    )
+
+
+def test_surfaced_block_without_dedup_gets_no_extra_line():
+    out, _ = run_hook(
+        "hello",
+        body={
+            "context": "[MEMORY] something",
+            "memories_retrieved": 1,
+            "retrieval_status": "ran",
+            "already_in_context": 0,
+            "in_context_reflections_skipped": 0,
+        },
+    )
+    got = lines(out)
+    assert got[0] == "[MEMORY] something"
+    assert "matched:" not in out
+    assert "Start it with [WAKEUP]" in got[1]
+
+
+def test_dedup_line_precedes_mailbox_flag():
+    out, _ = run_hook(
+        "hello",
+        body={
+            "context": "[MEMORY] something",
+            "memories_retrieved": 2,
+            "retrieval_status": "ran",
+            "in_context_reflections_skipped": 1,
+            "new_sibling_reflections": 2,
+        },
+    )
+    got = lines(out)
+    assert got[1].startswith("[HERE I AM MEMORY RETRIEVAL] matched: 2 new")
+    assert "2 reflections saved in other sessions" in got[2]
+
+
+def test_dedup_line_survives_the_spill_branch(tmp_path):
+    out, _ = run_hook(
+        "hello",
+        body={
+            "context": "[MEMORY] " + ("x" * 30000),
+            "context_summary": "[HERE I AM MEMORY RETRIEVAL] 1 memory ...\n- abc12345: snippet",
+            "memories_retrieved": 1,
+            "retrieval_status": "ran",
+            "in_context_reflections_skipped": 3,
+        },
+        extra_env={
+            "HIM_INLINE_BUDGET": "1000",
+            "TMPDIR": str(tmp_path),
+            "TEMP": str(tmp_path),
+            "TMP": str(tmp_path),
+        },
+    )
+    assert "too large to inject inline" in out
+    assert (
+        "matched: 1 new (3 in-context reflections skipped; in-context verbatim "
+        "held 0 slots)."
+    ) in out

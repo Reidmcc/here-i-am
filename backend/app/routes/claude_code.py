@@ -161,9 +161,12 @@ class RetrieveResponse(BaseModel):
     # never has to be read as "nothing matched".
     retrieval_status: str = cc.RETRIEVAL_RAN
     retrieval_error: str = ""
-    # Matches that made the re-ranked top-k but were already linked into
-    # this conversation (suppressed without backfill, like native mode)
+    # Verbatim matches that made the re-ranked top-k but were already linked
+    # into this conversation (suppressed without backfill, like native mode)
     already_in_context: int = 0
+    # Already-linked reflections the pull ranked highly and dropped from the
+    # pool before the top-k cut, so they held no slot (issue #328)
+    in_context_reflections_skipped: int = 0
     # Rooms registry: renames observed this turn / a loud write failure
     rooms_notice: str = ""
     rooms_error: str = ""
@@ -445,6 +448,7 @@ async def retrieve(
         retrieval_status=retrieval.status,
         retrieval_error=retrieval.error,
         already_in_context=retrieval.already_in_context,
+        in_context_reflections_skipped=retrieval.in_context_reflections_skipped,
         rooms_notice=rooms_notice,
         rooms_error=rooms_error,
     )

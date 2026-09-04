@@ -38,6 +38,13 @@ backend-unreachable notice below. The backend reports which
 (retrieval_status); the hook only adds what it alone knows (a wakeup
 sentinel it dropped, a prompt that was pure plumbing and never sent).
 
+The dedup is reported by kind (issue #328): an in-context reflection is
+dropped from the candidate pool before the top-k cut and holds no slot,
+while an in-context verbatim match keeps its slot (no backfill). Whenever
+either count is nonzero the stamp carries both — on the matched: 0 line,
+or as one line after a printed block ("matched: 3 new (2 in-context
+reflections skipped; in-context verbatim held 0 slots)").
+
 Fail-soft, loudly: a failure still exits 0 with the prompt going through
 unmodified (never exits 2 — that would block the prompt), but prints a
 one-line [HERE I AM] notice: an unrecorded prompt and a skipped retrieval
@@ -166,6 +173,9 @@ def main() -> None:
         # No memory block to print: say why, first (issue #326)
         print("\n\n".join([empty_retrieval_stamp(body, wakeup), *tail]))
         return
+    # A block was printed: if the dedup suppressed anything, say what
+    # (issue #328) — right after the block, before the mailbox and reminder
+    tail = [part for part in (dedup_stamp(body), *tail) if part]
     if hook_util.output_bytes(context) <= hook_util.inline_budget():
         print("\n\n".join([context, *tail]))
         return
@@ -273,10 +283,12 @@ def empty_retrieval_stamp(body: dict, wakeup: bool) -> str:
             f"backend predates this hook); {MEMORY_QUERY_HINT}"
         )
     if status == "ran":
-        try:
-            already = int(body.get("already_in_context") or 0)
-        except (TypeError, ValueError):
-            already = 0
+        already, reflections = dedup_counts(body)
+        if reflections > 0:
+            return (
+                "[HERE I AM MEMORY RETRIEVAL] matched: 0 new (retrieval ran; "
+                f"{dedup_detail(already, reflections)})."
+            )
         if already > 0:
             plural = "match" if already == 1 else "matches"
             return (
@@ -309,6 +321,50 @@ def empty_retrieval_stamp(body: dict, wakeup: bool) -> str:
     return (
         "[HERE I AM] No memories surfaced for this prompt (retrieval status: "
         f"{status}); {MEMORY_QUERY_HINT}"
+    )
+
+
+def dedup_counts(body: dict) -> tuple:
+    """(verbatim matches that held a slot, reflections skipped before the cut)."""
+    counts = []
+    for key in ("already_in_context", "in_context_reflections_skipped"):
+        try:
+            counts.append(int(body.get(key) or 0))
+        except (TypeError, ValueError):
+            counts.append(0)
+    return counts[0], counts[1]
+
+
+def dedup_detail(already: int, reflections: int) -> str:
+    """
+    The two dedup counts side by side (issue #328): in-context reflections
+    are dropped from the candidate pool before the top-k cut, so they cost
+    nothing; in-context verbatim matches keep their slot, so the pull does
+    not back-fill with weaker matches.
+    """
+    reflection_word = "reflection" if reflections == 1 else "reflections"
+    slot_word = "slot" if already == 1 else "slots"
+    return (
+        f"{reflections} in-context {reflection_word} skipped; "
+        f"in-context verbatim held {already} {slot_word}"
+    )
+
+
+def dedup_stamp(body: dict) -> str:
+    """
+    One line after a printed memory block saying what the dedup did, so the
+    effect of issue #328 is visible; empty when nothing was suppressed.
+    """
+    already, reflections = dedup_counts(body)
+    if already <= 0 and reflections <= 0:
+        return ""
+    try:
+        matched = int(body.get("memories_retrieved") or 0)
+    except (TypeError, ValueError):
+        matched = 0
+    return (
+        f"[HERE I AM MEMORY RETRIEVAL] matched: {matched} new "
+        f"({dedup_detail(already, reflections)})."
     )
 
 

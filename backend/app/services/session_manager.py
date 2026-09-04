@@ -51,6 +51,7 @@ from app.services.session_helpers import (
     _build_memory_queries,
     _calculate_significance,
     _ensure_role_balance,
+    drop_in_context_reflections,
     estimate_prompt_tokens,
     make_link_timestamper,
     stamp_human_message,
@@ -1104,6 +1105,25 @@ class SessionManager:
             # Re-rank by combined score and keep top_k
             enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
 
+            # Memories the entity can already see: [MEMORY] context messages
+            # still in context, plus memory_query tool results still in
+            # context. In-context *reflections* leave the pool before the
+            # cut so they hold no slot and the next-ranked candidate moves
+            # up (issue #328); in-context verbatim memories stay in the pool
+            # and are skipped below without backfill.
+            query_surfaced_ids = session.get_query_surfaced_memory_ids()
+            in_context_ids = session.get_in_context_memory_ids() | query_surfaced_ids
+            enriched_candidates, skipped_reflections = drop_in_context_reflections(
+                enriched_candidates, in_context_ids
+            )
+            for item in skipped_reflections:
+                logger.info(
+                    f"[MEMORY]   [IN-CONTEXT REFLECTION SKIPPED] "
+                    f"id={item['mem_data']['id'][:8]}... "
+                    f"combined={item['combined_score']:.3f} "
+                    f"similarity={item['candidate']['score']:.3f}"
+                )
+
             # Apply role balance if enabled (ensures at least one human and one assistant message)
             if settings.memory_role_balance_enabled:
                 top_candidates = _ensure_role_balance(enriched_candidates, top_k)
@@ -1122,7 +1142,6 @@ class SessionManager:
             skipped_in_context = 0
             # Memories the entity can already see in memory_query tool results
             # are skipped like in-context [MEMORY] messages — no backfill.
-            query_surfaced_ids = session.get_query_surfaced_memory_ids()
             for item in top_candidates:
                 candidate = item["candidate"]
                 mem_data = item["mem_data"]
@@ -1194,13 +1213,13 @@ class SessionManager:
 
             # Log memory retrieval summary
             if new_memories:
-                logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals, {skipped_in_context} already in context)")
+                logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals, {skipped_in_context} already in context, {len(skipped_reflections)} in-context reflections skipped)")
                 for mem in new_memories:
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
                     recency_str = f"{mem.days_since_retrieval:.1f}" if mem.days_since_retrieval >= 0 else "never"
                     logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str} source={mem.source}")
             else:
-                logger.info(f"[MEMORY] No new memories retrieved ({skipped_in_context} already in context, total in context: {session.get_in_context_memory_count()})")
+                logger.info(f"[MEMORY] No new memories retrieved ({skipped_in_context} already in context, {len(skipped_reflections)} in-context reflections skipped, total in context: {session.get_in_context_memory_count()})")
 
             # Log candidates that were not selected after re-ranking (show next 5)
             unselected_candidates = enriched_candidates[top_k:top_k + 5]
@@ -1539,6 +1558,25 @@ class SessionManager:
             # Re-rank by combined score and keep top_k
             enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
 
+            # Memories the entity can already see: [MEMORY] context messages
+            # still in context, plus memory_query tool results still in
+            # context. In-context *reflections* leave the pool before the
+            # cut so they hold no slot and the next-ranked candidate moves
+            # up (issue #328); in-context verbatim memories stay in the pool
+            # and are skipped below without backfill.
+            query_surfaced_ids = session.get_query_surfaced_memory_ids()
+            in_context_ids = session.get_in_context_memory_ids() | query_surfaced_ids
+            enriched_candidates, skipped_reflections = drop_in_context_reflections(
+                enriched_candidates, in_context_ids
+            )
+            for item in skipped_reflections:
+                logger.info(
+                    f"[MEMORY]   [IN-CONTEXT REFLECTION SKIPPED] "
+                    f"id={item['mem_data']['id'][:8]}... "
+                    f"combined={item['combined_score']:.3f} "
+                    f"similarity={item['candidate']['score']:.3f}"
+                )
+
             # Apply role balance if enabled (ensures at least one human and one assistant message)
             if settings.memory_role_balance_enabled:
                 top_candidates = _ensure_role_balance(enriched_candidates, top_k)
@@ -1557,7 +1595,6 @@ class SessionManager:
             skipped_in_context = 0
             # Memories the entity can already see in memory_query tool results
             # are skipped like in-context [MEMORY] messages — no backfill.
-            query_surfaced_ids = session.get_query_surfaced_memory_ids()
             for item in top_candidates:
                 candidate = item["candidate"]
                 mem_data = item["mem_data"]
@@ -1629,13 +1666,13 @@ class SessionManager:
 
             # Log memory retrieval summary
             if new_memories:
-                logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals, {skipped_in_context} already in context)")
+                logger.info(f"[MEMORY] Retrieved {len(new_memories)} new memories ({len(truly_new_memory_ids)} first-time retrievals, {skipped_in_context} already in context, {len(skipped_reflections)} in-context reflections skipped)")
                 for mem in new_memories:
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
                     recency_str = f"{mem.days_since_retrieval:.1f}" if mem.days_since_retrieval >= 0 else "never"
                     logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str} source={mem.source}")
             else:
-                logger.info(f"[MEMORY] No new memories retrieved ({skipped_in_context} already in context, total in context: {session.get_in_context_memory_count()})")
+                logger.info(f"[MEMORY] No new memories retrieved ({skipped_in_context} already in context, {len(skipped_reflections)} in-context reflections skipped, total in context: {session.get_in_context_memory_count()})")
 
             # Log candidates that were not selected after re-ranking (show next 5)
             unselected_candidates = enriched_candidates[top_k:top_k + 5]
