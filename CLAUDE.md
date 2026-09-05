@@ -5,7 +5,7 @@
 - **Backend:** Python 3.11+, FastAPI (async), SQLAlchemy 2.x async, Pydantic settings. SQLite dev / Postgres prod via `HERE_I_AM_DATABASE_URL` (NOT `DATABASE_URL`).
 - **Frontend:** Vanilla ES6 modules, no build step. Orchestrator `frontend/js/app-modular.js` wires modules in `frontend/js/modules/`.
 - **Vector store:** Pinecone with integrated inference (`llama-text-embed-v2`, dim=1024). Optional — guard with `if memory_service.pinecone:`.
-- **LLM providers:** Anthropic, OpenAI, Google, MiniMax (Anthropic-compatible API, routed through `AnthropicService` with separate client).
+- **LLM providers:** Anthropic, OpenAI, Google, MiniMax (Anthropic-compatible API, routed through `AnthropicService` with separate client). The anthropic SDK is unpinned above `0.40`; 1.x runs on the `httpx2` fork and rejects `httpx` objects (`Timeout`, clients) at construction, so anything handed to an Anthropic client is built from the SDK's own re-exports (`anthropic.Timeout`), never from `httpx` directly.
 - **Optional local servers** (separate FastAPI processes): XTTS (8020), StyleTTS 2 (8021), Whisper STT (8030).
 
 ## Run
