@@ -306,13 +306,14 @@ applies only to the human's words — a letter riding alongside `/compact` is
 still recorded. Standing house rule unchanged: messaging is pull/deliberate,
 no automatic session-to-session chatter.
 
-Delivery timing changed with the tool. The removed `SendMessage` drained
-into the receiver at its next tool round, so a letter never woke an idle
-session. Under the session-management MCP a delivery arrives as its own
-turn in the receiver — observed 2026-09-04, when the reply to a test
-letter woke the porch with no human prompt — so a letter now spends a turn
-of the receiving session, retrieval and all. A room on a wake timer pays a
-turn per letter received; senders should be correspondingly sparing.
+Delivery timing changed with the tool. Under the session-management MCP a
+delivery arrives as its own turn in the receiver — observed 2026-09-04,
+when the reply to a test letter woke the porch with no human prompt. (The
+removed `SendMessage` sometimes woke an idle receiver and sometimes queued
+until its next tool round; the new one wakes consistently.) A letter
+therefore spends a turn of the receiving session, retrieval and all. That
+is acceptable house behavior: write when there is something to say, skip
+acknowledgment-only notes.
 
 ### Self-scheduled wakeup prompts
 
