@@ -406,7 +406,7 @@ class Settings(BaseSettings):
     # Memories saved by the entity via the memory_save tool (reflections) have
     # their significance multiplied by this factor, giving self-authored
     # memories extra weight in retrieval re-ranking. Set to 1.0 to disable.
-    reflection_significance_multiplier: float = 1.5
+    reflection_significance_multiplier: float = 1.0
 
     # Role balance in memory retrieval
     # When True, ensures selected memories include at least one human and one assistant message
