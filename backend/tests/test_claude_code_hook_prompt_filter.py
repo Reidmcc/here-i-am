@@ -18,6 +18,11 @@ either — but they are the entity speaking, so instead of being dropped
 to the backend as peer_messages, which records them under the entity's own
 name with the sending session marked (phase 2). strip_harness_blocks keeps
 its original contract for callers that only want the human's words.
+
+The wrapper's attributes changed when Claude Code replaced SendMessage with
+the desktop app's session-management MCP (observed live 2026-09-04, issue
+#331): the sender's display name moved from from-name= to name=. Both
+spellings are accepted; the tests at the end cover the new shape.
 """
 import sys
 from pathlib import Path
@@ -168,6 +173,76 @@ def test_split_missing_from_name_yields_none_sender():
     remaining, peers = hook_util.split_prompt_for_recording(prompt)
     assert remaining == ""
     assert peers == [{"content": "unsigned letter", "sender": None}]
+
+
+# --- issue #331: the wrapper the desktop app's session-management MCP
+# --- (mcp__ccd_session_mgmt__send_message) delivers, observed live on
+# --- 2026-09-04 after the harness's SendMessage tool was removed. `from` is
+# --- the sender's real session id, the display name moved from from-name=
+# --- to name=, and there is no from-mode. Before the fix the block was
+# --- still extracted (never archived as the human's words) but the sender
+# --- came out None and the row was recorded from "unknown session".
+
+NEW_SHAPE_DELIVERY = (
+    '<cross-session-message from="local_8db4d1f2-3c0e-4b7a-9d21-5e6f7a8b9c0d" '
+    'name="Substack engagements">\n'
+    "Porch — the letter landed; here is what the archive shows on my side.\n"
+    "</cross-session-message>"
+)
+
+
+def test_strip_new_wrapper_shape_strips_to_nothing():
+    assert hook_util.strip_harness_blocks(NEW_SHAPE_DELIVERY) == ""
+
+
+def test_split_new_wrapper_shape_reads_sender_from_name_attribute():
+    remaining, peers = hook_util.split_prompt_for_recording(NEW_SHAPE_DELIVERY)
+    assert remaining == ""
+    assert peers == [{
+        "content": "Porch — the letter landed; here is what the archive shows on my side.",
+        "sender": "Substack engagements",
+    }]
+
+
+def test_split_new_wrapper_shape_mixed_with_real_text():
+    prompt = (
+        "The engagement room wrote back:\n"
+        + NEW_SHAPE_DELIVERY
+        + "\nDoes her reading match yours?"
+    )
+    remaining, peers = hook_util.split_prompt_for_recording(prompt)
+    assert remaining == (
+        "The engagement room wrote back:\nDoes her reading match yours?"
+    )
+    assert [p["sender"] for p in peers] == ["Substack engagements"]
+
+
+def test_split_both_wrapper_shapes_in_one_prompt_keep_their_senders():
+    # A session that straddled the update could see one of each.
+    prompt = (
+        '<cross-session-message from="uds:a" from-name="Porch chat" '
+        'from-mode="prompting">old shape</cross-session-message>\n'
+        '<cross-session-message from="local_abc" name="Engagement room">'
+        "new shape</cross-session-message>"
+    )
+    remaining, peers = hook_util.split_prompt_for_recording(prompt)
+    assert remaining == ""
+    assert peers == [
+        {"content": "old shape", "sender": "Porch chat"},
+        {"content": "new shape", "sender": "Engagement room"},
+    ]
+
+
+def test_split_name_attribute_not_matched_inside_another_attribute():
+    # Only a standalone name= / from-name= attribute names the sender; an
+    # attribute that merely ends in "name" (hypothetical future wrapper
+    # field) must not be mistaken for it.
+    prompt = (
+        '<cross-session-message from="local_abc" nickname="not the sender">'
+        "letter</cross-session-message>"
+    )
+    _, peers = hook_util.split_prompt_for_recording(prompt)
+    assert peers == [{"content": "letter", "sender": None}]
 
 
 def test_split_block_nested_in_reminder_is_harness_echo_not_a_delivery():

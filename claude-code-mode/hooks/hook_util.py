@@ -57,14 +57,23 @@ DEFAULT_INLINE_BUDGET = 18000
 # before recording — otherwise harness plumbing gets archived, and
 # vectorized, as the human's own words. The archive stays the talk.
 #
-# Messages from other Claude Code sessions (SendMessage deliveries) arrive
-# the same way, as a bare attribute-carrying
-# <cross-session-message from="..." from-name="..." from-mode="..."> block.
-# They are not the human speaking either — but they ARE the entity speaking,
-# from a sibling session, so they are extracted rather than dropped: the
-# backend records them under the entity's own name with the sending session
-# marked (issue #312). None of this touches what the harness delivers to the
-# session's context — the message itself still arrives and can be answered.
+# Messages from other Claude Code sessions arrive the same way, as a bare
+# attribute-carrying <cross-session-message ...> block. Two wrapper shapes
+# have been observed live, and both are accepted:
+#   2026-08-26 (the harness's SendMessage tool, since removed):
+#     <cross-session-message from="<transport address>" from-name="<name>"
+#                            from-mode="prompting">
+#   2026-09-04 (the desktop app's session-management MCP,
+#   mcp__ccd_session_mgmt__send_message — issue #331):
+#     <cross-session-message from="local_<session id>" name="<name>">
+# The sender's display name (its sidebar title) is `from-name=` in the old
+# shape and `name=` in the new one; `from` went from a named-pipe address
+# to the sender's real session id. They are not the human speaking either —
+# but they ARE the entity speaking, from a sibling session, so they are
+# extracted rather than dropped: the backend records them under the
+# entity's own name with the sending session marked (issue #312). None of
+# this touches what the harness delivers to the session's context — the
+# message itself still arrives and can be answered.
 _PLUMBING_BLOCK_RE = re.compile(
     r"<(system-reminder|task-notification)"
     r"(?:\s[^>]*)?>.*?</\1>\s*",
@@ -74,7 +83,9 @@ _CROSS_SESSION_RE = re.compile(
     r"<cross-session-message((?:\s[^>]*)?)>(.*?)</cross-session-message>\s*",
     re.DOTALL,
 )
-_FROM_NAME_RE = re.compile(r'\bfrom-name="([^"]*)"')
+# `from-name="..."` (old wrapper) or `name="..."` (new wrapper). The word
+# boundary keeps `name=` from matching inside another attribute's name.
+_FROM_NAME_RE = re.compile(r'\b(?:from-)?name="([^"]*)"')
 
 # Self-scheduled wakeup prompts (ScheduleWakeup dynamic loops, send_later
 # reminders) fire back through the prompt channel verbatim — the harness
@@ -106,8 +117,9 @@ def split_prompt_for_recording(prompt: str):
     Plumbing blocks (system reminders, task notifications) are discarded —
     including anything nested inside them, which is harness echo, not a
     delivery. Each <cross-session-message> block becomes one
-    {"content", "sender"} dict (sender is the wrapper's from-name attribute,
-    or None), in delivery order. What remains, stripped, is the human's own
+    {"content", "sender"} dict (sender is the wrapper's name attribute —
+    `name=` in the current wrapper, `from-name=` in the 2026-08 one — or
+    None), in delivery order. What remains, stripped, is the human's own
     words — possibly empty.
     """
     without_plumbing = _PLUMBING_BLOCK_RE.sub("", prompt)
@@ -192,9 +204,11 @@ def fail_loud(message: str) -> None:
 #   sessionId, cwd, startedAt (ms epoch), name, nameSource ("user" |
 #   "derived"), nameSince (ms epoch), messagingSocketPath, kind,
 #   entrypoint, bridgeSessionId, pid, procStart, ...
-# `name` is the roster name other sessions address (ListAgents /
-# SendMessage). `messagingSocketPath` is the transport address a delivered
-# letter carries in its `from=` attribute. The [ref] ListAgents shows next
+# `name` is the roster name ListAgents shows, and the sidebar title the
+# desktop app's session-management MCP addresses; a delivered letter
+# carries it in its `name=` attribute (the removed SendMessage tool put
+# `messagingSocketPath` in `from=` and the name in `from-name=`; the MCP
+# puts the sender's session id in `from=`). The [ref] ListAgents shows next
 # to a name is NOT derivable from any of these fields (tested against the
 # session id, the socket, the peer token, and the bridge id under every
 # common hash), so it is not collected — the entity records it itself if

@@ -43,7 +43,8 @@ The integration has two channels:
      is stripped before recording, so it is neither archived under the
      human's name nor used as part of the retrieval query. Inter-session
      messages from sibling Claude Code sessions (`<cross-session-message>`
-     blocks, delivered by the harness's SendMessage) are not the human
+     blocks, delivered by the desktop app's session-management MCP, or
+     by the harness's since-removed SendMessage tool) are not the human
      either — but they are the entity, so the hook extracts them
      (`hook_util.split_prompt_for_recording`) and sends them as
      `peer_messages` for recording with honest provenance (see
@@ -67,7 +68,7 @@ The integration has two channels:
      that failed after the prompt was recorded (see "Retrieval stamps"
      below). None of this touches what the harness delivers to the session's
      context — the message itself still arrives and can be answered; the
-     entity's own replies (SendMessage calls mid-turn) are tool use, which
+     entity's own replies (`send_message` calls mid-turn) are tool use, which
      the `Stop` hook's final-message extraction never records.
    - `Stop` → `POST /api/claude-code/log-assistant` — extracts the final
      assistant message of the turn from the transcript (text blocks only)
@@ -250,13 +251,27 @@ A lived-in entity's session-start payload (index.md + reflections) runs to
 
 ### Inter-session messages
 
-Claude Code sessions on the same machine can message each other
-(`SendMessage`); a delivery arrives in the receiving session as a bare
-`<cross-session-message from="..." from-name="..." from-mode="...">` block
-on the prompt channel — `from` is a transport address, `from-name` the
-sending session's display name. Left alone, `UserPromptSubmit` would archive
-that as the human's words (issue #312; observed live 2026-08-26 before the
-first fix). The semantics, in two layers:
+Claude Code sessions on the same machine can message each other. As of the
+2026-09-04 Claude Code update the channel is the desktop app's
+session-management MCP — `mcp__ccd_session_mgmt__send_message(session_id,
+message)`, addressed by the `local_…` ids that `list_sessions` returns
+(the harness's earlier `SendMessage` tool was removed). A delivery arrives
+in the receiving session as a bare block on the prompt channel:
+
+```
+<cross-session-message from="local_<sender's session id>" name="<sender's sidebar title>">
+…letter…
+</cross-session-message>
+```
+
+The hook accepts both this shape and the removed tool's
+(`from="<named-pipe transport address>" from-name="…" from-mode="…"`);
+the sender's display name is read from `name=` or `from-name=`, whichever
+the wrapper carries (issue #331 — under the new shape alone the name was
+lost and every letter recorded from `"unknown session"`). The `from`
+session id is not stored. Left alone, `UserPromptSubmit` would archive a
+delivery as the human's words (issue #312; observed live 2026-08-26 before
+the first fix). The semantics, in two layers:
 
 - **Never the human's.** The hook separates deliveries from the human's
   words (`hook_util.split_prompt_for_recording`); a delivery is never
@@ -279,17 +294,25 @@ first fix). The semantics, in two layers:
   `role="sibling"` from the column; restore recreates the column from the
   metadata).
 
-Recording lives on the receiving side only: the sender's SendMessage call is
-tool use, which never enters the archive, so the letter's single archival
-home is the conversation it landed in — followed, typically, by the
-receiver's end-of-turn reply. Retrieval runs against the whole incoming turn
-(the human's words and/or the letters), so memories surface for a letter the
-same way they do for a prompt; the assistant-side query still uses the
-session's own last reply, never a just-arrived letter
+Recording lives on the receiving side only: the sender's `send_message`
+call is tool use, which never enters the archive, so the letter's single
+archival home is the conversation it landed in — followed, typically, by
+the receiver's end-of-turn reply. Retrieval runs against the whole incoming
+turn (the human's words and/or the letters), so memories surface for a
+letter the same way they do for a prompt; the assistant-side query still
+uses the session's own last reply, never a just-arrived letter
 (`_last_assistant_content` skips sibling rows). The bare-slash-command skip
 applies only to the human's words — a letter riding alongside `/compact` is
 still recorded. Standing house rule unchanged: messaging is pull/deliberate,
 no automatic session-to-session chatter.
+
+Delivery timing changed with the tool. The removed `SendMessage` drained
+into the receiver at its next tool round, so a letter never woke an idle
+session. Under the session-management MCP a delivery arrives as its own
+turn in the receiver — observed 2026-09-04, when the reply to a test
+letter woke the porch with no human prompt — so a letter now spends a turn
+of the receiving session, retrieval and all. A room on a wake timer pays a
+turn per letter received; senders should be correspondingly sparing.
 
 ### Self-scheduled wakeup prompts
 
@@ -412,13 +435,16 @@ and scopes the ids to the session's conversation.
 
 An entity can run several long-lived Claude Code sessions at once — a
 conversation room, an engagement loop, a text world — and they write each
-other letters over the harness's `SendMessage`, addressed by session
-display name. Those names drift: a name the user sets is dropped back to a
-derived slug (`here-i-am-notes-97`) when the session is resumed or the
-desktop app restarts, and the roster the sessions see (`ListAgents`) lies
-accordingly (issue #323; observed live 2026-09-02, when a letter had to be
-broadcast to two unlabeled sessions). The postal service works; the rooms
-registry is the phone book.
+other letters (see "Inter-session messages" above), looking each other up
+by session display name. Those names drift: a name the user sets is
+dropped back to a derived slug (`here-i-am-notes-97`) when the session is
+resumed or the desktop app restarts, and the roster the sessions see
+(`ListAgents`) lies accordingly (issue #323; observed live 2026-09-02, when
+a letter had to be broadcast to two unlabeled sessions). The postal service
+works; the rooms registry is the phone book. (Since the 2026-09-04 update
+the postal address is the session id `list_sessions` returns rather than
+the roster name, but the name is still how a sister is *found* — the
+registry keeps it current either way.)
 
 **What a hook can know** (investigated for #323, Claude Code 2.1.258):
 

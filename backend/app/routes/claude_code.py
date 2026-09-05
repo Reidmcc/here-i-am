@@ -104,14 +104,15 @@ class SessionStartResponse(BaseModel):
 
 class PeerMessage(BaseModel):
     """
-    One inter-session message (a SendMessage delivery from a sibling Claude
-    Code session), extracted from the prompt by the UserPromptSubmit hook.
-    Another session of this entity speaking — recorded under the entity's
-    own name with the sending session marked (issue #312), never as the
-    human's words.
+    One inter-session message (a delivery from a sibling Claude Code
+    session over the desktop app's session-management MCP), extracted from
+    the prompt by the UserPromptSubmit hook. Another session of this entity
+    speaking — recorded under the entity's own name with the sending
+    session marked (issue #312), never as the human's words.
     """
     content: str
-    # The sending session's display name (the wrapper's from-name attribute)
+    # The sending session's display name (the wrapper's name= attribute;
+    # from-name= in the removed SendMessage tool's wrapper — issue #331)
     sender: Optional[str] = None
     # Row id chosen by the hook (a UUID), so it can verify recording after a
     # failed call and so a retry is idempotent; see RetrieveRequest.message_id
