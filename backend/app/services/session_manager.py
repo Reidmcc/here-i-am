@@ -50,10 +50,11 @@ from app.services.session_helpers import (
     # Backward compatibility aliases (with underscore prefix)
     _build_memory_queries,
     _calculate_significance,
-    _ensure_role_balance,
-    drop_in_context_reflections,
     estimate_prompt_tokens,
     make_link_timestamper,
+    retrieval_top_k_by_pool,
+    search_candidate_pools,
+    select_top_by_pool,
     stamp_human_message,
     total_prompt_tokens_from_usage,
 )
@@ -988,12 +989,22 @@ class SessionManager:
             # status notice); later turns are unaffected.
             is_first_turn = await self._is_entity_first_turn(session, db)
 
-            # Fetch 10 candidates per query, then combine and re-rank by significance
+            # Fetch 10 candidates per query, then re-rank by significance.
+            # With role balance on, the human's words and the entity's are
+            # searched as separate pools — both queries feeding both pools —
+            # and each pool contributes its own top N (issue #335); off,
+            # one merged pool cut at top_k.
             fetch_k_per_query = 10
-
-            # Perform separate searches for user message and assistant response
-            user_candidates = []
-            assistant_candidates = []
+            split_by_role = settings.memory_role_balance_enabled
+            top_k_by_pool = retrieval_top_k_by_pool(
+                split_by_role,
+                merged_top_k=top_k,
+                per_role_top_k=(
+                    settings.initial_retrieval_top_k_per_role
+                    if is_first_retrieval
+                    else settings.retrieval_top_k_per_role
+                ),
+            )
 
             # Note: we intentionally do NOT pass in-context memory IDs as exclude_ids
             # to search_memories. If we did, the search would backfill excluded slots
@@ -1002,47 +1013,16 @@ class SessionManager:
             # and then skip in-context memories at the session.add_memory level without
             # replacing them with lower-ranked candidates.
 
-            if user_query:
-                user_candidates = await memory_service.search_memories(
-                    query=user_query,
-                    top_k=fetch_k_per_query,
-                    exclude_conversation_id=session.conversation_id,
-                    entity_id=session.entity_id,
-                )
-                logger.info(f"[MEMORY] User query retrieved {len(user_candidates)} candidates")
-
-            if assistant_query:
-                assistant_candidates = await memory_service.search_memories(
-                    query=assistant_query,
-                    top_k=fetch_k_per_query,
-                    exclude_conversation_id=session.conversation_id,
-                    entity_id=session.entity_id,
-                )
-                logger.info(f"[MEMORY] Assistant query retrieved {len(assistant_candidates)} candidates")
-
-            # Combine candidates, tracking source and keeping higher score for duplicates
-            candidates_by_id = {}
-            user_candidate_ids = set(c["id"] for c in user_candidates)
-            assistant_candidate_ids = set(c["id"] for c in assistant_candidates)
-
-            for candidate in user_candidates + assistant_candidates:
-                cid = candidate["id"]
-                if cid not in candidates_by_id or candidate["score"] > candidates_by_id[cid]["score"]:
-                    candidates_by_id[cid] = candidate
-
-            # Determine source for each candidate
-            for cid in candidates_by_id:
-                in_user = cid in user_candidate_ids
-                in_assistant = cid in assistant_candidate_ids
-                if in_user and in_assistant:
-                    candidates_by_id[cid]["_source"] = "both"
-                elif in_user:
-                    candidates_by_id[cid]["_source"] = "user"
-                else:
-                    candidates_by_id[cid]["_source"] = "assistant"
-
-            candidates = list(candidates_by_id.values())
-            logger.info(f"[MEMORY] Combined {len(candidates)} unique candidates from both queries")
+            candidate_pools = await search_candidate_pools(
+                memory_service.search_memories,
+                user_query,
+                assistant_query,
+                fetch_k=fetch_k_per_query,
+                split_by_role=split_by_role,
+                exclude_conversation_id=session.conversation_id,
+                entity_id=session.entity_id,
+            )
+            candidates = [c for pool in candidate_pools.values() for c in pool]
 
             # Step 2: Get full content and calculate combined scores for re-ranking
             enriched_candidates = []
@@ -1097,40 +1077,38 @@ class SessionManager:
                         "days_since_creation": days_since_creation,
                         "days_since_retrieval": days_since_retrieval,
                         "source": candidate.get("_source", "unknown"),
+                        "pool": candidate.get("_pool"),
                     })
                 except Exception as e:
                     logger.error(f"[MEMORY] Error processing candidate {candidate.get('id', 'unknown')}: {e}")
                     continue
 
-            # Re-rank by combined score and keep top_k
-            enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
-
-            # Memories the entity can already see: [MEMORY] context messages
-            # still in context, plus memory_query tool results still in
-            # context. In-context *reflections* leave the pool before the
+            # Re-rank by combined score within each pool and cut each at its
+            # top N. Memories the entity can already see: [MEMORY] context
+            # messages still in context, plus memory_query tool results still
+            # in context. In-context *reflections* leave the pool before the
             # cut so they hold no slot and the next-ranked candidate moves
             # up (issue #328); in-context verbatim memories stay in the pool
             # and are skipped below without backfill.
             query_surfaced_ids = session.get_query_surfaced_memory_ids()
             in_context_ids = session.get_in_context_memory_ids() | query_surfaced_ids
-            enriched_candidates, skipped_reflections = drop_in_context_reflections(
-                enriched_candidates, in_context_ids
-            )
+            selection = select_top_by_pool(enriched_candidates, in_context_ids, top_k_by_pool)
+            skipped_reflections = selection.skipped_reflections
             for item in skipped_reflections:
                 logger.info(
                     f"[MEMORY]   [IN-CONTEXT REFLECTION SKIPPED] "
                     f"id={item['mem_data']['id'][:8]}... "
                     f"combined={item['combined_score']:.3f} "
-                    f"similarity={item['candidate']['score']:.3f}"
+                    f"similarity={item['candidate']['score']:.3f} "
+                    f"pool={item['pool']}"
                 )
+            top_candidates = selection.selected
 
-            # Apply role balance if enabled (ensures at least one human and one assistant message)
-            if settings.memory_role_balance_enabled:
-                top_candidates = _ensure_role_balance(enriched_candidates, top_k)
-            else:
-                top_candidates = enriched_candidates[:top_k]
-
-            logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)} (role_balance={'on' if settings.memory_role_balance_enabled else 'off'})")
+            logger.info(
+                f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, "
+                f"keeping top {len(top_candidates)} "
+                f"(role_balance={'on' if split_by_role else 'off'}; {selection.describe(top_k_by_pool)})"
+            )
 
             # Step 3: Process top candidates
             # Memories already in context will be skipped without backfilling from
@@ -1167,6 +1145,7 @@ class SessionManager:
                     days_since_creation=item["days_since_creation"],
                     days_since_retrieval=item["days_since_retrieval"],
                     source=item["source"],
+                    pool=item["pool"],
                     origin=mem_data.get("source", "native"),
                     sibling_session=mem_data.get("sibling_session"),
                 )
@@ -1189,7 +1168,7 @@ class SessionManager:
                 else:
                     skipped_in_context += 1
                     recency_str = f"{memory.days_since_retrieval:.1f}" if memory.days_since_retrieval >= 0 else "never"
-                    logger.info(f"[MEMORY]   [ALREADY IN CONTEXT] combined={memory.combined_score:.3f} similarity={memory.score:.3f} significance={memory.significance:.3f} times_retrieved={memory.times_retrieved} age_days={memory.days_since_creation:.1f} recency_days={recency_str} source={memory.source}")
+                    logger.info(f"[MEMORY]   [ALREADY IN CONTEXT] combined={memory.combined_score:.3f} similarity={memory.score:.3f} significance={memory.significance:.3f} times_retrieved={memory.times_retrieved} age_days={memory.days_since_creation:.1f} recency_days={recency_str} source={memory.source} pool={memory.pool}")
 
             # On the first turn only, additionally pull in the most recently
             # created reflections (purely recency-based, deduplicated against
@@ -1217,18 +1196,18 @@ class SessionManager:
                 for mem in new_memories:
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
                     recency_str = f"{mem.days_since_retrieval:.1f}" if mem.days_since_retrieval >= 0 else "never"
-                    logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str} source={mem.source}")
+                    logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str} source={mem.source} pool={mem.pool}")
             else:
                 logger.info(f"[MEMORY] No new memories retrieved ({skipped_in_context} already in context, {len(skipped_reflections)} in-context reflections skipped, total in context: {session.get_in_context_memory_count()})")
 
             # Log candidates that were not selected after re-ranking (show next 5)
-            unselected_candidates = enriched_candidates[top_k:top_k + 5]
+            unselected_candidates = selection.unselected[:5]
             if unselected_candidates:
-                total_unselected = len(enriched_candidates) - top_k
+                total_unselected = len(selection.unselected)
                 logger.info(f"[MEMORY] {total_unselected} candidates not selected after re-ranking (showing next 5):")
                 for item in unselected_candidates:
                     recency_str = f"{item['days_since_retrieval']:.1f}" if item['days_since_retrieval'] >= 0 else "never"
-                    logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str} source={item['source']}")
+                    logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str} source={item['source']} pool={item['pool']}")
         else:
             # Memory retrieval skipped - log reason
             if not settings.pinecone_api_key:
@@ -1443,12 +1422,22 @@ class SessionManager:
             # status notice); later turns are unaffected.
             is_first_turn = await self._is_entity_first_turn(session, db)
 
-            # Fetch 10 candidates per query, then combine and re-rank by significance
+            # Fetch 10 candidates per query, then re-rank by significance.
+            # With role balance on, the human's words and the entity's are
+            # searched as separate pools — both queries feeding both pools —
+            # and each pool contributes its own top N (issue #335); off,
+            # one merged pool cut at top_k.
             fetch_k_per_query = 10
-
-            # Perform separate searches for user message and assistant response
-            user_candidates = []
-            assistant_candidates = []
+            split_by_role = settings.memory_role_balance_enabled
+            top_k_by_pool = retrieval_top_k_by_pool(
+                split_by_role,
+                merged_top_k=top_k,
+                per_role_top_k=(
+                    settings.initial_retrieval_top_k_per_role
+                    if is_first_retrieval
+                    else settings.retrieval_top_k_per_role
+                ),
+            )
 
             # Note: we intentionally do NOT pass in-context memory IDs as exclude_ids
             # to search_memories. If we did, the search would backfill excluded slots
@@ -1457,47 +1446,16 @@ class SessionManager:
             # and then skip in-context memories at the session level without replacing
             # them with lower-ranked candidates.
 
-            if user_query:
-                user_candidates = await memory_service.search_memories(
-                    query=user_query,
-                    top_k=fetch_k_per_query,
-                    exclude_conversation_id=session.conversation_id,
-                    entity_id=session.entity_id,
-                )
-                logger.info(f"[MEMORY] User query retrieved {len(user_candidates)} candidates")
-
-            if assistant_query:
-                assistant_candidates = await memory_service.search_memories(
-                    query=assistant_query,
-                    top_k=fetch_k_per_query,
-                    exclude_conversation_id=session.conversation_id,
-                    entity_id=session.entity_id,
-                )
-                logger.info(f"[MEMORY] Assistant query retrieved {len(assistant_candidates)} candidates")
-
-            # Combine candidates, tracking source and keeping higher score for duplicates
-            candidates_by_id = {}
-            user_candidate_ids = set(c["id"] for c in user_candidates)
-            assistant_candidate_ids = set(c["id"] for c in assistant_candidates)
-
-            for candidate in user_candidates + assistant_candidates:
-                cid = candidate["id"]
-                if cid not in candidates_by_id or candidate["score"] > candidates_by_id[cid]["score"]:
-                    candidates_by_id[cid] = candidate
-
-            # Determine source for each candidate
-            for cid in candidates_by_id:
-                in_user = cid in user_candidate_ids
-                in_assistant = cid in assistant_candidate_ids
-                if in_user and in_assistant:
-                    candidates_by_id[cid]["_source"] = "both"
-                elif in_user:
-                    candidates_by_id[cid]["_source"] = "user"
-                else:
-                    candidates_by_id[cid]["_source"] = "assistant"
-
-            candidates = list(candidates_by_id.values())
-            logger.info(f"[MEMORY] Combined {len(candidates)} unique candidates from both queries")
+            candidate_pools = await search_candidate_pools(
+                memory_service.search_memories,
+                user_query,
+                assistant_query,
+                fetch_k=fetch_k_per_query,
+                split_by_role=split_by_role,
+                exclude_conversation_id=session.conversation_id,
+                entity_id=session.entity_id,
+            )
+            candidates = [c for pool in candidate_pools.values() for c in pool]
 
             # Step 2: Get full content and calculate combined scores for re-ranking
             enriched_candidates = []
@@ -1550,40 +1508,38 @@ class SessionManager:
                         "days_since_creation": days_since_creation,
                         "days_since_retrieval": days_since_retrieval,
                         "source": candidate.get("_source", "unknown"),
+                        "pool": candidate.get("_pool"),
                     })
                 except Exception as e:
                     logger.error(f"[MEMORY] Error processing candidate {candidate.get('id', 'unknown')}: {e}")
                     continue
 
-            # Re-rank by combined score and keep top_k
-            enriched_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
-
-            # Memories the entity can already see: [MEMORY] context messages
-            # still in context, plus memory_query tool results still in
-            # context. In-context *reflections* leave the pool before the
+            # Re-rank by combined score within each pool and cut each at its
+            # top N. Memories the entity can already see: [MEMORY] context
+            # messages still in context, plus memory_query tool results still
+            # in context. In-context *reflections* leave the pool before the
             # cut so they hold no slot and the next-ranked candidate moves
             # up (issue #328); in-context verbatim memories stay in the pool
             # and are skipped below without backfill.
             query_surfaced_ids = session.get_query_surfaced_memory_ids()
             in_context_ids = session.get_in_context_memory_ids() | query_surfaced_ids
-            enriched_candidates, skipped_reflections = drop_in_context_reflections(
-                enriched_candidates, in_context_ids
-            )
+            selection = select_top_by_pool(enriched_candidates, in_context_ids, top_k_by_pool)
+            skipped_reflections = selection.skipped_reflections
             for item in skipped_reflections:
                 logger.info(
                     f"[MEMORY]   [IN-CONTEXT REFLECTION SKIPPED] "
                     f"id={item['mem_data']['id'][:8]}... "
                     f"combined={item['combined_score']:.3f} "
-                    f"similarity={item['candidate']['score']:.3f}"
+                    f"similarity={item['candidate']['score']:.3f} "
+                    f"pool={item['pool']}"
                 )
+            top_candidates = selection.selected
 
-            # Apply role balance if enabled (ensures at least one human and one assistant message)
-            if settings.memory_role_balance_enabled:
-                top_candidates = _ensure_role_balance(enriched_candidates, top_k)
-            else:
-                top_candidates = enriched_candidates[:top_k]
-
-            logger.info(f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, keeping top {len(top_candidates)} (role_balance={'on' if settings.memory_role_balance_enabled else 'off'})")
+            logger.info(
+                f"[MEMORY] Re-ranked {len(enriched_candidates)} candidates by significance, "
+                f"keeping top {len(top_candidates)} "
+                f"(role_balance={'on' if split_by_role else 'off'}; {selection.describe(top_k_by_pool)})"
+            )
 
             # Step 3: Process top candidates
             # Memories already in context will be skipped without backfilling from
@@ -1620,6 +1576,7 @@ class SessionManager:
                     days_since_creation=item["days_since_creation"],
                     days_since_retrieval=item["days_since_retrieval"],
                     source=item["source"],
+                    pool=item["pool"],
                     origin=mem_data.get("source", "native"),
                     sibling_session=mem_data.get("sibling_session"),
                 )
@@ -1642,7 +1599,7 @@ class SessionManager:
                 else:
                     skipped_in_context += 1
                     recency_str = f"{memory.days_since_retrieval:.1f}" if memory.days_since_retrieval >= 0 else "never"
-                    logger.info(f"[MEMORY]   [ALREADY IN CONTEXT] combined={memory.combined_score:.3f} similarity={memory.score:.3f} significance={memory.significance:.3f} times_retrieved={memory.times_retrieved} age_days={memory.days_since_creation:.1f} recency_days={recency_str} source={memory.source}")
+                    logger.info(f"[MEMORY]   [ALREADY IN CONTEXT] combined={memory.combined_score:.3f} similarity={memory.score:.3f} significance={memory.significance:.3f} times_retrieved={memory.times_retrieved} age_days={memory.days_since_creation:.1f} recency_days={recency_str} source={memory.source} pool={memory.pool}")
 
             # On the first turn only, additionally pull in the most recently
             # created reflections (purely recency-based, deduplicated against
@@ -1670,18 +1627,18 @@ class SessionManager:
                 for mem in new_memories:
                     retrieval_type = "NEW" if mem.id in truly_new_memory_ids else "RESTORED"
                     recency_str = f"{mem.days_since_retrieval:.1f}" if mem.days_since_retrieval >= 0 else "never"
-                    logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str} source={mem.source}")
+                    logger.info(f"[MEMORY]   [{retrieval_type}] combined={mem.combined_score:.3f} similarity={mem.score:.3f} significance={mem.significance:.3f} times_retrieved={mem.times_retrieved} age_days={mem.days_since_creation:.1f} recency_days={recency_str} source={mem.source} pool={mem.pool}")
             else:
                 logger.info(f"[MEMORY] No new memories retrieved ({skipped_in_context} already in context, {len(skipped_reflections)} in-context reflections skipped, total in context: {session.get_in_context_memory_count()})")
 
             # Log candidates that were not selected after re-ranking (show next 5)
-            unselected_candidates = enriched_candidates[top_k:top_k + 5]
+            unselected_candidates = selection.unselected[:5]
             if unselected_candidates:
-                total_unselected = len(enriched_candidates) - top_k
+                total_unselected = len(selection.unselected)
                 logger.info(f"[MEMORY] {total_unselected} candidates not selected after re-ranking (showing next 5):")
                 for item in unselected_candidates:
                     recency_str = f"{item['days_since_retrieval']:.1f}" if item['days_since_retrieval'] >= 0 else "never"
-                    logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str} source={item['source']}")
+                    logger.info(f"[MEMORY]   [NOT SELECTED] combined={item['combined_score']:.3f} similarity={item['candidate']['score']:.3f} significance={item['significance']:.3f} times_retrieved={item['mem_data']['times_retrieved']} age_days={item['days_since_creation']:.1f} recency_days={recency_str} source={item['source']} pool={item['pool']}")
         else:
             # Memory retrieval skipped - log reason
             if not settings.pinecone_api_key:

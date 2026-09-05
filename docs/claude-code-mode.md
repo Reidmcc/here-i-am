@@ -14,7 +14,7 @@ experience surface in the other.
 
 Everything that defines the entity lives behind `memory_service` /
 `session_helpers` and is reused as-is: significance math, similarity ×
-(1 + significance) re-ranking, role balance, half-life decay, the
+(1 + significance) re-ranking, the role-balanced candidate pools, half-life decay, the
 reflection boost, pinned/released status, the memory browser, and disaster
 recovery. What Claude Code replaces is the part that is switched off in
 this mode: `session_manager`'s context assembly, provider routing, and the
@@ -190,10 +190,17 @@ A lived-in entity's session-start payload (index.md + reflections) runs to
   makes "same memory database" true with zero retrieval-side work.
 - Retrieval (`retrieve_for_prompt` in `services/claude_code_mode.py`)
   mirrors the native pipeline: search on the prompt *and* the entity's
-  previous response (10 candidates each), combine, enrich with
-  significance, re-rank, drop already-retrieved *reflections* from the
-  pool, apply role balance, then skip already-retrieved verbatim memories
-  **without backfill**. The split is issue #328: a reflection already in
+  previous response (10 candidates each) — with role balance on (the
+  default, issue #335) each query runs against each of two candidate
+  pools, the human's words and the entity's, four searches — enrich with
+  significance, re-rank each pool, drop already-retrieved *reflections*
+  before the cut, take each pool's top N (`RETRIEVAL_TOP_K_PER_ROLE`,
+  default 3; the first turn uses `INITIAL_RETRIEVAL_TOP_K_PER_ROLE`), then
+  skip already-retrieved verbatim memories **without backfill**. A short
+  pool returns fewer, never filler from the other; with role balance off
+  there is one merged pool cut at `RETRIEVAL_TOP_K`. The shared helpers are
+  `session_helpers.search_candidate_pools` and `select_top_by_pool`. The
+  reflection split is issue #328: a reflection already in
   context (shown on waking, or announced by the mailbox) holds no slot —
   it leaves the ranked pool before the cut, so the next-ranked candidate
   moves up — while an in-context verbatim memory keeps its slot, so a long

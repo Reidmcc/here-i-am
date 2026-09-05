@@ -546,6 +546,7 @@ class TestSessionManager:
             mock_settings.retrieval_candidate_multiplier = 2
             mock_settings.initial_retrieval_top_k = 5
             mock_settings.retrieval_top_k = 5
+            mock_settings.memory_role_balance_enabled = False
             mock_settings.recent_reflections_enabled = False
 
             session = manager.create_session(sample_conversation.id)
@@ -611,6 +612,7 @@ class TestSessionManager:
             mock_settings.retrieval_candidate_multiplier = 2
             mock_settings.initial_retrieval_top_k = 5
             mock_settings.retrieval_top_k = 5
+            mock_settings.memory_role_balance_enabled = False
             mock_settings.recent_reflections_enabled = False
 
             session = manager.create_session(sample_conversation.id)
@@ -670,6 +672,7 @@ class TestSessionManager:
             mock_settings.retrieval_candidate_multiplier = 2
             mock_settings.initial_retrieval_top_k = 5
             mock_settings.retrieval_top_k = 5
+            mock_settings.memory_role_balance_enabled = False
             mock_settings.recent_reflections_enabled = False
 
             session = manager.create_session(sample_conversation.id)
@@ -3314,6 +3317,7 @@ class TestMemoryQueryResultDedup:
             mock_settings.retrieval_candidate_multiplier = 2
             mock_settings.initial_retrieval_top_k = 5
             mock_settings.retrieval_top_k = 5
+            mock_settings.memory_role_balance_enabled = False
             mock_settings.recent_reflections_enabled = False
 
             session = manager.create_session(sample_conversation.id)
@@ -3987,9 +3991,10 @@ class TestNoteStampTracking:
 
 
 class TestInContextReflectionDedup:
-    """Issue #328, native pipeline: an in-context reflection the pull ranks
-    highly leaves the candidate pool before the top-k cut (the next-ranked
-    memory moves up); an in-context verbatim memory still holds its slot."""
+    """Issue #328, native pipeline (merged pool): an in-context reflection
+    the pull ranks highly leaves the candidate pool before the top-k cut
+    (the next-ranked memory moves up); an in-context verbatim memory still
+    holds its slot. The split-pool variant is TestSplitRolePools."""
 
     @staticmethod
     def _memory(mem_id, role):
@@ -4055,7 +4060,8 @@ class TestInContextReflectionDedup:
             mock_settings.retrieval_candidate_multiplier = 2
             mock_settings.initial_retrieval_top_k = 5
             mock_settings.retrieval_top_k = 5
-            mock_settings.memory_role_balance_enabled = True
+            # Merged pool: the #328 rule on its own, without the role split
+            mock_settings.memory_role_balance_enabled = False
             mock_settings.recent_reflections_enabled = False
 
             session = manager.create_session(sample_conversation.id)
@@ -4102,3 +4108,185 @@ class TestInContextReflectionDedup:
         )
         # verb-0 makes the top five and holds its slot: four arrive, no backfill
         assert new_ids == ["verb-1", "verb-2", "verb-3", "verb-4"]
+
+
+class TestSplitRolePools:
+    """Issue #335, native pipeline: with role balance on, the human's words
+    and the entity's are searched and ranked as separate pools, both queries
+    feeding both pools, and each pool contributes its own top N — so the
+    human's words can't be squeezed out of the pull by the entity's."""
+
+    @staticmethod
+    def _memory(mem_id, role):
+        return {
+            "id": mem_id,
+            "conversation_id": "old-conv",
+            "role": role,
+            "content": f"content of {mem_id}",
+            "created_at": "2024-01-01",
+            "times_retrieved": 0,
+            "last_retrieved_at": None,
+        }
+
+    @staticmethod
+    def _search_mock(ranked):
+        """search_memories stand-in that honors the role filter the way the
+        Pinecone-side filter does; ranked is [(id, role), ...] best first."""
+        from app.services.memory_service import role_matches_filter
+
+        hits = [
+            {
+                "id": mem_id,
+                "score": 0.95 - 0.01 * i,
+                "conversation_id": "old-conv",
+                "created_at": "2024-01-01",
+                "role": role,
+                "last_retrieved_at": None,
+            }
+            for i, (mem_id, role) in enumerate(ranked)
+        ]
+
+        async def search(query, top_k, role_filter=None, **kwargs):
+            return [dict(h) for h in hits if role_matches_filter(h["role"], role_filter)]
+
+        return AsyncMock(side_effect=search)
+
+    async def _run(self, db_session, sample_conversation, turns, *, balance=True,
+                   per_role=3, initial_per_role=None, merged_top_k=5):
+        """Process one message per entry of turns (each a ranked pool);
+        returns (per-turn new ids, the search mock of the last turn)."""
+        manager = SessionManager()
+        full = {mem_id: self._memory(mem_id, role) for ranked in turns for mem_id, role in ranked}
+        outcomes = []
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.llm_service") as mock_llm, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = True
+            mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+            mock_memory.get_full_memory_content = AsyncMock(
+                side_effect=lambda mem_id, db: full.get(mem_id)
+            )
+            mock_memory.update_retrieval_count = AsyncMock()
+            mock_memory.record_memory_link = AsyncMock()
+
+            mock_llm.build_messages.return_value = []
+            mock_llm.send_message = AsyncMock(return_value={
+                "content": "Response",
+                "model": "claude-sonnet-4-5-20250929",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "stop_reason": "end_turn",
+            })
+            mock_llm.count_tokens = MagicMock(return_value=50)
+
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.context_token_limit = 150000
+            mock_settings.significance_half_life_days = 60
+            mock_settings.recency_boost_strength = 1.0
+            mock_settings.reflection_significance_multiplier = 1.0
+            mock_settings.significance_floor = 0.01
+            mock_settings.retrieval_candidate_multiplier = 2
+            mock_settings.initial_retrieval_top_k = merged_top_k
+            mock_settings.retrieval_top_k = merged_top_k
+            mock_settings.memory_role_balance_enabled = balance
+            mock_settings.initial_retrieval_top_k_per_role = (
+                per_role if initial_per_role is None else initial_per_role
+            )
+            mock_settings.retrieval_top_k_per_role = per_role
+            mock_settings.recent_reflections_enabled = False
+
+            session = manager.create_session(sample_conversation.id)
+            for i, ranked in enumerate(turns):
+                mock_memory.search_memories = self._search_mock(ranked)
+                result = await manager.process_message(session, f"Turn {i + 1}", db_session)
+                outcomes.append([m["id"] for m in result["new_memories_retrieved"]])
+            return outcomes, mock_memory.search_memories
+
+    ENTITY_HEAVY = [
+        ("a-1", "assistant"), ("a-2", "assistant"), ("a-3", "assistant"),
+        ("a-4", "assistant"), ("a-5", "assistant"),
+        ("h-1", "human"), ("h-2", "human"), ("h-3", "human"), ("h-4", "human"),
+    ]
+
+    @pytest.mark.asyncio
+    async def test_each_pool_contributes_its_top_n(self, db_session, sample_conversation):
+        # Five entity memories outrank every human one: the merged pool
+        # would have been all entity; each pool now gives its top three
+        (new_ids,), _ = await self._run(db_session, sample_conversation, [self.ENTITY_HEAVY])
+        assert new_ids == ["a-1", "a-2", "a-3", "h-1", "h-2", "h-3"]
+
+    @pytest.mark.asyncio
+    async def test_both_queries_feed_both_pools(self, db_session, sample_conversation):
+        _, search = await self._run(
+            db_session, sample_conversation, [self.ENTITY_HEAVY, self.ENTITY_HEAVY]
+        )
+        # Turn two has a previous response: prompt and last-message queries,
+        # each against each pool
+        calls = [(c.kwargs["role_filter"], c.kwargs["query"]) for c in search.await_args_list]
+        assert sorted(calls) == [
+            ("ai", "Response"), ("ai", "Turn 2"), ("human", "Response"), ("human", "Turn 2"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_first_turn_queries_each_pool_with_the_prompt_only(
+        self, db_session, sample_conversation
+    ):
+        _, search = await self._run(db_session, sample_conversation, [self.ENTITY_HEAVY])
+        calls = [(c.kwargs["role_filter"], c.kwargs["query"]) for c in search.await_args_list]
+        assert sorted(calls) == [("ai", "Turn 1"), ("human", "Turn 1")]
+
+    @pytest.mark.asyncio
+    async def test_empty_human_pool_returns_fewer_not_filler(self, db_session, sample_conversation):
+        entity_only = [(f"a-{i}", "assistant") for i in range(1, 6)]
+        (new_ids,), _ = await self._run(db_session, sample_conversation, [entity_only])
+        assert new_ids == ["a-1", "a-2", "a-3"]
+
+    @pytest.mark.asyncio
+    async def test_in_context_reflection_frees_its_pool_slot(self, db_session, sample_conversation):
+        turn_two = [
+            ("refl-1", "reflection"), ("a-1", "assistant"), ("a-2", "assistant"),
+            ("a-3", "assistant"), ("h-1", "human"), ("h-2", "human"), ("h-3", "human"),
+        ]
+        (_, new_ids), _ = await self._run(
+            db_session, sample_conversation, [[("refl-1", "reflection")], turn_two]
+        )
+        # The reflection leaves the entity pool before its cut: three
+        # entity memories arrive, and the human pool is untouched by it
+        assert new_ids == ["a-1", "a-2", "a-3", "h-1", "h-2", "h-3"]
+
+    @pytest.mark.asyncio
+    async def test_in_context_verbatim_holds_its_pool_slot(self, db_session, sample_conversation):
+        turn_two = [
+            ("a-0", "assistant"), ("a-1", "assistant"), ("a-2", "assistant"),
+            ("a-3", "assistant"), ("h-1", "human"), ("h-2", "human"), ("h-3", "human"),
+        ]
+        (_, new_ids), _ = await self._run(
+            db_session, sample_conversation, [[("a-0", "assistant")], turn_two]
+        )
+        # a-0 makes the entity pool's top three and holds its slot: two
+        # entity memories arrive, no backfill from a-3; the human pool
+        # still gives three
+        assert new_ids == ["a-1", "a-2", "h-1", "h-2", "h-3"]
+
+    @pytest.mark.asyncio
+    async def test_first_turn_uses_the_initial_per_role_knob(self, db_session, sample_conversation):
+        (first, second), _ = await self._run(
+            db_session, sample_conversation,
+            [self.ENTITY_HEAVY, [(f"{m}-b", r) for m, r in self.ENTITY_HEAVY]],
+            per_role=3, initial_per_role=1,
+        )
+        assert first == ["a-1", "h-1"]
+        assert second == ["a-1-b", "a-2-b", "a-3-b", "h-1-b", "h-2-b", "h-3-b"]
+
+    @pytest.mark.asyncio
+    async def test_role_balance_off_is_a_merged_pool_without_the_swap(
+        self, db_session, sample_conversation
+    ):
+        (new_ids,), search = await self._run(
+            db_session, sample_conversation, [self.ENTITY_HEAVY], balance=False
+        )
+        # Purely by score: all five entity memories, nothing swapped in
+        assert new_ids == ["a-1", "a-2", "a-3", "a-4", "a-5"]
+        assert [c.kwargs["role_filter"] for c in search.await_args_list] == [None]

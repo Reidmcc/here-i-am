@@ -2096,10 +2096,11 @@ class TestLogAssistantModel:
 
 
 class TestInContextReflectionDedup:
-    """Issue #328: an already-linked reflection the pull ranks highly leaves
-    the candidate pool before the top-k cut, so it holds no slot and the
-    next-ranked verbatim memory arrives; an already-linked verbatim memory
-    still holds its slot (no backfill), as before."""
+    """Issue #328 (merged pool): an already-linked reflection the pull ranks
+    highly leaves the candidate pool before the top-k cut, so it holds no
+    slot and the next-ranked verbatim memory arrives; an already-linked
+    verbatim memory still holds its slot (no backfill), as before. The
+    split-pool variant is TestSplitRolePools."""
 
     @staticmethod
     def _memory(mem_id, role):
@@ -2147,6 +2148,7 @@ class TestInContextReflectionDedup:
     async def _retrieve(self, async_client, monkeypatch, ranked, linked):
         monkeypatch.setattr(settings, "retrieval_top_k", 5)
         monkeypatch.setattr(settings, "initial_retrieval_top_k", 5)
+        monkeypatch.setattr(settings, "memory_role_balance_enabled", False)
         hits, full = self._pool(ranked)
         with patch("app.services.claude_code_mode.memory_service") as mock_memory:
             self._configure(mock_memory, hits, full, linked)
@@ -2229,3 +2231,180 @@ class TestInContextReflectionDedup:
         assert retrieved == []
         assert body["in_context_reflections_skipped"] == 2
         assert body["already_in_context"] == 0
+
+
+class TestSplitRolePools:
+    """Issue #335, Claude Code pipeline: with role balance on, the human's
+    words and the entity's are searched and ranked as separate pools, both
+    queries feeding both pools, and each pool contributes its own top N."""
+
+    @staticmethod
+    def _memory(mem_id, role):
+        return {
+            "id": mem_id,
+            "content": f"content of {mem_id}",
+            "created_at": datetime.utcnow() - timedelta(days=1),
+            "last_retrieved_at": None,
+            "times_retrieved": 0,
+            "role": role,
+            "memory_status": None,
+            "source": "native",
+        }
+
+    @classmethod
+    def _configure(cls, mock_memory, ranked, linked=()):
+        from app.services.memory_service import role_matches_filter
+
+        hits = [
+            {
+                "id": mem_id,
+                "score": 0.95 - 0.01 * i,
+                "conversation_id": "elsewhere",
+                "role": role,
+            }
+            for i, (mem_id, role) in enumerate(ranked)
+        ]
+        full = {mem_id: cls._memory(mem_id, role) for mem_id, role in ranked}
+
+        async def search(query, top_k, role_filter=None, **kwargs):
+            return [dict(h) for h in hits if role_matches_filter(h["role"], role_filter)]
+
+        mock_memory.is_configured.return_value = True
+        mock_memory.store_memory = AsyncMock(return_value=True)
+        mock_memory.get_archived_conversation_ids = AsyncMock(return_value=set())
+        mock_memory.get_retrieved_ids_for_conversation = AsyncMock(return_value=set(linked))
+        mock_memory.search_memories = AsyncMock(side_effect=search)
+        mock_memory.get_full_memory_content = AsyncMock(
+            side_effect=lambda mem_id, db: full.get(mem_id)
+        )
+        mock_memory.update_retrieval_count = AsyncMock()
+
+    @staticmethod
+    def _settings(monkeypatch, *, balance=True, per_role=3, initial_per_role=None,
+                  merged_top_k=5):
+        monkeypatch.setattr(settings, "retrieval_top_k", merged_top_k)
+        monkeypatch.setattr(settings, "initial_retrieval_top_k", merged_top_k)
+        monkeypatch.setattr(settings, "memory_role_balance_enabled", balance)
+        monkeypatch.setattr(settings, "retrieval_top_k_per_role", per_role)
+        monkeypatch.setattr(
+            settings, "initial_retrieval_top_k_per_role",
+            per_role if initial_per_role is None else initial_per_role,
+        )
+
+    async def _retrieve(self, async_client, ranked, linked=()):
+        with patch("app.services.claude_code_mode.memory_service") as mock_memory:
+            self._configure(mock_memory, ranked, linked)
+            response = await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": str(uuid.uuid4()), "prompt": "hello"},
+            )
+            retrieved = [
+                call.args[0] for call in mock_memory.update_retrieval_count.await_args_list
+            ]
+        assert response.status_code == 200
+        return response.json(), retrieved, mock_memory.search_memories
+
+    ENTITY_HEAVY = [
+        ("a-1", "assistant"), ("a-2", "assistant"), ("a-3", "assistant"),
+        ("a-4", "assistant"), ("a-5", "assistant"),
+        ("h-1", "human"), ("h-2", "human"), ("h-3", "human"), ("h-4", "human"),
+    ]
+
+    async def test_each_pool_contributes_its_top_n(self, async_client, monkeypatch):
+        # Five entity memories outrank every human one: the merged pool
+        # would have been all entity (and the old swap could only rescue
+        # one); each pool now gives its top three
+        self._settings(monkeypatch)
+        body, retrieved, _ = await self._retrieve(async_client, self.ENTITY_HEAVY)
+        assert body["retrieval_status"] == "ran"
+        assert body["memories_retrieved"] == 6
+        assert retrieved == ["a-1", "a-2", "a-3", "h-1", "h-2", "h-3"]
+        assert "content of h-3" in body["context"]
+        assert "content of a-4" not in body["context"]
+
+    async def test_first_turn_uses_the_initial_per_role_knob(self, async_client, monkeypatch):
+        self._settings(monkeypatch, per_role=3, initial_per_role=1)
+        body, retrieved, _ = await self._retrieve(async_client, self.ENTITY_HEAVY)
+        assert retrieved == ["a-1", "h-1"]
+        assert body["memories_retrieved"] == 2
+
+    async def test_empty_human_pool_returns_fewer_not_filler(self, async_client, monkeypatch):
+        self._settings(monkeypatch)
+        entity_only = [(f"a-{i}", "assistant") for i in range(1, 6)]
+        body, retrieved, _ = await self._retrieve(async_client, entity_only)
+        assert retrieved == ["a-1", "a-2", "a-3"]
+        assert body["memories_retrieved"] == 3
+
+    async def test_in_context_reflection_frees_its_pool_slot(self, async_client, monkeypatch):
+        self._settings(monkeypatch)
+        ranked = [
+            ("refl-1", "reflection"), ("a-1", "assistant"), ("a-2", "assistant"),
+            ("a-3", "assistant"), ("h-1", "human"), ("h-2", "human"), ("h-3", "human"),
+        ]
+        body, retrieved, _ = await self._retrieve(async_client, ranked, linked={"refl-1"})
+        assert retrieved == ["a-1", "a-2", "a-3", "h-1", "h-2", "h-3"]
+        assert body["in_context_reflections_skipped"] == 1
+        assert body["already_in_context"] == 0
+
+    async def test_in_context_verbatim_holds_its_pool_slot(self, async_client, monkeypatch):
+        self._settings(monkeypatch)
+        ranked = [
+            ("a-0", "assistant"), ("a-1", "assistant"), ("a-2", "assistant"),
+            ("a-3", "assistant"), ("h-1", "human"), ("h-2", "human"), ("h-3", "human"),
+        ]
+        body, retrieved, _ = await self._retrieve(async_client, ranked, linked={"a-0"})
+        # a-0 holds one of the entity pool's three slots (no backfill from
+        # a-3); the human pool is unaffected
+        assert retrieved == ["a-1", "a-2", "h-1", "h-2", "h-3"]
+        assert body["already_in_context"] == 1
+        assert body["memories_retrieved"] == 5
+
+    async def test_prompt_only_turn_queries_each_pool_once(self, async_client, monkeypatch):
+        self._settings(monkeypatch)
+        _, _, search = await self._retrieve(async_client, self.ENTITY_HEAVY)
+        calls = sorted((c.kwargs["role_filter"], c.kwargs["query"]) for c in search.await_args_list)
+        assert calls == [("ai", "hello"), ("human", "hello")]
+
+    async def test_both_queries_feed_both_pools(self, cc_mode_enabled, db_session, monkeypatch):
+        from app.services import claude_code_mode as cc_mode
+
+        self._settings(monkeypatch)
+        conversation = Conversation(
+            entity_id="test-entity",
+            source=ConversationSource.CLAUDE_CODE.value,
+            external_session_id=str(uuid.uuid4()),
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+        db_session.add(Message(
+            conversation_id=conversation.id,
+            role=MessageRole.ASSISTANT,
+            content="what I said last",
+            speaker_entity_id="test-entity",
+        ))
+        await db_session.commit()
+
+        entity = cc_mode.resolve_entity(None)
+        with patch("app.services.claude_code_mode.memory_service") as mock_memory:
+            self._configure(mock_memory, self.ENTITY_HEAVY)
+            retrieval = await cc_mode.retrieve_for_prompt(
+                db_session, conversation, entity, "a new subject"
+            )
+            calls = sorted(
+                (c.kwargs["role_filter"], c.kwargs["query"])
+                for c in mock_memory.search_memories.await_args_list
+            )
+        assert retrieval.count == 6
+        assert calls == [
+            ("ai", "a new subject"), ("ai", "what I said last"),
+            ("human", "a new subject"), ("human", "what I said last"),
+        ]
+
+    async def test_role_balance_off_is_a_merged_pool_without_the_swap(
+        self, async_client, monkeypatch
+    ):
+        self._settings(monkeypatch, balance=False)
+        body, retrieved, search = await self._retrieve(async_client, self.ENTITY_HEAVY)
+        assert retrieved == ["a-1", "a-2", "a-3", "a-4", "a-5"]
+        assert body["memories_retrieved"] == 5
+        assert [c.kwargs["role_filter"] for c in search.await_args_list] == [None]

@@ -60,8 +60,9 @@ from app.services.rooms_registry import (
 )
 from app.services.session_helpers import (
     calculate_significance,
-    drop_in_context_reflections,
-    ensure_role_balance,
+    retrieval_top_k_by_pool,
+    search_candidate_pools,
+    select_top_by_pool,
 )
 
 logger = logging.getLogger(__name__)
@@ -733,7 +734,8 @@ def _selection_log_detail(item: Dict[str, Any]) -> str:
         f"times_retrieved={item['mem_data']['times_retrieved']} "
         f"age_days={item['days_since_creation']:.1f} "
         f"recency_days={recency_str} "
-        f"source={item['source']}"
+        f"source={item['source']} "
+        f"pool={item['pool']}"
     )
 
 
@@ -746,10 +748,12 @@ async def retrieve_for_prompt(
     """
     Automatic semantic retrieval for a user prompt, mirroring the native
     pipeline in session_manager.process_message: search on the prompt and the
-    entity's previous response, combine candidates, re-rank by
-    similarity * (1 + significance), drop already-retrieved *reflections*
-    from the pool (they hold no slot — issue #328), apply role balance, then
-    skip already-retrieved verbatim memories without backfill.
+    entity's previous response — with role balance on, both queries against
+    each of two candidate pools, the human's words and the entity's (issue
+    #335) — re-rank each pool by similarity * (1 + significance), drop
+    already-retrieved *reflections* before the cut (they hold no slot —
+    issue #328), take each pool's top N, then skip already-retrieved
+    verbatim memories without backfill.
 
     Selected memories get update_retrieval_count (link + times_retrieved), so
     deliberate significance dynamics work identically to native mode, and the
@@ -789,49 +793,40 @@ async def retrieve_for_prompt(
         if is_first_retrieval
         else settings.retrieval_top_k
     )
+    # With role balance on, the human's words and the entity's are searched
+    # as separate pools — both queries feeding both pools — and each pool
+    # contributes its own top N (issue #335); off, one merged pool cut at
+    # top_k
+    split_by_role = settings.memory_role_balance_enabled
+    top_k_by_pool = retrieval_top_k_by_pool(
+        split_by_role,
+        merged_top_k=top_k,
+        per_role_top_k=(
+            settings.initial_retrieval_top_k_per_role
+            if is_first_retrieval
+            else settings.retrieval_top_k_per_role
+        ),
+    )
 
     assistant_query = await _last_assistant_content(db, conversation.id)
 
-    user_candidates = await memory_service.search_memories(
-        query=prompt,
-        top_k=FETCH_K_PER_QUERY,
+    candidate_pools = await search_candidate_pools(
+        memory_service.search_memories,
+        prompt,
+        assistant_query,
+        fetch_k=FETCH_K_PER_QUERY,
+        split_by_role=split_by_role,
+        log_prefix="[CC MODE]",
         exclude_conversation_id=conversation.id,
         exclude_conversation_after=conversation.last_compacted_at,
         entity_id=entity_index,
     )
-    logger.info(f"[CC MODE] User query retrieved {len(user_candidates)} candidates")
-    assistant_candidates = []
-    if assistant_query:
-        assistant_candidates = await memory_service.search_memories(
-            query=assistant_query,
-            top_k=FETCH_K_PER_QUERY,
-            exclude_conversation_id=conversation.id,
-            exclude_conversation_after=conversation.last_compacted_at,
-            entity_id=entity_index,
-        )
-        logger.info(f"[CC MODE] Assistant query retrieved {len(assistant_candidates)} candidates")
-
-    # Combine, keeping the higher score for duplicates
-    candidates_by_id: Dict[str, Dict[str, Any]] = {}
-    user_candidate_ids = set(c["id"] for c in user_candidates)
-    assistant_candidate_ids = set(c["id"] for c in assistant_candidates)
-    for candidate in user_candidates + assistant_candidates:
-        cid = candidate["id"]
-        if cid not in candidates_by_id or candidate["score"] > candidates_by_id[cid]["score"]:
-            candidates_by_id[cid] = candidate
-    for cid, candidate in candidates_by_id.items():
-        if cid in user_candidate_ids and cid in assistant_candidate_ids:
-            candidate["_source"] = "both"
-        elif cid in user_candidate_ids:
-            candidate["_source"] = "user"
-        else:
-            candidate["_source"] = "assistant"
-    logger.info(f"[CC MODE] Combined {len(candidates_by_id)} unique candidates from both queries")
+    candidates = [c for pool in candidate_pools.values() for c in pool]
 
     # Enrich with full content and significance
     enriched: List[Dict[str, Any]] = []
     now = datetime.utcnow()
-    for candidate in candidates_by_id.values():
+    for candidate in candidates:
         try:
             if candidate.get("conversation_id") in archived_ids:
                 continue
@@ -869,34 +864,30 @@ async def retrieve_for_prompt(
                 "days_since_creation": days_since_creation,
                 "days_since_retrieval": days_since_retrieval,
                 "source": candidate.get("_source", "unknown"),
+                "pool": candidate.get("_pool"),
             })
         except Exception as e:
             logger.error(f"[CC MODE] Error processing candidate {candidate.get('id')}: {e}")
 
-    enriched.sort(key=lambda x: x["combined_score"], reverse=True)
-
-    # Already-linked reflections leave the pool before the cut, so they
-    # hold no slot and the next-ranked candidate moves up (issue #328);
-    # already-linked verbatim memories stay and are skipped below without
-    # backfill, so a long conversation doesn't fill with weaker matches
-    enriched, skipped_reflections = drop_in_context_reflections(
-        enriched, already_retrieved
-    )
+    # Rank each pool and cut it at its top N. Already-linked reflections
+    # leave the pool before the cut, so they hold no slot and the
+    # next-ranked candidate moves up (issue #328); already-linked verbatim
+    # memories stay and are skipped below without backfill, so a long
+    # conversation doesn't fill with weaker matches
+    selection = select_top_by_pool(enriched, already_retrieved, top_k_by_pool)
+    skipped_reflections = selection.skipped_reflections
     for item in skipped_reflections:
         logger.info(
             f"[CC MODE]   [IN-CONTEXT REFLECTION SKIPPED] "
             f"{_selection_log_detail(item)}"
         )
-
-    if settings.memory_role_balance_enabled:
-        top_candidates = ensure_role_balance(enriched, top_k)
-    else:
-        top_candidates = enriched[:top_k]
+    top_candidates = selection.selected
 
     logger.info(
         f"[CC MODE] Re-ranked {len(enriched)} candidates by significance, "
         f"keeping top {len(top_candidates)} "
-        f"(role_balance={'on' if settings.memory_role_balance_enabled else 'off'})"
+        f"(role_balance={'on' if split_by_role else 'off'}; "
+        f"{selection.describe(top_k_by_pool)})"
     )
 
     # Skip already-retrieved memories without backfilling from lower-ranked
@@ -931,13 +922,13 @@ async def retrieve_for_prompt(
             f"[CC MODE] No new memories retrieved for conversation "
             f"{conversation.id[:8]}... ({skipped} already in context, "
             f"{len(skipped_reflections)} in-context reflections skipped, "
-            f"{len(candidates_by_id)} candidates)"
+            f"{len(candidates)} candidates)"
         )
 
     # Log candidates that were not selected after re-ranking (show next 5)
-    unselected = enriched[top_k:top_k + 5]
+    unselected = selection.unselected[:5]
     if unselected:
-        total_unselected = len(enriched) - top_k
+        total_unselected = len(selection.unselected)
         logger.info(
             f"[CC MODE] {total_unselected} candidates not selected after "
             f"re-ranking (showing next 5):"

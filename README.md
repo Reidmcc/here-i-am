@@ -42,7 +42,7 @@ While Here I Am can be used with no memory features enabled, this is not recomme
 - Session memory accumulator pattern: Deduplication within conversations
 - Dynamic memory significance: `significance = (1 + 0.1 × times_retrieved) × recency_factor × half_life_modifier`, with an optional modifier to increase the significance of memories the AI chooses to create via `memory_save`.
 - Retrieved memory display in UI 
-- Optional memory role balance (ensures both human and assistant memories in retrieval)
+- Memory role balance: the human's words and the entity's are retrieved as separate pools with a guaranteed share each, so what the human said is never squeezed out by the entity's denser messages
 - Memory query tool: Entities can deliberately search their memories beyond automatic retrieval
 - Self-authored reflections: Entities can save memories in their own words via `memory_save`
 - Memory agency: Entities can pin memories (exempt from age-based decay) or release them from retrieval via `memory_mark`/`memory_release`, and review and undo their own releases (`memory_query` mode `released`); the researcher can view and override these choices, but every status write is attributed, and a researcher override is reported to the entity at the start of its next session
@@ -201,9 +201,11 @@ Text-to-Speech / Speech-to-Text: ElevenLabs, XTTS v2, StyleTTS 2, and Whisper va
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `MEMORY_ROLE_BALANCE_ENABLED` | Balance human/assistant memories in retrieval | No (default: true) |
-| `RETRIEVAL_TOP_K` | Memories retrieved per message | No (default: 5) |
-| `INITIAL_RETRIEVAL_TOP_K` |= Memories retrieved on the first turn  | No (default: 5)
+| `MEMORY_ROLE_BALANCE_ENABLED` | Retrieve the human's words and the entity's as separate pools, each contributing its own top N (both queries feed both pools) | No (default: true) |
+| `RETRIEVAL_TOP_K_PER_ROLE` | Memories retrieved per pool per message when role balance is on | No (default: 3) |
+| `INITIAL_RETRIEVAL_TOP_K_PER_ROLE` | Memories retrieved per pool on the first turn when role balance is on | No (default: 3) |
+| `RETRIEVAL_TOP_K` | Memories retrieved per message when role balance is off (merged pool) | No (default: 5) |
+| `INITIAL_RETRIEVAL_TOP_K` | Memories retrieved on the first turn when role balance is off (merged pool) | No (default: 5) |
 | `SIMILARITY_THRESHOLD` | Minimum similarity for automatic retrieval | No (default: 0.4) |
 | `QUERY_SIMILARITY_THRESHOLD` | Minimum similarity for deliberate `memory_query` searches | No (default: 0.2) |
 | `SIGNIFICANCE_HALF_LIFE_DAYS` | Days for a memory's significance to halve | No (default: 60) |
@@ -285,7 +287,7 @@ The memory system uses a session memory accumulator pattern:
    - `significance = (1 + 0.1 × times_retrieved) × recency_factor × half_life_modifier × reflection_significance_multiplier` 
    - Half-life of 60 days prevents old memories from permanently dominating
 
-4. Optional memory role balance ensures retrieved sets include both human and assistant messages when possible.
+4. Memory role balance (default on) searches and ranks the human's words and the entity's as two separate candidate pools — both the current-message query and the entity's last-response query feed both pools — and takes the top N from each, so every retrieval carries an equal share of what each party said. Off, one merged pool is cut purely by combined score.
 
 5. Entities have agency over their own memories:
    - `memory_save` stores self-authored reflections, vectorized alongside conversational memories

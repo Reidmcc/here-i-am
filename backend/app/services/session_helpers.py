@@ -7,13 +7,20 @@ significance calculation, caching, and token estimation.
 Split from session_manager.py to reduce file size and improve maintainability.
 """
 
+import asyncio
 import itertools
 import json
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 from app.config import settings
+from app.services.memory_service import (
+    ROLE_FILTER_AI,
+    ROLE_FILTER_HUMAN,
+    role_matches_filter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -183,79 +190,172 @@ def drop_in_context_reflections(
     return remaining, dropped
 
 
-def ensure_role_balance(
+# Candidate pools for automatic retrieval (issue #335). With role balance
+# on, the human's words and the entity's words are searched and ranked as
+# two separate pools and each contributes its own top N; off, one merged
+# pool cut at top_k. Pool names double as search_memories role filters.
+POOL_ALL = "all"
+POOL_HUMAN = ROLE_FILTER_HUMAN
+POOL_AI = ROLE_FILTER_AI
+_POOL_ROLE_FILTERS = {POOL_ALL: None, POOL_HUMAN: ROLE_FILTER_HUMAN, POOL_AI: ROLE_FILTER_AI}
+
+
+def retrieval_top_k_by_pool(
+    split_by_role: bool,
+    *,
+    merged_top_k: int,
+    per_role_top_k: int,
+) -> Dict[str, int]:
+    """
+    How many memories each candidate pool contributes to a retrieval.
+
+    Role balance on: the human pool and the entity pool each give
+    per_role_top_k (the *_retrieval_top_k_per_role settings). Off: the
+    single merged pool gives merged_top_k (the *_retrieval_top_k settings).
+    """
+    if split_by_role:
+        return {POOL_HUMAN: per_role_top_k, POOL_AI: per_role_top_k}
+    return {POOL_ALL: merged_top_k}
+
+
+async def search_candidate_pools(
+    search_memories: Callable[..., Awaitable[List[Dict[str, Any]]]],
+    user_query: Optional[str],
+    assistant_query: Optional[str],
+    *,
+    fetch_k: int,
+    split_by_role: bool,
+    log_prefix: str = "[MEMORY]",
+    **search_kwargs: Any,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Run the automatic-retrieval searches and group the hits into candidate
+    pools, keyed by pool name.
+
+    Two query texts drive retrieval: the human's current message and the
+    entity's previous response. With split_by_role (role balance, issue
+    #335) there are two pools — the human's words (role filter "human")
+    and the entity's (role filter "ai": its own messages, reflections, and
+    sibling letters) — and *both* queries run against *both* pools, four
+    searches in all. The cross-feed matters in both directions: when the
+    human opens a new subject, the entity's last message is still about the
+    old one, so the prompt query is what keeps the entity pool current; and
+    when the human's message is "okay, go ahead", the entity's last message
+    is what keeps the human pool topical instead of returning the human's
+    other terse turns. Without the split there is one merged pool queried
+    by both texts (two searches, the pre-#335 shape minus the role swap).
+
+    Within a pool a hit returned by both queries keeps its higher score;
+    every hit is tagged "_source" ("user" / "assistant" / "both") and
+    "_pool". A hit is admitted to a pool only if its role satisfies the
+    pool's filter — the Pinecone-side filter already guarantees this, so in
+    production the check is a no-op backstop. The searches run concurrently.
+    """
+    queries = [
+        (source, query)
+        for source, query in (("user", user_query), ("assistant", assistant_query))
+        if query
+    ]
+    pools = [POOL_HUMAN, POOL_AI] if split_by_role else [POOL_ALL]
+    plan = [(pool, source, query) for pool in pools for source, query in queries]
+
+    results = await asyncio.gather(*[
+        search_memories(
+            query=query,
+            top_k=fetch_k,
+            role_filter=_POOL_ROLE_FILTERS[pool],
+            **search_kwargs,
+        )
+        for pool, _source, query in plan
+    ])
+
+    best_by_pool: Dict[str, Dict[str, Dict[str, Any]]] = {pool: {} for pool in pools}
+    sources_by_pool: Dict[str, Dict[str, Set[str]]] = {pool: {} for pool in pools}
+    for (pool, source, _query), hits in zip(plan, results, strict=True):
+        logger.info(
+            f"{log_prefix} {source.capitalize()} query retrieved {len(hits)} candidates "
+            f"(pool={pool})"
+        )
+        role_filter = _POOL_ROLE_FILTERS[pool]
+        for hit in hits:
+            if not role_matches_filter(hit.get("role"), role_filter):
+                continue
+            cid = hit["id"]
+            sources_by_pool[pool].setdefault(cid, set()).add(source)
+            current = best_by_pool[pool].get(cid)
+            if current is None or hit["score"] > current["score"]:
+                # Copy so tags never leak into the search cache's dicts
+                best_by_pool[pool][cid] = dict(hit)
+
+    candidate_pools: Dict[str, List[Dict[str, Any]]] = {}
+    for pool in pools:
+        candidates = []
+        for cid, hit in best_by_pool[pool].items():
+            sources = sources_by_pool[pool][cid]
+            hit["_source"] = "both" if len(sources) > 1 else next(iter(sources))
+            hit["_pool"] = pool
+            candidates.append(hit)
+        candidate_pools[pool] = candidates
+        logger.info(
+            f"{log_prefix} Combined {len(candidates)} unique candidates "
+            f"(pool={pool}, {len(queries)} queries)"
+        )
+    return candidate_pools
+
+
+@dataclass
+class PoolSelection:
+    """The outcome of select_top_by_pool: what the cut kept and what it didn't."""
+    selected: List[Dict[str, Any]] = field(default_factory=list)  # all pools, best combined score first
+    skipped_reflections: List[Dict[str, Any]] = field(default_factory=list)  # in-context reflections dropped before the cut
+    unselected: List[Dict[str, Any]] = field(default_factory=list)  # below the cut, all pools, best first
+    pool_sizes: Dict[str, int] = field(default_factory=dict)  # candidates per pool after the reflection drop
+    pool_selected: Dict[str, int] = field(default_factory=dict)  # candidates the cut took per pool
+
+    def describe(self, top_k_by_pool: Dict[str, int]) -> str:
+        """One-line summary for the retrieval log, e.g. 'human 3/7 (top 3), ai 3/12 (top 3)'."""
+        return ", ".join(
+            f"{pool} {self.pool_selected.get(pool, 0)}/{self.pool_sizes.get(pool, 0)} (top {top_k})"
+            for pool, top_k in top_k_by_pool.items()
+        )
+
+
+def select_top_by_pool(
     enriched_candidates: List[Dict[str, Any]],
-    top_k: int,
-) -> List[Dict[str, Any]]:
+    in_context_ids: Set[str],
+    top_k_by_pool: Dict[str, int],
+) -> PoolSelection:
     """
-    Ensure the selected memories include at least one assistant and one human message.
+    Rank each candidate pool by combined score and take its top N.
 
-    If all selected memories are from one role (all human or all assistant),
-    replace the lowest scoring one with the highest scoring message of the
-    other role (if any exist in the candidate pool).
-
-    Args:
-        enriched_candidates: List of candidates sorted by combined_score descending,
-                            each containing {"mem_data": {"role": ...}, ...}
-        top_k: Number of memories to select
-
-    Returns:
-        List of selected candidates with role balance ensured
+    Each enriched candidate carries the pool it was searched from
+    ("pool"; missing means the merged pool). Per pool: sort by combined
+    score, drop in-context reflections before the cut (issue #328 — they
+    hold no slot, the next-ranked candidate moves up), then keep the top N
+    from top_k_by_pool. In-context verbatim memories stay in and are
+    skipped by the caller without backfill. The returned lists are merged
+    across pools in combined-score order, so the context receives the
+    strongest memory first regardless of who authored it.
     """
-    if not enriched_candidates or top_k <= 0:
-        return []
-
-    # Start with top candidates
-    top_candidates = list(enriched_candidates[:top_k])  # Make a copy
-
-    if len(top_candidates) < 2:
-        # Can't balance with less than 2 candidates
-        return top_candidates
-
-    # Count human and assistant roles in selection
-    human_count = sum(1 for item in top_candidates if item["mem_data"]["role"] == "human")
-    assistant_count = sum(1 for item in top_candidates if item["mem_data"]["role"] == "assistant")
-
-    # Check if we need to rebalance
-    # Only rebalance if ALL are one role (human or assistant)
-    if human_count > 0 and assistant_count > 0:
-        # Already have both roles
-        return top_candidates
-
-    # Determine which role we need
-    if human_count > 0 and assistant_count == 0:
-        needed_role = "assistant"
-    elif assistant_count > 0 and human_count == 0:
-        needed_role = "human"
-    else:
-        # Neither human nor assistant in selection (edge case - all other roles)
-        # Return as-is
-        return top_candidates
-
-    # Find highest scoring candidate with the needed role from the FULL pool
-    replacement = None
-    for item in enriched_candidates:
-        if item["mem_data"]["role"] == needed_role:
-            replacement = item
-            break  # First match is highest scoring since list is sorted
-
-    if replacement is None:
-        # No candidates with the needed role exist in the pool
-        logger.info(f"[MEMORY] Role balance: needed {needed_role} but none found in candidate pool")
-        return top_candidates
-
-    # Check if replacement is already in selection (shouldn't happen given above logic)
-    replacement_id = replacement["mem_data"]["id"]
-    if any(item["mem_data"]["id"] == replacement_id for item in top_candidates):
-        return top_candidates
-
-    # Replace the lowest scoring candidate (last in the sorted list)
-    replaced_id = top_candidates[-1]["mem_data"]["id"][:8]
-    replacement_score = replacement["combined_score"]
-    logger.info(f"[MEMORY] Role balance: replacing {replaced_id}... with {needed_role} message (score={replacement_score:.3f})")
-    top_candidates[-1] = replacement
-
-    return top_candidates
+    selection = PoolSelection()
+    by_score = lambda item: item["combined_score"]  # noqa: E731
+    for pool, top_k in top_k_by_pool.items():
+        members = [
+            item for item in enriched_candidates
+            if item.get("pool", POOL_ALL) == pool
+        ]
+        members.sort(key=by_score, reverse=True)
+        members, dropped = drop_in_context_reflections(members, in_context_ids)
+        cut = members[:max(top_k, 0)]
+        selection.skipped_reflections.extend(dropped)
+        selection.selected.extend(cut)
+        selection.unselected.extend(members[len(cut):])
+        selection.pool_sizes[pool] = len(members)
+        selection.pool_selected[pool] = len(cut)
+    selection.selected.sort(key=by_score, reverse=True)
+    selection.unselected.sort(key=by_score, reverse=True)
+    selection.skipped_reflections.sort(key=by_score, reverse=True)
+    return selection
 
 
 def get_message_content_text(content: Any) -> str:
@@ -415,6 +515,5 @@ def make_link_timestamper(
 # These allow existing code to import from here without changes
 _build_memory_queries = build_memory_queries
 _calculate_significance = calculate_significance
-_ensure_role_balance = ensure_role_balance
 _get_message_content_text = get_message_content_text
 _add_cache_control_to_tool_result = add_cache_control_to_tool_result
