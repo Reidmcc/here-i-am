@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 
 import httpx
 import tiktoken
-from anthropic import APIConnectionError, AsyncAnthropic
+from anthropic import APIConnectionError, AsyncAnthropic, Timeout
 
 from app.config import settings
 from app.services.notes_service import notes_service
@@ -182,7 +182,7 @@ def _get_content_text(content: Union[str, List[Dict[str, Any]]]) -> str:
     return "\n".join(text_parts)
 
 
-def _build_timeout() -> httpx.Timeout:
+def _build_timeout() -> Timeout:
     """
     Timeout policy for Anthropic-compatible clients.
 
@@ -194,8 +194,13 @@ def _build_timeout() -> httpx.Timeout:
     setting explicitly as a backstop against a half-dead connection that stops
     delivering without closing — but the read budget has to stay well above the
     gap between keepalive pings on a slow turn, or healthy streams get killed.
+
+    Built from the SDK's own re-exported Timeout class, not httpx's: anthropic
+    1.x moved to the `httpx2` fork and rejects `httpx.Timeout` objects at
+    client construction, while 0.x re-exports `httpx.Timeout` under the same
+    name. The re-export is the one spelling that is correct on both.
     """
-    return httpx.Timeout(
+    return Timeout(
         connect=settings.anthropic_connect_timeout,
         read=settings.anthropic_read_timeout,
         write=settings.anthropic_write_timeout,

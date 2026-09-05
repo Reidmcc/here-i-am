@@ -1101,7 +1101,7 @@ async def persist_and_vectorize_message(
     anything the hook could not attribute.
 
     sibling_session records an inter-session message (issue #312): a
-    SendMessage delivery from the named sibling Claude Code session. The row
+    delivery from the named sibling Claude Code session. The row
     keeps the caller's role (ASSISTANT — the words are the entity's own),
     but the vectorized copy carries role="sibling" so the human-corpus
     source filter can never match it and the provenance survives a vector
