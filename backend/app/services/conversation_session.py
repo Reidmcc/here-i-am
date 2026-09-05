@@ -40,6 +40,7 @@ class MemoryEntry:
     days_since_creation: float = 0.0  # Age of the memory in days
     days_since_retrieval: float = 0.0  # Days since last retrieval (None if never retrieved)
     source: str = "unknown"  # What retrieved this memory: "user"/"assistant"/"both" (semantic queries) or "recent_reflection" (first-turn recency injection)
+    pool: Optional[str] = None  # Candidate pool it was selected from: "human"/"ai" (role balance on), "all" (merged), None (not a semantic retrieval)
     origin: str = "native"  # Which experience formed this memory: "native" or "claude_code" (from the memory's conversation row; rendered in its marker)
     sibling_session: Optional[str] = None  # Sibling Claude Code session that authored this message, for inter-session deliveries (rendered in its marker)
 

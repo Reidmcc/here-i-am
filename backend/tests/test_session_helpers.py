@@ -4,7 +4,7 @@ Tests for session_helpers.py - Session helper functions.
 Tests cover:
 - build_memory_queries: Building memory similarity search queries
 - calculate_significance: Memory significance calculation
-- ensure_role_balance: Memory role balance in retrieval
+- search_candidate_pools / select_top_by_pool: role-balanced candidate pools (issue #335)
 - get_message_content_text: Content text extraction from messages
 - add_cache_control_to_tool_result: Cache control insertion
 """
@@ -12,18 +12,25 @@ Tests cover:
 import os
 import time
 from datetime import datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 
+from app.services.memory_service import role_matches_filter
 from app.services.session_helpers import (
+    POOL_AI,
+    POOL_ALL,
+    POOL_HUMAN,
     add_cache_control_to_tool_result,
     build_memory_queries,
     calculate_significance,
     drop_in_context_reflections,
-    ensure_role_balance,
     estimate_prompt_tokens,
     get_message_content_text,
     make_link_timestamper,
+    retrieval_top_k_by_pool,
+    search_candidate_pools,
+    select_top_by_pool,
     stamp_human_message,
     total_prompt_tokens_from_usage,
 )
@@ -264,81 +271,211 @@ class TestCalculateSignificance:
 
 
 # ============================================================
-# Tests for ensure_role_balance
+# Tests for the role-balanced candidate pools (issue #335)
 # ============================================================
 
-class TestEnsureRoleBalance:
-    """Tests for memory role balance in retrieval results."""
-
-    def _make_candidate(self, role, score, mem_id):
-        return {
-            "mem_data": {"role": role, "id": mem_id},
-            "combined_score": score,
+class TestRetrievalTopKByPool:
+    def test_split_gives_each_role_pool_the_per_role_n(self):
+        assert retrieval_top_k_by_pool(True, merged_top_k=5, per_role_top_k=3) == {
+            POOL_HUMAN: 3, POOL_AI: 3,
         }
 
-    def test_already_balanced(self):
-        """Should return candidates unchanged when already balanced."""
-        candidates = [
-            self._make_candidate("human", 0.9, "h1"),
-            self._make_candidate("assistant", 0.8, "a1"),
-            self._make_candidate("human", 0.7, "h2"),
+    def test_merged_gives_the_single_pool_top_k(self):
+        assert retrieval_top_k_by_pool(False, merged_top_k=5, per_role_top_k=3) == {
+            POOL_ALL: 5,
+        }
+
+
+class TestSearchCandidatePools:
+    """search_candidate_pools runs the prompt query and the entity's
+    last-message query against each pool and merges per pool."""
+
+    HITS = [
+        {"id": "h1", "score": 0.9, "role": "human"},
+        {"id": "a1", "score": 0.8, "role": "assistant"},
+        {"id": "r1", "score": 0.7, "role": "reflection"},
+        {"id": "s1", "score": 0.6, "role": "sibling"},
+        {"id": "u1", "score": 0.5},  # no role metadata: pre-role record
+    ]
+
+    @staticmethod
+    def _search(hits_by_query=None, honor_filter=True):
+        """A search_memories stand-in. With honor_filter it applies the
+        role filter the way Pinecone would; without it, it ignores the
+        filter (the shape of a naive test mock)."""
+        async def search(query, top_k, role_filter=None, **kwargs):
+            hits = (hits_by_query or {}).get(query, TestSearchCandidatePools.HITS)
+            if honor_filter:
+                hits = [h for h in hits if role_matches_filter(h.get("role"), role_filter)]
+            return [dict(h) for h in hits]
+        return AsyncMock(side_effect=search)
+
+    async def test_split_runs_both_queries_against_both_pools(self):
+        search = self._search()
+        pools = await search_candidate_pools(
+            search, "the prompt", "my last message", fetch_k=10, split_by_role=True,
+            entity_id="idx",
+        )
+        calls = {(c.kwargs["role_filter"], c.kwargs["query"]) for c in search.await_args_list}
+        assert calls == {
+            ("human", "the prompt"), ("human", "my last message"),
+            ("ai", "the prompt"), ("ai", "my last message"),
+        }
+        assert all(c.kwargs["entity_id"] == "idx" and c.kwargs["top_k"] == 10
+                   for c in search.await_args_list)
+        assert set(pools) == {POOL_HUMAN, POOL_AI}
+        assert [h["id"] for h in pools[POOL_HUMAN]] == ["h1"]
+        # "ai" is everything that isn't the human: messages, reflections,
+        # sibling letters, and records written before the role field
+        assert {h["id"] for h in pools[POOL_AI]} == {"a1", "r1", "s1", "u1"}
+        assert all(h["_pool"] == POOL_AI for h in pools[POOL_AI])
+        assert all(h["_source"] == "both" for h in pools[POOL_AI])
+
+    async def test_merged_runs_both_queries_once_with_no_filter(self):
+        search = self._search()
+        pools = await search_candidate_pools(
+            search, "the prompt", "my last message", fetch_k=10, split_by_role=False,
+        )
+        assert [(c.kwargs["role_filter"], c.kwargs["query"]) for c in search.await_args_list] == [
+            (None, "the prompt"), (None, "my last message"),
         ]
-        result = ensure_role_balance(candidates, 3)
-        assert len(result) == 3
+        assert set(pools) == {POOL_ALL}
+        assert {h["id"] for h in pools[POOL_ALL]} == {"h1", "a1", "r1", "s1", "u1"}
+        assert all(h["_pool"] == POOL_ALL for h in pools[POOL_ALL])
 
-    def test_all_human_replaces_last(self):
-        """Should replace lowest-scored human with best assistant when all human."""
-        candidates = [
-            self._make_candidate("human", 0.9, "h1"),
-            self._make_candidate("human", 0.8, "h2"),
-            self._make_candidate("human", 0.7, "h3"),
-            self._make_candidate("assistant", 0.6, "a1"),  # Outside top_k but in pool
+    async def test_missing_assistant_query_halves_the_plan(self):
+        search = self._search()
+        await search_candidate_pools(
+            search, "the prompt", None, fetch_k=10, split_by_role=True,
+        )
+        assert [(c.kwargs["role_filter"], c.kwargs["query"]) for c in search.await_args_list] == [
+            ("human", "the prompt"), ("ai", "the prompt"),
         ]
-        result = ensure_role_balance(candidates, 3)
-        assert len(result) == 3
-        roles = [r["mem_data"]["role"] for r in result]
-        assert "assistant" in roles
 
-    def test_all_assistant_replaces_last(self):
-        """Should replace lowest-scored assistant with best human when all assistant."""
-        candidates = [
-            self._make_candidate("assistant", 0.9, "a1"),
-            self._make_candidate("assistant", 0.8, "a2"),
-            self._make_candidate("assistant", 0.7, "a3"),
-            self._make_candidate("human", 0.6, "h1"),
+    async def test_no_queries_runs_no_search(self):
+        search = self._search()
+        pools = await search_candidate_pools(
+            search, None, None, fetch_k=10, split_by_role=True,
+        )
+        search.assert_not_awaited()
+        assert pools == {POOL_HUMAN: [], POOL_AI: []}
+
+    async def test_duplicate_within_a_pool_keeps_the_higher_score_and_both_sources(self):
+        search = self._search(hits_by_query={
+            "the prompt": [{"id": "h1", "score": 0.5, "role": "human"},
+                           {"id": "h2", "score": 0.4, "role": "human"}],
+            "my last message": [{"id": "h1", "score": 0.9, "role": "human"}],
+        })
+        pools = await search_candidate_pools(
+            search, "the prompt", "my last message", fetch_k=10, split_by_role=True,
+        )
+        by_id = {h["id"]: h for h in pools[POOL_HUMAN]}
+        assert by_id["h1"]["score"] == 0.9
+        assert by_id["h1"]["_source"] == "both"
+        assert by_id["h2"]["_source"] == "user"
+
+    async def test_a_hit_that_contradicts_its_pool_filter_is_not_admitted(self):
+        # The Pinecone filter guarantees this in production; the backstop
+        # keeps a hit from landing in two pools if the filter ever leaks
+        search = self._search(honor_filter=False)
+        pools = await search_candidate_pools(
+            search, "the prompt", None, fetch_k=10, split_by_role=True,
+        )
+        assert [h["id"] for h in pools[POOL_HUMAN]] == ["h1"]
+        assert {h["id"] for h in pools[POOL_AI]} == {"a1", "r1", "s1", "u1"}
+
+    async def test_tags_do_not_leak_into_the_search_results(self):
+        # search_memories may hand back its cache's own dicts
+        shared = [{"id": "h1", "score": 0.9, "role": "human"}]
+        search = AsyncMock(return_value=shared)
+        await search_candidate_pools(search, "the prompt", None, fetch_k=10, split_by_role=True)
+        assert "_pool" not in shared[0] and "_source" not in shared[0]
+
+
+class TestSelectTopByPool:
+    @staticmethod
+    def _item(mem_id, role, score, pool):
+        return {
+            "mem_data": {"id": mem_id, "role": role},
+            "combined_score": score,
+            "pool": pool,
+        }
+
+    def test_each_pool_is_cut_at_its_own_n_and_merged_by_score(self):
+        enriched = [
+            self._item("a1", "assistant", 0.9, POOL_AI),
+            self._item("a2", "assistant", 0.8, POOL_AI),
+            self._item("a3", "assistant", 0.7, POOL_AI),
+            self._item("a4", "assistant", 0.6, POOL_AI),
+            self._item("h1", "human", 0.5, POOL_HUMAN),
+            self._item("h2", "human", 0.4, POOL_HUMAN),
+            self._item("h3", "human", 0.3, POOL_HUMAN),
+            self._item("h4", "human", 0.2, POOL_HUMAN),
         ]
-        result = ensure_role_balance(candidates, 3)
-        assert len(result) == 3
-        roles = [r["mem_data"]["role"] for r in result]
-        assert "human" in roles
-
-    def test_empty_candidates(self):
-        """Should return empty list for empty candidates."""
-        result = ensure_role_balance([], 5)
-        assert result == []
-
-    def test_zero_top_k(self):
-        """Should return empty list for zero top_k."""
-        candidates = [self._make_candidate("human", 0.9, "h1")]
-        result = ensure_role_balance(candidates, 0)
-        assert result == []
-
-    def test_single_candidate(self):
-        """Should return single candidate unchanged."""
-        candidates = [self._make_candidate("human", 0.9, "h1")]
-        result = ensure_role_balance(candidates, 1)
-        assert len(result) == 1
-
-    def test_no_replacement_available(self):
-        """Should return unchanged when no opposite-role candidates exist."""
-        candidates = [
-            self._make_candidate("human", 0.9, "h1"),
-            self._make_candidate("human", 0.8, "h2"),
+        selection = select_top_by_pool(enriched, set(), {POOL_HUMAN: 3, POOL_AI: 3})
+        assert [i["mem_data"]["id"] for i in selection.selected] == [
+            "a1", "a2", "a3", "h1", "h2", "h3",
         ]
-        result = ensure_role_balance(candidates, 2)
-        assert len(result) == 2
-        # Both still human since no assistant exists
-        assert all(r["mem_data"]["role"] == "human" for r in result)
+        assert [i["mem_data"]["id"] for i in selection.unselected] == ["a4", "h4"]
+        assert selection.pool_sizes == {POOL_HUMAN: 4, POOL_AI: 4}
+        assert selection.pool_selected == {POOL_HUMAN: 3, POOL_AI: 3}
+        assert selection.describe({POOL_HUMAN: 3, POOL_AI: 3}) == "human 3/4 (top 3), ai 3/4 (top 3)"
+
+    def test_a_short_pool_returns_fewer_not_filler_from_the_other(self):
+        enriched = [
+            self._item("a1", "assistant", 0.9, POOL_AI),
+            self._item("a2", "assistant", 0.8, POOL_AI),
+            self._item("a3", "assistant", 0.7, POOL_AI),
+            self._item("a4", "assistant", 0.6, POOL_AI),
+            self._item("h1", "human", 0.5, POOL_HUMAN),
+        ]
+        selection = select_top_by_pool(enriched, set(), {POOL_HUMAN: 3, POOL_AI: 3})
+        assert [i["mem_data"]["id"] for i in selection.selected] == ["a1", "a2", "a3", "h1"]
+        assert selection.pool_selected == {POOL_HUMAN: 1, POOL_AI: 3}
+
+    def test_in_context_reflection_leaves_its_pool_before_the_cut(self):
+        enriched = [
+            self._item("r1", "reflection", 0.9, POOL_AI),
+            self._item("a1", "assistant", 0.8, POOL_AI),
+            self._item("a2", "assistant", 0.7, POOL_AI),
+            self._item("a3", "assistant", 0.6, POOL_AI),
+        ]
+        selection = select_top_by_pool(enriched, {"r1"}, {POOL_HUMAN: 3, POOL_AI: 3})
+        assert [i["mem_data"]["id"] for i in selection.selected] == ["a1", "a2", "a3"]
+        assert [i["mem_data"]["id"] for i in selection.skipped_reflections] == ["r1"]
+        assert selection.pool_sizes[POOL_AI] == 3
+
+    def test_in_context_verbatim_stays_in_the_cut(self):
+        enriched = [
+            self._item("a0", "assistant", 0.9, POOL_AI),
+            self._item("a1", "assistant", 0.8, POOL_AI),
+            self._item("a2", "assistant", 0.7, POOL_AI),
+            self._item("a3", "assistant", 0.6, POOL_AI),
+        ]
+        selection = select_top_by_pool(enriched, {"a0"}, {POOL_AI: 3})
+        # The caller skips a0 without backfill; a3 stays below the cut
+        assert [i["mem_data"]["id"] for i in selection.selected] == ["a0", "a1", "a2"]
+        assert [i["mem_data"]["id"] for i in selection.unselected] == ["a3"]
+
+    def test_merged_pool_is_cut_at_top_k_in_score_order(self):
+        enriched = [
+            self._item("a1", "assistant", 0.5, POOL_ALL),
+            self._item("h1", "human", 0.9, POOL_ALL),
+            self._item("a2", "assistant", 0.7, POOL_ALL),
+        ]
+        selection = select_top_by_pool(enriched, set(), {POOL_ALL: 2})
+        assert [i["mem_data"]["id"] for i in selection.selected] == ["h1", "a2"]
+        assert [i["mem_data"]["id"] for i in selection.unselected] == ["a1"]
+
+    def test_untagged_items_belong_to_the_merged_pool(self):
+        enriched = [{"mem_data": {"id": "x", "role": "human"}, "combined_score": 0.5}]
+        selection = select_top_by_pool(enriched, set(), {POOL_ALL: 1})
+        assert [i["mem_data"]["id"] for i in selection.selected] == ["x"]
+
+    def test_empty(self):
+        selection = select_top_by_pool([], set(), {POOL_HUMAN: 3, POOL_AI: 3})
+        assert selection.selected == [] and selection.unselected == []
+        assert selection.pool_selected == {POOL_HUMAN: 0, POOL_AI: 0}
 
 
 # ============================================================

@@ -408,10 +408,20 @@ class Settings(BaseSettings):
     # memories extra weight in retrieval re-ranking. Set to 1.0 to disable.
     reflection_significance_multiplier: float = 1.0
 
-    # Role balance in memory retrieval
-    # When True, ensures selected memories include at least one human and one assistant message
-    # When False, memories are selected purely by combined score (similarity × significance)
+    # Role balance in memory retrieval (issue #335)
+    # When True, automatic retrieval searches and ranks the human's words and
+    # the entity's words as two separate candidate pools (both the prompt
+    # query and the entity's last-message query feed both pools) and takes
+    # the top N from each, so every retrieval carries an equal share of what
+    # the human said and what the entity said — a structural guarantee, not
+    # a swap after the fact. When False, one merged pool is selected purely
+    # by combined score (similarity × significance), cut at *_retrieval_top_k.
     memory_role_balance_enabled: bool = True
+    # Per-pool N with role balance on: each of the two pools contributes this
+    # many memories (the *_retrieval_top_k settings above apply only to the
+    # merged pool). Separate first-turn / later-turn values, mirroring them.
+    initial_retrieval_top_k_per_role: int = 3
+    retrieval_top_k_per_role: int = 3
 
     # Recent reflections on the first turn
     # When True, the most recently created reflection memories (self-authored
