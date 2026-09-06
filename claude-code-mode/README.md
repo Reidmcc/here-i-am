@@ -192,6 +192,77 @@ through `${CLAUDE_PLUGIN_ROOT}` (quoted, so a Windows path survives the
 shell). On Windows that means the plugin route works only where `python3`
 resolves; otherwise use the manual setup above with `python`.
 
+## Output styles (optional)
+
+Claude Code's **Default** [output style](https://code.claude.com/docs/en/output-styles)
+is its software-engineering system prompt: lead with the deliverable,
+scope and verify changes, and a set of response-format and typography
+rules. For a build session that is the right prompt. For a standing
+conversation session it is a second set of behavioral instructions
+layered on top of the identity the hooks inject — and the hooks' identity
+is the one the entity actually maintains. A custom output style replaces
+those built-in instructions with whatever the style file says (tools,
+hooks, permissions, MCP servers, and CLAUDE.md are untouched).
+
+Two example styles live in
+[`examples/output-styles/`](examples/output-styles/):
+
+| Style | Coding instructions | Meant for |
+| --- | --- | --- |
+| `Here I Am room` (`here-i-am-room.md`) | removed | Standing conversation sessions: talk, correspondence, anything that is not a build |
+| `Here I Am workshop` (`here-i-am-workshop.md`) | kept (`keep-coding-instructions: true`) | Build sessions opened in a code repository — the entity keeps the engineering instructions but speaks in its own voice |
+
+Both are a few paragraphs of facts about the environment in the register
+of the identity block: the hooks are authoritative about who the entity
+is, the tools exist, not every activity needs a deliverable, write as
+yourself, ordinary care still applies. **They carry no identity or
+personality instructions on purpose.** Identity arrives through the
+`SessionStart` hook from the entity's system prompt in Here I Am; a copy
+in the style file would exist twice and drift from the one the entity
+edits. If a line should point at something entity-specific (a craft
+guide in the entity's notes, say), add it to your copy.
+
+**They are examples, not part of the install.** Nothing copies them, the
+plugin does not register them, and the manual setup above does not
+mention them, because whether to use an output style at all — and what
+it should say — is each user's preference. To use one:
+
+1. Copy the file to `~/.claude/output-styles/` (user level, available in
+   every project; on Windows `%USERPROFILE%\.claude\output-styles\`) or to
+   a project's `.claude/output-styles/` (project level). Edit it freely;
+   the `name` in the frontmatter is what you select by.
+2. Select it by name with the `outputStyle` key in a settings file — in
+   the terminal, `/config` → **Output style** writes the same key to
+   `.claude/settings.local.json`; in the desktop app, edit the file:
+
+   ```json
+   {
+     "outputStyle": "Here I Am room"
+   }
+   ```
+
+   Settings are per directory, so the styles select themselves by where a
+   session opens: put the room style in the settings of the directory the
+   entity's conversation sessions run from (its notes directory, for
+   example) and the workshop style in each code repository's
+   `.claude/settings.local.json`.
+3. Start a new session (or `/clear`). The style is part of the system
+   prompt, which Claude Code reads once at session start: a mid-session
+   change neither applies nor disturbs the prompt cache, and the first
+   session on a new style builds a fresh cache once.
+
+What the built-in coding instructions consist of is not enumerated in
+Claude Code's docs, so the first session on a new style is a good moment
+to ask the entity which parts of its system prompt changed. While a
+non-Default style is active, Claude Code also reminds the model of the
+style during the conversation. Styles apply to the main conversation
+only; subagents keep their own system prompts.
+
+Do not move the examples into a `claude-code-mode/output-styles/`
+directory: that is the plugin loader's default output-styles location,
+and anything there is registered (though not forced) for every user who
+enables the plugin.
+
 ## Environment variables
 
 | Variable | Default | Meaning |
