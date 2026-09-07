@@ -16,12 +16,24 @@ Two halves, deliberately split:
   send what the harness lets them see: the session id, cwd, transcript
   path, and — best effort, from Claude Code's live per-process registry —
   the session's current roster name, whether the user set it or the
-  harness derived it, and its messaging socket (the `from=` address on a
-  delivered letter). The hooks also send the same snapshot for every other
-  live session on the machine, so any hook firing anywhere refreshes every
-  registered row: a rename lands in the registry on the next prompt in any
-  room, not only the renamed one. Nothing the hook can't see is inferred —
-  a field it never observed stays null, which renders as "not recorded".
+  harness derived it, and its messaging socket (the `from=` address the
+  removed SendMessage tool put on a delivered letter). Since the desktop
+  app's session-management MCP replaced that tool (2026-09-04), letters
+  are addressed by the desktop app's own session id — the `local_…` string
+  its list_sessions returns — which is unrelated to the Claude Code session
+  id (issue #339); the hooks read it, with the sidebar title, from the
+  desktop app's per-session record (joined on the Claude Code id), and the
+  registry renders it as the row's messaging address. The hooks also send
+  the same snapshot for every other live session on the machine, so any
+  hook firing anywhere refreshes every registered row: a rename lands in
+  the registry on the next prompt in any room, not only the renamed one.
+  Nothing the hook can't see is inferred — a field it never observed stays
+  null, which renders as "not recorded". One exception is explicit rather
+  than inferred: the entity may supply its own messaging address on
+  declare_room (read from get_session "self") when the hooks can't see the
+  desktop record; the row says which of the two it holds. A delivered
+  letter's `from=` is the one thing that proves an address works, so a
+  delivery from a row's address stamps the row as confirmed.
 - **Self = meaning.** Which room a session *is* — the porch, the
   engagement room — is declared by the entity (declare_room over MCP),
   never guessed from cwd or a first prompt. Rows exist only for declared
@@ -79,6 +91,24 @@ REGISTRY_VERSION = 1
 # writes.
 LIVENESS_GRANULARITY = timedelta(hours=1)
 
+# Where a row's messaging address (desktop_session_id) came from
+DESKTOP_ID_OBSERVED = "desktop app record"  # the hooks read it
+DESKTOP_ID_DECLARED = "declared"  # the entity supplied it on declare_room
+
+# Observation fields the hooks refresh on every row they can see (an
+# observation that lacks one never erases a recorded value)
+OBSERVED_FIELDS = (
+    "name",
+    "name_source",
+    "name_since",
+    "messaging_socket",
+    "cwd",
+    "transcript_path",
+    "started_at",
+    "desktop_session_id",
+    "desktop_title",
+)
+
 ROW_FIELDS = (
     "session_id",
     "conversation_id",
@@ -90,6 +120,13 @@ ROW_FIELDS = (
     "name_source",
     "name_since",
     "messaging_socket",
+    # The desktop app's session id — the address send_message takes
+    # (issue #339) — where it came from, the sidebar title beside it, and
+    # when a letter last arrived from it
+    "desktop_session_id",
+    "desktop_session_id_source",
+    "desktop_title",
+    "address_confirmed_at",
     "cwd",
     "transcript_path",
     "started_at",
@@ -126,6 +163,9 @@ class SessionObservation:
     cwd: Optional[str] = None
     transcript_path: Optional[str] = None
     started_at: Optional[str] = None  # ISO timestamp (this process start)
+    # From the desktop app's session record (issue #339)
+    desktop_session_id: Optional[str] = None
+    desktop_title: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> Optional["SessionObservation"]:
@@ -141,6 +181,8 @@ class SessionObservation:
             cwd=_clean(data.get("cwd")),
             transcript_path=_clean(data.get("transcript_path")),
             started_at=_clean(data.get("started_at")),
+            desktop_session_id=_clean(data.get("desktop_session_id")),
+            desktop_title=_clean(data.get("desktop_title")),
         )
 
 
@@ -150,6 +192,8 @@ class ObservationOutcome:
     changed_session_ids: List[str] = field(default_factory=list)
     # Rows whose roster name changed in this observation: session_id -> (old, new)
     renamed: Dict[str, Tuple[Optional[str], Optional[str]]] = field(default_factory=dict)
+    # Rows whose messaging address a delivery just confirmed (session ids)
+    confirmed: List[str] = field(default_factory=list)
     # The observing session's own row, if it has one (declared)
     own_row: Optional[Dict[str, Any]] = None
     wrote: bool = False
@@ -188,6 +232,17 @@ def _render_local(value: Optional[str]) -> str:
     if parsed is None:
         return "—"
     return parsed.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+
+
+def _render_address_source(row: Dict[str, Any]) -> Optional[str]:
+    """Where the row's messaging address came from, plus when a letter last
+    confirmed it; None when there is no address."""
+    if not row.get("desktop_session_id"):
+        return None
+    text = row.get("desktop_session_id_source") or "source unknown"
+    if row.get("address_confirmed_at"):
+        text += f"; confirmed by a delivery {_render_local(row['address_confirmed_at'])}"
+    return text
 
 
 def _new_row(session_id: str) -> Dict[str, Any]:
@@ -303,6 +358,7 @@ class RoomsRegistry:
         observations: List[SessionObservation],
         *,
         session_start: bool,
+        delivered_from: Optional[List[str]] = None,
         now: Optional[datetime] = None,
     ) -> ObservationOutcome:
         """
@@ -315,7 +371,17 @@ class RoomsRegistry:
         refreshed; a changed roster name is reported back so the entity can
         be told. Fields absent from the observation are left as they were —
         an observation that couldn't see the name is not evidence the name
-        went away.
+        went away. An observed desktop session id replaces a declared one
+        (the desktop app's own record outranks a hand-copied value) and is
+        marked as observed.
+
+        `delivered_from` lists the `from=` addresses of letters that arrived
+        with this prompt. A live row whose messaging address is among them
+        is stamped address_confirmed_at — a delivery is the one proof an
+        address works — refreshed hourly like liveness so a busy
+        correspondence doesn't rewrite the file per letter. No row is
+        matched by anything but its recorded address: an unknown sender
+        stays unknown.
 
         session_start=True (the observing session's own SessionStart —
         startup, resume, or post-compaction restart) always refreshes that
@@ -332,6 +398,7 @@ class RoomsRegistry:
         now_iso = _now_iso(now)
         now_dt = _parse_iso(now_iso)
         by_session = {obs.session_id: obs for obs in observations if obs}
+        delivered = {_clean(address) for address in (delivered_from or [])} - {None}
 
         for row in data["rooms"]:
             if row.get("retired_at"):
@@ -339,20 +406,35 @@ class RoomsRegistry:
             session_id = row["session_id"]
             obs = by_session.get(session_id)
             is_own = session_id == own_session_id
-            if obs is None and not is_own:
-                continue
             changed = False
+
+            if row.get("desktop_session_id") and row["desktop_session_id"] in delivered:
+                confirmed = _parse_iso(row.get("address_confirmed_at"))
+                if confirmed is None or now_dt - confirmed >= LIVENESS_GRANULARITY:
+                    row["address_confirmed_at"] = now_iso
+                    changed = True
+                outcome.confirmed.append(session_id)
+
+            if obs is None and not is_own:
+                if changed:
+                    outcome.changed_session_ids.append(session_id)
+                continue
 
             if obs is not None:
                 old_name = row.get("name")
-                for name in ("name", "name_source", "name_since", "messaging_socket",
-                             "cwd", "transcript_path", "started_at"):
+                for name in OBSERVED_FIELDS:
                     value = getattr(obs, name)
                     if value is not None and value != row.get(name):
                         row[name] = value
                         changed = True
                 if obs.name is not None and obs.name != old_name:
                     outcome.renamed[session_id] = (old_name, obs.name)
+                if (
+                    obs.desktop_session_id is not None
+                    and row.get("desktop_session_id_source") != DESKTOP_ID_OBSERVED
+                ):
+                    row["desktop_session_id_source"] = DESKTOP_ID_OBSERVED
+                    changed = True
 
             # Liveness: own SessionStart always; otherwise hourly
             last_seen = _parse_iso(row.get("last_seen"))
@@ -387,6 +469,7 @@ class RoomsRegistry:
         *,
         note: Optional[str] = None,
         ref: Optional[str] = None,
+        desktop_session_id: Optional[str] = None,
         observation: Optional[SessionObservation] = None,
         now: Optional[datetime] = None,
     ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
@@ -395,6 +478,12 @@ class RoomsRegistry:
         re-declares an existing one — a session can change rooms). Any
         other live row holding the same room is marked retired as
         superseded: one current address per room, history kept.
+
+        `desktop_session_id` is the entity's own statement of its messaging
+        address (issue #339), for sessions whose desktop record the hooks
+        can't read; recorded as declared, and replaced by the observed value
+        the next time a hook can see one. Omitted = the recorded value
+        stays.
 
         Returns (the declared row, the rows it superseded). Raises
         RegistryWriteError on a failed write.
@@ -426,12 +515,19 @@ class RoomsRegistry:
             row["note"] = _clean(note)
         if ref is not None:
             row["ref"] = _clean(ref)
+        declared_address = _clean(desktop_session_id)
+        if declared_address is not None:
+            if declared_address != row.get("desktop_session_id"):
+                row["address_confirmed_at"] = None
+            row["desktop_session_id"] = declared_address
+            row["desktop_session_id_source"] = DESKTOP_ID_DECLARED
         if observation is not None:
-            for name in ("name", "name_source", "name_since", "messaging_socket",
-                         "cwd", "transcript_path", "started_at"):
+            for name in OBSERVED_FIELDS:
                 value = getattr(observation, name)
                 if value is not None:
                     row[name] = value
+            if observation.desktop_session_id is not None:
+                row["desktop_session_id_source"] = DESKTOP_ID_OBSERVED
         row["last_seen"] = now_iso
 
         self.save(entity_label, data, row=row)
@@ -479,28 +575,38 @@ class RoomsRegistry:
             "",
             "Session display names in the Claude Code roster drift (a user-set name "
             "drops back to a derived slug on resume), so sisters look each other up "
-            "HERE, not in ListAgents. The hooks keep the ids and the liveness of every "
-            "declared row current — the roster name as last observed, whether the user "
-            "set it or the harness derived it, and when the session was last seen "
+            "HERE, not in ListAgents or list_sessions. The hooks keep the ids and the "
+            "liveness of every declared row current — the messaging address, the "
+            "sidebar title, the roster name as last observed (and whether the user "
+            "set it or the harness derived it), and when the session was last seen "
             "running (accurate to the hour). Which room a session IS is declared by "
             "the self (declare_room over MCP), never inferred. A blank cell means the "
             "harness never exposed that fact; a stale last-seen is a visible fact, not "
             "a deletion — rows are retired, never removed.",
             "",
-            "Address a sister by the roster name in her row (SendMessage to that name; "
-            "add the [ref] only if the name alone is ambiguous). Letterhead convention "
-            "stays house style: every letter names its own sender and purpose in the "
-            "body, because the envelope may be generic.",
+            "TO WRITE TO A SISTER: mcp__ccd_session_mgmt__send_message with the "
+            "Messaging address in her row — the desktop app's own session id (the "
+            "local_… string list_sessions returns, and the from= on any letter she "
+            "sends). The Claude Code session id in the Session column is a different "
+            "string and is NOT a messaging address. The hooks read the address from "
+            "the desktop app's session record; a row whose Address source is "
+            "\"declared\" holds what the self supplied on declare_room instead, and a "
+            "blank one can be filled by re-declaring with desktop_session_id (read "
+            "your own with get_session \"self\"). \"Confirmed\" means a letter has "
+            "arrived from that address. Letterhead convention stays house style: "
+            "every letter names its own sender and purpose in the body, because the "
+            "envelope may be generic.",
             "",
             "## Standing rooms",
             "",
         ]
         if live:
             lines.append(
-                "| Room | Address (roster name) | Name source | Ref | Session | "
+                "| Room | Messaging address (send_message id) | Address source | "
+                "Sidebar title | Roster name | Name source | Ref | Session | "
                 "Last seen | Declared | Notes |"
             )
-            lines.append("|---|---|---|---|---|---|---|---|")
+            lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
             for row in live:
                 lines.append(
                     "| "
@@ -508,6 +614,9 @@ class RoomsRegistry:
                         _md_cell(v)
                         for v in (
                             row.get("room"),
+                            row.get("desktop_session_id"),
+                            _render_address_source(row),
+                            row.get("desktop_title"),
                             row.get("name"),
                             row.get("name_source"),
                             row.get("ref"),
@@ -547,7 +656,7 @@ class RoomsRegistry:
         lines.append("")
         lines.append(
             "Full record (every field, including messaging socket, transcript path, "
-            "and conversation id): rooms.json alongside this file."
+            "confirmation time, and conversation id): rooms.json alongside this file."
         )
         lines.append("")
         return "\n".join(lines)
@@ -555,8 +664,16 @@ class RoomsRegistry:
     @staticmethod
     def describe_row(row: Dict[str, Any]) -> str:
         """One-paragraph, hand-writable description of a row, for notices."""
+        address = row.get("desktop_session_id")
         parts = [
             f"room={row.get('room') or '—'}",
+            "messaging address="
+            + (
+                f"{address} ({_render_address_source(row)})"
+                if address
+                else "not recorded"
+            ),
+            f"sidebar title={row.get('desktop_title') or 'not recorded'}",
             f"roster name={row.get('name') or 'not recorded'}"
             + (f" ({row.get('name_source')})" if row.get("name_source") else ""),
             f"ref={row.get('ref') or '—'}",

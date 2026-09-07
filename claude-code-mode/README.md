@@ -48,17 +48,26 @@ entity the `conversation_id` to pass so the tools act on this session's
 conversation. Notes and git tools are not exposed — Claude Code's native
 tools cover them.
 
-**Rooms registry.** Sessions of the same entity message each other by
-display name, and display names drift (a user-set name drops back to a
-derived slug on resume). The hooks therefore read Claude Code's live
-per-process registry (`<config dir>/sessions/<pid>.json`, config dir =
-`CLAUDE_CONFIG_DIR` or `~/.claude`) best-effort on every SessionStart and
-prompt and send the backend a snapshot of every live session's roster
-name; the backend keeps `rooms.json` + a rendered `rooms.md` in the
+**Rooms registry.** Sessions of the same entity message each other over
+the desktop app's session-management MCP, addressed by the desktop app's
+own `local_…` session id — a different string from the Claude Code
+session id the hooks see — while they find each other by display name,
+which drifts (a user-set name drops back to a derived slug on resume).
+The hooks therefore read, best-effort on every SessionStart and prompt,
+Claude Code's live per-process registry (`<config dir>/sessions/<pid>.json`,
+config dir = `CLAUDE_CONFIG_DIR` or `~/.claude`) for roster names and
+liveness, and the desktop app's per-session records
+(`<desktop data dir>/claude-code-sessions/…/local_<id>.json`, data dir =
+`HIM_DESKTOP_DATA_DIR` or the platform's Claude app data directory) for
+each session's messaging address and sidebar title, and send the backend
+a snapshot; the backend keeps `rooms.json` + a rendered `rooms.md` in the
 entity's private notes directory current for every session the entity has
 *declared* as a standing room (`declare_room` over MCP — the hooks record
-ids and liveness, the entity declares meaning, nothing is inferred). A
-registry write failure is printed loudly, with the row to write by hand.
+ids and liveness, the entity declares meaning, nothing is inferred; the
+entity may supply its own messaging address on `declare_room` when the
+hooks can't see the record). A letter arriving from a row's address
+stamps the row as confirmed. A registry write failure is printed loudly,
+with the row to write by hand.
 Details: [`docs/claude-code-mode.md`](../docs/claude-code-mode.md#rooms-registry).
 
 **The MCP server must be registered separately from the hooks** — hooks in
@@ -201,6 +210,7 @@ resolves; otherwise use the manual setup above with `python`.
 | `HIM_DISABLE` | unset | Set to anything to turn the hooks off (silently — this is the deliberate off switch) |
 | `HIM_INLINE_BUDGET` | `18000` | Max bytes of hook stdout before bulk content is spilled to a file with an inline pointer (Claude Code truncates oversized hook output silently; the default sits under the observed ~20KB cap) |
 | `CLAUDE_CONFIG_DIR` | unset (`~/.claude`) | Claude Code's own config-dir override, honored when the hooks look for the live sessions registry (`<config dir>/sessions/`) that feeds the rooms registry |
+| `HIM_DESKTOP_DATA_DIR` | unset (platform default: `%APPDATA%\Claude`, `~/Library/Application Support/Claude`, `~/.config/Claude`) | Where the hooks look for the Claude desktop app's per-session records (`claude-code-sessions/`), which carry each session's messaging address for the rooms registry |
 
 ## Notes and compaction
 

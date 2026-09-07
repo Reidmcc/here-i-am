@@ -70,13 +70,20 @@ which touch no memory:
 
 - `declare_room` — declare which of the entity's standing rooms this Claude
   Code session is (`room`, optional `note`, optional `ref` copied from
-  `ListAgents`; `conversation_id` required). Writes the session's row in
-  `rooms.json` / rendered `rooms.md` in the entity's private notes; the
-  hooks then keep the row's roster name and last-seen current across
-  renames, resumes, and compactions, so sister sessions look the address
-  up there instead of in a drifting roster. One current address per room:
-  declaring a room another live row holds retires that row as superseded
-  (kept, not deleted).
+  `ListAgents`, optional `desktop_session_id`; `conversation_id`
+  required). Writes the session's row in `rooms.json` / rendered
+  `rooms.md` in the entity's private notes; the hooks then keep the row's
+  messaging address (the desktop app's `local_…` session id that
+  `mcp__ccd_session_mgmt__send_message` takes — not the Claude Code
+  session id, issue #339), sidebar title, roster name, and last-seen
+  current across renames, resumes, and compactions, so sister sessions
+  look the address up there instead of in a drifting roster.
+  `desktop_session_id` is for a session whose desktop record the hooks
+  can't read: the entity reads its own with
+  `mcp__ccd_session_mgmt__get_session` (`session_id: "self"`) and
+  supplies it; an observed value replaces it. One current address per
+  room: declaring a room another live row holds retires that row as
+  superseded (kept, not deleted).
 - `retire_room` — mark this session's row retired, with an optional
   `reason`. Rows are never removed.
 

@@ -16,10 +16,20 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 HOOKS_DIR = Path(__file__).resolve().parents[2] / "claude-code-mode" / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
 import hook_util  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def isolated_desktop_dir(monkeypatch, tmp_path):
+    """Keep every test (and every hook subprocess) away from the real
+    desktop app's session records on the machine running the suite."""
+    monkeypatch.setenv("HIM_DESKTOP_DATA_DIR", str(tmp_path / "desktop"))
+    return tmp_path / "desktop"
 
 # The shape observed live (Claude Code 2.1.258, desktop entrypoint)
 LIVE_ENTRY = {
@@ -48,6 +58,37 @@ def write_registry(config_dir: Path, *entries: dict) -> None:
         )
 
 
+# The desktop app's per-session record (Claude desktop / Claude Code
+# 2.1.260, observed 2026-09-07 for issue #339), trimmed to the fields that
+# matter: sessionId is the desktop app's own id — the one send_message
+# takes — and cliSessionId is the Claude Code session id the hooks see
+DESKTOP_RECORD = {
+    "sessionId": "local_ad0cb4d4-901e-4fb1-8a84-33af914a222a",
+    "cliSessionId": LIVE_ENTRY["sessionId"],
+    "cwd": "E:\\here-i-am-notes",
+    "originCwd": "E:\\here-i-am-notes",
+    "createdAt": 1788395082000,
+    "lastActivityAt": 1788404038000,
+    "lastFocusedAt": 1788404038000,
+    "model": "claude-fable-5-1",
+    "effort": "high",
+    "isArchived": False,
+    "title": "Porch chat",
+    "titleSource": "user",
+    "permissionMode": "auto",
+    "bridgeSessionIds": ["session_01Uhn2Qd9K6gGAXDLH3ZGp41"],
+}
+
+
+def write_desktop_records(desktop_dir: Path, *records: dict) -> None:
+    directory = desktop_dir / "claude-code-sessions" / "org-0000" / "account-0000"
+    directory.mkdir(parents=True, exist_ok=True)
+    for record in records:
+        (directory / f"{record['sessionId']}.json").write_text(
+            json.dumps(record), encoding="utf-8"
+        )
+
+
 # --- live_sessions_snapshot
 
 
@@ -63,6 +104,8 @@ def test_snapshot_maps_observed_fields(tmp_path):
             "messaging_socket": "\\\\.\\pipe\\LOCAL\\cc-msg-2db48788b5f07d5597aa094da48d4211",
             "cwd": "E:\\here-i-am-notes",
             "started_at": "2026-09-03T00:24:42+00:00",
+            "desktop_session_id": None,
+            "desktop_title": None,
         }
     ]
 
@@ -76,6 +119,106 @@ def test_snapshot_records_missing_fields_as_none(tmp_path):
     assert entry["name_since"] is None
     assert entry["messaging_socket"] is None
     assert entry["started_at"] is None
+    assert entry["desktop_session_id"] is None
+    assert entry["desktop_title"] is None
+
+
+# --- the desktop app's session records (issue #339)
+
+
+def test_snapshot_joins_desktop_record_on_cli_session_id(tmp_path, isolated_desktop_dir):
+    write_registry(tmp_path, LIVE_ENTRY, {"pid": 7, "sessionId": "no-desktop-record"})
+    write_desktop_records(isolated_desktop_dir, DESKTOP_RECORD)
+    by_id = {s["session_id"]: s for s in hook_util.live_sessions_snapshot(str(tmp_path))}
+    porch = by_id[LIVE_ENTRY["sessionId"]]
+    assert porch["desktop_session_id"] == "local_ad0cb4d4-901e-4fb1-8a84-33af914a222a"
+    assert porch["desktop_title"] == "Porch chat"
+    assert porch["name"] == "Porch chats"  # the registry's fields are untouched
+    assert by_id["no-desktop-record"]["desktop_session_id"] is None
+
+
+def test_snapshot_appends_own_session_when_only_the_desktop_record_has_it(
+    tmp_path, isolated_desktop_dir
+):
+    # The per-process registry may be unreadable; the hook's own session
+    # still gets its address recorded from the desktop record alone
+    write_desktop_records(isolated_desktop_dir, DESKTOP_RECORD)
+    snapshot = hook_util.live_sessions_snapshot(
+        str(tmp_path / "no-registry"), own_session_id=LIVE_ENTRY["sessionId"]
+    )
+    assert snapshot == [{
+        "session_id": LIVE_ENTRY["sessionId"],
+        "name": None,
+        "name_source": None,
+        "name_since": None,
+        "messaging_socket": None,
+        "cwd": None,
+        "started_at": None,
+        "desktop_session_id": "local_ad0cb4d4-901e-4fb1-8a84-33af914a222a",
+        "desktop_title": "Porch chat",
+    }]
+    # ...but never a sibling: only declared rows are refreshed anyway, and
+    # the registry is the liveness source
+    assert hook_util.live_sessions_snapshot(str(tmp_path / "no-registry")) == []
+
+
+def test_snapshot_does_not_duplicate_own_session(tmp_path, isolated_desktop_dir):
+    write_registry(tmp_path, LIVE_ENTRY)
+    write_desktop_records(isolated_desktop_dir, DESKTOP_RECORD)
+    snapshot = hook_util.live_sessions_snapshot(
+        str(tmp_path), own_session_id=LIVE_ENTRY["sessionId"]
+    )
+    assert len(snapshot) == 1
+    assert snapshot[0]["desktop_session_id"] == DESKTOP_RECORD["sessionId"]
+
+
+def test_desktop_index_skips_unjoinable_and_unparsable_records(isolated_desktop_dir):
+    write_desktop_records(
+        isolated_desktop_dir,
+        DESKTOP_RECORD,
+        {"sessionId": "local_no-cli-id", "title": "orphan"},
+        {"sessionId": "local_blank-cli-id", "cliSessionId": "  ", "title": "orphan"},
+    )
+    records = isolated_desktop_dir / "claude-code-sessions" / "org-0000" / "account-0000"
+    (records / "local_broken.json").write_text("{nope", encoding="utf-8")
+    (records / "local_list.json").write_text("[]", encoding="utf-8")
+    # A deleted session's directory sits beside the records and is not one
+    (records / "deleted_0b6bb4a2").mkdir()
+    (records / "not-a-session.json").write_text(
+        json.dumps({"sessionId": "x", "cliSessionId": "y"}), encoding="utf-8"
+    )
+    index = hook_util.desktop_sessions_index()
+    assert index == {
+        LIVE_ENTRY["sessionId"]: {
+            "desktop_session_id": "local_ad0cb4d4-901e-4fb1-8a84-33af914a222a",
+            "desktop_title": "Porch chat",
+        }
+    }
+
+
+def test_desktop_index_records_missing_title_as_none(isolated_desktop_dir):
+    write_desktop_records(
+        isolated_desktop_dir, {"sessionId": "local_untitled", "cliSessionId": "cli-1"}
+    )
+    assert hook_util.desktop_sessions_index()["cli-1"]["desktop_title"] is None
+
+
+def test_desktop_index_empty_when_directory_missing(tmp_path):
+    assert hook_util.desktop_sessions_index(str(tmp_path / "nowhere")) == {}
+
+
+def test_desktop_data_dir_honors_env_then_platform(monkeypatch, tmp_path):
+    monkeypatch.setenv("HIM_DESKTOP_DATA_DIR", str(tmp_path))
+    assert hook_util.claude_desktop_data_dir() == str(tmp_path)
+    monkeypatch.delenv("HIM_DESKTOP_DATA_DIR")
+    default = hook_util.claude_desktop_data_dir()
+    assert os.path.basename(default) == "Claude"
+    if sys.platform == "win32":
+        assert default.startswith(os.environ.get("APPDATA") or "")
+    elif sys.platform == "darwin":
+        assert "Application Support" in default
+    else:
+        assert ".config" in default or os.environ.get("XDG_CONFIG_HOME", "") in default
 
 
 def test_snapshot_skips_unparsable_and_idless_files(tmp_path):
@@ -239,6 +382,28 @@ def test_prompt_hook_sends_snapshot_and_prints_rooms_lines(tmp_path):
     assert payload["sessions"][0]["name"] == "Porch chats"
     assert "Roster name change recorded" in out
     assert "Start it with [WAKEUP]" in out
+
+
+def test_prompt_hook_sends_desktop_fields_and_letter_addresses(tmp_path, isolated_desktop_dir):
+    write_registry(tmp_path, LIVE_ENTRY)
+    write_desktop_records(isolated_desktop_dir, DESKTOP_RECORD)
+    letter = (
+        '<cross-session-message from="local_d0ea5527-ad93-4031-98b9-957d27c9edb0" '
+        'name="Substack engagement">the porch is asked a question</cross-session-message>'
+    )
+    _, payload = run_hook(
+        "user_prompt_submit",
+        {"session_id": LIVE_ENTRY["sessionId"], "prompt": letter, "cwd": "E:\\x"},
+        tmp_path,
+        {"context": ""},
+    )
+    [session] = payload["sessions"]
+    assert session["desktop_session_id"] == DESKTOP_RECORD["sessionId"]
+    assert session["desktop_title"] == "Porch chat"
+    [peer] = payload["peer_messages"]
+    assert peer["sender"] == "Substack engagement"
+    assert peer["sender_session"] == "local_d0ea5527-ad93-4031-98b9-957d27c9edb0"
+    assert peer["content"] == "the porch is asked a question"
 
 
 def test_prompt_hook_prints_rooms_error_on_wakeup_tick(tmp_path):
