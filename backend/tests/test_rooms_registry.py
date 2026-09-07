@@ -23,6 +23,8 @@ from app.models import Conversation, ConversationSource, ConversationType
 from app.services import claude_code_mcp
 from app.services.notes_service import notes_service
 from app.services.rooms_registry import (
+    DESKTOP_ID_DECLARED,
+    DESKTOP_ID_OBSERVED,
     GENERATED_MARKER,
     ROOMS_MANUAL_MD,
     RegistryWriteError,
@@ -77,14 +79,14 @@ class TestDeclare:
         assert [r["session_id"] for r in data["rooms"]] == ["sess-A-0000"]
         md = (notes_dir / "rooms.md").read_text(encoding="utf-8")
         assert md.startswith(GENERATED_MARKER)
-        assert "| Porch | Porch chats | user | a46590 | sess-A-0 |" in md
+        assert "| Porch | — | — | — | Porch chats | user | a46590 | sess-A-0 |" in md
         assert "conversation with Pseudo" in md
         assert "_None._" in md  # no retired rows yet
 
     def test_unobserved_fields_render_as_not_recorded(self, notes_dir):
         rooms_registry.declare(ENTITY, "sess-A-0000", "conv-A", "Porch", now=T0)
         md = (notes_dir / "rooms.md").read_text(encoding="utf-8")
-        assert "| Porch | — | — | — | sess-A-0 |" in md
+        assert "| Porch | — | — | — | — | — | — | sess-A-0 |" in md
 
     def test_same_room_from_new_session_supersedes_old_row(self, notes_dir):
         rooms_registry.declare(
@@ -251,6 +253,192 @@ class TestObserve:
         assert not (notes_dir / "rooms.json").exists()
 
 
+class TestMessagingAddress:
+    """Issue #339: the address send_message takes is the desktop app's own
+    session id, unrelated to the Claude Code session id the hooks see. The
+    hooks read it from the desktop app's session record; the entity can
+    supply it on declare_room when they can't; a delivery confirms it."""
+
+    def test_observed_address_is_recorded_with_title_and_source(self, notes_dir):
+        rooms_registry.declare(ENTITY, "sess-A-0000", "conv-A", "Porch", now=T0)
+        rooms_registry.observe(
+            ENTITY, "sess-A-0000",
+            [obs("sess-A-0000", desktop_session_id="local_aaa", desktop_title="Porch chat")],
+            session_start=True, now=T0 + timedelta(minutes=1),
+        )
+        row = rooms_registry.find_row(rooms_registry.load(ENTITY), "sess-A-0000")
+        assert row["desktop_session_id"] == "local_aaa"
+        assert row["desktop_session_id_source"] == DESKTOP_ID_OBSERVED
+        assert row["desktop_title"] == "Porch chat"
+        md = (notes_dir / "rooms.md").read_text(encoding="utf-8")
+        assert "| Porch | local_aaa | desktop app record | Porch chat | — | — | — | sess-A-0 |" in md
+        assert "send_message" in md  # the header says which id is for messaging
+
+    def test_declared_address_is_recorded_as_declared(self, notes_dir):
+        row, _ = rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch",
+            desktop_session_id="  local_aaa ", now=T0,
+        )
+        assert row["desktop_session_id"] == "local_aaa"
+        assert row["desktop_session_id_source"] == DESKTOP_ID_DECLARED
+        md = (notes_dir / "rooms.md").read_text(encoding="utf-8")
+        assert "| Porch | local_aaa | declared | — | — | — | — | sess-A-0 |" in md
+
+    def test_observed_address_replaces_declared(self, notes_dir):
+        rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch",
+            desktop_session_id="local_typo", now=T0,
+        )
+        outcome = rooms_registry.observe(
+            ENTITY, "sess-A-0000",
+            [obs("sess-A-0000", desktop_session_id="local_real")],
+            session_start=False, now=T0 + timedelta(minutes=1),
+        )
+        assert outcome.wrote
+        row = rooms_registry.find_row(rooms_registry.load(ENTITY), "sess-A-0000")
+        assert row["desktop_session_id"] == "local_real"
+        assert row["desktop_session_id_source"] == DESKTOP_ID_OBSERVED
+
+    def test_declaration_with_observation_prefers_the_observed_address(self, notes_dir):
+        row, _ = rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch",
+            desktop_session_id="local_typo",
+            observation=obs("sess-A-0000", desktop_session_id="local_real"),
+            now=T0,
+        )
+        assert row["desktop_session_id"] == "local_real"
+        assert row["desktop_session_id_source"] == DESKTOP_ID_OBSERVED
+
+    def test_redeclare_without_address_keeps_the_recorded_one(self, notes_dir):
+        rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch",
+            observation=obs("sess-A-0000", desktop_session_id="local_aaa"), now=T0,
+        )
+        row, _ = rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch", note="again", now=T0
+        )
+        assert row["desktop_session_id"] == "local_aaa"
+        assert row["desktop_session_id_source"] == DESKTOP_ID_OBSERVED
+
+    def test_observation_without_desktop_fields_does_not_erase(self, notes_dir):
+        rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch",
+            observation=obs("sess-A-0000", desktop_session_id="local_aaa", desktop_title="Porch chat"),
+            now=T0,
+        )
+        rooms_registry.observe(
+            ENTITY, "sess-A-0000", [obs("sess-A-0000", name="here-i-am-notes-1e")],
+            session_start=True, now=T0 + timedelta(minutes=1),
+        )
+        row = rooms_registry.find_row(rooms_registry.load(ENTITY), "sess-A-0000")
+        assert row["desktop_session_id"] == "local_aaa"
+        assert row["desktop_title"] == "Porch chat"
+
+    def test_delivery_confirms_the_senders_row(self, notes_dir):
+        rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch",
+            observation=obs("sess-A-0000", desktop_session_id="local_aaa"), now=T0,
+        )
+        rooms_registry.declare(
+            ENTITY, "sess-B-0000", "conv-B", "Engagement room",
+            observation=obs("sess-B-0000", desktop_session_id="local_bbb"), now=T0,
+        )
+        # A letter from the porch arrives in the engagement room; the porch
+        # itself is not in this hook's snapshot
+        outcome = rooms_registry.observe(
+            ENTITY, "sess-B-0000", [obs("sess-B-0000")],
+            session_start=False, delivered_from=["local_aaa"],
+            now=T0 + timedelta(minutes=1),
+        )
+        assert outcome.confirmed == ["sess-A-0000"]
+        assert outcome.wrote
+        data = rooms_registry.load(ENTITY)
+        assert rooms_registry.find_row(data, "sess-A-0000")["address_confirmed_at"] == "2026-09-03T03:01:00+00:00"
+        assert rooms_registry.find_row(data, "sess-B-0000")["address_confirmed_at"] is None
+        md = (notes_dir / "rooms.md").read_text(encoding="utf-8")
+        assert "desktop app record; confirmed by a delivery 2026-09-0" in md
+
+    def test_unknown_sender_confirms_nothing(self, notes_dir):
+        rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch",
+            observation=obs("sess-A-0000", desktop_session_id="local_aaa"), now=T0,
+        )
+        outcome = rooms_registry.observe(
+            ENTITY, "sess-A-0000", [obs("sess-A-0000")],
+            session_start=False, delivered_from=["local_nobody", "", None],
+            now=T0 + timedelta(minutes=1),
+        )
+        assert outcome.confirmed == []
+        assert not outcome.wrote
+        assert rooms_registry.find_row(rooms_registry.load(ENTITY), "sess-A-0000")["address_confirmed_at"] is None
+
+    def test_confirmation_is_hourly(self, notes_dir):
+        rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch",
+            observation=obs("sess-A-0000", desktop_session_id="local_aaa"), now=T0,
+        )
+        rooms_registry.declare(ENTITY, "sess-B-0000", "conv-B", "Engagement room", now=T0)
+        first = rooms_registry.observe(
+            ENTITY, "sess-B-0000", [obs("sess-B-0000")],
+            session_start=False, delivered_from=["local_aaa"], now=T0 + timedelta(minutes=1),
+        )
+        assert first.wrote
+        again = rooms_registry.observe(
+            ENTITY, "sess-B-0000", [obs("sess-B-0000")],
+            session_start=False, delivered_from=["local_aaa"], now=T0 + timedelta(minutes=10),
+        )
+        assert again.confirmed == ["sess-A-0000"]  # reported, but not rewritten
+        assert not again.wrote
+        later = rooms_registry.observe(
+            ENTITY, "sess-B-0000", [obs("sess-B-0000")],
+            session_start=False, delivered_from=["local_aaa"], now=T0 + timedelta(minutes=61),
+        )
+        assert later.wrote
+        assert rooms_registry.find_row(rooms_registry.load(ENTITY), "sess-A-0000")["address_confirmed_at"] == "2026-09-03T04:01:00+00:00"
+
+    def test_retired_row_is_not_confirmed(self, notes_dir):
+        rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch",
+            observation=obs("sess-A-0000", desktop_session_id="local_aaa"), now=T0,
+        )
+        rooms_registry.retire(ENTITY, "sess-A-0000", now=T0)
+        rooms_registry.declare(ENTITY, "sess-B-0000", "conv-B", "Engagement room", now=T0)
+        outcome = rooms_registry.observe(
+            ENTITY, "sess-B-0000", [obs("sess-B-0000")],
+            session_start=False, delivered_from=["local_aaa"], now=T0 + timedelta(minutes=1),
+        )
+        assert outcome.confirmed == []
+
+    def test_declaring_a_different_address_clears_the_confirmation(self, notes_dir):
+        rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch",
+            observation=obs("sess-A-0000", desktop_session_id="local_aaa"), now=T0,
+        )
+        rooms_registry.declare(ENTITY, "sess-B-0000", "conv-B", "Engagement room", now=T0)
+        rooms_registry.observe(
+            ENTITY, "sess-B-0000", [obs("sess-B-0000")],
+            session_start=False, delivered_from=["local_aaa"], now=T0 + timedelta(minutes=1),
+        )
+        row, _ = rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch", desktop_session_id="local_new", now=T0
+        )
+        assert row["address_confirmed_at"] is None
+        same, _ = rooms_registry.declare(
+            ENTITY, "sess-B-0000", "conv-B", "Engagement room", desktop_session_id=None, now=T0
+        )
+        assert same["desktop_session_id"] is None
+
+    def test_describe_row_names_the_address(self, notes_dir):
+        row, _ = rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch", desktop_session_id="local_aaa", now=T0
+        )
+        text = RoomsRegistry.describe_row(row)
+        assert "messaging address=local_aaa (declared)" in text
+        assert "sidebar title=not recorded" in text
+        bare, _ = rooms_registry.declare(ENTITY, "sess-B-0000", "conv-B", "The World", now=T0)
+        assert "messaging address=not recorded" in RoomsRegistry.describe_row(bare)
+
+
 class TestFiles:
     def test_hand_written_rooms_md_is_moved_aside_not_overwritten(self, notes_dir):
         notes_dir.mkdir(parents=True)
@@ -359,6 +547,8 @@ SNAPSHOT_A = {
     "messaging_socket": "\\\\.\\pipe\\LOCAL\\cc-msg-2db4",
     "cwd": "E:\\here-i-am-notes",
     "started_at": "2026-09-03T00:24:42+00:00",
+    "desktop_session_id": "local_ad0cb4d4-901e-4fb1-8a84-33af914a222a",
+    "desktop_title": "Porch chat",
 }
 
 
@@ -379,13 +569,50 @@ class TestRoutes:
         body = response.json()
         assert body["rooms_error"] == ""
         assert "registered as the Porch" in body["rooms_notice"]
+        assert "messaging address local_ad0cb4d4-901e-4fb1-8a84-33af914a222a" in body["rooms_notice"]
         assert 'roster name now "Porch chats" (user)' in body["rooms_notice"]
         row = rooms_registry.find_row(rooms_registry.load(ENTITY), "sess-A-0000")
         assert row["name"] == "Porch chats"
         assert row["messaging_socket"] == SNAPSHOT_A["messaging_socket"]
+        assert row["desktop_session_id"] == SNAPSHOT_A["desktop_session_id"]
+        assert row["desktop_session_id_source"] == DESKTOP_ID_OBSERVED
+        assert row["desktop_title"] == "Porch chat"
         assert row["transcript_path"] == "C:\\t\\sess-A.jsonl"
         assert row["last_seen"] > "2026-09-03T03:00:00"
         assert len(rooms_registry.load(ENTITY)["rooms"]) == 1  # no row for sess-X
+
+    async def test_session_start_notice_names_unobserved_address(self, async_client, notes_dir):
+        rooms_registry.declare(ENTITY, "sess-A-0000", "conv-A", "Porch", now=T0)
+        response = await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": "sess-A-0000", "sessions": [{"session_id": "sess-A-0000", "name": "x"}]},
+        )
+        assert "messaging address not observed" in response.json()["rooms_notice"]
+
+    async def test_retrieve_letter_confirms_the_senders_address(self, async_client, notes_dir):
+        rooms_registry.declare(
+            ENTITY, "sess-A-0000", "conv-A", "Porch",
+            observation=obs("sess-A-0000", desktop_session_id="local_aaa"), now=T0,
+        )
+        rooms_registry.declare(ENTITY, "sess-B-0000", "conv-B", "Engagement room", now=T0)
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": "sess-B-0000",
+                "prompt": "",
+                "peer_messages": [
+                    {"content": "a letter from the porch", "sender": "Porch chat",
+                     "sender_session": "local_aaa"},
+                    {"content": "one from nowhere", "sender": None, "sender_session": "local_zzz"},
+                ],
+                "sessions": [{"session_id": "sess-B-0000"}],
+            },
+        )
+        assert response.status_code == 200
+        assert len(response.json()["peer_message_ids"]) == 2
+        data = rooms_registry.load(ENTITY)
+        assert rooms_registry.find_row(data, "sess-A-0000")["address_confirmed_at"] is not None
+        assert rooms_registry.find_row(data, "sess-B-0000")["address_confirmed_at"] is None
 
     async def test_session_start_without_row_stays_quiet(self, async_client, notes_dir):
         response = await async_client.post(
@@ -553,12 +780,41 @@ class TestMcpRoomTools:
         )
         assert not is_error, text
         assert "Declared this session as the Porch" in text
+        assert "No messaging address is recorded for this session yet" in text
+        assert 'get_session (session_id "self")' in text
         assert "not yet observed this session's roster name" in text
         assert str(notes_dir / "rooms.md") in text
         row = rooms_registry.find_row(rooms_registry.load(ENTITY), "sess-A-0000")
         assert row["conversation_id"] == conversation.id
         assert row["ref"] == "a46590"
         assert row["note"] == "with Pseudo"
+        assert row["desktop_session_id"] is None
+
+    async def test_declare_room_with_supplied_messaging_address(self, mcp_db, notes_dir):
+        conversation = await make_conversation(
+            mcp_db, source=ConversationSource.CLAUDE_CODE.value, session_id="sess-A-0000"
+        )
+        text, is_error = await call_tool(
+            "declare_room",
+            {"conversation_id": conversation.id, "room": "Porch",
+             "desktop_session_id": "local_ad0cb4d4-901e-4fb1-8a84-33af914a222a"},
+        )
+        assert not is_error, text
+        assert "messaging address=local_ad0cb4d4-901e-4fb1-8a84-33af914a222a (declared)" in text
+        assert "No messaging address is recorded" not in text
+        row = rooms_registry.find_row(rooms_registry.load(ENTITY), "sess-A-0000")
+        assert row["desktop_session_id"] == "local_ad0cb4d4-901e-4fb1-8a84-33af914a222a"
+        assert row["desktop_session_id_source"] == DESKTOP_ID_DECLARED
+
+    async def test_declare_room_schema_offers_the_address(self, mcp_db):
+        response = await claude_code_mcp.handle_jsonrpc_message(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )
+        declare = next(t for t in response["result"]["tools"] if t["name"] == "declare_room")
+        properties = declare["inputSchema"]["properties"]
+        assert "desktop_session_id" in properties
+        assert "desktop_session_id" not in declare["inputSchema"]["required"]
+        assert "send_message" in properties["desktop_session_id"]["description"]
 
     async def test_declare_room_reports_superseded_row(self, mcp_db, notes_dir):
         rooms_registry.declare(

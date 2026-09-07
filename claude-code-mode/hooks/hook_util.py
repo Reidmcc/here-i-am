@@ -21,6 +21,10 @@ Environment:
     HIM_INLINE_BUDGET  max bytes of hook stdout before bulk content is
                        spilled to a file (default 18000, conservatively
                        under the observed harness cap)
+    HIM_DESKTOP_DATA_DIR  the Claude desktop app's data directory (default:
+                       the platform's; see claude_desktop_data_dir), whose
+                       per-session records give the rooms registry each
+                       session's messaging address
 """
 import glob
 import json
@@ -68,12 +72,17 @@ DEFAULT_INLINE_BUDGET = 18000
 #     <cross-session-message from="local_<session id>" name="<name>">
 # The sender's display name (its sidebar title) is `from-name=` in the old
 # shape and `name=` in the new one; `from` went from a named-pipe address
-# to the sender's real session id. They are not the human speaking either —
-# but they ARE the entity speaking, from a sibling session, so they are
-# extracted rather than dropped: the backend records them under the
-# entity's own name with the sending session marked (issue #312). None of
-# this touches what the harness delivers to the session's context — the
-# message itself still arrives and can be answered.
+# to the sender's desktop-app session id — the `local_…` string
+# list_sessions returns and send_message addresses, which is NOT the
+# Claude Code session id the hooks see (issue #339). Both attributes are
+# extracted: the name for the archive's provenance, the address so the
+# backend can mark a rooms-registry row as confirmed by a real delivery.
+# They are not the human speaking either — but they ARE the entity
+# speaking, from a sibling session, so they are extracted rather than
+# dropped: the backend records them under the entity's own name with the
+# sending session marked (issue #312). None of this touches what the
+# harness delivers to the session's context — the message itself still
+# arrives and can be answered.
 _PLUMBING_BLOCK_RE = re.compile(
     r"<(system-reminder|task-notification)"
     r"(?:\s[^>]*)?>.*?</\1>\s*",
@@ -86,6 +95,10 @@ _CROSS_SESSION_RE = re.compile(
 # `from-name="..."` (old wrapper) or `name="..."` (new wrapper). The word
 # boundary keeps `name=` from matching inside another attribute's name.
 _FROM_NAME_RE = re.compile(r'\b(?:from-)?name="([^"]*)"')
+# `from="..."` — the sender's transport address (a desktop-app `local_…`
+# session id in the current wrapper). The lookbehind keeps a hypothetical
+# `reply-from="` or `xfrom="` attribute from being mistaken for it.
+_FROM_RE = re.compile(r'(?<![\w-])from="([^"]*)"')
 
 # Self-scheduled wakeup prompts (ScheduleWakeup dynamic loops, send_later
 # reminders) fire back through the prompt channel verbatim — the harness
@@ -117,10 +130,11 @@ def split_prompt_for_recording(prompt: str):
     Plumbing blocks (system reminders, task notifications) are discarded —
     including anything nested inside them, which is harness echo, not a
     delivery. Each <cross-session-message> block becomes one
-    {"content", "sender"} dict (sender is the wrapper's name attribute —
-    `name=` in the current wrapper, `from-name=` in the 2026-08 one — or
-    None), in delivery order. What remains, stripped, is the human's own
-    words — possibly empty.
+    {"content", "sender", "sender_session"} dict (sender is the wrapper's
+    name attribute — `name=` in the current wrapper, `from-name=` in the
+    2026-08 one — or None; sender_session is its `from=` attribute, the
+    sending session's messaging address, or None), in delivery order. What
+    remains, stripped, is the human's own words — possibly empty.
     """
     without_plumbing = _PLUMBING_BLOCK_RE.sub("", prompt)
     peer_messages = []
@@ -128,9 +142,16 @@ def split_prompt_for_recording(prompt: str):
     def _capture(match):
         content = match.group(2).strip()
         if content:
-            name_match = _FROM_NAME_RE.search(match.group(1) or "")
+            attributes = match.group(1) or ""
+            name_match = _FROM_NAME_RE.search(attributes)
             sender = (name_match.group(1).strip() if name_match else "") or None
-            peer_messages.append({"content": content, "sender": sender})
+            from_match = _FROM_RE.search(attributes)
+            sender_session = (from_match.group(1).strip() if from_match else "") or None
+            peer_messages.append({
+                "content": content,
+                "sender": sender,
+                "sender_session": sender_session,
+            })
         return ""
 
     remaining = _CROSS_SESSION_RE.sub(_capture, without_plumbing)
@@ -204,16 +225,36 @@ def fail_loud(message: str) -> None:
 #   sessionId, cwd, startedAt (ms epoch), name, nameSource ("user" |
 #   "derived"), nameSince (ms epoch), messagingSocketPath, kind,
 #   entrypoint, bridgeSessionId, pid, procStart, ...
-# `name` is the roster name ListAgents shows, and the sidebar title the
-# desktop app's session-management MCP addresses; a delivered letter
-# carries it in its `name=` attribute (the removed SendMessage tool put
-# `messagingSocketPath` in `from=` and the name in `from-name=`; the MCP
-# puts the sender's session id in `from=`). The [ref] ListAgents shows next
-# to a name is NOT derivable from any of these fields (tested against the
-# session id, the socket, the peer token, and the bridge id under every
-# common hash), so it is not collected — the entity records it itself if
-# it wants it. A missing or unreadable directory yields an empty snapshot;
-# the backend records what it didn't see as exactly that.
+# `name` is the roster name ListAgents shows (the removed SendMessage tool
+# put `messagingSocketPath` in `from=` and the name in `from-name=`). The
+# [ref] ListAgents shows next to a name is NOT derivable from any of these
+# fields (tested against the session id, the socket, the peer token, and
+# the bridge id under every common hash), so it is not collected — the
+# entity records it itself if it wants it. A missing or unreadable
+# directory yields an empty snapshot; the backend records what it didn't
+# see as exactly that.
+#
+# The desktop app's session-management MCP (mcp__ccd_session_mgmt__*, since
+# 2026-09-04) addresses sessions by the desktop app's OWN id — the `local_…`
+# string list_sessions returns and a delivered letter carries in `from=` —
+# which is unrelated to the Claude Code session id above (issue #339: a
+# sister who looked a room up by its registry id got "not found"). The
+# desktop app keeps a record per session at
+# <desktop data dir>/claude-code-sessions/<org>/<account>/local_<id>.json
+# (Electron userData: %APPDATA%\Claude on Windows, ~/Library/Application
+# Support/Claude on macOS, ~/.config/Claude on Linux; observed with Claude
+# Code 2.1.260, undocumented internal state — read best-effort like the
+# registry above). Observed shape:
+#   sessionId ("local_…"), cliSessionId (the Claude Code session id),
+#   title (the sidebar title — the `name=` on a delivered letter),
+#   cwd, isArchived, createdAt, lastActivityAt, model, bridgeSessionIds, ...
+# `cliSessionId` is the join: the snapshot carries each live session's
+# desktop id and title when its record is readable, so the rooms registry
+# can render an address a sister can actually send to. A session with no
+# readable record (CLI-launched, or another app version) gets None, and the
+# entity can supply the id itself on declare_room.
+
+DESKTOP_SESSIONS_SUBDIR = "claude-code-sessions"
 
 
 def claude_config_dir() -> str:
@@ -241,20 +282,80 @@ def _ms_to_iso(value):
         return None
 
 
-def live_sessions_snapshot(config_dir=None):
+def claude_desktop_data_dir() -> str:
+    """The Claude desktop app's data directory (Electron userData), where
+    its per-session records live. HIM_DESKTOP_DATA_DIR overrides the
+    platform default."""
+    configured = os.environ.get("HIM_DESKTOP_DATA_DIR")
+    if configured:
+        return configured
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Roaming"
+        )
+    elif sys.platform == "darwin":
+        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            os.path.expanduser("~"), ".config"
+        )
+    return os.path.join(base, "Claude")
+
+
+def desktop_sessions_index(desktop_dir=None):
+    """
+    The desktop app's session records, keyed by Claude Code session id:
+    {cli_session_id: {"desktop_session_id", "desktop_title"}}. Empty when
+    the records directory doesn't exist or nothing in it parses — a hook
+    never fails over this. A record without a cliSessionId is skipped (it
+    can't be joined to anything the hooks see).
+    """
+    directory = os.path.join(desktop_dir or claude_desktop_data_dir(), DESKTOP_SESSIONS_SUBDIR)
+    index = {}
+    try:
+        paths = sorted(glob.glob(os.path.join(directory, "*", "*", "local_*.json")))
+    except Exception:
+        return index
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        cli_session_id = _optional_str(data.get("cliSessionId"))
+        desktop_session_id = _optional_str(data.get("sessionId"))
+        if not cli_session_id or not desktop_session_id:
+            continue
+        index[cli_session_id] = {
+            "desktop_session_id": desktop_session_id,
+            "desktop_title": _optional_str(data.get("title")),
+        }
+    return index
+
+
+def live_sessions_snapshot(config_dir=None, desktop_dir=None, own_session_id=None):
     """
     Every live session the per-process registry describes, as a list of
     {session_id, name, name_source, name_since, messaging_socket, cwd,
-    started_at} dicts (values None where the file lacks them). Empty when
-    the registry directory doesn't exist or nothing in it parses — a hook
-    never fails over this.
+    started_at, desktop_session_id, desktop_title} dicts (values None where
+    the files lack them). The desktop fields come from the desktop app's
+    own session record for that session (desktop_sessions_index), joined
+    on the Claude Code session id. Empty when the registry directory
+    doesn't exist or nothing in it parses — a hook never fails over this.
+
+    own_session_id (the hook's own session, from its stdin) is appended
+    with just its desktop fields when the per-process registry didn't list
+    it but a desktop record did: the address is worth recording even when
+    the registry is unreadable.
     """
     directory = os.path.join(config_dir or claude_config_dir(), "sessions")
     snapshot = []
     try:
         paths = sorted(glob.glob(os.path.join(directory, "*.json")))
     except Exception:
-        return snapshot
+        paths = []
     for path in paths:
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -274,6 +375,30 @@ def live_sessions_snapshot(config_dir=None):
             "messaging_socket": _optional_str(data.get("messagingSocketPath")),
             "cwd": _optional_str(data.get("cwd")),
             "started_at": _ms_to_iso(data.get("startedAt")),
+            "desktop_session_id": None,
+            "desktop_title": None,
+        })
+
+    desktop = desktop_sessions_index(desktop_dir)
+    for entry in snapshot:
+        record = desktop.get(entry["session_id"])
+        if record:
+            entry["desktop_session_id"] = record["desktop_session_id"]
+            entry["desktop_title"] = record["desktop_title"]
+    if own_session_id and own_session_id in desktop and not any(
+        entry["session_id"] == own_session_id for entry in snapshot
+    ):
+        record = desktop[own_session_id]
+        snapshot.append({
+            "session_id": own_session_id,
+            "name": None,
+            "name_source": None,
+            "name_since": None,
+            "messaging_socket": None,
+            "cwd": None,
+            "started_at": None,
+            "desktop_session_id": record["desktop_session_id"],
+            "desktop_title": record["desktop_title"],
         })
     return snapshot
 

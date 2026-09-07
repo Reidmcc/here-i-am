@@ -66,6 +66,10 @@ class SessionObservationIn(BaseModel):
     cwd: Optional[str] = None
     transcript_path: Optional[str] = None
     started_at: Optional[str] = None
+    # From the desktop app's own session record (issue #339): the `local_…`
+    # id its session-management MCP addresses, and the sidebar title
+    desktop_session_id: Optional[str] = None
+    desktop_title: Optional[str] = None
 
 
 class SessionStartRequest(BaseModel):
@@ -114,6 +118,10 @@ class PeerMessage(BaseModel):
     # The sending session's display name (the wrapper's name= attribute;
     # from-name= in the removed SendMessage tool's wrapper — issue #331)
     sender: Optional[str] = None
+    # The wrapper's from= attribute: the sender's messaging address (its
+    # desktop-app session id). Not persisted on the row; it confirms the
+    # rooms registry's address for the sender (issue #339)
+    sender_session: Optional[str] = None
     # Row id chosen by the hook (a UUID), so it can verify recording after a
     # failed call and so a retry is idempotent; see RetrieveRequest.message_id
     message_id: Optional[str] = None
@@ -329,7 +337,8 @@ async def retrieve(
     )
 
     # Rooms registry: a prompt in any room is a chance to catch a rename
-    # anywhere (the snapshot covers every live session the hook could see)
+    # anywhere (the snapshot covers every live session the hook could see),
+    # and a letter that arrived with it confirms its sender's address
     rooms_notice, rooms_error = cc.observe_rooms_for_hook(
         entity,
         data.session_id,
@@ -337,6 +346,11 @@ async def retrieve(
         transcript_path=None,
         sessions=[s.model_dump() for s in data.sessions],
         session_start=False,
+        delivered_from=[
+            peer.sender_session
+            for peer in (data.peer_messages or [])
+            if peer.sender_session
+        ],
     )
 
     prompt = data.prompt or ""

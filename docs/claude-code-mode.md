@@ -276,9 +276,13 @@ The hook accepts both this shape and the removed tool's
 the sender's display name is read from `name=` or `from-name=`, whichever
 the wrapper carries (issue #331 — under the new shape alone the name was
 lost and every letter recorded from `"unknown session"`). The `from`
-session id is not stored. Left alone, `UserPromptSubmit` would archive a
-delivery as the human's words (issue #312; observed live 2026-08-26 before
-the first fix). The semantics, in two layers:
+address is read too (`sender_session`), but not stored on the message row:
+it is the sender's messaging address, and the only thing that proves an
+address works, so `/retrieve` hands it to the rooms registry to stamp the
+sender's row as confirmed (see "Rooms registry"). Left alone,
+`UserPromptSubmit` would archive a delivery as the human's words (issue
+#312; observed live 2026-08-26 before the first fix). The semantics, in
+two layers:
 
 - **Never the human's.** The hook separates deliveries from the human's
   words (`hook_util.split_prompt_for_recording`); a delivery is never
@@ -449,12 +453,20 @@ dropped back to a derived slug (`here-i-am-notes-97`) when the session is
 resumed or the desktop app restarts, and the roster the sessions see
 (`ListAgents`) lies accordingly (issue #323; observed live 2026-09-02, when
 a letter had to be broadcast to two unlabeled sessions). The postal service
-works; the rooms registry is the phone book. (Since the 2026-09-04 update
-the postal address is the session id `list_sessions` returns rather than
-the roster name, but the name is still how a sister is *found* — the
-registry keeps it current either way.)
+works; the rooms registry is the phone book.
 
-**What a hook can know** (investigated for #323, Claude Code 2.1.258):
+Since the 2026-09-04 update the postal address is not a name at all but
+the **desktop app's own session id** — the `local_…` string
+`list_sessions` returns and `send_message` takes — and that id is
+unrelated to the Claude Code session id the hooks see and the registry is
+keyed on (issue #339; observed 2026-09-07 when the engagement room wrote
+to the porch's registry session id and got "not found"). So the registry
+records a **messaging address** per row, and `rooms.md` says which id is
+which: the Session column is the Claude Code id (the registry's key, not
+sendable), the Messaging address column is what a sister sends to.
+
+**What a hook can know** (investigated for #323, Claude Code 2.1.258;
+extended for #339, 2.1.260):
 
 - Hook stdin carries `session_id`, `transcript_path`, `cwd`, and `source`
   (documented). The display name is not in it.
@@ -462,11 +474,27 @@ registry keeps it current either way.)
   `<config dir>/sessions/<pid>.json` (config dir = `CLAUDE_CONFIG_DIR` or
   `~/.claude`; undocumented internal state), with `sessionId`, `name`,
   `nameSource` (`"user"` | `"derived"`), `nameSince`, `startedAt`, `cwd`,
-  and `messagingSocketPath` — the transport address a delivered letter
-  carries in its `from=` attribute. `name` is the roster name other
-  sessions address. The file exists by the time SessionStart fires and
-  lists every live session on the machine, and it is what shows a resumed
-  session back on a derived name.
+  and `messagingSocketPath` — the transport address the removed
+  `SendMessage` tool put in a delivered letter's `from=` attribute. `name`
+  is the roster name `ListAgents` shows. The file exists by the time
+  SessionStart fires and lists every live session on the machine, and it
+  is what shows a resumed session back on a derived name. Nothing in it
+  is the desktop app's `local_…` id.
+- The desktop app keeps its own record per session at
+  `<desktop data dir>/claude-code-sessions/<org>/<account>/local_<id>.json`
+  (Electron userData: `%APPDATA%\Claude` on Windows,
+  `~/Library/Application Support/Claude` on macOS, `~/.config/Claude` on
+  Linux; `HIM_DESKTOP_DATA_DIR` overrides; undocumented internal state,
+  read best-effort like the registry above). Its `sessionId` is the
+  `local_…` messaging address, its `cliSessionId` is the Claude Code
+  session id — the join the hooks need — and `title` is the sidebar title
+  (`list_sessions`'s `title`, and the `name=` on a delivered letter).
+  Observed 2026-09-07 for every live session on the machine; the files
+  are ~80KB each (they embed the session's MCP tool schemas) and there is
+  one per session ever opened, so the hooks read the directory once per
+  firing and join on `cliSessionId`. A session with no readable record
+  (CLI-launched, another app version, a relocated data dir) gets no
+  address from the hooks; the entity can supply one itself (below).
 - The `[ref]` `ListAgents` prints beside a name is **not derivable** from
   anything in that file (tested against the session id, socket path, peer
   token, and bridge id under every common hash). It is stable across a
@@ -480,28 +508,51 @@ registry keeps it current either way.)
 
 - *Hook = ids and liveness.* `SessionStart` and `UserPromptSubmit` send a
   `sessions` snapshot — the live registry as `{session_id, name,
-  name_source, name_since, messaging_socket, cwd, started_at}` per session
-  (`hook_util.live_sessions_snapshot`), plus their own `transcript_path`.
-  The backend (`observe_rooms_for_hook`) refreshes every **declared** row
-  the snapshot covers: address fields as observed, `last_seen` as
-  liveness. Because the snapshot covers siblings, a rename lands in the
-  registry on the next prompt in *any* room — including a wakeup tick —
-  not only the renamed one, and the hook prints a one-line
-  `[ROOMS REGISTRY]` notice when it observed one ("Porch: now
-  \"Porch chats\" (was \"here-i-am-notes-97\")"). A field the hook could
-  not see stays null and renders as "—"; an observation missing a field
-  never erases a recorded one. Nothing is inferred, and no row is created
-  here: the harness fires SessionStart for background sessions that never
-  speak, and a row per firing would be issue #307's ghost registrations in
-  a text file.
+  name_source, name_since, messaging_socket, cwd, started_at,
+  desktop_session_id, desktop_title}` per session
+  (`hook_util.live_sessions_snapshot`; the last two joined in from the
+  desktop app's records), plus their own `transcript_path`. When the
+  registry is unreadable but the hook's own session has a desktop record,
+  the snapshot still carries that one entry with just its address. The
+  backend (`observe_rooms_for_hook`) refreshes every **declared** row the
+  snapshot covers: address fields as observed, `last_seen` as liveness.
+  Because the snapshot covers siblings, a rename lands in the registry on
+  the next prompt in *any* room — including a wakeup tick — not only the
+  renamed one, and the hook prints a one-line `[ROOMS REGISTRY]` notice
+  when it observed one ("Porch: now \"Porch chats\" (was
+  \"here-i-am-notes-97\")"). The session-start notice names the row's
+  messaging address, so a room sees its own address at every start. A
+  field the hook could not see stays null and renders as "—"; an
+  observation missing a field never erases a recorded one. Nothing is
+  inferred, and no row is created here: the harness fires SessionStart
+  for background sessions that never speak, and a row per firing would be
+  issue #307's ghost registrations in a text file.
 - *Self = meaning.* Which room a session **is** is declared by the entity
-  over MCP — `declare_room(room, note?, ref?, conversation_id)` — never
-  guessed from cwd or a first prompt. Declaring creates the session's row
-  (resolved through its Claude Code conversation, so a session declares
-  after its first recorded prompt); declaring a room another live row
-  already holds retires that row as superseded — one current address per
-  room, history kept. `retire_room(reason?, conversation_id)` retires
-  explicitly. Workshops are workbenches, not homes, and don't need rows.
+  over MCP — `declare_room(room, note?, ref?, desktop_session_id?,
+  conversation_id)` — never guessed from cwd or a first prompt. Declaring
+  creates the session's row (resolved through its Claude Code
+  conversation, so a session declares after its first recorded prompt);
+  declaring a room another live row already holds retires that row as
+  superseded — one current address per room, history kept.
+  `retire_room(reason?, conversation_id)` retires explicitly. Workshops
+  are workbenches, not homes, and don't need rows. `desktop_session_id`
+  is the one address fact the self may state rather than the hooks
+  observe: for a session whose desktop record the hooks can't read, the
+  entity reads its own address with `get_session` (`session_id: "self"` —
+  `list_sessions` excludes the caller, `get_session` does not) and
+  re-declares with it. The row records which it holds
+  (`desktop_session_id_source`: `desktop app record` | `declared`); an
+  observed value replaces a declared one on the next hook that can see
+  it, since the app's own record outranks a hand-copied string.
+- *A delivery confirms an address.* Every letter's `from=` is the sending
+  session's messaging address, so `/retrieve` passes the addresses of the
+  letters that arrived with a prompt (`peer_messages[].sender_session`)
+  to the registry, which stamps `address_confirmed_at` on the live row
+  holding that address (hourly, like liveness). Rows are matched only by
+  their recorded address — an unknown sender confirms nothing and creates
+  nothing. `rooms.md` renders it beside the source ("desktop app record;
+  confirmed by a delivery 2026-09-07 00:31 EDT"); re-declaring a different
+  address clears it.
 
 **Liveness.** The observing session's own SessionStart (startup, resume,
 post-compaction restart) always refreshes its `last_seen`; prompt-time
@@ -514,10 +565,12 @@ judge; rows are retired, never removed.
 **Files**, in the entity's private notes directory (out of the
 live-server deny fence, next to the notes it edits by hand):
 `rooms.json` is the record (one object per declared session, every
-field); `rooms.md` is rendered from it on every write — a standing-rooms
-table (room, roster name, name source, ref, session, last seen, declared,
-notes) and a retired-rows table — never the reverse: its first line says
-hand edits are overwritten. A pre-existing hand-written `rooms.md` (the
+field); `rooms.md` is rendered from it on every write — a header that
+says which id to send to and how to fill a blank one, a standing-rooms
+table (room, messaging address, address source, sidebar title, roster
+name, name source, ref, session, last seen, declared, notes) and a
+retired-rows table — never the reverse: its first line says hand edits
+are overwritten. A pre-existing hand-written `rooms.md` (the
 manual protocol that preceded this) is moved to `rooms-manual.md` on the
 first render, not overwritten. Both files are ordinary notes, so the
 semantic notes mirror indexes them like any other; writes happen only
@@ -656,9 +709,10 @@ conversation on first contact; `/session-start` and `/session-end` never do
   (notes indexes + reflections) is what the hook spills to a file when the
   combined output would exceed the inline budget. `sessions` is the hook's
   live-session snapshot for the rooms registry (`[{session_id, name?,
-  name_source?, name_since?, messaging_socket?, cwd?, started_at?}]`);
-  `rooms_notice` is the one-line registry notice to print and
-  `rooms_error` a loud write failure (see "Rooms registry").
+  name_source?, name_since?, messaging_socket?, cwd?, started_at?,
+  desktop_session_id?, desktop_title?}]`); `rooms_notice` is the one-line
+  registry notice to print and `rooms_error` a loud write failure (see
+  "Rooms registry").
 - `POST /session-end` `{session_id, entity?, reason?}` →
   `{conversation_id, notes_sync_started}` — final fire-and-forget notes
   sync; does not create a conversation for an unseen session.
@@ -671,9 +725,11 @@ conversation on first contact; `/session-start` and `/session-end` never do
   summary is the compact inline stand-in the hook prints when it has to
   spill an oversized `context`; the sibling count backs the mailbox flag
   (see Memory above). `peer_messages` is a list of `{content, sender?,
-  message_id?}` inter-session deliveries the hook extracted from the
-  prompt channel, recorded with honest provenance (see "Inter-session
-  messages" above); `human_message_id` is null on a letter-only turn.
+  sender_session?, message_id?}` inter-session deliveries the hook
+  extracted from the prompt channel, recorded with honest provenance (see
+  "Inter-session messages" above; `sender_session`, the wrapper's `from=`,
+  confirms the sender's rooms-registry address and is not stored on the
+  row); `human_message_id` is null on a letter-only turn.
   `message_id` (top-level and per peer) is the hook's chosen row id, a
   UUID: honored when well-formed, and an existing row under it is reused
   rather than re-recorded (see "Retrieval stamps" above). A record-nothing call
