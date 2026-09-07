@@ -53,9 +53,15 @@ DEFAULT_INLINE_BUDGET = 18000
 # Claude Code delivers harness events through the prompt channel: background
 # task notifications arrive as a bare <task-notification> block, and other
 # events ride in a <system-reminder> block prepended to (or standing in for)
-# the user's message. Neither is the human speaking, so both are stripped
-# before recording — otherwise harness plumbing gets archived, and
-# vectorized, as the human's own words. The archive stays the talk.
+# the user's message. The desktop app's CI monitor ("Auto-fix pull
+# requests") delivers its findings the same way, as a bare
+# <ci-monitor-event> block standing in for a prompt (observed live
+# 2026-09-07: failing checks, merge conflicts — each event its own turn,
+# arriving as often as the PR's state changes). None of these is the human
+# speaking, so all are stripped before recording — otherwise harness
+# plumbing gets archived, and vectorized, as the human's own words, and a
+# CI notice becomes a retrieval query. The archive stays the talk; an
+# automated event is handled like a tool result, not like a message.
 #
 # Messages from other Claude Code sessions arrive the same way, as a bare
 # attribute-carrying <cross-session-message ...> block. Two wrapper shapes
@@ -75,7 +81,7 @@ DEFAULT_INLINE_BUDGET = 18000
 # this touches what the harness delivers to the session's context — the
 # message itself still arrives and can be answered.
 _PLUMBING_BLOCK_RE = re.compile(
-    r"<(system-reminder|task-notification)"
+    r"<(system-reminder|task-notification|ci-monitor-event)"
     r"(?:\s[^>]*)?>.*?</\1>\s*",
     re.DOTALL,
 )
@@ -114,7 +120,8 @@ def split_prompt_for_recording(prompt: str):
     """
     Separate a prompt into (the human's words, inter-session messages).
 
-    Plumbing blocks (system reminders, task notifications) are discarded —
+    Plumbing blocks (system reminders, task notifications, CI monitor
+    events) are discarded —
     including anything nested inside them, which is harness echo, not a
     delivery. Each <cross-session-message> block becomes one
     {"content", "sender"} dict (sender is the wrapper's name attribute —
