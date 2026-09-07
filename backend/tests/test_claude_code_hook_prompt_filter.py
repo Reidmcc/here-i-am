@@ -23,6 +23,13 @@ The wrapper's attributes changed when Claude Code replaced SendMessage with
 the desktop app's session-management MCP (observed live 2026-09-04, issue
 #331): the sender's display name moved from from-name= to name=. Both
 spellings are accepted; the tests at the end cover the new shape.
+
+The desktop app's CI monitor ("Auto-fix pull requests") uses the channel
+too: observed live on 2026-09-07, each finding arrives as a bare
+<ci-monitor-event> block standing in for a prompt — and, until it joined
+the plumbing list, was archived as the human's words and run as a
+retrieval query on every CI state change. An automated event is neither
+talk nor the entity: handled like a tool call, dropped entirely.
 """
 import sys
 from pathlib import Path
@@ -65,6 +72,53 @@ def test_notification_nested_in_reminder_strips_to_nothing():
         "</system-reminder>"
     )
     assert hook_util.strip_harness_blocks(prompt) == ""
+
+
+def test_pure_ci_monitor_event_strips_to_nothing():
+    # The shape observed live on 2026-09-07: the desktop app's auto-fix
+    # monitor delivers a failing-check report as a bare block, no
+    # attributes, standing in for the prompt.
+    prompt = (
+        '<ci-monitor-event>"Auto-fix pull requests" is watching '
+        "Reidmcc/here-i-am PR #340 and detected the following. ...\n\n"
+        "1 CI check failed on Reidmcc/here-i-am PR #340 (names quoted "
+        "below). Run `gh pr checks 340 --repo Reidmcc/here-i-am` to see "
+        "details, then fix the failing check, commit, and push.\n\n"
+        "Failing checks (1):\n"
+        '> "tests (py3.12)"\n'
+        "(End of quoted GitHub text.)\n"
+        "</ci-monitor-event>"
+    )
+    remaining, peers = hook_util.split_prompt_for_recording(prompt)
+    assert remaining == ""
+    assert peers == []
+
+
+def test_ci_monitor_event_mentioning_its_own_tag_strips_whole_block():
+    # The event's boilerplate names the tag it arrives in ("Autofix will
+    # send another <ci-monitor-event> when ..."). That inner mention has
+    # no closing tag of its own, so the block still ends at the real one.
+    prompt = (
+        "<ci-monitor-event>Do not offer to poll CI \u2014 Autofix will send "
+        "another <ci-monitor-event> when something else needs attention.\n"
+        "Reidmcc/here-i-am PR #340 has merge conflicts with its base "
+        "branch. Resolve them now.\n</ci-monitor-event>"
+    )
+    assert hook_util.strip_harness_blocks(prompt) == ""
+
+
+def test_ci_monitor_event_beside_real_text_keeps_the_humans_words():
+    # Defensive: events arrive alone today, but if one ever rides with a
+    # typed prompt, only the human's words survive.
+    prompt = (
+        "<ci-monitor-event>1 CI check failed on Reidmcc/here-i-am PR #340."
+        "</ci-monitor-event>\n"
+        "Fix it, but tell me what broke first."
+    )
+    assert (
+        hook_util.strip_harness_blocks(prompt)
+        == "Fix it, but tell me what broke first."
+    )
 
 
 def test_plain_prompt_untouched():

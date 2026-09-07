@@ -8,7 +8,8 @@ returned memory block is printed to stdout, which Claude Code injects into
 context alongside the prompt.
 
 Not everything on the prompt channel is the human: harness plumbing
-(system reminders, task notifications) is stripped and dropped, while
+(system reminders, task notifications, the desktop app's CI monitor
+events) is stripped and dropped, while
 inter-session messages from sibling Claude Code sessions are extracted and
 sent separately (peer_messages), so the backend can record them under the
 entity's own name with the sending session marked instead of archiving
@@ -86,8 +87,9 @@ def main() -> None:
         )
         return
     session_id = data.get("session_id") or ""
-    # Harness blocks (system reminders, task notifications) are not the
-    # human speaking — stripped so they are neither archived under the
+    # Harness blocks (system reminders, task notifications, CI monitor
+    # events) are not the human speaking — stripped so they are neither
+    # archived under the
     # human's name nor used as a retrieval query. Inter-session messages
     # from sibling sessions aren't the human either, but they are the
     # entity: extracted and sent alongside the prompt for recording with

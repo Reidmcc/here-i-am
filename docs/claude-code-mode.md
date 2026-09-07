@@ -39,9 +39,13 @@ The integration has two channels:
      `[MEMORY ...]` block into context alongside the prompt (or, when
      oversized, a per-memory summary plus a pointer to the spilled file).
      Not everything arriving on the prompt channel is the human speaking:
-     harness plumbing (`<system-reminder>`, `<task-notification>` blocks)
-     is stripped before recording, so it is neither archived under the
-     human's name nor used as part of the retrieval query. Inter-session
+     harness plumbing (`<system-reminder>`, `<task-notification>`, and
+     `<ci-monitor-event>` blocks — the last is the desktop app's
+     "Auto-fix pull requests" monitor reporting CI failures or merge
+     conflicts, which arrives as its own prompt every time the PR's state
+     changes) is stripped before recording, so it is neither archived under
+     the human's name nor used as part of the retrieval query; an automated
+     event is handled like a tool call, not like a message. Inter-session
      messages from sibling Claude Code sessions (`<cross-session-message>`
      blocks, delivered by the desktop app's session-management MCP, or
      by the harness's since-removed SendMessage tool) are not the human
