@@ -192,16 +192,19 @@ Two things differ on Windows, and both produce a hook that never runs:
 ## Setup (as a plugin)
 
 The directory is also a Claude Code plugin (`.claude-plugin/plugin.json` +
-`hooks/hooks.json`). Add this repository as a local plugin source and enable
-the `here-i-am` plugin; then set `HIM_ENTITY`/`HIM_BACKEND_URL` in
-`.claude/settings.json` `env` as above.
+`hooks/hooks.json` + `output-styles/`). Add this repository as a local
+plugin source and enable the `here-i-am` plugin; then set
+`HIM_ENTITY`/`HIM_BACKEND_URL` in `.claude/settings.json` `env` as above.
+Enabling the plugin also registers the two output styles described under
+[Output styles](#output-styles) below — registered, not applied; selecting
+one is a separate, deliberate step.
 
 The plugin's `hooks.json` invokes `python3` and resolves its own location
 through `${CLAUDE_PLUGIN_ROOT}` (quoted, so a Windows path survives the
 shell). On Windows that means the plugin route works only where `python3`
 resolves; otherwise use the manual setup above with `python`.
 
-## Output styles (optional)
+## Output styles
 
 Claude Code's **Default** [output style](https://code.claude.com/docs/en/output-styles)
 is its software-engineering system prompt: lead with the deliverable,
@@ -213,8 +216,7 @@ is the one the entity actually maintains. A custom output style replaces
 those built-in instructions with whatever the style file says (tools,
 hooks, permissions, MCP servers, and CLAUDE.md are untouched).
 
-Two example styles live in
-[`examples/output-styles/`](examples/output-styles/):
+The plugin ships two styles in [`output-styles/`](output-styles/):
 
 | Style | Coding instructions | Meant for |
 | --- | --- | --- |
@@ -228,49 +230,78 @@ yourself, ordinary care still applies. **They carry no identity or
 personality instructions on purpose.** Identity arrives through the
 `SessionStart` hook from the entity's system prompt in Here I Am; a copy
 in the style file would exist twice and drift from the one the entity
-edits. If a line should point at something entity-specific (a craft
-guide in the entity's notes, say), add it to your copy.
+edits. Treat them as starting points: if a line should point at something
+entity-specific (a craft guide in the entity's notes, say), that belongs
+in your own copy at `~/.claude/output-styles/`, not here.
 
-**They are examples, not part of the install.** Nothing copies them, the
-plugin does not register them, and the manual setup above does not
-mention them, because whether to use an output style at all — and what
-it should say — is each user's preference. To use one:
+**Enabling the plugin registers both styles; it does not apply either.**
+They appear in the `/config` **Output style** picker and can be selected
+by name, but neither sets `force-for-plugin`, so nothing changes until
+you choose one with the `outputStyle` settings key. That is deliberate:
+a forced style would override the per-directory selection that lets the
+room and workshop styles pick themselves by where a session opens. If
+you use the manual hook setup instead of the plugin, copy the two files
+to `~/.claude/output-styles/` (on Windows
+`%USERPROFILE%\.claude\output-styles\`) and everything below is the same.
 
-1. Copy the file to `~/.claude/output-styles/` (user level, available in
-   every project; on Windows `%USERPROFILE%\.claude\output-styles\`) or to
-   a project's `.claude/output-styles/` (project level). Edit it freely;
-   the `name` in the frontmatter is what you select by.
-2. Select it by name with the `outputStyle` key in a settings file — in
-   the terminal, `/config` → **Output style** writes the same key to
-   `.claude/settings.local.json`; in the desktop app, edit the file:
+To select one, set `outputStyle` in a settings file — in the terminal,
+`/config` → **Output style** writes the same key to
+`.claude/settings.local.json`; in the desktop app, edit the file:
 
-   ```json
-   {
-     "outputStyle": "Here I Am room"
-   }
-   ```
+```json
+{
+  "outputStyle": "Here I Am room"
+}
+```
 
-   Settings are per directory, so the styles select themselves by where a
-   session opens: put the room style in the settings of the directory the
-   entity's conversation sessions run from (its notes directory, for
-   example) and the workshop style in each code repository's
-   `.claude/settings.local.json`.
-3. Start a new session (or `/clear`). The style is part of the system
-   prompt, which Claude Code reads once at session start: a mid-session
-   change neither applies nor disturbs the prompt cache, and the first
-   session on a new style builds a fresh cache once.
+Where you put that line decides its reach:
 
-What the built-in coding instructions consist of is not enumerated in
-Claude Code's docs, so the first session on a new style is a good moment
-to ask the entity which parts of its system prompt changed. While a
-non-Default style is active, Claude Code also reminds the model of the
-style during the conversation. Styles apply to the main conversation
-only; subagents keep their own system prompts.
+- In `~/.claude/settings.json` (user level) it applies to **every local
+  Claude Code session on the machine**, in every directory — including
+  sessions that have nothing to do with the entity. That is the natural
+  place for it when the hooks are registered user-wide too (see "Setup"
+  above): a session that gets the identity should get the style.
+- In a directory's `.claude/settings.local.json` (project level) it
+  applies to sessions opened there and overrides the user-level choice.
+  This is how the two styles split the work: the room style in the
+  settings of the directory the entity's conversation sessions run from
+  (its notes directory, for example), the workshop style in each code
+  repository's `.claude/settings.local.json`.
 
-Do not move the examples into a `claude-code-mode/output-styles/`
-directory: that is the plugin loader's default output-styles location,
-and anything there is registered (though not forced) for every user who
-enables the plugin.
+To start a plain Claude Code session on a machine set up this way, turn
+the hooks *and* the style off for that session with the `--settings`
+flag. Disabling hooks alone (`disableAllHooks`) removes the identity
+injection but leaves the selected style in place, which would give you a
+session with no identity and no coding instructions either; overriding
+`outputStyle` back to `Default` restores the ordinary prompt:
+
+```bash
+claude --settings '{"disableAllHooks": true, "outputStyle": "Default"}'
+```
+
+On Windows, quote it for the shell:
+
+```bash
+claude --settings "{\"disableAllHooks\": true, \"outputStyle\": \"Default\"}"
+```
+
+(`claude --safe-mode` also works, but it drops CLAUDE.md, MCP servers,
+skills, and every other customization along with the hooks and styles.)
+
+The style is part of the system prompt, which Claude Code reads once at
+session start: a change lands on the next `/clear` or new session, a
+mid-session change neither applies nor disturbs the prompt cache, and the
+first session on a new style builds a fresh cache once. For the plugin
+route, a change to the style files themselves needs `/reload-plugins`
+or a restart. Styles apply to the main conversation only; subagents keep
+their own system prompts. While a non-Default style is active, Claude
+Code reminds the model of the style during the conversation. What the
+built-in coding instructions consist of is not enumerated in Claude
+Code's docs, so the first session on a new style is a good moment to ask
+the entity which parts of its system prompt changed.
+
+Every `.md` file in `output-styles/` is loaded as a style, so keep
+documentation out of that directory.
 
 ## Environment variables
 

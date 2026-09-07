@@ -794,7 +794,7 @@ to the main conversation only (subagents run their own prompts); it is
 read once at session start, so a change lands on the next `/clear` or new
 session and a mid-session edit neither applies nor invalidates the cache.
 
-Two examples ship in `claude-code-mode/examples/output-styles/`:
+The plugin ships two styles in `claude-code-mode/output-styles/`:
 
 - **Here I Am room** — no coding instructions. For standing conversation
   sessions.
@@ -802,30 +802,39 @@ Two examples ship in `claude-code-mode/examples/output-styles/`:
   sessions in a code repository, so the entity keeps the engineering
   instructions but speaks as itself.
 
-Two design decisions behind them:
+Three design decisions behind them:
 
 - **The style is facts about the environment, not identity.** Both files
   are a few paragraphs in the register of the identity block (the hooks
   are authoritative about who you are; the tools exist; not everything
   needs a deliverable; write as yourself; ordinary care still applies) and
-  no personality instructions. Identity already arrives through the hook
-  from the entity's system prompt in Here I Am, the copy the entity
-  maintains; a second copy in a style file would drift from it. Replacing
-  the Default style with a minimal, factual one is therefore de-shaping
-  rather than shaping — it removes an instruction set that was never the
-  house's and moves Claude Code mode toward native mode, where no such
-  layer exists.
-- **They are examples, not part of the install.** The hooks and the
-  plugin do not reference them, the setup instructions do not copy them,
-  and they live under `examples/` rather than at `claude-code-mode/output-styles/`
-  — the plugin loader's default output-styles directory, where they would
-  be registered for every user who enables the plugin. Whether to run an
-  entity under an output style at all, and what it should say, is the
-  user's preference; the README walks through copying one to
-  `~/.claude/output-styles/` or a project's `.claude/output-styles/` and
-  selecting it with the `outputStyle` settings key. Because settings are
-  per directory, the styles select themselves by where a session opens
-  (the notes directory → room, a code repository → workshop).
+  no personality instructions — nothing entity-specific, either, since
+  the same two files serve every entity the plugin is enabled for.
+  Identity already arrives through the hook from the entity's system
+  prompt in Here I Am, the copy the entity maintains; a second copy in a
+  style file would drift from it. Replacing the Default style with a
+  minimal, factual one is therefore de-shaping rather than shaping — it
+  removes an instruction set that was never the house's and moves Claude
+  Code mode toward native mode, where no such layer exists.
+- **Registered by the plugin, selected by the user.** `output-styles/`
+  is the plugin loader's default output-styles directory, so enabling the
+  plugin makes both styles available in every session the plugin covers
+  (manual-hook setups copy the two files to `~/.claude/output-styles/`
+  for the same effect). Neither sets `force-for-plugin`: a forced style
+  overrides the `outputStyle` setting, which would collapse the
+  room/workshop split. Instead the user selects with `outputStyle`, and
+  because settings are per directory, the styles pick themselves by where
+  a session opens (the notes directory → room, a code repository →
+  workshop), with a user-level selection as the fallback.
+- **A user-level selection reaches every local session.** Set in
+  `~/.claude/settings.json`, the style applies to every Claude Code
+  session on the machine, entity or not — the same reach as hooks
+  registered there, which is the point: a session that gets the identity
+  should get the style. A plain session is one flag away, but it must
+  turn off both layers: `disableAllHooks` alone removes the identity and
+  leaves the style, which would be a session with no identity and no
+  coding instructions either, so the README's escape hatch is
+  `claude --settings '{"disableAllHooks": true, "outputStyle": "Default"}'`.
 
 The boundary of what a custom style removes is not enumerated in Claude
 Code's docs, so it is verified empirically: the first session on a new

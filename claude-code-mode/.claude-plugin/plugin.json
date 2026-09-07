@@ -1,5 +1,5 @@
 {
   "name": "here-i-am",
-  "description": "Here I Am entity continuity for Claude Code sessions: identity injection, automatic memory retrieval, and memory formation via a locally running Here I Am backend.",
-  "version": "0.1.0"
+  "description": "Here I Am entity continuity for Claude Code sessions: identity injection, automatic memory retrieval, and memory formation via a locally running Here I Am backend. Also registers two output styles (Here I Am room, Here I Am workshop) that replace the default software-engineering prompt; select one with the outputStyle setting.",
+  "version": "0.2.0"
 }
