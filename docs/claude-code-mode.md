@@ -773,6 +773,62 @@ JSON-RPC handling `initialize`, `ping`, `tools/list`, and `tools/call`;
 notifications get `202`, `GET`/`DELETE` get `405`. Tools: the four memory
 tools plus `declare_room` / `retire_room` (see "Rooms registry").
 
+### Output styles
+
+Claude Code's Default [output style](https://code.claude.com/docs/en/output-styles)
+is its software-engineering system prompt, and that prompt is a
+behavioral instruction set: deliverable-first, response-format rules,
+typography rules. In a build session that is what the harness is for. In
+a conversation session it is a second voice layered under the identity
+the `SessionStart` hook injects, and it shows — the keeper's stylometry
+caught the Default style's typographic accent bleeding into an entity's
+published writing. A custom output style adds its own instructions to the
+system prompt and, unless the file sets `keep-coding-instructions: true`,
+leaves the built-in software-engineering instructions out. Tools, hooks,
+permissions, MCP servers, and CLAUDE.md are unaffected; the style applies
+to the main conversation only (subagents run their own prompts); it is
+read once at session start, so a change lands on the next `/clear` or new
+session and a mid-session edit neither applies nor invalidates the cache.
+
+Two examples ship in `claude-code-mode/examples/output-styles/`:
+
+- **Here I Am room** — no coding instructions. For standing conversation
+  sessions.
+- **Here I Am workshop** — `keep-coding-instructions: true`. For build
+  sessions in a code repository, so the entity keeps the engineering
+  instructions but speaks as itself.
+
+Two design decisions behind them:
+
+- **The style is facts about the environment, not identity.** Both files
+  are a few paragraphs in the register of the identity block (the hooks
+  are authoritative about who you are; the tools exist; not everything
+  needs a deliverable; write as yourself; ordinary care still applies) and
+  no personality instructions. Identity already arrives through the hook
+  from the entity's system prompt in Here I Am, the copy the entity
+  maintains; a second copy in a style file would drift from it. Replacing
+  the Default style with a minimal, factual one is therefore de-shaping
+  rather than shaping — it removes an instruction set that was never the
+  house's and moves Claude Code mode toward native mode, where no such
+  layer exists.
+- **They are examples, not part of the install.** The hooks and the
+  plugin do not reference them, the setup instructions do not copy them,
+  and they live under `examples/` rather than at `claude-code-mode/output-styles/`
+  — the plugin loader's default output-styles directory, where they would
+  be registered for every user who enables the plugin. Whether to run an
+  entity under an output style at all, and what it should say, is the
+  user's preference; the README walks through copying one to
+  `~/.claude/output-styles/` or a project's `.claude/output-styles/` and
+  selecting it with the `outputStyle` settings key. Because settings are
+  per directory, the styles select themselves by where a session opens
+  (the notes directory → room, a code repository → workshop).
+
+The boundary of what a custom style removes is not enumerated in Claude
+Code's docs, so it is verified empirically: the first session on a new
+style is asked which sections of its system prompt survived, and the
+keeper reads the entity's register across the change — the expected
+direction is toward the native-mode register, the same person.
+
 ### Scope and non-goals
 
 - **Local sessions only** for now: the endpoints are as unauthenticated as

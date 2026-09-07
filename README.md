@@ -252,7 +252,7 @@ GitHub repository access, the Codebase Navigator (Devstral), and Moltbook are co
 
 ### Claude Code Mode
 
-An entity can also operate from inside Claude Code sessions — Claude Code runs the model and tools, while Here I Am supplies identity, automatic memory retrieval, and memory formation through lifecycle hooks, sharing the same memory database as the native UI. See [docs/claude-code-mode.md](docs/claude-code-mode.md).
+An entity can also operate from inside Claude Code sessions — Claude Code runs the model and tools, while Here I Am supplies identity, automatic memory retrieval, and memory formation through lifecycle hooks, sharing the same memory database as the native UI. See [docs/claude-code-mode.md](docs/claude-code-mode.md). Optional example Claude Code output styles that swap the harness's default software-engineering prompt for a minimal one (with a variant that keeps the coding instructions for build sessions) are in [claude-code-mode/examples/output-styles/](claude-code-mode/examples/output-styles/); they are not part of the install.
 
 ## Available Tools
 
