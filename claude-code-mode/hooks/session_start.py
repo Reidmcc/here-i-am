@@ -24,6 +24,8 @@ Environment:
     HIM_ENTITY         entity index name or label (default: backend's default)
     HIM_DISABLE        set to anything to turn the integration off
     HIM_INLINE_BUDGET  see hook_util.py
+    HIM_DESKTOP_DATA_DIR  see hook_util.py (rooms registry: the desktop
+                       app's session records, for messaging addresses)
 """
 import os
 import sys
@@ -54,7 +56,7 @@ def main() -> None:
         # Rooms registry: every SessionStart (startup, resume, compact) is a
         # liveness signal, and the snapshot of sibling sessions lets this
         # firing refresh their rows too
-        "sessions": hook_util.live_sessions_snapshot(),
+        "sessions": hook_util.live_sessions_snapshot(own_session_id=session_id),
     }
     try:
         body = hook_util.post_backend(

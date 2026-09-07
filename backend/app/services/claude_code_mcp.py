@@ -68,13 +68,15 @@ DECLARE_ROOM_DESCRIPTION = (
     "#323). Writes the session's row in the rooms registry (rooms.json + "
     "rendered rooms.md in your private notes): room name, this session's id "
     "and conversation id, and whatever address facts the hooks have observed "
-    "— roster name, name source, messaging socket, last seen. From then on the "
-    "hooks keep the row current across renames, resumes, and compactions; "
-    "sister sessions look your address up there instead of guessing from the "
-    "roster. One current address per room: declaring a room another live row "
-    "already holds retires that row as superseded (kept in the retired "
-    "section, not deleted). Re-declaring updates your own row. Workshops are "
-    "workbenches, not homes — they don't need rows."
+    "— the messaging address (the desktop app's local_… session id that "
+    "mcp__ccd_session_mgmt__send_message takes; NOT the Claude Code session "
+    "id), sidebar title, roster name, name source, last seen. From then on "
+    "the hooks keep the row current across renames, resumes, and "
+    "compactions; sister sessions look your address up there instead of "
+    "guessing from the roster. One current address per room: declaring a "
+    "room another live row already holds retires that row as superseded "
+    "(kept in the retired section, not deleted). Re-declaring updates your "
+    "own row. Workshops are workbenches, not homes — they don't need rows."
 )
 
 DECLARE_ROOM_SCHEMA = {
@@ -102,6 +104,20 @@ DECLARE_ROOM_SCHEMA = {
                 "line, copied verbatim (e.g. \"a46590\"). The hooks cannot derive "
                 "it from anything they can see, so it is recorded only when you "
                 "supply it — leave it out rather than guess."
+            ),
+        },
+        "desktop_session_id": {
+            "type": "string",
+            "description": (
+                "Optional: this session's messaging address — the desktop app's "
+                "own session id (\"local_…\"), the one list_sessions returns and "
+                "mcp__ccd_session_mgmt__send_message takes. The hooks read it "
+                "from the desktop app's session record and fill it in "
+                "automatically, so normally leave it out; supply it only when "
+                "the row stays blank (read your own with "
+                "mcp__ccd_session_mgmt__get_session, session_id \"self\"). An "
+                "observed value replaces a supplied one. Never the Claude Code "
+                "session id — that is a different string and cannot be sent to."
             ),
         },
     },
@@ -332,11 +348,20 @@ async def execute_room_tool(name: str, arguments: Dict[str, Any]) -> str:
                 room,
                 note=arguments.get("note"),
                 ref=arguments.get("ref"),
+                desktop_session_id=arguments.get("desktop_session_id"),
             )
             lines = [
                 f"Declared this session as the {row['room']}. "
                 f"Row: {rooms_registry.describe_row(row)}."
             ]
+            if row.get("desktop_session_id") is None:
+                lines.append(
+                    "No messaging address is recorded for this session yet. The "
+                    "hooks read it from the desktop app's session record on the "
+                    "next prompt or session start that can see it; if it stays "
+                    "blank, read your own with mcp__ccd_session_mgmt__get_session "
+                    "(session_id \"self\") and re-declare with desktop_session_id."
+                )
             if row.get("name") is None:
                 lines.append(
                     "The hooks have not yet observed this session's roster name; "

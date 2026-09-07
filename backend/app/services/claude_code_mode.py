@@ -399,7 +399,9 @@ async def build_session_start_context(
             "rooms.md in your private notes (record: rooms.json). If this "
             "session is one of your standing rooms, declare it once with the "
             "declare_room MCP tool (same conversation_id); the hooks then keep "
-            "its roster name and last-seen current across renames, resumes, "
+            "its messaging address (the desktop app's local_… session id that "
+            "send_message takes — not the Claude Code session id), sidebar "
+            "title, roster name, and last-seen current across renames, resumes, "
             "and compactions. Look sisters up there, not in the roster."
         )
 
@@ -507,6 +509,7 @@ def observe_rooms_for_hook(
     transcript_path: Optional[str],
     sessions: List[Dict[str, Any]],
     session_start: bool,
+    delivered_from: Optional[List[str]] = None,
 ) -> Tuple[str, str]:
     """
     Feed a hook's live-session snapshot to the rooms registry (issue #323)
@@ -516,14 +519,17 @@ def observe_rooms_for_hook(
     carried (cwd, transcript path) — the snapshot may lack it entirely when
     the harness's per-process registry isn't readable, and the row should
     still record what the hook did see. Nothing else is inferred.
+    `delivered_from` carries the from= addresses of letters that arrived
+    with the prompt, which confirm their senders' registry addresses
+    (issue #339).
 
     notice: one line worth telling the entity — at session start, which
-    room this session is registered as and its current roster name; at
-    prompt time, any roster rename the snapshot revealed (its own or a
-    sister's), since that is exactly the drift the registry exists to
-    catch. error: a write failure, phrased for a hand-write — the registry
-    being unwritable must never be silent (the #305 rule: spill and point).
-    Both empty when nothing happened.
+    room this session is registered as, its messaging address, and its
+    current roster name; at prompt time, any roster rename the snapshot
+    revealed (its own or a sister's), since that is exactly the drift the
+    registry exists to catch. error: a write failure, phrased for a
+    hand-write — the registry being unwritable must never be silent (the
+    #305 rule: spill and point). Both empty when nothing happened.
     """
     if not rooms_registry_enabled():
         return "", ""
@@ -548,7 +554,11 @@ def observe_rooms_for_hook(
 
     try:
         outcome = rooms_registry.observe(
-            entity.label, session_id, observations, session_start=session_start
+            entity.label,
+            session_id,
+            observations,
+            session_start=session_start,
+            delivered_from=delivered_from,
         )
     except RegistryWriteError as e:
         return "", _rooms_write_error_text(e)
@@ -569,9 +579,15 @@ def observe_rooms_for_hook(
             if name
             else "roster name not observed"
         )
+        address = row.get("desktop_session_id")
+        address_text = (
+            f"messaging address {address}"
+            if address
+            else "messaging address not observed"
+        )
         return (
             f"[ROOMS REGISTRY] This session is registered as the "
-            f"{row.get('room')} — {name_text}; rooms.md refreshed."
+            f"{row.get('room')} — {address_text}; {name_text}; rooms.md refreshed."
         ), ""
 
     if not outcome.renamed:

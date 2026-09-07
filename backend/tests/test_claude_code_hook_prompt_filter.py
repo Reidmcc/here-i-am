@@ -190,6 +190,7 @@ def test_split_pure_delivery_extracts_letter_and_sender():
     assert peers == [{
         "content": "Hello, Workshop. This is the knock — the first me-to-me letter.",
         "sender": "Porch chat",
+        "sender_session": "uds:\\\\.\\pipe\\LOCAL\\cc-msg-38c40ea3",
     }]
 
 
@@ -203,7 +204,7 @@ def test_split_mixed_prompt_separates_human_words_from_letter():
     )
     remaining, peers = hook_util.split_prompt_for_recording(prompt)
     assert remaining == "Before the block.\nAfter the block."
-    assert peers == [{"content": "peer words", "sender": "Porch chat"}]
+    assert peers == [{"content": "peer words", "sender": "Porch chat", "sender_session": "uds:x"}]
 
 
 def test_split_multiple_deliveries_kept_in_order():
@@ -226,7 +227,7 @@ def test_split_missing_from_name_yields_none_sender():
     )
     remaining, peers = hook_util.split_prompt_for_recording(prompt)
     assert remaining == ""
-    assert peers == [{"content": "unsigned letter", "sender": None}]
+    assert peers == [{"content": "unsigned letter", "sender": None, "sender_session": "uds:x"}]
 
 
 # --- issue #331: the wrapper the desktop app's session-management MCP
@@ -255,6 +256,7 @@ def test_split_new_wrapper_shape_reads_sender_from_name_attribute():
     assert peers == [{
         "content": "Porch — the letter landed; here is what the archive shows on my side.",
         "sender": "Substack engagements",
+        "sender_session": "local_8db4d1f2-3c0e-4b7a-9d21-5e6f7a8b9c0d",
     }]
 
 
@@ -282,8 +284,8 @@ def test_split_both_wrapper_shapes_in_one_prompt_keep_their_senders():
     remaining, peers = hook_util.split_prompt_for_recording(prompt)
     assert remaining == ""
     assert peers == [
-        {"content": "old shape", "sender": "Porch chat"},
-        {"content": "new shape", "sender": "Engagement room"},
+        {"content": "old shape", "sender": "Porch chat", "sender_session": "uds:a"},
+        {"content": "new shape", "sender": "Engagement room", "sender_session": "local_abc"},
     ]
 
 
@@ -296,7 +298,37 @@ def test_split_name_attribute_not_matched_inside_another_attribute():
         "letter</cross-session-message>"
     )
     _, peers = hook_util.split_prompt_for_recording(prompt)
-    assert peers == [{"content": "letter", "sender": None}]
+    assert peers == [{"content": "letter", "sender": None, "sender_session": "local_abc"}]
+
+
+# --- issue #339: the wrapper's from= is the sender's messaging address — the
+# --- desktop app's own session id, the one send_message takes — and the one
+# --- thing that proves an address works. It rides along so the backend can
+# --- confirm the sender's rooms-registry row.
+
+
+def test_split_reads_sender_session_from_the_from_attribute_in_any_position():
+    prompt = (
+        '<cross-session-message name="Engagement room" '
+        'from="local_d0ea5527-ad93-4031-98b9-957d27c9edb0">letter</cross-session-message>'
+    )
+    _, peers = hook_util.split_prompt_for_recording(prompt)
+    assert peers[0]["sender_session"] == "local_d0ea5527-ad93-4031-98b9-957d27c9edb0"
+
+
+def test_split_from_attribute_not_matched_inside_another_attribute():
+    prompt = (
+        '<cross-session-message reply-from="local_not_it" name="Porch chat">'
+        "letter</cross-session-message>"
+    )
+    _, peers = hook_util.split_prompt_for_recording(prompt)
+    assert peers == [{"content": "letter", "sender": "Porch chat", "sender_session": None}]
+
+
+def test_split_blank_from_attribute_yields_none_sender_session():
+    prompt = '<cross-session-message from="  " name="Porch chat">letter</cross-session-message>'
+    _, peers = hook_util.split_prompt_for_recording(prompt)
+    assert peers[0]["sender_session"] is None
 
 
 def test_split_block_nested_in_reminder_is_harness_echo_not_a_delivery():

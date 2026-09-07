@@ -130,7 +130,7 @@ def main() -> None:
         "cwd": data.get("cwd"),
         # Rooms registry: a prompt anywhere (a wakeup tick included) is a
         # chance to catch a roster rename in any live session
-        "sessions": hook_util.live_sessions_snapshot(),
+        "sessions": hook_util.live_sessions_snapshot(own_session_id=session_id),
     }
     try:
         body = hook_util.post_backend("/api/claude-code/retrieve", payload, timeout=30)
