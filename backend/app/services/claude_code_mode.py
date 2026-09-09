@@ -364,9 +364,11 @@ async def build_session_start_context(
         parts.append(
             "[HERE I AM MEMORY TOOLS] When the here-i-am MCP server is "
             "connected, you also have deliberate memory tools: memory_query "
-            "(recall by chosen text), memory_save (save a reflection in your "
-            "own words), memory_mark (pin against significance decay), and "
-            "memory_release (withdraw from retrieval). Pass conversation_id "
+            "(recall by chosen text), memory_read (read the archive in order "
+            "over a span of time: open a date and read it), memory_neighbors "
+            "(the messages around one memory), memory_save (save a reflection "
+            "in your own words), memory_mark (pin against significance decay), "
+            "and memory_release (withdraw from retrieval). Pass conversation_id "
             f'"{conversation_id}" when calling them so they act on this '
             "session's conversation. Retrieved memories are labeled with "
             "where they were formed: \"via Here I Am\" (a native "
@@ -470,6 +472,20 @@ async def build_post_compact_context(
         "important from before the compaction survives only in the summary, "
         "consider saving it as a reflection (memory_save) now, while the "
         "summary is fresh."
+    )
+    # Pull beats push (issue #343, the porch's read): the entity knows a
+    # compaction happened and the boundary is stamped, so one memory_read
+    # call recovers the lost stretch verbatim, as much of it as it wants —
+    # memory_read never excludes the current conversation and ignores the
+    # eligibility boundary, which is exactly what this use depends on.
+    boundary = conversation.last_compacted_at or datetime.utcnow()
+    parts.append(
+        "Everything said in this session before the compaction is still "
+        "readable verbatim, in order, with memory_read: in_conversation="
+        f'"{conversation.id}", from="{conversation.created_at.strftime("%Y-%m-%dT%H:%M")}", '
+        f'to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}" (UTC). memory_read never '
+        "excludes this conversation, so that call returns the pre-compaction "
+        "stretch itself, not a summary of it."
     )
 
     notes_paths = build_notes_paths_block(entity)

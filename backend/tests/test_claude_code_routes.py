@@ -936,6 +936,17 @@ class TestPostCompact:
         assert "An earlier conclusion about gardens." in bulk
         # The entity is re-told its conversation_id, in the inline block
         assert conversation_id in body["context"]
+        # ...and pointed at memory_read for the pre-compaction stretch, with
+        # this conversation and the boundary filled in (issue #343)
+        result = await db_session.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+        row = result.scalar_one()
+        assert (
+            f'memory_read: in_conversation="{conversation_id}", '
+            f'from="{row.created_at.strftime("%Y-%m-%dT%H:%M")}", '
+            f'to="{row.last_compacted_at.strftime("%Y-%m-%dT%H:%M:%S")}" (UTC)'
+        ) in body["context"]
 
         # No duplicate links: one per reflection across start + compact
         result = await db_session.execute(
@@ -1555,6 +1566,7 @@ class TestMcpEndpoint:
         tools = {t["name"]: t for t in response.json()["result"]["tools"]}
         assert set(tools) == {
             "memory_query", "memory_save", "memory_mark", "memory_release",
+            "memory_read", "memory_neighbors",
             "declare_room", "retire_room",
         }
         # Every tool takes the MCP-only conversation_id parameter

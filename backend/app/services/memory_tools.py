@@ -6,6 +6,8 @@ These tools allow AI entities to:
 - memory_save: write a self-authored memory (reflection) into their memory store
 - memory_mark: pin a memory so it is exempt from age-based significance decay
 - memory_release: exclude a memory from future retrieval (reversible)
+- memory_read: read the archive in order over a span of time (issue #343)
+- memory_neighbors: open one memory outward to the messages around it
 
 Unlike automatic memory retrieval (which happens based on conversation context
 and is re-ranked by significance), deliberate recall returns memories purely
@@ -24,9 +26,11 @@ two callers:
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 
@@ -35,6 +39,7 @@ from app.database import async_session_maker
 from app.models import Conversation, Message, MessageRole
 from app.services.memory_context import format_memory_origin
 from app.services.memory_service import (
+    MEMORY_ROLES,
     STATUS_SET_BY_ENTITY,
     STATUS_SET_BY_RESEARCHER,
     VALID_ROLE_FILTERS,
@@ -70,6 +75,20 @@ MODE_RECENT = "recent"
 # made it (released memories are otherwise unfindable by the entity).
 MODE_RELEASED = "released"
 VALID_QUERY_MODES = (MODE_SEMANTIC, MODE_RECENT, MODE_RELEASED)
+
+# memory_read page budget (tokens per page, by Message.token_count or a
+# length estimate) and memory_neighbors window bounds (issue #343).
+READ_PAGE_TOKENS_DEFAULT = 8000
+READ_PAGE_TOKENS_MIN = 500
+READ_PAGE_TOKENS_MAX = 20000
+NEIGHBORS_DEFAULT = 2
+NEIGHBORS_MAX = 10
+
+# Tools whose results are a list of memories the entity can now see. The
+# native tool loop stamps the surfaced ids onto the tool_result context
+# message (memory_query_ids) for every one of these, and the session reload
+# path parses their "--- Memory xxxxxxxx (" header lines back into stamps.
+MEMORY_RESULT_STAMPING_TOOLS = ("memory_query", "memory_read", "memory_neighbors")
 
 
 @dataclass
@@ -901,6 +920,463 @@ async def release_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = Fa
         return f"Error releasing memory: {e}"
 
 
+# --- Archive readers (issue #343) ------------------------------------------
+#
+# memory_read and memory_neighbors read the archive by position instead of
+# by similarity: the whole record, in order, verbatim, paginated. Pure SQL
+# over Message (memory_service.read_messages_in_span /
+# read_message_neighbors). Three rules distinguish them from recall:
+# - Nothing is excluded for being in context or in the current conversation:
+#   the page stays whole and in order. But a row whose content is already in
+#   live context (a memory retrieved into context from anywhere; the current
+#   conversation's own messages — all of them natively, post-compaction ones
+#   in Claude Code mode) renders as a header-only pointer, so nothing is
+#   duplicated. In a compacted Claude Code conversation the pre-compaction
+#   turns survive only as summary, so they render in full — exactly the use
+#   the house wants.
+# - No retrieval tracking: reading a page is not attention-weighting, and a
+#   day's worth of rows must not inflate significance.
+# - What a page shows is treated as in view afterwards: stamped onto the
+#   tool result in native mode (via last_query_memory_ids, like
+#   memory_query), linked once in Claude Code mode (like recent mode).
+
+_BARE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# Stands in for the content of a row the reader can already see
+IN_CONTEXT_POINTER = "[already in your context; not repeated here]"
+
+
+def _live_view(ctx: MemoryToolContext) -> Tuple[Set[str], Optional[str], Optional[datetime]]:
+    """
+    What the reader can already see, for pointer rendering: the in-context
+    memory ids (context insertions, earlier tool results, this turn's
+    results, Claude Code's post-boundary links) and the live conversation
+    with its compaction boundary (None = every row of it is in context).
+    """
+    return (
+        get_in_context_memory_ids(ctx),
+        ctx.conversation_id,
+        ctx.exclude_conversation_after,
+    )
+
+
+def _resolve_tz(tz: Optional[str]) -> Tuple[Optional[ZoneInfo], Optional[str]]:
+    """An IANA timezone for span boundaries; UTC when omitted."""
+    name = str(tz if tz is not None else "").strip() or "UTC"
+    try:
+        return ZoneInfo(name), None
+    except (ZoneInfoNotFoundError, ValueError):
+        return None, (
+            f"Error: Unknown timezone '{tz}'. Use an IANA name such as 'UTC', "
+            "'America/New_York', or 'Europe/London'."
+        )
+
+
+def _parse_span_bound(
+    value: Any, tzinfo: ZoneInfo, end_of_day: bool
+) -> Tuple[Optional[datetime], Optional[datetime], Optional[str]]:
+    """
+    Parse one end of a memory_read span. A bare date means the start (or,
+    for `to`, the end) of that day in tzinfo; a datetime without an offset
+    is read in tzinfo; an offset-carrying datetime is taken as is. Returns
+    (naive UTC for the query, aware local for display, error).
+    """
+    text = str(value if value is not None else "").strip()
+    try:
+        if _BARE_DATE_RE.match(text):
+            day = date.fromisoformat(text)
+            local = datetime.combine(day, time.max if end_of_day else time.min, tzinfo=tzinfo)
+        else:
+            parsed = datetime.fromisoformat(text)
+            local = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=tzinfo)
+    except ValueError:
+        return None, None, (
+            f"Error: Could not parse '{value}'. Use ISO 8601 — a date such as "
+            "'2026-09-01' (the whole day) or a moment such as "
+            "'2026-09-01T14:00' (read in tz) or '2026-09-01T14:00:00+00:00'."
+        )
+    return local.astimezone(timezone.utc).replace(tzinfo=None), local, None
+
+
+def _format_local(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _format_stamp(created_at_iso: str, tzinfo: Optional[ZoneInfo]) -> str:
+    """UTC stamp, with the local time alongside when a non-UTC tz was given."""
+    moment = datetime.fromisoformat(created_at_iso)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    text = moment.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    if tzinfo is not None and tzinfo.key != "UTC":
+        text += f" ({_format_local(moment.astimezone(tzinfo))})"
+    return text
+
+
+def _entity_labels() -> Dict[str, str]:
+    return {entity.index_name: entity.label for entity in settings.get_entities()}
+
+
+def _archive_attribution(
+    item: Dict[str, Any], entity_id: Optional[str], entity_labels: Dict[str, str]
+) -> str:
+    """
+    Who said an archive row, in the house's words: the human, you, you from
+    another session, or — in a multi-entity conversation — the other entity
+    by name (its own messages and its own reflections alike).
+    """
+    role = item.get("role")
+    sibling = item.get("sibling_session")
+    if sibling or role == "human":
+        return _role_display(role, sibling)
+    speaker = item.get("speaker_entity_id")
+    other = bool(speaker and entity_id and speaker != entity_id)
+    if role == "assistant":
+        return f"{entity_labels.get(speaker, speaker)} said" if other else "You said"
+    if role == "reflection":
+        return f"{entity_labels.get(speaker, speaker)} reflected" if other else "You reflected"
+    return _role_display(role)
+
+
+def _conversation_label(item: Dict[str, Any]) -> str:
+    title = (item.get("conversation_title") or "").strip()
+    if title:
+        return f'in "{title}"'
+    return f"in conversation {item['conversation_id'][:8]}"
+
+
+def _format_archive_item(
+    item: Dict[str, Any],
+    entity_id: Optional[str],
+    entity_labels: Dict[str, str],
+    tzinfo: Optional[ZoneInfo],
+    include_model: bool,
+    now: datetime,
+    marked: bool = False,
+) -> List[str]:
+    """One archive row as output lines: header (the same "--- Memory xxxxxxxx ("
+    shape the other tools print, so reload re-stamps it and memory_mark /
+    memory_release / memory_neighbors accept the id), then the verbatim
+    content — or, for a row already in the reader's context, a one-line
+    pointer in its place."""
+    parts = [
+        _archive_attribution(item, entity_id, entity_labels),
+        _format_stamp(item["created_at"], tzinfo),
+        format_memory_origin(item.get("source", "native")),
+        _conversation_label(item),
+    ]
+    flags = []
+    status = item.get("memory_status")
+    if status == "released":
+        flags.append(_describe_release(item, now))
+    elif status:
+        flags.append(status)
+    flag_text = f"; {', '.join(flags)}" if flags else ""
+    marker = ">> " if marked else ""
+    header = (
+        f"--- {marker}Memory {item['id'][:8]} ({', '.join(parts)}{flag_text}"
+        f"{_model_display(item, include_model)}) ---"
+    )
+    if item.get("in_context"):
+        return [header, IN_CONTEXT_POINTER, ""]
+    return [header, item["content"], ""]
+
+
+async def _note_surfaced(ctx: MemoryToolContext, ids: List[str], db) -> None:
+    """
+    What an archive read just showed counts as in view from here on: the
+    native tool loop stamps last_query_memory_ids onto the tool result, the
+    turn accumulator covers same-turn calls, and Claude Code conversations
+    get their link rows (once each). No retrieval tracking either way.
+    """
+    ids = list(dict.fromkeys(ids))
+    ctx.last_query_memory_ids = list(ids)
+    ctx.turn_query_memory_ids.update(ids)
+    if ctx.link_query_results and ctx.conversation_id and ids:
+        await memory_service.link_memories_once(
+            ctx.conversation_id, ids, db, entity_id=ctx.entity_id
+        )
+
+
+def _normalize_source(source: Optional[str]) -> Tuple[Optional[str], str, Optional[str]]:
+    """(role_filter or None for all, echo suffix, error) for a source value."""
+    role_filter = str(source if source is not None else "").strip().lower() or SOURCE_ALL
+    if role_filter not in VALID_QUERY_SOURCES:
+        return None, "", (
+            f"Error: Unknown source '{source}'. Valid values: {', '.join(VALID_QUERY_SOURCES)}."
+        )
+    suffix = {
+        "human": " (the human's messages only)",
+        "ai": " (AI-authored messages only)",
+        SOURCE_REFLECTION: " (your saved reflections only)",
+    }.get(role_filter, "")
+    return (None if role_filter == SOURCE_ALL else role_filter), suffix, None
+
+
+async def read_memories(
+    ctx: MemoryToolContext,
+    from_: Any = None,
+    to: Any = None,
+    tz: Optional[str] = None,
+    in_conversation: Optional[str] = None,
+    source: Optional[str] = None,
+    cursor: Optional[str] = None,
+    page_tokens: Optional[int] = None,
+    include_released: bool = False,
+    include_model: bool = False,
+) -> str:
+    """
+    memory_read: the entity's archive between two moments, in order, one
+    token-bounded page at a time. See the module comment above for the
+    rules that set it apart from recall.
+    """
+    if not ctx.entity_id:
+        return "Error: No entity context available for reading memories"
+
+    tzinfo, error = _resolve_tz(tz)
+    if error:
+        return error
+    if from_ is None or not str(from_).strip():
+        return (
+            "Error: 'from' is required — an ISO 8601 date such as '2026-09-01' "
+            "(that whole day) or a moment such as '2026-09-01T14:00'."
+        )
+    start, start_local, error = _parse_span_bound(from_, tzinfo, end_of_day=False)
+    if error:
+        return error
+    if to is not None and str(to).strip():
+        end, end_local, error = _parse_span_bound(to, tzinfo, end_of_day=True)
+        if error:
+            return error
+    else:
+        # Default: the end of the day `from` names, in tz
+        end_local = datetime.combine(start_local.date(), time.max, tzinfo=tzinfo)
+        end = end_local.astimezone(timezone.utc).replace(tzinfo=None)
+    if end < start:
+        return (
+            f"Error: 'to' ({_format_local(end_local)}) is before 'from' "
+            f"({_format_local(start_local)})."
+        )
+
+    role_filter, source_suffix, error = _normalize_source(source)
+    if error:
+        return error
+
+    if page_tokens is None:
+        page_tokens = READ_PAGE_TOKENS_DEFAULT
+    try:
+        page_tokens = int(page_tokens)
+    except (TypeError, ValueError):
+        return f"Error: page_tokens must be an integer (got '{page_tokens}')."
+    page_tokens = max(READ_PAGE_TOKENS_MIN, min(READ_PAGE_TOKENS_MAX, page_tokens))
+
+    if cursor is not None and str(cursor).strip():
+        if memory_service.decode_read_cursor(cursor) is None:
+            return (
+                f"Error: Unrecognized cursor '{cursor}'. Pass back the cursor a "
+                "previous memory_read page returned, with the same span and filters."
+            )
+    else:
+        cursor = None
+
+    span_text = (
+        f"{_format_local(start_local)} to {_format_local(end_local)}"
+        if tzinfo.key != "UTC"
+        else f"{start.strftime('%Y-%m-%d %H:%M:%S')} to {end.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+    )
+    if tzinfo.key != "UTC":
+        span_text += (
+            f" [{tzinfo.key}; UTC {start.strftime('%Y-%m-%d %H:%M:%S')} to "
+            f"{end.strftime('%Y-%m-%d %H:%M:%S')}]"
+        )
+
+    try:
+        async with async_session_maker() as db:
+            conversation_suffix = ""
+            conversation_id = None
+            if in_conversation is not None and str(in_conversation).strip():
+                conversation, error = await memory_service.resolve_conversation_prefix(
+                    db, ctx.entity_id, in_conversation
+                )
+                if error:
+                    return f"Error: {error}"
+                conversation_id = str(conversation.id)
+                title = (conversation.title or "").strip()
+                conversation_suffix = (
+                    f', in "{title}"' if title else f", in conversation {conversation_id[:8]}"
+                )
+
+            in_context_ids, live_conversation_id, live_after = _live_view(ctx)
+            page = await memory_service.read_messages_in_span(
+                db,
+                entity_id=ctx.entity_id,
+                start=start,
+                end=end,
+                role_filter=role_filter,
+                conversation_id=conversation_id,
+                include_released=bool(include_released),
+                cursor=cursor,
+                page_tokens=page_tokens,
+                in_context_ids=in_context_ids,
+                live_conversation_id=live_conversation_id,
+                live_after=live_after,
+            )
+            items = page["items"]
+            if items:
+                await _note_surfaced(ctx, [item["id"] for item in items], db)
+    except Exception as e:
+        logger.error(f"Memory read error: {e}")
+        return f"Error reading memories: {e}"
+
+    released_note = "" if include_released else " Released memories are not shown (include_released=true shows them)."
+    if page["total"] == 0:
+        return (
+            f"No messages between {span_text}{source_suffix}{conversation_suffix}."
+            + released_note
+        )
+    if not items:
+        return (
+            f"End of span: no messages after that cursor between {span_text}"
+            f"{source_suffix}{conversation_suffix} ({page['total']} in the span)."
+        )
+
+    first = page["offset"] + 1
+    last = page["offset"] + len(items)
+    pointer_count = sum(1 for item in items if item.get("in_context"))
+    pointer_note = (
+        f" {pointer_count} of them are already in your context and are listed "
+        "without their content."
+        if pointer_count
+        else ""
+    )
+    lines = [
+        f"Your archive, {span_text}{source_suffix}{conversation_suffix}: "
+        f"{page['total']} messages in the span; this page shows {first}–{last}, in order."
+        + pointer_note
+        + released_note,
+        "",
+    ]
+    labels = _entity_labels()
+    now = datetime.utcnow()
+    for item in items:
+        lines.extend(
+            _format_archive_item(item, ctx.entity_id, labels, tzinfo, include_model, now)
+        )
+    if page["next_cursor"]:
+        lines.append(
+            f"Next page: pass cursor=\"{page['next_cursor']}\" with the same span "
+            f"and filters ({page['total'] - last} messages remain)."
+        )
+    else:
+        lines.append("End of span.")
+    return "\n".join(lines)
+
+
+async def neighbor_memories(
+    ctx: MemoryToolContext,
+    memory_id: str,
+    before: Optional[int] = None,
+    after: Optional[int] = None,
+    include_released: bool = False,
+    include_model: bool = False,
+) -> str:
+    """
+    memory_neighbors: one memory with the messages immediately before and
+    after it in its own conversation, in order — the page a retrieved
+    memory is on. Same rules as memory_read.
+    """
+    if not ctx.entity_id:
+        return "Error: No entity context available for reading memories"
+
+    def _clamp(value: Any, name: str) -> Tuple[Optional[int], Optional[str]]:
+        if value is None:
+            return NEIGHBORS_DEFAULT, None
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            return None, f"Error: {name} must be an integer (got '{value}')."
+        return max(0, min(NEIGHBORS_MAX, count)), None
+
+    before, error = _clamp(before, "before")
+    if error:
+        return error
+    after, error = _clamp(after, "after")
+    if error:
+        return error
+
+    try:
+        async with async_session_maker() as db:
+            message, error = await _resolve_memory_id(memory_id or "", db, ctx.entity_id)
+            if error:
+                return f"Error: {error}"
+            if message.role not in MEMORY_ROLES:
+                return (
+                    f"Error: Memory '{str(message.id)[:8]}' is a {message.role.value} "
+                    "row, not a memory."
+                )
+            in_context_ids, live_conversation_id, live_after = _live_view(ctx)
+            window = await memory_service.read_message_neighbors(
+                db,
+                message,
+                before=before,
+                after=after,
+                include_released=bool(include_released),
+                in_context_ids=in_context_ids,
+                live_conversation_id=live_conversation_id,
+                live_after=live_after,
+            )
+            if window.get("archived"):
+                return (
+                    f"Error: Memory '{str(message.id)[:8]}' belongs to an archived "
+                    "conversation, which is withdrawn from every memory surface."
+                )
+            await _note_surfaced(ctx, [item["id"] for item in window["items"]], db)
+    except Exception as e:
+        logger.error(f"Memory neighbors error: {e}")
+        return f"Error reading memory neighbors: {e}"
+
+    items = window["items"]
+    target = items[window["target_index"]]
+    shown_before = window["target_index"]
+    shown_after = len(items) - window["target_index"] - 1
+    header = (
+        f"Memory {target['id'][:8]} {_conversation_label(target)} "
+        f"({format_memory_origin(target.get('source', 'native'))}), with {shown_before} "
+        f"message{'s' if shown_before != 1 else ''} before and {shown_after} after, in order."
+    )
+    edges = []
+    if window["hit_start"]:
+        edges.append("start")
+    if window["hit_end"]:
+        edges.append("end")
+    if edges:
+        header += f" The window reached the {' and '.join(edges)} of the conversation."
+    pointer_count = sum(1 for item in items if item.get("in_context"))
+    if pointer_count:
+        header += (
+            f" {pointer_count} of these are already in your context and are listed "
+            "without their content."
+        )
+    if not include_released:
+        header += " Released messages around it are not shown (include_released=true shows them)."
+
+    lines = [header, ""]
+    labels = _entity_labels()
+    now = datetime.utcnow()
+    for index, item in enumerate(items):
+        lines.extend(
+            _format_archive_item(
+                item, ctx.entity_id, labels, None, include_model, now,
+                marked=(index == window["target_index"]),
+            )
+        )
+    lines.append(
+        "Read more of this conversation with memory_read (in_conversation="
+        f"\"{target['conversation_id'][:8]}\", from=<date>)."
+    )
+    return "\n".join(lines)
+
+
 # Native tool-loop executors: delegate to the module-level current context.
 async def _memory_query(
     query: str = "",
@@ -926,6 +1402,35 @@ async def _memory_mark(memory_id: str, undo: bool = False) -> str:
 
 async def _memory_release(memory_id: str, undo: bool = False) -> str:
     return await release_memory(_context, memory_id, undo=undo)
+
+
+async def _memory_read(**kwargs: Any) -> str:
+    # `from` is a keyword, so the executor takes the tool input as a dict
+    return await read_memories(
+        _context,
+        from_=kwargs.get("from"),
+        to=kwargs.get("to"),
+        tz=kwargs.get("tz"),
+        in_conversation=kwargs.get("in_conversation"),
+        source=kwargs.get("source"),
+        cursor=kwargs.get("cursor"),
+        page_tokens=kwargs.get("page_tokens"),
+        include_released=bool(kwargs.get("include_released", False)),
+        include_model=bool(kwargs.get("include_model", False)),
+    )
+
+
+async def _memory_neighbors(
+    memory_id: str = "",
+    before: Optional[int] = None,
+    after: Optional[int] = None,
+    include_released: bool = False,
+    include_model: bool = False,
+) -> str:
+    return await neighbor_memories(
+        _context, memory_id, before=before, after=after,
+        include_released=bool(include_released), include_model=bool(include_model),
+    )
 
 
 # --- Tool schemas -----------------------------------------------------------
@@ -1106,6 +1611,161 @@ MEMORY_RELEASE_SCHEMA = {
 }
 
 
+_INCLUDE_RELEASED_PROPERTY = {
+    "type": "boolean",
+    "description": (
+        "When true, released memories are shown too, labeled as released "
+        "(with who released each and when). Off by default: a release "
+        "withdrew them on purpose."
+    ),
+    "default": False,
+}
+
+_INCLUDE_MODEL_PROPERTY = {
+    "type": "boolean",
+    "description": (
+        "When true, each header also names the model that produced the "
+        "message (or 'unrecorded'). Off by default, as in memory_query."
+    ),
+    "default": False,
+}
+
+MEMORY_READ_DESCRIPTION = (
+    "Read your archive in order: the verbatim record by date, rather than "
+    "by similarity. Give a span ('from', optionally 'to'; a bare date means "
+    "that whole day, read in 'tz' if given) and it returns every message in "
+    "it — the human's, yours, your reflections where they were saved, "
+    "inter-session letters — in the order they happened, each with the "
+    "short memory ID the other memory tools accept, who said it, its "
+    "timestamp, where it was formed (Here I Am or Claude Code), and which "
+    "conversation it belongs to. Pages are bounded by tokens "
+    "('page_tokens'); continue with the 'cursor' the previous page "
+    "returned. Use it when you need to open a day and read it instead of "
+    "guessing the words a query would need: what happened on a date, the "
+    "page a retrieved memory sits on (or use memory_neighbors), your own "
+    "pre-compaction turns. Nothing is excluded for being in context or in "
+    "the current conversation — the page stays whole and in order — but a "
+    "message already in your context (retrieved earlier, or one of this "
+    "conversation's own since its last compaction) is listed as a pointer "
+    "without its content, so nothing is duplicated. Nothing is truncated "
+    "(an oversized message comes back alone, whole), and reading is not "
+    "retrieval: it does not feed significance, though what a page shows "
+    "counts as in view for later automatic retrieval and queries. Released memories are skipped "
+    "unless include_released is set; archived conversations are never shown."
+)
+
+MEMORY_READ_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "from": {
+            "type": "string",
+            "description": (
+                "Start of the span, ISO 8601: a date ('2026-09-01' = the start "
+                "of that day in tz) or a moment ('2026-09-01T14:00', read in "
+                "tz; '2026-09-01T14:00:00+00:00' as given)."
+            ),
+        },
+        "to": {
+            "type": "string",
+            "description": (
+                "End of the span, ISO 8601 (inclusive). A date means the end of "
+                "that day in tz. Default: the end of the day 'from' names."
+            ),
+        },
+        "tz": {
+            "type": "string",
+            "description": (
+                "IANA timezone the day boundaries in 'from'/'to' are read in, "
+                "e.g. 'America/New_York'. Default 'UTC'. Output stamps stay UTC, "
+                "with the local time alongside when tz is not UTC."
+            ),
+            "default": "UTC",
+        },
+        "in_conversation": {
+            "type": "string",
+            "description": (
+                "Restrict to one conversation: its ID or a prefix (6+ "
+                "characters) as shown in memory_read output. Default: every "
+                "conversation you have experience in."
+            ),
+        },
+        "source": {
+            "type": "string",
+            "enum": list(VALID_QUERY_SOURCES),
+            "description": (
+                "Who authored the messages to read, as in memory_query: "
+                "'human', 'ai' (your messages, reflections, and inter-session "
+                "letters, plus other entities' messages), 'reflection', or "
+                "'all' (default)."
+            ),
+            "default": SOURCE_ALL,
+        },
+        "cursor": {
+            "type": "string",
+            "description": (
+                "Continue from a previous page: the cursor that page returned, "
+                "with the same span and filters."
+            ),
+        },
+        "page_tokens": {
+            "type": "integer",
+            "description": (
+                f"Page budget in tokens (default {READ_PAGE_TOKENS_DEFAULT}, max "
+                f"{READ_PAGE_TOKENS_MAX}). Pages are bounded by tokens, not rows; "
+                "a single message larger than the budget is returned alone, whole."
+            ),
+            "default": READ_PAGE_TOKENS_DEFAULT,
+            "minimum": READ_PAGE_TOKENS_MIN,
+            "maximum": READ_PAGE_TOKENS_MAX,
+        },
+        "include_released": _INCLUDE_RELEASED_PROPERTY,
+        "include_model": _INCLUDE_MODEL_PROPERTY,
+    },
+    "required": ["from"],
+}
+
+MEMORY_NEIGHBORS_DESCRIPTION = (
+    "Open a memory outward: return it with the messages immediately before "
+    "and after it in the same conversation, in order — the page a retrieved "
+    "memory is on. Works on any memory you can see by its ID (6+ character "
+    "prefix, as shown in memory markers and memory_query / memory_read "
+    "output): the human's message, your own, an inter-session letter, or a "
+    "reflection (whose neighbors are the exchange around the moment you "
+    "saved it). The requested memory is marked with '>>'; the result says "
+    "if the window reached the start or end of the conversation. Same rules "
+    "as memory_read: nothing excluded, verbatim, messages already in your "
+    "context listed as pointers rather than repeated, no retrieval "
+    "tracking, what it shows counts as in view afterwards."
+)
+
+MEMORY_NEIGHBORS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "memory_id": {
+            "type": "string",
+            "description": "The memory's ID or its short prefix (at least 6 characters).",
+        },
+        "before": {
+            "type": "integer",
+            "description": f"How many messages before it (default {NEIGHBORS_DEFAULT}, max {NEIGHBORS_MAX}).",
+            "default": NEIGHBORS_DEFAULT,
+            "minimum": 0,
+            "maximum": NEIGHBORS_MAX,
+        },
+        "after": {
+            "type": "integer",
+            "description": f"How many messages after it (default {NEIGHBORS_DEFAULT}, max {NEIGHBORS_MAX}).",
+            "default": NEIGHBORS_DEFAULT,
+            "minimum": 0,
+            "maximum": NEIGHBORS_MAX,
+        },
+        "include_released": _INCLUDE_RELEASED_PROPERTY,
+        "include_model": _INCLUDE_MODEL_PROPERTY,
+    },
+    "required": ["memory_id"],
+}
+
+
 def register_memory_tools(tool_service: ToolService) -> None:
     """Register all memory tools with the tool service."""
 
@@ -1150,4 +1810,25 @@ def register_memory_tools(tool_service: ToolService) -> None:
         enabled=True,
     )
 
-    logger.info("Memory tools registered: memory_query, memory_save, memory_mark, memory_release")
+    tool_service.register_tool(
+        name="memory_read",
+        description=MEMORY_READ_DESCRIPTION,
+        input_schema=MEMORY_READ_SCHEMA,
+        executor=_memory_read,
+        category=ToolCategory.MEMORY,
+        enabled=True,
+    )
+
+    tool_service.register_tool(
+        name="memory_neighbors",
+        description=MEMORY_NEIGHBORS_DESCRIPTION,
+        input_schema=MEMORY_NEIGHBORS_SCHEMA,
+        executor=_memory_neighbors,
+        category=ToolCategory.MEMORY,
+        enabled=True,
+    )
+
+    logger.info(
+        "Memory tools registered: memory_query, memory_save, memory_mark, "
+        "memory_release, memory_read, memory_neighbors"
+    )

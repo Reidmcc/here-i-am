@@ -1,8 +1,9 @@
 """
 MCP server for Claude Code mode: the entity's deliberate memory tools.
 
-Exposes memory_query / memory_save / memory_mark / memory_release over the
-MCP streamable-HTTP transport (POST /mcp, wired in routes/claude_code.py),
+Exposes memory_query / memory_save / memory_mark / memory_release and the
+archive readers memory_read / memory_neighbors over the MCP streamable-HTTP
+transport (POST /mcp, wired in routes/claude_code.py),
 so an entity operating from a Claude Code session can act on its memory
 deliberately — the hooks cover the automatics (retrieval and formation),
 this covers intent.
@@ -51,16 +52,20 @@ SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 SERVER_INSTRUCTIONS = (
     "Here I Am memory tools for the entity operating in this Claude Code "
-    "session: deliberate memory recall (memory_query), self-authored "
-    "memories (memory_save), and memory curation (memory_mark, "
-    "memory_release); plus the rooms registry (declare_room, retire_room) "
+    "session: deliberate memory recall (memory_query), reading the archive "
+    "in order (memory_read over a span of time; memory_neighbors around one "
+    "memory), self-authored memories (memory_save), and memory curation "
+    "(memory_mark, memory_release); plus the rooms registry (declare_room, retire_room) "
     "that records which standing room this session is, so sister sessions "
     "can find its current address in rooms.md. Pass the conversation_id "
     "from your session-start context so the tools act on this session's "
     "conversation."
 )
 
-MEMORY_TOOL_NAMES = ("memory_query", "memory_save", "memory_mark", "memory_release")
+MEMORY_TOOL_NAMES = (
+    "memory_query", "memory_save", "memory_mark", "memory_release",
+    "memory_read", "memory_neighbors",
+)
 ROOM_TOOL_NAMES = ("declare_room", "retire_room")
 
 DECLARE_ROOM_DESCRIPTION = (
@@ -193,6 +198,16 @@ def get_tool_listing() -> List[Dict[str, Any]]:
             "name": "memory_release",
             "description": memory_tools.MEMORY_RELEASE_DESCRIPTION,
             "inputSchema": _with_conversation_id(memory_tools.MEMORY_RELEASE_SCHEMA),
+        },
+        {
+            "name": "memory_read",
+            "description": memory_tools.MEMORY_READ_DESCRIPTION,
+            "inputSchema": _with_conversation_id(memory_tools.MEMORY_READ_SCHEMA),
+        },
+        {
+            "name": "memory_neighbors",
+            "description": memory_tools.MEMORY_NEIGHBORS_DESCRIPTION,
+            "inputSchema": _with_conversation_id(memory_tools.MEMORY_NEIGHBORS_SCHEMA),
         },
         {
             "name": "declare_room",
@@ -441,6 +456,28 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
         if name == "memory_mark":
             return await memory_tools.mark_memory(
                 ctx, arguments.get("memory_id", ""), undo=bool(arguments.get("undo", False))
+            )
+        if name == "memory_read":
+            return await memory_tools.read_memories(
+                ctx,
+                from_=arguments.get("from"),
+                to=arguments.get("to"),
+                tz=arguments.get("tz"),
+                in_conversation=arguments.get("in_conversation"),
+                source=arguments.get("source"),
+                cursor=arguments.get("cursor"),
+                page_tokens=arguments.get("page_tokens"),
+                include_released=bool(arguments.get("include_released", False)),
+                include_model=bool(arguments.get("include_model", False)),
+            )
+        if name == "memory_neighbors":
+            return await memory_tools.neighbor_memories(
+                ctx,
+                arguments.get("memory_id", ""),
+                before=arguments.get("before"),
+                after=arguments.get("after"),
+                include_released=bool(arguments.get("include_released", False)),
+                include_model=bool(arguments.get("include_model", False)),
             )
         return await memory_tools.release_memory(
             ctx, arguments.get("memory_id", ""), undo=bool(arguments.get("undo", False))
