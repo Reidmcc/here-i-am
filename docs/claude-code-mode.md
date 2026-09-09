@@ -126,7 +126,9 @@ A lived-in entity's session-start payload (index.md + reflections) runs to
   visible inline.
 
 2. **MCP tools** (deliberate acts): the entity's `memory_query` /
-   `memory_save` / `memory_mark` / `memory_release` — and the rooms
+   `memory_save` / `memory_mark` / `memory_release`, the archive readers
+   `memory_read` / `memory_neighbors` (the record in order, by span or
+   around one memory — see [tools.md](tools.md#memory-tools)) — and the rooms
    registry's `declare_room` / `retire_room` (see "Rooms registry") —
    served at `POST /mcp` as a stateless streamable-HTTP MCP endpoint (the
    plugin's `.mcp.json` points Claude Code at it). The transport is a small in-repo JSON-RPC
@@ -142,7 +144,13 @@ A lived-in entity's session-start payload (index.md + reflections) runs to
    `memory_query`, query results here **are** linked
    (`ConversationMemoryLink`): Claude Code conversations are never rebuilt
    into context, so the link is purely the dedup record that keeps
-   automatic retrieval and later queries from re-surfacing them. Notes,
+   automatic retrieval and later queries from re-surfacing them. The
+   archive readers follow the same rule, linking what a page showed once
+   (`link_memories_once` — a new link for an unlinked row, a timestamp bump
+   for one linked before a compaction, so the just-read row counts as in
+   view again); they never exclude the current conversation, which after a
+   compaction is the way to read this session's own pre-compaction turns
+   verbatim. Notes,
    git, and web tools are *not* exposed — Claude Code's native tools cover
    them.
 

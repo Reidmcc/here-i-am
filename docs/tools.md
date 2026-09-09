@@ -23,6 +23,8 @@ Require Pinecone (`PINECONE_API_KEY` + `PINECONE_INDEXES`).
 - `memory_save` — save a self-authored reflection: a conclusion, synthesis, or anything the entity wants to remember, in its own words. Stored and retrieved like any other memory, attributed as a reflection.
 - `memory_mark` — pin a memory so it is exempt from age-based significance decay (or unpin with `undo=true`). Accepts memory ID prefixes of 6+ characters.
 - `memory_release` — remove a memory from all retrieval without deleting it (reversible with `undo=true`; `memory_query mode="released"` lists what has been released, and the researcher can also view and restore released memories).
+- `memory_read` — read the archive **in order** (issue #343): the verbatim record over a span of time, rather than by similarity. Pure SQL over the messages table — no Pinecone, no ranking. `from` (ISO 8601, required) starts the span; `to` (optional) ends it, defaulting to the end of the day `from` names; a bare date means that whole day, read in `tz` (an IANA name, default `UTC` — "September 1st, Eastern" is `from="2026-09-01", tz="America/New_York"`), and a datetime without an offset is read in `tz` too. Output stamps stay UTC, with the local time alongside when `tz` is not UTC. `in_conversation` (id or 6+ character prefix, as the output prints them) restricts to one conversation; the default is every conversation the entity has experience in. `source` narrows by author exactly as in `memory_query`. Pages are bounded by **tokens**, not rows (`page_tokens`, default 8000, max 20000, weighed by each row's stored `token_count` or a length estimate), so a day of long messages cannot eat a context; a single message larger than the budget is returned alone, whole — nothing is ever truncated. Each page's header states the span, the filters, how many messages the span holds in total and which ones this page shows, and ends with the `cursor` for the next page (pass it back with the same span and filters) or "End of span."; an empty span says so plainly. Each message carries its short memory ID (accepted by `memory_mark` / `memory_release` / `memory_neighbors`), who said it (`Human said` / `You said` / `You reflected` / `You said (inter-session message from "…")` / the other entity by name in a multi-entity conversation), its stamp, where it was formed (`via Here I Am` / `via Claude Code`), and the conversation's title (or id prefix), so a span across several rooms reads as several rooms; reflections are interleaved where they were saved. Three rules set it apart from recall: it does **not** exclude the current conversation or memories already in context (reading the page you are on is a legitimate use — in a compacted Claude Code conversation, reading your own pre-compaction turns verbatim is exactly the use); it does **not** touch retrieval tracking (reading a page is not attention-weighting, and a day's worth of rows must not inflate significance); and what a page shows counts as in view afterwards (native: the ids are stamped onto the tool result like `memory_query`'s; Claude Code: linked once as the dedup record), so automatic retrieval does not re-surface what is already on the table. Released memories are skipped by default (they were withdrawn on purpose) and included, labeled with who released them and when, with `include_released=true`; archived conversations are read and flagged rather than hidden. `include_model` works as in `memory_query`.
+- `memory_neighbors` — open a retrieved memory outward: given a memory ID (6+ character prefix), return it with the `before` / `after` (default 2 each, max 10) messages immediately around it in the same conversation, in order, formatted as `memory_read` formats them, the requested memory marked `>>`, with a note when the window reached the start or end of the conversation. Works on any memory the entity can see — the human's message, its own, a sibling letter, a reflection (whose neighbors are the exchange around the moment it was saved). Same exclusion, tracking, released, and dedup rules as `memory_read`.
 
 Every status write — set or clear, by either tool or by the researcher's
 `PUT /api/memories/{id}/status` — records who made it and when
@@ -50,13 +52,14 @@ mode, appends `model: <id>` (or `model: unrecorded`) to each result's
 header line — for a specific purpose such as comparing the entity's voice
 across substrates, not as a standing label.
 
-The four memory tools are also exposed over MCP for Claude Code mode
+The six memory tools are also exposed over MCP for Claude Code mode
 (`POST /mcp`, gated by `CLAUDE_CODE_MODE_ENABLED` — see
 [claude-code-mode.md](claude-code-mode.md)). The MCP variants take an extra
 `conversation_id` parameter (required for `memory_save`) identifying the
-session's Claude Code conversation; there, `memory_query` results *are*
-linked (`ConversationMemoryLink`), because Claude Code conversations are
-never rebuilt into context — the link is purely the dedup record that keeps
+session's Claude Code conversation; there, `memory_query` results (and what
+`memory_read` / `memory_neighbors` show) *are* linked
+(`ConversationMemoryLink`), because Claude Code conversations are never
+rebuilt into context — the link is purely the dedup record that keeps
 automatic retrieval from re-surfacing queried memories. In a Claude Code
 conversation that has been compacted, both exclusions narrow to
 post-compaction state (`Conversation.last_compacted_at`): messages and

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from pinecone import Pinecone
 from sqlalchemy import and_, func, or_, select, update
@@ -1334,6 +1334,332 @@ class MemoryService:
         )
         result = await db.execute(query)
         return int(result.scalar_one() or 0)
+
+    # ------------------------------------------------------------------
+    # Archive readers (issue #343): the record in order, verbatim
+    # ------------------------------------------------------------------
+    #
+    # Everything else here reaches the archive by similarity; these two read
+    # it by position. Pure SQL over Message — no Pinecone, no ranking, no
+    # retrieval tracking — ordered by (created_at, id) so a page is stable
+    # and a cursor can resume it. Nothing is ever truncated: a single
+    # message larger than the page budget comes back alone, whole.
+
+    @staticmethod
+    def encode_read_cursor(created_at: datetime, message_id: str) -> str:
+        """A page cursor: the sort key of the last row shown, readable on purpose."""
+        return f"{created_at.isoformat()}|{message_id}"
+
+    @staticmethod
+    def decode_read_cursor(cursor: str) -> Optional[Tuple[datetime, str]]:
+        """The inverse of encode_read_cursor; None when the cursor is malformed."""
+        try:
+            stamp, message_id = str(cursor).strip().split("|", 1)
+            parsed = datetime.fromisoformat(stamp)
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        if not message_id:
+            return None
+        return parsed, message_id
+
+    @staticmethod
+    def _after_key(created_at: datetime, message_id: str):
+        """Rows sorting strictly after (created_at, message_id)."""
+        return or_(
+            Message.created_at > created_at,
+            and_(Message.created_at == created_at, Message.id > message_id),
+        )
+
+    @staticmethod
+    def _before_key(created_at: datetime, message_id: str):
+        """Rows sorting strictly before (created_at, message_id)."""
+        return or_(
+            Message.created_at < created_at,
+            and_(Message.created_at == created_at, Message.id < message_id),
+        )
+
+    @staticmethod
+    def _archive_row(message: Message, conversation: Conversation) -> Dict[str, Any]:
+        """The dict shape both archive readers return, one row per message."""
+        return {
+            "id": str(message.id),
+            "conversation_id": str(message.conversation_id),
+            "conversation_title": conversation.title,
+            "conversation_archived": bool(conversation.is_archived),
+            "role": message.role.value,
+            "content": message.content,
+            "created_at": message.created_at.isoformat(),
+            "token_count": message.token_count,
+            "times_retrieved": message.times_retrieved,
+            "memory_status": message.memory_status,
+            "status_set_by": message.status_set_by,
+            "status_set_at": message.status_set_at.isoformat() if message.status_set_at else None,
+            "speaker_entity_id": message.speaker_entity_id,
+            "sibling_session": message.sibling_session,
+            "source": conversation.source or "native",
+            "model": message.model,
+        }
+
+    @staticmethod
+    def estimate_message_tokens(row: Dict[str, Any]) -> int:
+        """
+        Page-budget weight of a row: the stored token_count, or a length
+        estimate when the row predates counting. Display/budgeting only.
+        """
+        count = row.get("token_count")
+        if count:
+            return int(count)
+        return max(1, len(row.get("content") or "") // 4)
+
+    def _span_conditions(
+        self,
+        entity_id: str,
+        role_filter: Optional[str],
+        conversation_id: Optional[str],
+        include_released: bool,
+    ) -> list:
+        conditions = [
+            Message.role.in_(MEMORY_ROLES),
+            self._sql_role_clause(role_filter),
+            self._entity_experience_clause(entity_id),
+        ]
+        if conversation_id:
+            conditions.append(Message.conversation_id == str(conversation_id))
+        if not include_released:
+            conditions.append(
+                or_(Message.memory_status.is_(None), Message.memory_status != "released")
+            )
+        return conditions
+
+    async def resolve_conversation_prefix(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        id_or_prefix: str,
+    ) -> Tuple[Optional[Conversation], Optional[str]]:
+        """
+        Resolve a conversation id or its prefix (as memory_read prints them)
+        to one of this entity's conversations. Returns (conversation,
+        error) — exactly one is None.
+        """
+        id_or_prefix = str(id_or_prefix or "").strip()
+        if len(id_or_prefix) < 6:
+            return None, "Conversation ID must be at least 6 characters."
+        query = (
+            select(Conversation)
+            .where(
+                Conversation.id.like(f"{id_or_prefix}%"),
+                self._entity_experience_clause(entity_id),
+            )
+            .limit(5)
+        )
+        matches = (await db.execute(query)).scalars().all()
+        exact = [c for c in matches if str(c.id) == id_or_prefix]
+        if exact:
+            return exact[0], None
+        if not matches:
+            return None, f"No conversation of yours found with ID '{id_or_prefix}'."
+        if len(matches) > 1:
+            ids = ", ".join(str(c.id)[:12] + "..." for c in matches)
+            return None, (
+                f"Conversation ID prefix '{id_or_prefix}' is ambiguous ({ids}). "
+                "Use a longer prefix."
+            )
+        return matches[0], None
+
+    async def read_messages_in_span(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        start: datetime,
+        end: datetime,
+        role_filter: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        include_released: bool = False,
+        cursor: Optional[str] = None,
+        page_tokens: int = 8000,
+        batch_size: int = 200,
+    ) -> Dict[str, Any]:
+        """
+        Read the entity's archive between two naive-UTC moments (inclusive),
+        in (created_at, id) order, one token-bounded page at a time.
+
+        Backs the memory_read tool. Scope is the entity's experience
+        (_entity_experience_clause) narrowed by the same role filter
+        memory_query's `source` uses and optionally to one conversation.
+        Released memories are skipped unless include_released — they were
+        withdrawn on purpose — and archived conversations are read (flagged
+        in the row) rather than hidden: this is the reading instrument, not
+        the ranking one, and a hole it can't show would be a silent gap in
+        a dated record. The current conversation is NOT excluded and
+        nothing here touches times_retrieved.
+
+        The page fills until adding the next row would exceed page_tokens
+        (token_count, or a length estimate); an oversized first row is
+        returned alone and whole. Returns {"items", "total", "offset",
+        "next_cursor"}: total is the span's row count under the same
+        filters, offset how many rows precede this page, next_cursor None
+        at the end of the span.
+        """
+        conditions = self._span_conditions(
+            entity_id, role_filter, conversation_id, include_released
+        ) + [Message.created_at >= start, Message.created_at <= end]
+
+        total = int((await db.execute(
+            select(func.count(Message.id))
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(*conditions)
+        )).scalar_one() or 0)
+
+        offset = 0
+        position = self.decode_read_cursor(cursor) if cursor else None
+        if position is not None:
+            offset = int((await db.execute(
+                select(func.count(Message.id))
+                .join(Conversation, Conversation.id == Message.conversation_id)
+                .where(*conditions, or_(
+                    self._before_key(*position),
+                    and_(Message.created_at == position[0], Message.id == position[1]),
+                ))
+            )).scalar_one() or 0)
+
+        items: List[Dict[str, Any]] = []
+        used = 0
+        next_cursor: Optional[str] = None
+        key = position
+        exhausted = False
+        while not exhausted and next_cursor is None:
+            query = (
+                select(Message, Conversation)
+                .join(Conversation, Conversation.id == Message.conversation_id)
+                .where(*conditions)
+            )
+            if key is not None:
+                query = query.where(self._after_key(*key))
+            query = query.order_by(Message.created_at.asc(), Message.id.asc()).limit(batch_size)
+            rows = (await db.execute(query)).all()
+            if len(rows) < batch_size:
+                exhausted = True
+            for message, conversation in rows:
+                row = self._archive_row(message, conversation)
+                weight = self.estimate_message_tokens(row)
+                if items and used + weight > page_tokens:
+                    last = items[-1]
+                    next_cursor = self.encode_read_cursor(
+                        datetime.fromisoformat(last["created_at"]), last["id"]
+                    )
+                    break
+                items.append(row)
+                used += weight
+                key = (message.created_at, str(message.id))
+            if not rows:
+                exhausted = True
+
+        logger.info(
+            f"[MEMORY] Archive read: {len(items)} of {total} rows in span for "
+            f"entity={entity_id} (offset={offset}, tokens~{used})"
+        )
+        return {"items": items, "total": total, "offset": offset, "next_cursor": next_cursor}
+
+    async def read_message_neighbors(
+        self,
+        db: AsyncSession,
+        message: Message,
+        before: int = 2,
+        after: int = 2,
+        include_released: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        The messages immediately around one message in its own
+        conversation, in order — the memory_neighbors tool. Same row shape
+        and skip rules as read_messages_in_span (the requested message
+        itself is always shown, released or not). Returns {"items",
+        "target_index", "hit_start", "hit_end"}: hit_start/hit_end say the
+        window reached the conversation's first/last memory row.
+        """
+        conversation = (await db.execute(
+            select(Conversation).where(Conversation.id == message.conversation_id)
+        )).scalar_one()
+        conditions = [
+            Message.role.in_(MEMORY_ROLES),
+            Message.conversation_id == str(message.conversation_id),
+        ]
+        if not include_released:
+            conditions.append(
+                or_(Message.memory_status.is_(None), Message.memory_status != "released")
+            )
+        key = (message.created_at, str(message.id))
+
+        earlier = (await db.execute(
+            select(Message)
+            .where(*conditions, self._before_key(*key))
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(before + 1)
+        )).scalars().all()
+        later = (await db.execute(
+            select(Message)
+            .where(*conditions, self._after_key(*key))
+            .order_by(Message.created_at.asc(), Message.id.asc())
+            .limit(after + 1)
+        )).scalars().all()
+
+        hit_start = len(earlier) <= before
+        hit_end = len(later) <= after
+        earlier = list(reversed(earlier[:before]))
+        later = later[:after]
+
+        items = [self._archive_row(m, conversation) for m in earlier]
+        target_index = len(items)
+        items.append(self._archive_row(message, conversation))
+        items.extend(self._archive_row(m, conversation) for m in later)
+        return {
+            "items": items,
+            "target_index": target_index,
+            "hit_start": hit_start,
+            "hit_end": hit_end,
+        }
+
+    async def link_memories_once(
+        self,
+        conversation_id: str,
+        message_ids: List[str],
+        db: AsyncSession,
+        entity_id: Optional[str] = None,
+    ) -> int:
+        """
+        Record a ConversationMemoryLink for each id not already linked to the
+        conversation, and bump the timestamp of those that are, so all of
+        them count as in view from now — the Claude Code dedup record for
+        what an archive read just put on the table (never touches
+        times_retrieved). Claude Code only: the timestamp refresh is unsafe
+        for native conversations (see refresh_memory_link_timestamps).
+        Returns how many new links were written.
+        """
+        ids = list(dict.fromkeys(str(mid) for mid in message_ids))
+        if not ids:
+            return 0
+        already = await self.get_retrieved_ids_for_conversation(
+            conversation_id, db, entity_id=entity_id
+        )
+        to_refresh = [mid for mid in ids if mid in already]
+        if to_refresh:
+            await self.refresh_memory_link_timestamps(
+                conversation_id=conversation_id,
+                message_ids=to_refresh,
+                db=db,
+                entity_id=entity_id,
+            )
+        written = 0
+        for mid in ids:
+            if mid in already:
+                continue
+            if await self.record_memory_link(
+                message_id=mid, conversation_id=conversation_id, db=db, entity_id=entity_id
+            ):
+                written += 1
+        return written
 
     async def get_last_session_anchor(
         self,

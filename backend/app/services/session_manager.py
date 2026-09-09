@@ -37,7 +37,11 @@ from app.services.conversation_session import ConversationSession, MemoryEntry
 from app.services.llm_service import llm_service
 from app.services.memory_context import format_memory_as_context_message
 from app.services.memory_service import memory_service
-from app.services.memory_tools import consume_last_query_memory_ids, set_memory_tool_context
+from app.services.memory_tools import (
+    MEMORY_RESULT_STAMPING_TOOLS,
+    consume_last_query_memory_ids,
+    set_memory_tool_context,
+)
 from app.services.notes_tools import (
     NOTE_IN_CONTEXT_MARKER,
     NOTE_STAMP_TOOL_NAMES,
@@ -62,11 +66,13 @@ from app.services.tool_service import tool_service
 
 logger = logging.getLogger(__name__)
 
-# Matches the per-memory header line in memory_query tool results, e.g.
-# "--- Memory a1b2c3d4 (You said, 3.2 days ago, similarity: 0.812) ---".
+# Matches the per-memory header line in memory_query / memory_read /
+# memory_neighbors tool results, e.g.
+# "--- Memory a1b2c3d4 (You said, 3.2 days ago, similarity: 0.812) ---"
+# (memory_neighbors marks the requested memory "--- >> Memory ...").
 # Used to rebuild query-result dedup state (memory_query_ids on tool_result
 # context messages) when a session is reloaded from the DB.
-_MEMORY_QUERY_RESULT_ID_RE = re.compile(r"^--- Memory ([0-9a-f]{8}) \(", re.MULTILINE)
+_MEMORY_QUERY_RESULT_ID_RE = re.compile(r"^--- (?:>> )?Memory ([0-9a-f]{8}) \(", re.MULTILINE)
 
 class SessionManager:
     """
@@ -487,7 +493,7 @@ class SessionManager:
                 for block in content_blocks or []:
                     if not isinstance(block, dict) or block.get("type") != "tool_use":
                         continue
-                    if block.get("name") == "memory_query":
+                    if block.get("name") in MEMORY_RESULT_STAMPING_TOOLS:
                         memory_query_tool_ids.add(block.get("id"))
                     elif block.get("name") in NOTE_STAMP_TOOL_NAMES:
                         # Private-note ownership follows the entity that made
@@ -1960,7 +1966,7 @@ class SessionManager:
                         tool_input=tool_input,
                     )
 
-                    if tool_name == "memory_query":
+                    if tool_name in MEMORY_RESULT_STAMPING_TOOLS:
                         exchange_query_memory_ids.extend(consume_last_query_memory_ids())
                     elif tool_name in NOTE_STAMP_TOOL_NAMES:
                         exchange_note_stamps.extend(consume_last_note_stamps())

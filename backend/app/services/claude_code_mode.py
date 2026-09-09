@@ -364,9 +364,11 @@ async def build_session_start_context(
         parts.append(
             "[HERE I AM MEMORY TOOLS] When the here-i-am MCP server is "
             "connected, you also have deliberate memory tools: memory_query "
-            "(recall by chosen text), memory_save (save a reflection in your "
-            "own words), memory_mark (pin against significance decay), and "
-            "memory_release (withdraw from retrieval). Pass conversation_id "
+            "(recall by chosen text), memory_read (read the archive in order "
+            "over a span of time: open a date and read it), memory_neighbors "
+            "(the messages around one memory), memory_save (save a reflection "
+            "in your own words), memory_mark (pin against significance decay), "
+            "and memory_release (withdraw from retrieval). Pass conversation_id "
             f'"{conversation_id}" when calling them so they act on this '
             "session's conversation. Retrieved memories are labeled with "
             "where they were formed: \"via Here I Am\" (a native "

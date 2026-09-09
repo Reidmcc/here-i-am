@@ -12,6 +12,9 @@ pydantic-settings==2.15.0
 httpx==0.26.0
 numpy>=1.26.0,<3.0.0
 tiktoken==0.14.0
+# IANA timezone data for memory_read's tz parameter (zoneinfo has no
+# bundled database on Windows)
+tzdata>=2024.1
 aiofiles==23.2.1
 python-multipart==0.0.9
 beautifulsoup4>=4.12.0
