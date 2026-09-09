@@ -10,7 +10,7 @@ case; reflections interleaved where they were saved; sibling letters and
 other entities labeled; released skipped by default and included on
 request; no retrieval-tracking writes; Claude Code links recorded once;
 neighbors at the start and end of a conversation; prefix resolution and the
-ambiguity error; the reload-side re-stamping of what a page showed; and the
+ambiguity error; archived conversations hidden; the reload-side re-stamping of what a page showed; and the
 MCP exposure.
 
 These run against a real (in-memory SQLite) database: both readers are
@@ -326,14 +326,24 @@ class TestReadSpan:
         result = await read_memories(native_ctx(), from_="2026-09-01", in_conversation=twin_a.id[:6])
         assert "is ambiguous" in result
 
-    async def test_archived_conversations_are_read_and_flagged(self, db, tools_db):
-        """Retrieval hides archived conversations; the reader shows the row
-        with the flag, so a dated record never has an invisible hole."""
+    async def test_archived_conversations_are_hidden(self, db, tools_db):
+        """Archiving removes a conversation where something went wrong from
+        every memory surface; the readers are no exception: not in a span,
+        not by conversation prefix, not as a neighbor window."""
         archived = await make_conversation(db, title="Old room", is_archived=True)
         message = await make_message(db, archived, content="from the archive", created_at=at())
+        live = await make_conversation(db, title="Live")
+        kept = await make_message(db, live, content="kept", created_at=at(minutes=1))
+
         result = await read_memories(native_ctx(), from_="2026-09-01")
-        assert ids_in_order(result) == [message.id[:8]]
-        assert "; archived conversation)" in result
+        assert ids_in_order(result) == [kept.id[:8]]
+        assert "1 messages in the span" in result
+
+        result = await read_memories(native_ctx(), from_="2026-09-01", in_conversation=archived.id)
+        assert result.startswith("Error: No conversation of yours found")
+
+        result = await neighbor_memories(native_ctx(), message.id)
+        assert "belongs to an archived conversation" in result
 
     async def test_current_conversation_and_in_context_memories_are_not_excluded(
         self, db, tools_db

@@ -1387,7 +1387,6 @@ class MemoryService:
             "id": str(message.id),
             "conversation_id": str(message.conversation_id),
             "conversation_title": conversation.title,
-            "conversation_archived": bool(conversation.is_archived),
             "role": message.role.value,
             "content": message.content,
             "created_at": message.created_at.isoformat(),
@@ -1424,6 +1423,10 @@ class MemoryService:
             Message.role.in_(MEMORY_ROLES),
             self._sql_role_clause(role_filter),
             self._entity_experience_clause(entity_id),
+            # Archived conversations are withdrawn from every memory surface:
+            # archiving is how the researcher removes a conversation where
+            # something went wrong, and a reader that showed it would undo that
+            Conversation.is_archived == False,
         ]
         if conversation_id:
             conditions.append(Message.conversation_id == str(conversation_id))
@@ -1452,6 +1455,7 @@ class MemoryService:
             .where(
                 Conversation.id.like(f"{id_or_prefix}%"),
                 self._entity_experience_clause(entity_id),
+                Conversation.is_archived == False,
             )
             .limit(5)
         )
@@ -1489,12 +1493,11 @@ class MemoryService:
         Backs the memory_read tool. Scope is the entity's experience
         (_entity_experience_clause) narrowed by the same role filter
         memory_query's `source` uses and optionally to one conversation.
-        Released memories are skipped unless include_released — they were
-        withdrawn on purpose — and archived conversations are read (flagged
-        in the row) rather than hidden: this is the reading instrument, not
-        the ranking one, and a hole it can't show would be a silent gap in
-        a dated record. The current conversation is NOT excluded and
-        nothing here touches times_retrieved.
+        Released memories are skipped unless include_released (they were
+        withdrawn on purpose) and archived conversations are hidden entirely,
+        as everywhere else (archiving removes a conversation where something
+        went wrong from every memory surface). The current conversation is
+        NOT excluded and nothing here touches times_retrieved.
 
         The page fills until adding the next row would exceed page_tokens
         (token_count, or a length estimate); an oversized first row is
@@ -1575,13 +1578,20 @@ class MemoryService:
         The messages immediately around one message in its own
         conversation, in order — the memory_neighbors tool. Same row shape
         and skip rules as read_messages_in_span (the requested message
-        itself is always shown, released or not). Returns {"items",
+        itself is always shown, released or not; an archived conversation
+        returns no items and "archived": True). Returns {"items",
         "target_index", "hit_start", "hit_end"}: hit_start/hit_end say the
         window reached the conversation's first/last memory row.
         """
         conversation = (await db.execute(
             select(Conversation).where(Conversation.id == message.conversation_id)
         )).scalar_one()
+        if conversation.is_archived:
+            # Withdrawn from every memory surface, this one included
+            return {
+                "items": [], "target_index": -1, "hit_start": True, "hit_end": True,
+                "archived": True,
+            }
         conditions = [
             Message.role.in_(MEMORY_ROLES),
             Message.conversation_id == str(message.conversation_id),

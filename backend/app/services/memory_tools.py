@@ -1048,8 +1048,6 @@ def _format_archive_item(
         flags.append(_describe_release(item, now))
     elif status:
         flags.append(status)
-    if item.get("conversation_archived"):
-        flags.append("archived conversation")
     flag_text = f"; {', '.join(flags)}" if flags else ""
     marker = ">> " if marked else ""
     header = (
@@ -1286,6 +1284,11 @@ async def neighbor_memories(
                 after=after,
                 include_released=bool(include_released),
             )
+            if window.get("archived"):
+                return (
+                    f"Error: Memory '{str(message.id)[:8]}' belongs to an archived "
+                    "conversation, which is withdrawn from every memory surface."
+                )
             await _note_surfaced(ctx, [item["id"] for item in window["items"]], db)
     except Exception as e:
         logger.error(f"Memory neighbors error: {e}")
@@ -1598,7 +1601,7 @@ MEMORY_READ_DESCRIPTION = (
     "comes back alone, whole), and reading is not retrieval: it does not "
     "feed significance, though what a page shows counts as in view for "
     "later automatic retrieval and queries. Released memories are skipped "
-    "unless include_released is set."
+    "unless include_released is set; archived conversations are never shown."
 )
 
 MEMORY_READ_SCHEMA = {
