@@ -630,9 +630,13 @@ are the entity's verbatim carriers across that boundary.
   knows a compaction happened, the boundary is already stamped, and one
   call gets the lost stretch verbatim, as much of it as it wants, where a
   fixed re-injection would have to guess the window. This depends on
-  `memory_read` never excluding the current conversation and never
-  applying the eligibility boundary below — the issue's rule, and this is
-  the use that needs it. (Measured 2026-09-09 on local transcripts:
+  `memory_read` never excluding the current conversation — the issue's
+  rule, and this is the use that needs it. The boundary below is applied
+  the other way round: rows of this conversation created at or after
+  `last_compacted_at` are still in live context and render as header-only
+  pointers, rows before it survive only as summary and render in full, so
+  the call returns exactly the lost stretch without duplicating what is
+  still in view. (Measured 2026-09-09 on local transcripts:
   auto-compaction fires near 1M tokens and leaves a ~10k post-compaction
   context, so the page budget's 8k default and 20k ceiling are
   conservative, not tight — and the archive holds only the talk, no tool

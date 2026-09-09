@@ -1381,9 +1381,34 @@ class MemoryService:
         )
 
     @staticmethod
-    def _archive_row(message: Message, conversation: Conversation) -> Dict[str, Any]:
+    def _row_in_context(
+        message: Message,
+        in_context_ids: Optional[Set[str]],
+        live_conversation_id: Optional[str],
+        live_after: Optional[datetime],
+    ) -> bool:
+        """
+        Whether a row's content is already in the reader's live context, so
+        the page shows it as a pointer instead of repeating it: a memory
+        retrieved into context from anywhere (in_context_ids), or one of the
+        live conversation's own messages — all of them for a native session,
+        and for a compacted Claude Code session only those created at or
+        after the compaction boundary (earlier ones survive only as summary,
+        which is exactly what a reader is for).
+        """
+        if in_context_ids and str(message.id) in in_context_ids:
+            return True
+        if live_conversation_id and str(message.conversation_id) == str(live_conversation_id):
+            return live_after is None or message.created_at >= live_after
+        return False
+
+    @staticmethod
+    def _archive_row(
+        message: Message, conversation: Conversation, in_context: bool = False
+    ) -> Dict[str, Any]:
         """The dict shape both archive readers return, one row per message."""
         return {
+            "in_context": in_context,
             "id": str(message.id),
             "conversation_id": str(message.conversation_id),
             "conversation_title": conversation.title,
@@ -1401,12 +1426,18 @@ class MemoryService:
             "model": message.model,
         }
 
+    # Page weight of a row rendered as an in-context pointer (header only)
+    POINTER_TOKENS = 24
+
     @staticmethod
     def estimate_message_tokens(row: Dict[str, Any]) -> int:
         """
         Page-budget weight of a row: the stored token_count, or a length
-        estimate when the row predates counting. Display/budgeting only.
+        estimate when the row predates counting; a pointer's fixed weight
+        when the row is already in context. Display/budgeting only.
         """
+        if row.get("in_context"):
+            return MemoryService.POINTER_TOKENS
         count = row.get("token_count")
         if count:
             return int(count)
@@ -1485,6 +1516,9 @@ class MemoryService:
         cursor: Optional[str] = None,
         page_tokens: int = 8000,
         batch_size: int = 200,
+        in_context_ids: Optional[Set[str]] = None,
+        live_conversation_id: Optional[str] = None,
+        live_after: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """
         Read the entity's archive between two naive-UTC moments (inclusive),
@@ -1497,7 +1531,11 @@ class MemoryService:
         withdrawn on purpose) and archived conversations are hidden entirely,
         as everywhere else (archiving removes a conversation where something
         went wrong from every memory surface). The current conversation is
-        NOT excluded and nothing here touches times_retrieved.
+        NOT excluded, but rows whose content is already in live context
+        (see _row_in_context) come back flagged in_context so the tool
+        renders them as pointers — the page stays whole and in order without
+        duplicating what the reader can already see. Nothing here touches
+        times_retrieved.
 
         The page fills until adding the next row would exceed page_tokens
         (token_count, or a length estimate); an oversized first row is
@@ -1546,7 +1584,13 @@ class MemoryService:
             if len(rows) < batch_size:
                 exhausted = True
             for message, conversation in rows:
-                row = self._archive_row(message, conversation)
+                row = self._archive_row(
+                    message,
+                    conversation,
+                    in_context=self._row_in_context(
+                        message, in_context_ids, live_conversation_id, live_after
+                    ),
+                )
                 weight = self.estimate_message_tokens(row)
                 if items and used + weight > page_tokens:
                     last = items[-1]
@@ -1573,6 +1617,9 @@ class MemoryService:
         before: int = 2,
         after: int = 2,
         include_released: bool = False,
+        in_context_ids: Optional[Set[str]] = None,
+        live_conversation_id: Optional[str] = None,
+        live_after: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """
         The messages immediately around one message in its own
@@ -1620,10 +1667,19 @@ class MemoryService:
         earlier = list(reversed(earlier[:before]))
         later = later[:after]
 
-        items = [self._archive_row(m, conversation) for m in earlier]
+        def row(m: Message) -> Dict[str, Any]:
+            return self._archive_row(
+                m,
+                conversation,
+                in_context=self._row_in_context(
+                    m, in_context_ids, live_conversation_id, live_after
+                ),
+            )
+
+        items = [row(m) for m in earlier]
         target_index = len(items)
-        items.append(self._archive_row(message, conversation))
-        items.extend(self._archive_row(m, conversation) for m in later)
+        items.append(row(message))
+        items.extend(row(m) for m in later)
         return {
             "items": items,
             "target_index": target_index,

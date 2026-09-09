@@ -8,7 +8,9 @@ these read it by position. Rules under test: span boundaries in a non-UTC
 timezone; pagination by token budget including the oversized-single-message
 case; reflections interleaved where they were saved; sibling letters and
 other entities labeled; released skipped by default and included on
-request; no retrieval-tracking writes; Claude Code links recorded once;
+request; rows already in live context rendered as pointers, never
+duplicated (the current conversation's own rows, post-compaction only in
+Claude Code mode); no retrieval-tracking writes; Claude Code links recorded once;
 neighbors at the start and end of a conversation; prefix resolution and the
 ambiguity error; archived conversations hidden; the reload-side re-stamping of what a page showed; and the
 MCP exposure.
@@ -39,6 +41,7 @@ from app.models import (
 )
 from app.services.memory_service import memory_service
 from app.services.memory_tools import (
+    IN_CONTEXT_POINTER,
     MEMORY_RESULT_STAMPING_TOOLS,
     MemoryToolContext,
     neighbor_memories,
@@ -345,16 +348,62 @@ class TestReadSpan:
         result = await neighbor_memories(native_ctx(), message.id)
         assert "belongs to an archived conversation" in result
 
-    async def test_current_conversation_and_in_context_memories_are_not_excluded(
-        self, db, tools_db
-    ):
-        conversation = await make_conversation(db)
-        here = await make_message(db, conversation, content="said here", created_at=at())
-        ctx = native_ctx(conversation_id=conversation.id)
-        ctx.extra_exclude_ids = {here.id}
-        ctx.turn_query_memory_ids = {here.id}
+    async def test_rows_already_in_context_are_pointers_not_duplicates(self, db, tools_db):
+        """The page stays whole and in order, but nothing the reader can
+        already see is repeated: the current conversation's own rows (all of
+        them, natively) and memories retrieved into context from elsewhere
+        render as header-only pointers and still carry their ids."""
+        here = await make_conversation(db, title="Here")
+        own = await make_message(db, here, content="said in this very conversation", created_at=at())
+        elsewhere = await make_conversation(db, title="Elsewhere")
+        retrieved = await make_message(db, elsewhere, content="pulled in earlier", created_at=at(minutes=1))
+        fresh = await make_message(db, elsewhere, content="never seen", created_at=at(minutes=2))
+        ctx = native_ctx(conversation_id=here.id)
+        ctx.extra_exclude_ids = {retrieved.id}
+
         result = await read_memories(ctx, from_="2026-09-01")
-        assert ids_in_order(result) == [here.id[:8]]
+
+        assert ids_in_order(result) == [own.id[:8], retrieved.id[:8], fresh.id[:8]]
+        assert "said in this very conversation" not in result
+        assert "pulled in earlier" not in result
+        assert "never seen" in result
+        assert result.count(IN_CONTEXT_POINTER) == 2
+        assert "2 of them are already in your context and are listed without their content." in result
+        # Pointers still count as shown for dedup stamping
+        assert set(ctx.last_query_memory_ids) == {own.id, retrieved.id, fresh.id}
+
+    async def test_compacted_claude_code_conversation_reads_its_own_past_in_full(self, db, tools_db):
+        """After a compaction only post-boundary rows are in live context;
+        the pre-compaction stretch survives as summary alone, so it renders
+        verbatim — the use the post-compaction block points at."""
+        room = await make_conversation(db, title="Room", source=ConversationSource.CLAUDE_CODE.value)
+        before = await make_message(db, room, content="before the compaction", created_at=at())
+        after = await make_message(db, room, content="after the compaction", created_at=at(minutes=10))
+        ctx = claude_code_ctx(room.id)
+        ctx.exclude_conversation_after = at(minutes=5)
+
+        result = await read_memories(ctx, from_="2026-09-01", in_conversation=room.id[:8])
+
+        assert ids_in_order(result) == [before.id[:8], after.id[:8]]
+        assert "before the compaction" in result
+        assert "after the compaction" not in result
+        assert result.count(IN_CONTEXT_POINTER) == 1
+
+        # Never compacted: everything in it is in live context
+        ctx.exclude_conversation_after = None
+        result = await read_memories(ctx, from_="2026-09-01", in_conversation=room.id[:8])
+        assert result.count(IN_CONTEXT_POINTER) == 2
+        assert "before the compaction" not in result
+
+    async def test_pointer_rows_weigh_little_on_the_page(self, db, tools_db):
+        """A page of pointers is not charged the content it doesn't carry."""
+        here = await make_conversation(db, title="Here")
+        for i in range(5):
+            await make_message(db, here, content=f"m{i}", created_at=at(minutes=i), token_count=5000)
+        ctx = native_ctx(conversation_id=here.id)
+        result = await read_memories(ctx, from_="2026-09-01", page_tokens=1000)
+        assert len(ids_in_order(result)) == 5
+        assert result.rstrip().endswith("End of span.")
 
 
 # ============================================================
@@ -598,6 +647,20 @@ class TestNeighbors:
 
         assert "must be an integer" in await neighbor_memories(native_ctx(), messages[0].id, before="two")
 
+    async def test_in_context_target_is_a_pointer_with_full_neighbors(self, db, tools_db):
+        """The usual entry point is a memory marker already in context: the
+        target renders as a pointer and the messages around it in full."""
+        _, messages = await self.make_thread(db, count=3)
+        ctx = native_ctx()
+        ctx.extra_exclude_ids = {messages[1].id}
+        result = await neighbor_memories(ctx, messages[1].id, before=1, after=1)
+        assert ids_in_order(result) == [m.id[:8] for m in messages]
+        assert f"--- >> Memory {messages[1].id[:8]}" in result
+        assert "turn 1" not in result
+        assert "turn 0" in result and "turn 2" in result
+        assert result.count(IN_CONTEXT_POINTER) == 1
+        assert "1 of these are already in your context" in result
+
     async def test_neighbors_do_not_track_retrieval(self, db, tools_db):
         _, messages = await self.make_thread(db, count=3)
         ctx = native_ctx()
@@ -626,6 +689,9 @@ class TestReloadAndMcp:
         room = await make_conversation(
             db, title="Room", source=ConversationSource.CLAUDE_CODE.value,
             external_session_id="sess-1",
+            # Compacted after both rows: they survive only as summary, so the
+            # readers show them in full rather than as pointers
+            last_compacted_at=at(minutes=5),
         )
         a = await make_message(db, room, role=MessageRole.HUMAN, content="hello", created_at=at())
         b = await make_message(db, room, content="hi", created_at=at(minutes=1))
@@ -642,6 +708,7 @@ class TestReloadAndMcp:
         text = response.json()["result"]["content"][0]["text"]
         assert response.json()["result"]["isError"] is False
         assert ids_in_order(text) == [a.id[:8], b.id[:8]]
+        assert "hello" in text and IN_CONTEXT_POINTER not in text
 
         response = await async_client.post("/mcp", json=rpc("memory_neighbors", {
             "memory_id": b.id[:8], "conversation_id": room.id,

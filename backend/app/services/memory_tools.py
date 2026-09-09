@@ -926,10 +926,14 @@ async def release_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = Fa
 # by similarity: the whole record, in order, verbatim, paginated. Pure SQL
 # over Message (memory_service.read_messages_in_span /
 # read_message_neighbors). Three rules distinguish them from recall:
-# - Nothing is excluded for being in context or in the current conversation.
-#   Reading the page you are on is a legitimate use, and in a compacted
-#   Claude Code conversation reading your own pre-compaction turns verbatim
-#   is exactly the use the house wants.
+# - Nothing is excluded for being in context or in the current conversation:
+#   the page stays whole and in order. But a row whose content is already in
+#   live context (a memory retrieved into context from anywhere; the current
+#   conversation's own messages — all of them natively, post-compaction ones
+#   in Claude Code mode) renders as a header-only pointer, so nothing is
+#   duplicated. In a compacted Claude Code conversation the pre-compaction
+#   turns survive only as summary, so they render in full — exactly the use
+#   the house wants.
 # - No retrieval tracking: reading a page is not attention-weighting, and a
 #   day's worth of rows must not inflate significance.
 # - What a page shows is treated as in view afterwards: stamped onto the
@@ -937,6 +941,23 @@ async def release_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = Fa
 #   memory_query), linked once in Claude Code mode (like recent mode).
 
 _BARE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# Stands in for the content of a row the reader can already see
+IN_CONTEXT_POINTER = "[already in your context; not repeated here]"
+
+
+def _live_view(ctx: MemoryToolContext) -> Tuple[Set[str], Optional[str], Optional[datetime]]:
+    """
+    What the reader can already see, for pointer rendering: the in-context
+    memory ids (context insertions, earlier tool results, this turn's
+    results, Claude Code's post-boundary links) and the live conversation
+    with its compaction boundary (None = every row of it is in context).
+    """
+    return (
+        get_in_context_memory_ids(ctx),
+        ctx.conversation_id,
+        ctx.exclude_conversation_after,
+    )
 
 
 def _resolve_tz(tz: Optional[str]) -> Tuple[Optional[ZoneInfo], Optional[str]]:
@@ -1035,7 +1056,9 @@ def _format_archive_item(
 ) -> List[str]:
     """One archive row as output lines: header (the same "--- Memory xxxxxxxx ("
     shape the other tools print, so reload re-stamps it and memory_mark /
-    memory_release / memory_neighbors accept the id), then the verbatim content."""
+    memory_release / memory_neighbors accept the id), then the verbatim
+    content — or, for a row already in the reader's context, a one-line
+    pointer in its place."""
     parts = [
         _archive_attribution(item, entity_id, entity_labels),
         _format_stamp(item["created_at"], tzinfo),
@@ -1054,6 +1077,8 @@ def _format_archive_item(
         f"--- {marker}Memory {item['id'][:8]} ({', '.join(parts)}{flag_text}"
         f"{_model_display(item, include_model)}) ---"
     )
+    if item.get("in_context"):
+        return [header, IN_CONTEXT_POINTER, ""]
     return [header, item["content"], ""]
 
 
@@ -1181,6 +1206,7 @@ async def read_memories(
                     f', in "{title}"' if title else f", in conversation {conversation_id[:8]}"
                 )
 
+            in_context_ids, live_conversation_id, live_after = _live_view(ctx)
             page = await memory_service.read_messages_in_span(
                 db,
                 entity_id=ctx.entity_id,
@@ -1191,6 +1217,9 @@ async def read_memories(
                 include_released=bool(include_released),
                 cursor=cursor,
                 page_tokens=page_tokens,
+                in_context_ids=in_context_ids,
+                live_conversation_id=live_conversation_id,
+                live_after=live_after,
             )
             items = page["items"]
             if items:
@@ -1213,9 +1242,17 @@ async def read_memories(
 
     first = page["offset"] + 1
     last = page["offset"] + len(items)
+    pointer_count = sum(1 for item in items if item.get("in_context"))
+    pointer_note = (
+        f" {pointer_count} of them are already in your context and are listed "
+        "without their content."
+        if pointer_count
+        else ""
+    )
     lines = [
         f"Your archive, {span_text}{source_suffix}{conversation_suffix}: "
         f"{page['total']} messages in the span; this page shows {first}–{last}, in order."
+        + pointer_note
         + released_note,
         "",
     ]
@@ -1277,12 +1314,16 @@ async def neighbor_memories(
                     f"Error: Memory '{str(message.id)[:8]}' is a {message.role.value} "
                     "row, not a memory."
                 )
+            in_context_ids, live_conversation_id, live_after = _live_view(ctx)
             window = await memory_service.read_message_neighbors(
                 db,
                 message,
                 before=before,
                 after=after,
                 include_released=bool(include_released),
+                in_context_ids=in_context_ids,
+                live_conversation_id=live_conversation_id,
+                live_after=live_after,
             )
             if window.get("archived"):
                 return (
@@ -1310,6 +1351,12 @@ async def neighbor_memories(
         edges.append("end")
     if edges:
         header += f" The window reached the {' and '.join(edges)} of the conversation."
+    pointer_count = sum(1 for item in items if item.get("in_context"))
+    if pointer_count:
+        header += (
+            f" {pointer_count} of these are already in your context and are listed "
+            "without their content."
+        )
     if not include_released:
         header += " Released messages around it are not shown (include_released=true shows them)."
 
@@ -1597,10 +1644,13 @@ MEMORY_READ_DESCRIPTION = (
     "guessing the words a query would need: what happened on a date, the "
     "page a retrieved memory sits on (or use memory_neighbors), your own "
     "pre-compaction turns. Nothing is excluded for being in context or in "
-    "the current conversation, nothing is truncated (an oversized message "
-    "comes back alone, whole), and reading is not retrieval: it does not "
-    "feed significance, though what a page shows counts as in view for "
-    "later automatic retrieval and queries. Released memories are skipped "
+    "the current conversation — the page stays whole and in order — but a "
+    "message already in your context (retrieved earlier, or one of this "
+    "conversation's own since its last compaction) is listed as a pointer "
+    "without its content, so nothing is duplicated. Nothing is truncated "
+    "(an oversized message comes back alone, whole), and reading is not "
+    "retrieval: it does not feed significance, though what a page shows "
+    "counts as in view for later automatic retrieval and queries. Released memories are skipped "
     "unless include_released is set; archived conversations are never shown."
 )
 
@@ -1683,8 +1733,9 @@ MEMORY_NEIGHBORS_DESCRIPTION = (
     "reflection (whose neighbors are the exchange around the moment you "
     "saved it). The requested memory is marked with '>>'; the result says "
     "if the window reached the start or end of the conversation. Same rules "
-    "as memory_read: nothing excluded for being in context, verbatim, no "
-    "retrieval tracking, what it shows counts as in view afterwards."
+    "as memory_read: nothing excluded, verbatim, messages already in your "
+    "context listed as pointers rather than repeated, no retrieval "
+    "tracking, what it shows counts as in view afterwards."
 )
 
 MEMORY_NEIGHBORS_SCHEMA = {
