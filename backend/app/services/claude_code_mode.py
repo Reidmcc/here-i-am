@@ -473,6 +473,20 @@ async def build_post_compact_context(
         "consider saving it as a reflection (memory_save) now, while the "
         "summary is fresh."
     )
+    # Pull beats push (issue #343, the porch's read): the entity knows a
+    # compaction happened and the boundary is stamped, so one memory_read
+    # call recovers the lost stretch verbatim, as much of it as it wants —
+    # memory_read never excludes the current conversation and ignores the
+    # eligibility boundary, which is exactly what this use depends on.
+    boundary = conversation.last_compacted_at or datetime.utcnow()
+    parts.append(
+        "Everything said in this session before the compaction is still "
+        "readable verbatim, in order, with memory_read: in_conversation="
+        f'"{conversation.id}", from="{conversation.created_at.strftime("%Y-%m-%dT%H:%M")}", '
+        f'to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}" (UTC). memory_read never '
+        "excludes this conversation, so that call returns the pre-compaction "
+        "stretch itself, not a summary of it."
+    )
 
     notes_paths = build_notes_paths_block(entity)
     if notes_paths:

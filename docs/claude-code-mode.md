@@ -622,6 +622,21 @@ are the entity's verbatim carriers across that boundary.
   compaction are exactly the ones that must come back. Links are recorded
   only for reflections not already linked (no duplicate rows), and
   `times_retrieved` stays untouched as with all recency injections.
+- **The pre-compaction talk is readable verbatim, on request.** The
+  reorientation header also names the `memory_read` call that returns
+  this session's own pre-compaction stretch in order
+  (`in_conversation=<this conversation>`, `from=<the conversation's
+  start>`, `to=<last_compacted_at>`). Pull beats push here: the entity
+  knows a compaction happened, the boundary is already stamped, and one
+  call gets the lost stretch verbatim, as much of it as it wants, where a
+  fixed re-injection would have to guess the window. This depends on
+  `memory_read` never excluding the current conversation and never
+  applying the eligibility boundary below — the issue's rule, and this is
+  the use that needs it. (Measured 2026-09-09 on local transcripts:
+  auto-compaction fires near 1M tokens and leaves a ~10k post-compaction
+  context, so the page budget's 8k default and 20k ceiling are
+  conservative, not tight — and the archive holds only the talk, no tool
+  results, so a span page is small relative to a context.)
 - **Pre-compaction memory becomes retrievable again.** The compact
   `session-start` stamps `Conversation.last_compacted_at` (before the
   re-injection runs), and that stamp is the same-conversation eligibility
