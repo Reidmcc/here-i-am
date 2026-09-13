@@ -939,20 +939,73 @@ async def release_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = Fa
 # - What a page shows is treated as in view afterwards: stamped onto the
 #   tool result in native mode (via last_query_memory_ids, like
 #   memory_query), linked once in Claude Code mode (like recent mode).
+# - scope="isolated" (issue #345) switches both context rules off for one
+#   call: no pointers (every row in full, the conversation's own
+#   post-compaction rows included) and nothing recorded as in view (no
+#   stamping, no turn accumulator, no links). For a reader whose context
+#   is not the conversation's: a subagent shares its parent's
+#   conversation_id, so under the default scope it inherits the parent's
+#   in-view set as pointers and its own reads poison the parent's dedup.
+#   Isolation is context bookkeeping only; visibility rules (released,
+#   archived, source, in_conversation) are unchanged.
 
 _BARE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Stands in for the content of a row the reader can already see
 IN_CONTEXT_POINTER = "[already in your context; not repeated here]"
 
+# memory_read / memory_neighbors scope values (issue #345): which in-view
+# set a call belongs to. "conversation" is the conversation's own (pointers
+# for what it can already see; what the page shows is recorded as in view);
+# "isolated" belongs to none (every row in full; nothing recorded).
+SCOPE_CONVERSATION = "conversation"
+SCOPE_ISOLATED = "isolated"
+VALID_READ_SCOPES = (SCOPE_CONVERSATION, SCOPE_ISOLATED)
 
-def _live_view(ctx: MemoryToolContext) -> Tuple[Set[str], Optional[str], Optional[datetime]]:
+# Appended to a page header under scope="isolated"
+ISOLATED_SCOPE_NOTE = (
+    " Isolated scope: nothing is listed as already in your context, and "
+    "nothing shown here is recorded as in view for this conversation."
+)
+
+_ISOLATED_VIEW: Tuple[Set[str], Optional[str], Optional[datetime]] = (set(), None, None)
+
+
+def _normalize_scope(scope: Optional[str]) -> Tuple[bool, Optional[str]]:
+    """(isolated, error) for a scope value; the default is the conversation's."""
+    value = str(scope if scope is not None else "").strip().lower() or SCOPE_CONVERSATION
+    if value not in VALID_READ_SCOPES:
+        return False, (
+            f"Error: Unknown scope '{scope}'. Valid values: {', '.join(VALID_READ_SCOPES)}."
+        )
+    return value == SCOPE_ISOLATED, None
+
+
+def is_isolated_read(tool_input: Any) -> bool:
+    """
+    Whether a memory_read / memory_neighbors call's input asked for
+    scope="isolated". The native tool loop stamps nothing for such a call
+    (the executor sets no ids), and the session reload parser uses this to
+    skip re-stamping its persisted result; otherwise a reload would put
+    ids in view that the live turn deliberately did not.
+    """
+    if not isinstance(tool_input, dict):
+        return False
+    return str(tool_input.get("scope") or "").strip().lower() == SCOPE_ISOLATED
+
+
+def _live_view(
+    ctx: MemoryToolContext, isolated: bool = False
+) -> Tuple[Set[str], Optional[str], Optional[datetime]]:
     """
     What the reader can already see, for pointer rendering: the in-context
     memory ids (context insertions, earlier tool results, this turn's
     results, Claude Code's post-boundary links) and the live conversation
     with its compaction boundary (None = every row of it is in context).
+    An isolated reader sees nothing in advance, so nothing is a pointer.
     """
+    if isolated:
+        return _ISOLATED_VIEW
     return (
         get_in_context_memory_ids(ctx),
         ctx.conversation_id,
@@ -1124,6 +1177,7 @@ async def read_memories(
     page_tokens: Optional[int] = None,
     include_released: bool = False,
     include_model: bool = False,
+    scope: Optional[str] = None,
 ) -> str:
     """
     memory_read: the entity's archive between two moments, in order, one
@@ -1134,6 +1188,9 @@ async def read_memories(
         return "Error: No entity context available for reading memories"
 
     tzinfo, error = _resolve_tz(tz)
+    if error:
+        return error
+    isolated, error = _normalize_scope(scope)
     if error:
         return error
     if from_ is None or not str(from_).strip():
@@ -1206,7 +1263,7 @@ async def read_memories(
                     f', in "{title}"' if title else f", in conversation {conversation_id[:8]}"
                 )
 
-            in_context_ids, live_conversation_id, live_after = _live_view(ctx)
+            in_context_ids, live_conversation_id, live_after = _live_view(ctx, isolated)
             page = await memory_service.read_messages_in_span(
                 db,
                 entity_id=ctx.entity_id,
@@ -1222,7 +1279,7 @@ async def read_memories(
                 live_after=live_after,
             )
             items = page["items"]
-            if items:
+            if items and not isolated:
                 await _note_surfaced(ctx, [item["id"] for item in items], db)
     except Exception as e:
         logger.error(f"Memory read error: {e}")
@@ -1253,6 +1310,7 @@ async def read_memories(
         f"Your archive, {span_text}{source_suffix}{conversation_suffix}: "
         f"{page['total']} messages in the span; this page shows {first}–{last}, in order."
         + pointer_note
+        + (ISOLATED_SCOPE_NOTE if isolated else "")
         + released_note,
         "",
     ]
@@ -1279,6 +1337,7 @@ async def neighbor_memories(
     after: Optional[int] = None,
     include_released: bool = False,
     include_model: bool = False,
+    scope: Optional[str] = None,
 ) -> str:
     """
     memory_neighbors: one memory with the messages immediately before and
@@ -1287,6 +1346,9 @@ async def neighbor_memories(
     """
     if not ctx.entity_id:
         return "Error: No entity context available for reading memories"
+    isolated, error = _normalize_scope(scope)
+    if error:
+        return error
 
     def _clamp(value: Any, name: str) -> Tuple[Optional[int], Optional[str]]:
         if value is None:
@@ -1314,7 +1376,7 @@ async def neighbor_memories(
                     f"Error: Memory '{str(message.id)[:8]}' is a {message.role.value} "
                     "row, not a memory."
                 )
-            in_context_ids, live_conversation_id, live_after = _live_view(ctx)
+            in_context_ids, live_conversation_id, live_after = _live_view(ctx, isolated)
             window = await memory_service.read_message_neighbors(
                 db,
                 message,
@@ -1330,7 +1392,8 @@ async def neighbor_memories(
                     f"Error: Memory '{str(message.id)[:8]}' belongs to an archived "
                     "conversation, which is withdrawn from every memory surface."
                 )
-            await _note_surfaced(ctx, [item["id"] for item in window["items"]], db)
+            if not isolated:
+                await _note_surfaced(ctx, [item["id"] for item in window["items"]], db)
     except Exception as e:
         logger.error(f"Memory neighbors error: {e}")
         return f"Error reading memory neighbors: {e}"
@@ -1357,6 +1420,8 @@ async def neighbor_memories(
             f" {pointer_count} of these are already in your context and are listed "
             "without their content."
         )
+    if isolated:
+        header += ISOLATED_SCOPE_NOTE
     if not include_released:
         header += " Released messages around it are not shown (include_released=true shows them)."
 
@@ -1417,6 +1482,7 @@ async def _memory_read(**kwargs: Any) -> str:
         page_tokens=kwargs.get("page_tokens"),
         include_released=bool(kwargs.get("include_released", False)),
         include_model=bool(kwargs.get("include_model", False)),
+        scope=kwargs.get("scope"),
     )
 
 
@@ -1426,10 +1492,12 @@ async def _memory_neighbors(
     after: Optional[int] = None,
     include_released: bool = False,
     include_model: bool = False,
+    scope: Optional[str] = None,
 ) -> str:
     return await neighbor_memories(
         _context, memory_id, before=before, after=after,
         include_released=bool(include_released), include_model=bool(include_model),
+        scope=scope,
     )
 
 
@@ -1630,6 +1698,23 @@ _INCLUDE_MODEL_PROPERTY = {
     "default": False,
 }
 
+_SCOPE_PROPERTY = {
+    "type": "string",
+    "enum": list(VALID_READ_SCOPES),
+    "description": (
+        "Which in-view set this call belongs to. 'conversation' (default): "
+        "messages already in your context are listed as pointers, and what "
+        "the call shows counts as in view afterwards. 'isolated': for a "
+        "reader whose context is not this conversation's (a subagent, which "
+        "shares its parent's conversation_id): every message comes back in "
+        "full, this conversation's own included, and nothing is recorded as "
+        "in view, so the read leaves no trace in the conversation's dedup. "
+        "Visibility rules (released, archived, source, in_conversation) are "
+        "the same under both."
+    ),
+    "default": SCOPE_CONVERSATION,
+}
+
 MEMORY_READ_DESCRIPTION = (
     "Read your archive in order: the verbatim record by date, rather than "
     "by similarity. Give a span ('from', optionally 'to'; a bare date means "
@@ -1651,7 +1736,12 @@ MEMORY_READ_DESCRIPTION = (
     "(an oversized message comes back alone, whole), and reading is not "
     "retrieval: it does not feed significance, though what a page shows "
     "counts as in view for later automatic retrieval and queries. Released memories are skipped "
-    "unless include_released is set; archived conversations are never shown."
+    "unless include_released is set; archived conversations are never shown. "
+    "scope='isolated' is for a reader whose context is not this "
+    "conversation's (a subagent shares its parent's conversation_id): "
+    "every message comes back in full, nothing is a pointer, and nothing "
+    "it shows is recorded as in view. The parent's own calls stay on the "
+    "default scope."
 )
 
 MEMORY_READ_SCHEMA = {
@@ -1720,6 +1810,7 @@ MEMORY_READ_SCHEMA = {
         },
         "include_released": _INCLUDE_RELEASED_PROPERTY,
         "include_model": _INCLUDE_MODEL_PROPERTY,
+        "scope": _SCOPE_PROPERTY,
     },
     "required": ["from"],
 }
@@ -1735,7 +1826,9 @@ MEMORY_NEIGHBORS_DESCRIPTION = (
     "if the window reached the start or end of the conversation. Same rules "
     "as memory_read: nothing excluded, verbatim, messages already in your "
     "context listed as pointers rather than repeated, no retrieval "
-    "tracking, what it shows counts as in view afterwards."
+    "tracking, what it shows counts as in view afterwards; or, with "
+    "scope='isolated' (a subagent reading on the parent's conversation_id), "
+    "everything in full and nothing recorded."
 )
 
 MEMORY_NEIGHBORS_SCHEMA = {
@@ -1761,6 +1854,7 @@ MEMORY_NEIGHBORS_SCHEMA = {
         },
         "include_released": _INCLUDE_RELEASED_PROPERTY,
         "include_model": _INCLUDE_MODEL_PROPERTY,
+        "scope": _SCOPE_PROPERTY,
     },
     "required": ["memory_id"],
 }

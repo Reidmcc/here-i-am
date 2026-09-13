@@ -469,6 +469,7 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
                 page_tokens=arguments.get("page_tokens"),
                 include_released=bool(arguments.get("include_released", False)),
                 include_model=bool(arguments.get("include_model", False)),
+                scope=arguments.get("scope"),
             )
         if name == "memory_neighbors":
             return await memory_tools.neighbor_memories(
@@ -478,6 +479,7 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
                 after=arguments.get("after"),
                 include_released=bool(arguments.get("include_released", False)),
                 include_model=bool(arguments.get("include_model", False)),
+                scope=arguments.get("scope"),
             )
         return await memory_tools.release_memory(
             ctx, arguments.get("memory_id", ""), undo=bool(arguments.get("undo", False))
