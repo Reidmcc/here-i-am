@@ -3440,6 +3440,86 @@ class TestMemoryQueryResultDedup:
         tool_results = [m for m in session.conversation_context if m.get("is_tool_result")]
         assert all("memory_query_ids" not in m for m in tool_results)
 
+    @pytest.mark.asyncio
+    async def test_load_session_does_not_restamp_isolated_archive_reads(
+        self, db_session, sample_conversation, sample_messages
+    ):
+        """A memory_read with scope="isolated" stamped nothing live (issue
+        #345), so reload leaves its result unstamped too; the same call on
+        the default scope is re-stamped like memory_query's."""
+        import json
+
+        isolated_id = str(uuid.uuid4())
+        default_id = str(uuid.uuid4())
+
+        def header(memory_id):
+            return (
+                f"--- Memory {memory_id[:8]} (You said, 2026-09-01 12:00:00 UTC, "
+                'via Here I Am, in "x") ---\nsome words\n'
+            )
+
+        db_session.add_all([
+            Message(
+                conversation_id=sample_conversation.id,
+                role=MessageRole.TOOL_USE,
+                content=json.dumps([{
+                    "type": "tool_use", "id": "toolu_iso", "name": "memory_read",
+                    "input": {"from": "2026-09-01", "scope": "isolated"},
+                }]),
+            ),
+            Message(
+                conversation_id=sample_conversation.id,
+                role=MessageRole.TOOL_RESULT,
+                content=json.dumps([{
+                    "type": "tool_result", "tool_use_id": "toolu_iso",
+                    "content": header(isolated_id), "is_error": False,
+                }]),
+            ),
+            Message(
+                conversation_id=sample_conversation.id,
+                role=MessageRole.TOOL_USE,
+                content=json.dumps([{
+                    "type": "tool_use", "id": "toolu_def", "name": "memory_read",
+                    "input": {"from": "2026-09-01"},
+                }]),
+            ),
+            Message(
+                conversation_id=sample_conversation.id,
+                role=MessageRole.TOOL_RESULT,
+                content=json.dumps([{
+                    "type": "tool_result", "tool_use_id": "toolu_def",
+                    "content": header(default_id), "is_error": False,
+                }]),
+            ),
+        ])
+        await db_session.commit()
+
+        manager = SessionManager()
+
+        with patch("app.services.session_manager.memory_service") as mock_memory, \
+             patch("app.services.session_manager.settings") as mock_settings:
+            mock_memory.is_configured.return_value = False
+            mock_memory.get_retrieved_memories_with_timestamps = AsyncMock(return_value=[])
+            mock_memory.resolve_memory_id_prefixes = AsyncMock(return_value=[default_id])
+            mock_settings.default_model = "claude-sonnet-4-5-20250929"
+            mock_settings.default_temperature = 1.0
+            mock_settings.default_max_tokens = 64000
+            mock_settings.notes_enabled = False
+            mock_settings.get_entity_by_index.return_value = None
+
+            session = await manager.load_session_from_db(
+                sample_conversation.id, db_session
+            )
+
+        # Only the default-scope result's prefix was resolved
+        mock_memory.resolve_memory_id_prefixes.assert_awaited_once()
+        assert mock_memory.resolve_memory_id_prefixes.call_args.args[1] == [default_id[:8]]
+        tool_results = [m for m in session.conversation_context if m.get("is_tool_result")]
+        assert len(tool_results) == 2
+        assert "memory_query_ids" not in tool_results[0]
+        assert tool_results[1]["memory_query_ids"] == [default_id]
+        assert session.get_query_surfaced_memory_ids() == {default_id}
+
 
 class TestNoteStampTracking:
     """Tests for note-content stamps (notes_read dedup state)."""

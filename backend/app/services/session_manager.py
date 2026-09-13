@@ -40,6 +40,7 @@ from app.services.memory_service import memory_service
 from app.services.memory_tools import (
     MEMORY_RESULT_STAMPING_TOOLS,
     consume_last_query_memory_ids,
+    is_isolated_read,
     set_memory_tool_context,
 )
 from app.services.notes_tools import (
@@ -494,7 +495,11 @@ class SessionManager:
                     if not isinstance(block, dict) or block.get("type") != "tool_use":
                         continue
                     if block.get("name") in MEMORY_RESULT_STAMPING_TOOLS:
-                        memory_query_tool_ids.add(block.get("id"))
+                        # An isolated archive read (scope="isolated", issue
+                        # #345) stamped nothing live, so its result is not
+                        # re-stamped on reload either
+                        if not is_isolated_read(block.get("input")):
+                            memory_query_tool_ids.add(block.get("id"))
                     elif block.get("name") in NOTE_STAMP_TOOL_NAMES:
                         # Private-note ownership follows the entity that made
                         # the call: the responding entity for single-entity

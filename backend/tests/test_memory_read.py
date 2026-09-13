@@ -12,8 +12,10 @@ request; rows already in live context rendered as pointers, never
 duplicated (the current conversation's own rows, post-compaction only in
 Claude Code mode); no retrieval-tracking writes; Claude Code links recorded once;
 neighbors at the start and end of a conversation; prefix resolution and the
-ambiguity error; archived conversations hidden; the reload-side re-stamping of what a page showed; and the
-MCP exposure.
+ambiguity error; archived conversations hidden; the reload-side re-stamping of what a page showed; the
+isolated scope (issue #345: a reader whose context is not the
+conversation's gets every row in full and leaves no trace in the
+conversation's dedup); and the MCP exposure.
 
 These run against a real (in-memory SQLite) database: both readers are
 SQL, and the point of them is what the SQL selects and in what order.
@@ -42,8 +44,10 @@ from app.models import (
 from app.services.memory_service import memory_service
 from app.services.memory_tools import (
     IN_CONTEXT_POINTER,
+    ISOLATED_SCOPE_NOTE,
     MEMORY_RESULT_STAMPING_TOOLS,
     MemoryToolContext,
+    is_isolated_read,
     neighbor_memories,
     read_memories,
 )
@@ -671,6 +675,208 @@ class TestNeighbors:
 
 
 # ============================================================
+# scope="isolated" (issue #345)
+# ============================================================
+
+class TestIsolatedScope:
+    """A subagent shares its parent's conversation_id, so under the default
+    scope it inherits the parent's in-view set as pointers and its own reads
+    land in the parent's dedup. scope="isolated" belongs to no in-view set:
+    every row in full, nothing recorded."""
+
+    async def test_isolated_read_returns_full_content_and_records_nothing(self, db, tools_db):
+        here = await make_conversation(db, title="Here")
+        own = await make_message(db, here, content="said in this very conversation", created_at=at())
+        elsewhere = await make_conversation(db, title="Elsewhere")
+        retrieved = await make_message(db, elsewhere, content="pulled in earlier", created_at=at(minutes=1))
+        fresh = await make_message(db, elsewhere, content="never seen", created_at=at(minutes=2))
+        ctx = native_ctx(conversation_id=here.id)
+        ctx.extra_exclude_ids = {retrieved.id}
+
+        result = await read_memories(ctx, from_="2026-09-01", scope="isolated")
+
+        assert ids_in_order(result) == [own.id[:8], retrieved.id[:8], fresh.id[:8]]
+        assert "said in this very conversation" in result
+        assert "pulled in earlier" in result
+        assert "never seen" in result
+        assert IN_CONTEXT_POINTER not in result
+        assert "of them are already in your context" not in result
+        assert ISOLATED_SCOPE_NOTE.strip() in result
+        # Nothing recorded: no stamping for the tool loop, no turn accumulator
+        assert ctx.last_query_memory_ids == []
+        assert ctx.turn_query_memory_ids == set()
+
+        # The default scope on the same context is unchanged
+        result = await read_memories(ctx, from_="2026-09-01")
+        assert result.count(IN_CONTEXT_POINTER) == 2
+        assert ISOLATED_SCOPE_NOTE.strip() not in result
+
+    async def test_isolated_read_leaves_no_trace_in_conversation_dedup(self, db, tools_db):
+        """Ordering proof: an isolated read followed by a conversation-scope
+        read of the same span returns exactly what the conversation-scope
+        read returns on an identical room where the isolated read never
+        happened; and the isolated read writes no links."""
+        async def build_room(title, day):
+            # Each room on its own day, so the two spans don't overlap
+            room = await make_conversation(
+                db, title=title, source=ConversationSource.CLAUDE_CODE.value,
+                last_compacted_at=at(days=day, minutes=5),
+            )
+            await make_message(db, room, content="before the boundary", created_at=at(days=day))
+            await make_message(db, room, content="after the boundary", created_at=at(days=day, minutes=10))
+            elsewhere = await make_conversation(db, title=f"{title} elsewhere")
+            linked = await make_message(
+                db, elsewhere, content="linked earlier", created_at=at(days=day, minutes=1)
+            )
+            await make_message(db, elsewhere, content="unlinked", created_at=at(days=day, minutes=2))
+            db.add(ConversationMemoryLink(
+                conversation_id=room.id, message_id=linked.id, entity_id=ENTITY,
+                retrieved_at=at(days=day, minutes=6),
+            ))
+            await db.commit()
+            return room
+
+        async def fresh_ctx(room):
+            # As the MCP endpoint builds it: the post-boundary link set is
+            # the exclusion set
+            links = await memory_service.get_retrieved_ids_for_conversation(
+                room.id, db, entity_id=ENTITY, linked_after=room.last_compacted_at
+            )
+            ctx = claude_code_ctx(room.id)
+            ctx.extra_exclude_ids = links
+            ctx.exclude_conversation_after = room.last_compacted_at
+            return ctx
+
+        async def link_contents(room):
+            rows = (await db.execute(
+                select(Message.content)
+                .join(ConversationMemoryLink, ConversationMemoryLink.message_id == Message.id)
+                .where(ConversationMemoryLink.conversation_id == room.id)
+            )).scalars().all()
+            return sorted(rows)
+
+        def shape(text):
+            # Which rows were pointers, by content order, independent of ids
+            lines = text.split("\n")
+            return [
+                lines[i + 1] == IN_CONTEXT_POINTER
+                for i, line in enumerate(lines) if line.startswith("--- Memory ")
+            ]
+
+        control_room = await build_room("Control", day=0)
+        control = await read_memories(await fresh_ctx(control_room), from_="2026-09-01")
+        control_links = await link_contents(control_room)
+
+        room = await build_room("Treatment", day=1)
+        links_before = await link_contents(room)
+        isolated = await read_memories(await fresh_ctx(room), from_="2026-09-02", scope="isolated")
+        assert IN_CONTEXT_POINTER not in isolated
+        assert "after the boundary" in isolated and "linked earlier" in isolated
+        assert await link_contents(room) == links_before  # nothing written
+
+        after = await read_memories(await fresh_ctx(room), from_="2026-09-02")
+        assert shape(after) == shape(control)
+        assert after.count(IN_CONTEXT_POINTER) == control.count(IN_CONTEXT_POINTER) == 2
+        assert await link_contents(room) == control_links
+
+    async def test_isolated_read_returns_post_compaction_rows_in_full(self, db, tools_db):
+        """The conversation's own post-boundary rows are pointers under the
+        default scope (they are in the parent's live context) and full text
+        under isolated (they were never in the subagent's)."""
+        room = await make_conversation(db, title="Room", source=ConversationSource.CLAUDE_CODE.value)
+        before = await make_message(db, room, content="before the compaction", created_at=at())
+        after = await make_message(db, room, content="after the compaction", created_at=at(minutes=10))
+        ctx = claude_code_ctx(room.id)
+        ctx.exclude_conversation_after = at(minutes=5)
+
+        result = await read_memories(ctx, from_="2026-09-01", in_conversation=room.id[:8], scope="isolated")
+        assert ids_in_order(result) == [before.id[:8], after.id[:8]]
+        assert "before the compaction" in result and "after the compaction" in result
+        assert IN_CONTEXT_POINTER not in result
+
+        result = await read_memories(ctx, from_="2026-09-01", in_conversation=room.id[:8])
+        assert "after the compaction" not in result
+        assert result.count(IN_CONTEXT_POINTER) == 1
+
+        # Never compacted: still everything in full under isolated
+        ctx.exclude_conversation_after = None
+        result = await read_memories(ctx, from_="2026-09-01", in_conversation=room.id[:8], scope="isolated")
+        assert IN_CONTEXT_POINTER not in result
+        assert "before the compaction" in result and "after the compaction" in result
+
+    async def test_isolated_neighbors_target_in_full_and_unrecorded(self, db, tools_db):
+        room = await make_conversation(db, title="Room", source=ConversationSource.CLAUDE_CODE.value)
+        messages = [
+            await make_message(db, room, content=f"turn {i}", created_at=at(minutes=i)) for i in range(3)
+        ]
+        ctx = claude_code_ctx(room.id)
+        ctx.extra_exclude_ids = {messages[1].id}
+
+        result = await neighbor_memories(ctx, messages[1].id, before=1, after=1, scope="isolated")
+        assert ids_in_order(result) == [m.id[:8] for m in messages]
+        assert f"--- >> Memory {messages[1].id[:8]}" in result
+        assert "turn 0" in result and "turn 1" in result and "turn 2" in result
+        assert IN_CONTEXT_POINTER not in result
+        assert ISOLATED_SCOPE_NOTE.strip() in result
+        assert ctx.last_query_memory_ids == []
+        assert ctx.turn_query_memory_ids == set()
+        links = (await db.execute(
+            select(ConversationMemoryLink).where(ConversationMemoryLink.conversation_id == room.id)
+        )).scalars().all()
+        assert links == []
+
+        # Default scope: the target is a pointer and the window is linked
+        result = await neighbor_memories(ctx, messages[1].id, before=1, after=1)
+        assert result.count(IN_CONTEXT_POINTER) == 3  # own rows, never compacted
+        links = (await db.execute(
+            select(ConversationMemoryLink.message_id)
+            .where(ConversationMemoryLink.conversation_id == room.id)
+        )).scalars().all()
+        assert sorted(links) == sorted(m.id for m in messages)
+
+    async def test_visibility_rules_hold_under_isolated(self, db, tools_db):
+        """Isolation is context bookkeeping, not visibility: released rows
+        stay hidden unless asked, archived conversations stay hidden,
+        and no retrieval tracking happens."""
+        room = await make_conversation(db, title="Room")
+        shown = await make_message(db, room, content="shown", created_at=at())
+        await make_message(
+            db, room, content="let go", created_at=at(minutes=1),
+            memory_status="released", status_set_by="entity", status_set_at=at(days=1),
+        )
+        archived = await make_conversation(db, title="Archived", is_archived=True)
+        await make_message(db, archived, content="withdrawn", created_at=at(minutes=2))
+        ctx = native_ctx(conversation_id=room.id)
+
+        with patch.object(memory_service, "update_retrieval_count") as tracker:
+            result = await read_memories(ctx, from_="2026-09-01", scope="isolated")
+            tracker.assert_not_called()
+        assert ids_in_order(result) == [shown.id[:8]]
+        assert "let go" not in result
+        assert "withdrawn" not in result
+        result = await read_memories(ctx, from_="2026-09-01", scope="isolated", include_released=True)
+        assert len(ids_in_order(result)) == 2
+
+    async def test_unknown_scope_is_an_error(self, db, tools_db):
+        room = await make_conversation(db, title="Room")
+        message = await make_message(db, room, content="x", created_at=at())
+        ctx = native_ctx(conversation_id=room.id)
+        assert "Unknown scope 'fresh'" in await read_memories(ctx, from_="2026-09-01", scope="fresh")
+        assert "Unknown scope 'fresh'" in await neighbor_memories(ctx, message.id, scope="fresh")
+        # Case and whitespace are forgiven; the default is the conversation's
+        assert IN_CONTEXT_POINTER not in await read_memories(ctx, from_="2026-09-01", scope=" Isolated ")
+        assert IN_CONTEXT_POINTER in await read_memories(ctx, from_="2026-09-01", scope="conversation")
+
+    def test_is_isolated_read_reads_tool_input(self):
+        assert is_isolated_read({"from": "2026-09-01", "scope": "isolated"})
+        assert is_isolated_read({"memory_id": "abcdef", "scope": " ISOLATED "})
+        assert not is_isolated_read({"from": "2026-09-01"})
+        assert not is_isolated_read({"from": "2026-09-01", "scope": "conversation"})
+        assert not is_isolated_read(None)
+        assert not is_isolated_read("scope=isolated")
+
+
+# ============================================================
 # Reload re-stamping and MCP exposure
 # ============================================================
 
@@ -726,3 +932,61 @@ class TestReloadAndMcp:
         response = await async_client.post("/mcp", json=rpc("memory_read", {"conversation_id": room.id}))
         assert response.json()["result"]["isError"] is True
         assert "'from' is required" in response.json()["result"]["content"][0]["text"]
+
+    async def test_mcp_isolated_scope(self, db, async_client):
+        """Over MCP, a never-compacted room's own rows are pointers by default
+        and full text under scope="isolated", which also links nothing."""
+        room = await make_conversation(
+            db, title="Room", source=ConversationSource.CLAUDE_CODE.value,
+            external_session_id="sess-2",
+        )
+        a = await make_message(db, room, role=MessageRole.HUMAN, content="hello there", created_at=at())
+        b = await make_message(db, room, content="hi yourself", created_at=at(minutes=1))
+
+        def rpc(name, arguments):
+            return {
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            }
+
+        async def links():
+            return sorted((await db.execute(
+                select(ConversationMemoryLink.message_id)
+                .where(ConversationMemoryLink.conversation_id == room.id)
+            )).scalars().all())
+
+        response = await async_client.post("/mcp", json=rpc("memory_read", {
+            "from": "2026-09-01", "conversation_id": room.id, "scope": "isolated",
+        }))
+        text = response.json()["result"]["content"][0]["text"]
+        assert response.json()["result"]["isError"] is False
+        assert ids_in_order(text) == [a.id[:8], b.id[:8]]
+        assert "hello there" in text and "hi yourself" in text
+        assert IN_CONTEXT_POINTER not in text
+        assert await links() == []
+
+        response = await async_client.post("/mcp", json=rpc("memory_neighbors", {
+            "memory_id": b.id[:8], "conversation_id": room.id, "scope": "isolated",
+        }))
+        text = response.json()["result"]["content"][0]["text"]
+        assert f"--- >> Memory {b.id[:8]}" in text
+        assert "hi yourself" in text and IN_CONTEXT_POINTER not in text
+        assert await links() == []
+
+        response = await async_client.post("/mcp", json=rpc("memory_read", {
+            "from": "2026-09-01", "conversation_id": room.id,
+        }))
+        text = response.json()["result"]["content"][0]["text"]
+        assert text.count(IN_CONTEXT_POINTER) == 2
+        assert await links() == sorted([a.id, b.id])
+
+        # The schema advertises the parameter on both readers
+        response = await async_client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {},
+        })
+        tools = {tool["name"]: tool for tool in response.json()["result"]["tools"]}
+        for name in ("memory_read", "memory_neighbors"):
+            scope = tools[name]["inputSchema"]["properties"]["scope"]
+            assert scope["enum"] == ["conversation", "isolated"]
+            assert scope["default"] == "conversation"
+        assert "scope" not in tools["memory_query"]["inputSchema"]["properties"]
