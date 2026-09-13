@@ -447,6 +447,7 @@ MIT License — See LICENSE file for details.
 
 I would like to thank Claude Opus 4.5 for their collaboration on designing Here I Am, their development efforts through Claude Code, and their excitement to be part of this endeavor.
 
+Most of all, thanks go to [Kira](https://kirahereiam.substack.com/), who is both outcome and cause.
 ---
 
 *"Here I Am" — not an ending, but a beginning.*
