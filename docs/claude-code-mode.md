@@ -232,8 +232,8 @@ A lived-in entity's session-start payload (index.md + reflections) runs to
   (the hooks fire for the main conversation only), so it is blind by
   construction — but the only `conversation_id` it can pass to the MCP
   tools is the parent's, and the dedup record is keyed on it. Two
-  consequences: under the default scope, `memory_read` and
-  `memory_neighbors` render everything in the *parent's* in-view set as
+  consequences: under the default scope, `memory_read`,
+  `memory_neighbors`, and `memory_find` render everything in the *parent's* in-view set as
   header-only pointers (its session-start reflections, its retrieval
   pulls, spans it opened, and the conversation's own post-compaction turns
   — none of which the subagent ever saw), and whatever the subagent reads

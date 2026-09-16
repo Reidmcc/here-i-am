@@ -8,6 +8,7 @@ These tools allow AI entities to:
 - memory_release: exclude a memory from future retrieval (reversible)
 - memory_read: read the archive in order over a span of time (issue #343)
 - memory_neighbors: open one memory outward to the messages around it
+- memory_find: every message containing the exact words, in order
 
 Unlike automatic memory retrieval (which happens based on conversation context
 and is re-ranked by significance), deliberate recall returns memories purely
@@ -923,9 +924,10 @@ async def release_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = Fa
 # --- Archive readers (issue #343) ------------------------------------------
 #
 # memory_read and memory_neighbors read the archive by position instead of
-# by similarity: the whole record, in order, verbatim, paginated. Pure SQL
-# over Message (memory_service.read_messages_in_span /
-# read_message_neighbors). Three rules distinguish them from recall:
+# by similarity, and memory_find by the exact words: the whole record, in
+# order, verbatim, paginated. Pure SQL over Message
+# (memory_service.read_messages_in_span / read_message_neighbors /
+# find_messages). Three rules distinguish them from recall:
 # - Nothing is excluded for being in context or in the current conversation:
 #   the page stays whole and in order. But a row whose content is already in
 #   live context (a memory retrieved into context from anywhere; the current
@@ -1162,16 +1164,67 @@ def _parse_page_tokens(page_tokens: Any) -> Tuple[Optional[int], Optional[str]]:
     return max(READ_PAGE_TOKENS_MIN, min(READ_PAGE_TOKENS_MAX, page_tokens)), None
 
 
-def _check_cursor(cursor: Any, tool_name: str) -> Tuple[Optional[str], Optional[str]]:
-    """(cursor or None when absent, error) for a page cursor argument."""
+def _check_cursor(
+    cursor: Any, tool_name: str, same: str = "span"
+) -> Tuple[Optional[str], Optional[str]]:
+    """(cursor or None when absent, error) for a page cursor argument;
+    `same` names what a resumed page must repeat ("span" or "text")."""
     if cursor is None or not str(cursor).strip():
         return None, None
     if memory_service.decode_read_cursor(cursor) is None:
         return None, (
             f"Error: Unrecognized cursor '{cursor}'. Pass back the cursor a "
-            f"previous {tool_name} page returned, with the same span and filters."
+            f"previous {tool_name} page returned, with the same {same} and filters."
         )
     return cursor, None
+
+
+def _render_archive_page(
+    ctx: MemoryToolContext,
+    page: Dict[str, Any],
+    header: str,
+    tzinfo: Optional[ZoneInfo],
+    include_model: bool,
+    isolated: bool,
+    released_note: str,
+    same: str,
+    noun: Tuple[str, str],
+    end_text: str,
+) -> str:
+    """
+    A non-empty archive page as the readers print it: the header sentence
+    with the pointer / isolated / released notes appended, every row via
+    _format_archive_item, then the next-page footer (`same` and `noun` word
+    it: "the same span … (3 messages remain)") or `end_text`.
+    """
+    items = page["items"]
+    pointer_count = sum(1 for item in items if item.get("in_context"))
+    pointer_note = (
+        f" {pointer_count} of them are already in your context and are listed "
+        "without their content."
+        if pointer_count
+        else ""
+    )
+    lines = [
+        header + pointer_note + (ISOLATED_SCOPE_NOTE if isolated else "") + released_note,
+        "",
+    ]
+    labels = _entity_labels()
+    now = datetime.utcnow()
+    for item in items:
+        lines.extend(
+            _format_archive_item(item, ctx.entity_id, labels, tzinfo, include_model, now)
+        )
+    if page["next_cursor"]:
+        remaining = page["total"] - (page["offset"] + len(items))
+        word = noun[0] if remaining == 1 else noun[1]
+        lines.append(
+            f"Next page: pass cursor=\"{page['next_cursor']}\" with the same {same} "
+            f"and filters ({remaining} {word} remain{'s' if remaining == 1 else ''})."
+        )
+    else:
+        lines.append(end_text)
+    return "\n".join(lines)
 
 
 async def _resolve_conversation_filter(
@@ -1322,35 +1375,16 @@ async def read_memories(
 
     first = page["offset"] + 1
     last = page["offset"] + len(items)
-    pointer_count = sum(1 for item in items if item.get("in_context"))
-    pointer_note = (
-        f" {pointer_count} of them are already in your context and are listed "
-        "without their content."
-        if pointer_count
-        else ""
+    return _render_archive_page(
+        ctx, page,
+        header=(
+            f"Your archive, {span_text}{source_suffix}{conversation_suffix}: "
+            f"{page['total']} messages in the span; this page shows {first}–{last}, in order."
+        ),
+        tzinfo=tzinfo, include_model=include_model, isolated=isolated,
+        released_note=released_note, same="span", noun=("message", "messages"),
+        end_text="End of span.",
     )
-    lines = [
-        f"Your archive, {span_text}{source_suffix}{conversation_suffix}: "
-        f"{page['total']} messages in the span; this page shows {first}–{last}, in order."
-        + pointer_note
-        + (ISOLATED_SCOPE_NOTE if isolated else "")
-        + released_note,
-        "",
-    ]
-    labels = _entity_labels()
-    now = datetime.utcnow()
-    for item in items:
-        lines.extend(
-            _format_archive_item(item, ctx.entity_id, labels, tzinfo, include_model, now)
-        )
-    if page["next_cursor"]:
-        lines.append(
-            f"Next page: pass cursor=\"{page['next_cursor']}\" with the same span "
-            f"and filters ({page['total'] - last} messages remain)."
-        )
-    else:
-        lines.append("End of span.")
-    return "\n".join(lines)
 
 
 MATCH_DESCRIPTIONS = {
@@ -1370,6 +1404,7 @@ async def find_memories(
     ctx: MemoryToolContext,
     text: Any = None,
     match: Optional[str] = None,
+    whole_words: bool = True,
     from_: Any = None,
     to: Any = None,
     tz: Optional[str] = None,
@@ -1383,9 +1418,9 @@ async def find_memories(
 ) -> str:
     """
     memory_find: every message in the entity's archive containing the given
-    words, in order, one token-bounded page at a time — the record by word.
-    Same rules as memory_read (see the module comment above); the only
-    difference is what selects the rows.
+    words (whole words by default), in order, one token-bounded page at a
+    time — the record by word. Same rules as memory_read (see the module
+    comment above); the only difference is what selects the rows.
     """
     if not ctx.entity_id:
         return "Error: No entity context available for reading memories"
@@ -1428,7 +1463,7 @@ async def find_memories(
     page_tokens, error = _parse_page_tokens(page_tokens)
     if error:
         return error
-    cursor, error = _check_cursor(cursor, "memory_find")
+    cursor, error = _check_cursor(cursor, "memory_find", same="text")
     if error:
         return error
 
@@ -1443,7 +1478,8 @@ async def find_memories(
         span_text = f", up to {_describe_bound(end, end_local, tzinfo)}"
     else:
         span_text = ""
-    what = f'"{text}" ({MATCH_DESCRIPTIONS[match_mode]})'
+    boundary = "whole words" if whole_words else "inside words too"
+    what = f'"{text}" ({MATCH_DESCRIPTIONS[match_mode]}, {boundary})'
 
     try:
         async with async_session_maker() as db:
@@ -1459,6 +1495,7 @@ async def find_memories(
                 entity_id=ctx.entity_id,
                 text=text,
                 match=match_mode,
+                whole_words=bool(whole_words),
                 start=start,
                 end=end,
                 role_filter=role_filter,
@@ -1494,36 +1531,16 @@ async def find_memories(
 
     first = page["offset"] + 1
     last = page["offset"] + len(items)
-    pointer_count = sum(1 for item in items if item.get("in_context"))
-    pointer_note = (
-        f" {pointer_count} of them are already in your context and are listed "
-        "without their content."
-        if pointer_count
-        else ""
+    return _render_archive_page(
+        ctx, page,
+        header=(
+            f"Your archive, messages containing {what}{filters}: {total} match{plural}; "
+            f"this page shows {first}–{last}, in order."
+        ),
+        tzinfo=tzinfo, include_model=include_model, isolated=isolated,
+        released_note=released_note, same="text", noun=("match", "matches"),
+        end_text="End of matches.",
     )
-    lines = [
-        f"Your archive, messages containing {what}{filters}: {total} match{plural}; "
-        f"this page shows {first}–{last}, in order."
-        + pointer_note
-        + (ISOLATED_SCOPE_NOTE if isolated else "")
-        + released_note,
-        "",
-    ]
-    labels = _entity_labels()
-    now = datetime.utcnow()
-    for item in items:
-        lines.extend(
-            _format_archive_item(item, ctx.entity_id, labels, tzinfo, include_model, now)
-        )
-    if page["next_cursor"]:
-        remaining = total - last
-        lines.append(
-            f"Next page: pass cursor=\"{page['next_cursor']}\" with the same text "
-            f"and filters ({remaining} match{'es' if remaining != 1 else ''} remain)."
-        )
-    else:
-        lines.append("End of matches.")
-    return "\n".join(lines)
 
 
 async def neighbor_memories(
@@ -1688,6 +1705,7 @@ async def _memory_find(**kwargs: Any) -> str:
         _context,
         text=kwargs.get("text"),
         match=kwargs.get("match"),
+        whole_words=bool(kwargs.get("whole_words", True)),
         from_=kwargs.get("from"),
         to=kwargs.get("to"),
         tz=kwargs.get("tz"),
@@ -2084,12 +2102,18 @@ MEMORY_FIND_DESCRIPTION = (
     "filename, a quote you want verified at its source; for completeness — "
     "every occurrence, not the nearest few; and for its opposite — a result "
     "of zero means the words appear nowhere you can see, which a semantic "
-    "query can never say. 'text' is matched as written, case-insensitively; "
-    "'match' takes it as one phrase (default), or as words that must all "
-    "appear in any order ('all'), or of which any may ('any'). Optional "
-    "'from' / 'to' bound the search by date (as in memory_read, read in "
-    "'tz'); 'in_conversation' and 'source' narrow it as in memory_read. Same "
-    "rules as memory_read otherwise: verbatim, paged by tokens with a "
+    "query can never say. 'text' is matched literally and "
+    "case-insensitively, as whole words by default (so 'Sage' is not found "
+    "inside 'message'; whole_words=false also matches inside words — a "
+    "stem, part of an id); any whitespace in it matches any whitespace in "
+    "the message, so a quote that wrapped a line still matches. 'match' "
+    "takes it as one phrase (default), or as words that must all appear in "
+    "any order ('all'), or of which any may ('any'). Optional 'from' / 'to' "
+    "bound the search by date (as in memory_read, read in 'tz'); "
+    "'in_conversation' and 'source' narrow it as in memory_read. Text of "
+    "attached files in the human's messages is searched too, and a hit "
+    "there returns the whole message, attachment included. Same rules as "
+    "memory_read otherwise: verbatim, paged by tokens with a "
     "cursor, nothing excluded for being in context or in this conversation "
     "but such messages listed as pointers without their content, no "
     "retrieval tracking, what a page shows counts as in view afterwards "
@@ -2104,19 +2128,30 @@ MEMORY_FIND_SCHEMA = {
         "text": {
             "type": "string",
             "description": (
-                "The words to find, as written. Case-insensitive; matched "
-                "anywhere in a message's text."
+                "The words to find, as written. Matched literally and "
+                "case-insensitively anywhere in a message's text; whitespace "
+                "in it matches any whitespace, including a line break."
             ),
         },
         "match": {
             "type": "string",
             "enum": list(memory_service.VALID_MATCH_MODES),
             "description": (
-                "'phrase' (default): the text as one contiguous string. "
+                "'phrase' (default): the words in this order, together. "
                 "'all': every whitespace-separated word must appear, in any "
                 "order. 'any': at least one of the words must appear."
             ),
             "default": memory_service.MATCH_PHRASE,
+        },
+        "whole_words": {
+            "type": "boolean",
+            "description": (
+                "True (default): the text must begin and end at a word "
+                "boundary, so a name is not found inside another word "
+                "('Sage' in 'message', 'Ren' in 'different'). False: match "
+                "inside words too, for a stem or part of an id."
+            ),
+            "default": True,
         },
         "from": {
             "type": "string",

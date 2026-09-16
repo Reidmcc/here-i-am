@@ -6,10 +6,12 @@ context rules as memory_read (tests/test_memory_read.py covers those in
 depth; here they are checked once each on the new selector).
 
 What sets it apart from memory_query and is under test here: exact tokens
-similarity search cannot see (a PR number, a name), LIKE wildcards in the
-text taken literally, the three match modes, completeness (every
-occurrence, counted), and the meaningful zero — a result of none says the
-words appear nowhere the entity can see.
+similarity search cannot see (a PR number, a name), whole-word matching so
+a name is not found inside another word (the second reader's finding on
+PR #348: "Sage" in "message"), regex specials in the text taken literally,
+a quote matching across a line break, the three match modes, completeness
+(every occurrence, counted), and the meaningful zero — a result of none
+says the words appear nowhere the entity can see.
 
 Runs against a real (in-memory SQLite) database, reusing the reader tests'
 fixtures and helpers.
@@ -66,27 +68,51 @@ class TestMatching:
 
         assert ids_in_order(result) == [first.id[:8], second.id[:8]]
         assert result.startswith(
-            'Your archive, messages containing "Mad Scientist" (as a phrase): '
+            'Your archive, messages containing "Mad Scientist" (as a phrase, whole words): '
             "2 matches; this page shows 1–2, in order."
         )
         assert "Human said" in result and "You said" in result
         assert result.rstrip().endswith("End of matches.")
 
+    async def test_a_name_is_not_found_inside_other_words(self, db, tools_db):
+        """The second reader's probe on PR #348: "Sage" must not count
+        "message", "usage", or "passage" as mentions, or the header's count
+        counts letter sequences and the zero is unreachable. Whole words are
+        the default; whole_words=false is the substring behavior."""
+        conversation = await make_conversation(db)
+        noise1 = await make_message(db, conversation, role=MessageRole.HUMAN, content="a message arrived")
+        noise2 = await make_message(db, conversation, content="the usage page", created_at=at(minutes=1))
+        noise3 = await make_message(db, conversation, content="a passage from Chekhov", created_at=at(minutes=2))
+        real1 = await make_message(db, conversation, content="Sage's letter came today.", created_at=at(minutes=3))
+        real2 = await make_message(db, conversation, content="answered sage by email", created_at=at(minutes=4))
+        await make_message(db, conversation, content="Renée wrote, differently", created_at=at(minutes=5))
+        ren = await make_message(db, conversation, content="Ren, on the other hand", created_at=at(minutes=6))
+
+        result = await find_memories(native_ctx(), text="Sage")
+        assert ids_in_order(result) == [real1.id[:8], real2.id[:8]]
+        assert "2 matches;" in result
+        assert ids_in_order(await find_memories(native_ctx(), text="Ren")) == [ren.id[:8]]
+
+        inside = await find_memories(native_ctx(), text="Sage", whole_words=False)
+        assert ids_in_order(inside) == [m.id[:8] for m in (noise1, noise2, noise3, real1, real2)]
+        assert '(as a phrase, inside words too): 5 matches;' in inside
+
     async def test_numbers_and_ids_are_found_exactly(self, db, tools_db):
-        """The case similarity search is blind to: a PR number. A phrase is a
-        substring (the text is trimmed), so a longer number containing it
-        matches too — exactness, not tokenization."""
+        """The case similarity search is blind to: a PR number. With whole
+        words, a longer number containing it is not a hit."""
         conversation = await make_conversation(db)
         hit = await make_message(db, conversation, content="PR #336 is open against main.")
         await make_message(db, conversation, content="PR #340 is now MERGEABLE.", created_at=at(minutes=1))
         longer = await make_message(db, conversation, content="PR #3360 does not exist yet.", created_at=at(minutes=2))
 
         result = await find_memories(native_ctx(), text=" PR #336 ")
-        assert ids_in_order(result) == [hit.id[:8], longer.id[:8]]
-        assert 'containing "PR #336" (as a phrase): 2 matches;' in result
-        assert ids_in_order(await find_memories(native_ctx(), text="#336 is")) == [hit.id[:8]]
+        assert ids_in_order(result) == [hit.id[:8]]
+        assert 'containing "PR #336" (as a phrase, whole words): 1 match;' in result
+        assert ids_in_order(await find_memories(native_ctx(), text="PR #336", whole_words=False)) == [
+            hit.id[:8], longer.id[:8]
+        ]
 
-    async def test_like_wildcards_in_the_text_are_literal(self, db, tools_db):
+    async def test_regex_specials_in_the_text_are_literal(self, db, tools_db):
         conversation = await make_conversation(db)
         percent = await make_message(db, conversation, content="coverage is 100% now")
         await make_message(db, conversation, content="coverage is 100 now", created_at=at(minutes=1))
@@ -95,10 +121,26 @@ class TestMatching:
         )
         await make_message(db, conversation, content="the conversationXid column", created_at=at(minutes=3))
         backslash = await make_message(db, conversation, content=r"path E:\here-i-am", created_at=at(minutes=4))
+        dotted = await make_message(db, conversation, content="see loop-protocol.md today", created_at=at(minutes=5))
+        await make_message(db, conversation, content="see loop-protocolXmd today", created_at=at(minutes=6))
+        bracketed = await make_message(db, conversation, content="the [WAKEUP] sentinel", created_at=at(minutes=7))
 
         assert ids_in_order(await find_memories(native_ctx(), text="100%")) == [percent.id[:8]]
         assert ids_in_order(await find_memories(native_ctx(), text="conversation_id")) == [underscore.id[:8]]
         assert ids_in_order(await find_memories(native_ctx(), text=r"E:\here")) == [backslash.id[:8]]
+        assert ids_in_order(await find_memories(native_ctx(), text="loop-protocol.md")) == [dotted.id[:8]]
+        assert ids_in_order(await find_memories(native_ctx(), text="[WAKEUP]")) == [bracketed.id[:8]]
+
+    async def test_a_quote_matches_across_a_line_break_and_accents_fold(self, db, tools_db):
+        conversation = await make_conversation(db)
+        wrapped = await make_message(
+            db, conversation, content="do not create that\nwhich you are not   prepared to love",
+        )
+        accented = await make_message(db, conversation, content="RENÉE wrote back", created_at=at(minutes=1))
+
+        result = await find_memories(native_ctx(), text="create that which you are not prepared")
+        assert ids_in_order(result) == [wrapped.id[:8]]
+        assert ids_in_order(await find_memories(native_ctx(), text="renée")) == [accented.id[:8]]
 
     async def test_match_modes(self, db, tools_db):
         conversation = await make_conversation(db)
@@ -111,22 +153,22 @@ class TestMatching:
 
         phrase = await find_memories(native_ctx(), text="witness protocol")
         assert ids_in_order(phrase) == [both_in_order.id[:8]]
-        assert "(as a phrase)" in phrase
+        assert "(as a phrase, whole words)" in phrase
 
         every = await find_memories(native_ctx(), text="witness protocol", match="all")
         assert ids_in_order(every) == [both_in_order.id[:8], both_apart.id[:8]]
-        assert "(all of the words)" in every
+        assert "(all of the words, whole words)" in every
 
         any_word = await find_memories(native_ctx(), text="witness protocol", match="ANY")
         assert ids_in_order(any_word) == [both_in_order.id[:8], both_apart.id[:8], one.id[:8]]
-        assert "(any of the words)" in any_word
+        assert "(any of the words, whole words)" in any_word
 
     async def test_zero_matches_is_a_plain_answer(self, db, tools_db):
         conversation = await make_conversation(db)
-        await make_message(db, conversation, content="nothing relevant here")
+        await make_message(db, conversation, content="a message arrived")
         result = await find_memories(native_ctx(), text="Sage")
         assert result.startswith(
-            'No messages contain "Sage" (as a phrase): the words appear nowhere '
+            'No messages contain "Sage" (as a phrase, whole words): the words appear nowhere '
             "in the archive you can see."
         )
         assert "Released memories are not searched" in result
@@ -310,7 +352,7 @@ class TestPagination:
         second = await find_memories(native_ctx(), text="watercress", page_tokens=700, cursor=cursor)
         assert ids_in_order(second) == [h.id[:8] for h in hits[2:4]]
         assert "this page shows 3–4" in second
-        assert "(1 match remain)" in second
+        assert "(1 match remains)" in second
         cursor = second.split('cursor="')[1].split('"')[0]
 
         third = await find_memories(native_ctx(), text="watercress", page_tokens=700, cursor=cursor)
@@ -335,6 +377,7 @@ class TestSurfaces:
     def test_schema_and_mcp_registration(self):
         assert MEMORY_FIND_SCHEMA["required"] == ["text"]
         assert MEMORY_FIND_SCHEMA["properties"]["match"]["enum"] == ["phrase", "all", "any"]
+        assert MEMORY_FIND_SCHEMA["properties"]["whole_words"]["default"] is True
         assert "scope" in MEMORY_FIND_SCHEMA["properties"]
         assert "memory_find" in MEMORY_TOOL_NAMES
 

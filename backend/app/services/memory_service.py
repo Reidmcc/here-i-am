@@ -1339,8 +1339,9 @@ class MemoryService:
     # Archive readers (issue #343): the record in order, verbatim
     # ------------------------------------------------------------------
     #
-    # Everything else here reaches the archive by similarity; these two read
-    # it by position. Pure SQL over Message — no Pinecone, no ranking, no
+    # Everything else here reaches the archive by similarity; these read it
+    # by position (a span, the neighbors of one row) or by the exact words
+    # (find_messages). Pure SQL over Message — no Pinecone, no ranking, no
     # retrieval tracking — ordered by (created_at, id) so a page is stable
     # and a cursor can resume it. Nothing is ever truncated: a single
     # message larger than the page budget comes back alone, whole.
@@ -1596,40 +1597,47 @@ class MemoryService:
     MATCH_ANY = "any"
     VALID_MATCH_MODES = (MATCH_PHRASE, MATCH_ALL, MATCH_ANY)
 
-    _LIKE_ESCAPE = "\\"
+    @staticmethod
+    def _text_pattern(words: List[str], whole_words: bool) -> str:
+        """
+        A regular expression matching the given words in sequence, each
+        literal, any whitespace between them (so a quote that wrapped a
+        line still matches), case-insensitive; bounded by non-word
+        characters when whole_words, so a name is not found inside another
+        word ("Sage" in "message"). Python-re syntax, which SQLite runs
+        through SQLAlchemy's registered REGEXP function and Postgres reads
+        as an ARE (`(?i)`, `\\s`, `\\w`, and the lookarounds are common to
+        both; re.escape's backslash-punctuation escapes are literals in
+        both).
+        """
+        body = r"\s+".join(re.escape(word) for word in words)
+        if whole_words:
+            body = r"(?<!\w)" + body + r"(?!\w)"
+        return "(?i)" + body
 
     @classmethod
-    def _like_pattern(cls, text: str) -> str:
-        """A LIKE pattern matching `text` anywhere in a column, with LIKE's
-        own wildcards in the text taken literally."""
-        escaped = (
-            text.replace(cls._LIKE_ESCAPE, cls._LIKE_ESCAPE * 2)
-            .replace("%", cls._LIKE_ESCAPE + "%")
-            .replace("_", cls._LIKE_ESCAPE + "_")
-        )
-        return f"%{escaped}%"
-
-    @classmethod
-    def text_match_clause(cls, text: str, match: str = MATCH_PHRASE):
+    def text_match_clause(cls, text: str, match: str = MATCH_PHRASE, whole_words: bool = True):
         """
         The SQL condition for "Message.content contains `text`", as the
-        memory_find tool means it: case-insensitive (ilike renders as
-        lower() LIKE on SQLite and ILIKE on Postgres), the text taken as
-        written. `phrase` (default) matches it as one contiguous string;
-        `all` splits it on whitespace and requires every word, in any
-        order; `any` requires at least one. Raises ValueError for empty
-        text or an unknown mode.
+        memory_find tool means it: a case-insensitive regular-expression
+        match (see _text_pattern) with the text taken literally. `phrase`
+        (default) matches its words in that order with any whitespace
+        between them; `all` requires every word, in any order; `any`
+        requires at least one. whole_words (default) matches only where
+        the text begins and ends at a word boundary. Raises ValueError for
+        empty text or an unknown mode.
         """
         text = str(text or "").strip()
         if not text:
             raise ValueError("text is empty")
         if match not in cls.VALID_MATCH_MODES:
             raise ValueError(f"unknown match mode '{match}'")
+        words = text.split()
         if match == cls.MATCH_PHRASE:
-            return Message.content.ilike(cls._like_pattern(text), escape=cls._LIKE_ESCAPE)
+            return Message.content.regexp_match(cls._text_pattern(words, whole_words))
         clauses = [
-            Message.content.ilike(cls._like_pattern(word), escape=cls._LIKE_ESCAPE)
-            for word in text.split()
+            Message.content.regexp_match(cls._text_pattern([word], whole_words))
+            for word in words
         ]
         if len(clauses) == 1:
             return clauses[0]
@@ -1641,6 +1649,7 @@ class MemoryService:
         entity_id: str,
         text: str,
         match: str = MATCH_PHRASE,
+        whole_words: bool = True,
         start: Optional[datetime] = None,
         end: Optional[datetime] = None,
         role_filter: Optional[str] = None,
@@ -1655,7 +1664,7 @@ class MemoryService:
     ) -> Dict[str, Any]:
         """
         Every message in the entity's archive whose content contains `text`
-        (see text_match_clause), in (created_at, id) order, one
+        (see text_match_clause; whole words by default), in (created_at, id) order, one
         token-bounded page at a time — the memory_find tool. The record by
         WORD, where read_messages_in_span is the record by position: pure
         SQL, no Pinecone, no ranking, no retrieval tracking, and the same
@@ -1670,7 +1679,7 @@ class MemoryService:
         """
         conditions = self._span_conditions(
             entity_id, role_filter, conversation_id, include_released
-        ) + [self.text_match_clause(text, match)]
+        ) + [self.text_match_clause(text, match, whole_words)]
         if start is not None:
             conditions.append(Message.created_at >= start)
         if end is not None:

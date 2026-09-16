@@ -2,7 +2,7 @@
 MCP server for Claude Code mode: the entity's deliberate memory tools.
 
 Exposes memory_query / memory_save / memory_mark / memory_release and the
-archive readers memory_read / memory_neighbors over the MCP streamable-HTTP
+archive readers memory_read / memory_neighbors / memory_find over the MCP streamable-HTTP
 transport (POST /mcp, wired in routes/claude_code.py),
 so an entity operating from a Claude Code session can act on its memory
 deliberately — the hooks cover the automatics (retrieval and formation),
@@ -482,6 +482,7 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
                 ctx,
                 text=arguments.get("text"),
                 match=arguments.get("match"),
+                whole_words=bool(arguments.get("whole_words", True)),
                 from_=arguments.get("from"),
                 to=arguments.get("to"),
                 tz=arguments.get("tz"),
