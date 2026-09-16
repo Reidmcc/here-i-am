@@ -68,7 +68,7 @@ from app.services.tool_service import tool_service
 logger = logging.getLogger(__name__)
 
 # Matches the per-memory header line in memory_query / memory_read /
-# memory_neighbors tool results, e.g.
+# memory_neighbors / memory_find tool results, e.g.
 # "--- Memory a1b2c3d4 (You said, 3.2 days ago, similarity: 0.812) ---"
 # (memory_neighbors marks the requested memory "--- >> Memory ...").
 # Used to rebuild query-result dedup state (memory_query_ids on tool_result

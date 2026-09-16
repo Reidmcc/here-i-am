@@ -88,7 +88,7 @@ NEIGHBORS_MAX = 10
 # native tool loop stamps the surfaced ids onto the tool_result context
 # message (memory_query_ids) for every one of these, and the session reload
 # path parses their "--- Memory xxxxxxxx (" header lines back into stamps.
-MEMORY_RESULT_STAMPING_TOOLS = ("memory_query", "memory_read", "memory_neighbors")
+MEMORY_RESULT_STAMPING_TOOLS = ("memory_query", "memory_read", "memory_neighbors", "memory_find")
 
 
 @dataclass
@@ -983,8 +983,8 @@ def _normalize_scope(scope: Optional[str]) -> Tuple[bool, Optional[str]]:
 
 def is_isolated_read(tool_input: Any) -> bool:
     """
-    Whether a memory_read / memory_neighbors call's input asked for
-    scope="isolated". The native tool loop stamps nothing for such a call
+    Whether a memory_read / memory_neighbors / memory_find call's input asked
+    for scope="isolated". The native tool loop stamps nothing for such a call
     (the executor sets no ids), and the session reload parser uses this to
     skip re-stamping its persisted result; otherwise a reload would put
     ids in view that the live turn deliberately did not.
@@ -1151,6 +1151,47 @@ async def _note_surfaced(ctx: MemoryToolContext, ids: List[str], db) -> None:
         )
 
 
+def _parse_page_tokens(page_tokens: Any) -> Tuple[Optional[int], Optional[str]]:
+    """(clamped page budget, error) for a page_tokens argument."""
+    if page_tokens is None:
+        return READ_PAGE_TOKENS_DEFAULT, None
+    try:
+        page_tokens = int(page_tokens)
+    except (TypeError, ValueError):
+        return None, f"Error: page_tokens must be an integer (got '{page_tokens}')."
+    return max(READ_PAGE_TOKENS_MIN, min(READ_PAGE_TOKENS_MAX, page_tokens)), None
+
+
+def _check_cursor(cursor: Any, tool_name: str) -> Tuple[Optional[str], Optional[str]]:
+    """(cursor or None when absent, error) for a page cursor argument."""
+    if cursor is None or not str(cursor).strip():
+        return None, None
+    if memory_service.decode_read_cursor(cursor) is None:
+        return None, (
+            f"Error: Unrecognized cursor '{cursor}'. Pass back the cursor a "
+            f"previous {tool_name} page returned, with the same span and filters."
+        )
+    return cursor, None
+
+
+async def _resolve_conversation_filter(
+    db, ctx: MemoryToolContext, in_conversation: Any
+) -> Tuple[Optional[str], str, Optional[str]]:
+    """(conversation id or None for all, echo suffix, error) for an
+    in_conversation argument, resolved within the entity's experience."""
+    if in_conversation is None or not str(in_conversation).strip():
+        return None, "", None
+    conversation, error = await memory_service.resolve_conversation_prefix(
+        db, ctx.entity_id, in_conversation
+    )
+    if error:
+        return None, "", f"Error: {error}"
+    conversation_id = str(conversation.id)
+    title = (conversation.title or "").strip()
+    suffix = f', in "{title}"' if title else f", in conversation {conversation_id[:8]}"
+    return conversation_id, suffix, None
+
+
 def _normalize_source(source: Optional[str]) -> Tuple[Optional[str], str, Optional[str]]:
     """(role_filter or None for all, echo suffix, error) for a source value."""
     role_filter = str(source if source is not None else "").strip().lower() or SOURCE_ALL
@@ -1219,22 +1260,12 @@ async def read_memories(
     if error:
         return error
 
-    if page_tokens is None:
-        page_tokens = READ_PAGE_TOKENS_DEFAULT
-    try:
-        page_tokens = int(page_tokens)
-    except (TypeError, ValueError):
-        return f"Error: page_tokens must be an integer (got '{page_tokens}')."
-    page_tokens = max(READ_PAGE_TOKENS_MIN, min(READ_PAGE_TOKENS_MAX, page_tokens))
-
-    if cursor is not None and str(cursor).strip():
-        if memory_service.decode_read_cursor(cursor) is None:
-            return (
-                f"Error: Unrecognized cursor '{cursor}'. Pass back the cursor a "
-                "previous memory_read page returned, with the same span and filters."
-            )
-    else:
-        cursor = None
+    page_tokens, error = _parse_page_tokens(page_tokens)
+    if error:
+        return error
+    cursor, error = _check_cursor(cursor, "memory_read")
+    if error:
+        return error
 
     span_text = (
         f"{_format_local(start_local)} to {_format_local(end_local)}"
@@ -1249,19 +1280,11 @@ async def read_memories(
 
     try:
         async with async_session_maker() as db:
-            conversation_suffix = ""
-            conversation_id = None
-            if in_conversation is not None and str(in_conversation).strip():
-                conversation, error = await memory_service.resolve_conversation_prefix(
-                    db, ctx.entity_id, in_conversation
-                )
-                if error:
-                    return f"Error: {error}"
-                conversation_id = str(conversation.id)
-                title = (conversation.title or "").strip()
-                conversation_suffix = (
-                    f', in "{title}"' if title else f", in conversation {conversation_id[:8]}"
-                )
+            conversation_id, conversation_suffix, error = await _resolve_conversation_filter(
+                db, ctx, in_conversation
+            )
+            if error:
+                return error
 
             in_context_ids, live_conversation_id, live_after = _live_view(ctx, isolated)
             page = await memory_service.read_messages_in_span(
@@ -1327,6 +1350,179 @@ async def read_memories(
         )
     else:
         lines.append("End of span.")
+    return "\n".join(lines)
+
+
+MATCH_DESCRIPTIONS = {
+    memory_service.MATCH_PHRASE: "as a phrase",
+    memory_service.MATCH_ALL: "all of the words",
+    memory_service.MATCH_ANY: "any of the words",
+}
+
+
+def _describe_bound(moment_utc: datetime, local: datetime, tzinfo: ZoneInfo) -> str:
+    if tzinfo.key == "UTC":
+        return f"{moment_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+    return f"{_format_local(local)} ({moment_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC)"
+
+
+async def find_memories(
+    ctx: MemoryToolContext,
+    text: Any = None,
+    match: Optional[str] = None,
+    from_: Any = None,
+    to: Any = None,
+    tz: Optional[str] = None,
+    in_conversation: Optional[str] = None,
+    source: Optional[str] = None,
+    cursor: Optional[str] = None,
+    page_tokens: Optional[int] = None,
+    include_released: bool = False,
+    include_model: bool = False,
+    scope: Optional[str] = None,
+) -> str:
+    """
+    memory_find: every message in the entity's archive containing the given
+    words, in order, one token-bounded page at a time — the record by word.
+    Same rules as memory_read (see the module comment above); the only
+    difference is what selects the rows.
+    """
+    if not ctx.entity_id:
+        return "Error: No entity context available for reading memories"
+
+    text = str(text if text is not None else "").strip()
+    if not text:
+        return "Error: 'text' is required — the words to find, as written."
+    match_mode = str(match if match is not None else "").strip().lower() or memory_service.MATCH_PHRASE
+    if match_mode not in memory_service.VALID_MATCH_MODES:
+        return (
+            f"Error: Unknown match '{match}'. Valid values: "
+            f"{', '.join(memory_service.VALID_MATCH_MODES)}."
+        )
+    tzinfo, error = _resolve_tz(tz)
+    if error:
+        return error
+    isolated, error = _normalize_scope(scope)
+    if error:
+        return error
+
+    start = end = None
+    start_local = end_local = None
+    if from_ is not None and str(from_).strip():
+        start, start_local, error = _parse_span_bound(from_, tzinfo, end_of_day=False)
+        if error:
+            return error
+    if to is not None and str(to).strip():
+        end, end_local, error = _parse_span_bound(to, tzinfo, end_of_day=True)
+        if error:
+            return error
+    if start is not None and end is not None and end < start:
+        return (
+            f"Error: 'to' ({_format_local(end_local)}) is before 'from' "
+            f"({_format_local(start_local)})."
+        )
+
+    role_filter, source_suffix, error = _normalize_source(source)
+    if error:
+        return error
+    page_tokens, error = _parse_page_tokens(page_tokens)
+    if error:
+        return error
+    cursor, error = _check_cursor(cursor, "memory_find")
+    if error:
+        return error
+
+    if start is not None and end is not None:
+        span_text = (
+            f", between {_describe_bound(start, start_local, tzinfo)} and "
+            f"{_describe_bound(end, end_local, tzinfo)}"
+        )
+    elif start is not None:
+        span_text = f", from {_describe_bound(start, start_local, tzinfo)}"
+    elif end is not None:
+        span_text = f", up to {_describe_bound(end, end_local, tzinfo)}"
+    else:
+        span_text = ""
+    what = f'"{text}" ({MATCH_DESCRIPTIONS[match_mode]})'
+
+    try:
+        async with async_session_maker() as db:
+            conversation_id, conversation_suffix, error = await _resolve_conversation_filter(
+                db, ctx, in_conversation
+            )
+            if error:
+                return error
+
+            in_context_ids, live_conversation_id, live_after = _live_view(ctx, isolated)
+            page = await memory_service.find_messages(
+                db,
+                entity_id=ctx.entity_id,
+                text=text,
+                match=match_mode,
+                start=start,
+                end=end,
+                role_filter=role_filter,
+                conversation_id=conversation_id,
+                include_released=bool(include_released),
+                cursor=cursor,
+                page_tokens=page_tokens,
+                in_context_ids=in_context_ids,
+                live_conversation_id=live_conversation_id,
+                live_after=live_after,
+            )
+            items = page["items"]
+            if items and not isolated:
+                await _note_surfaced(ctx, [item["id"] for item in items], db)
+    except Exception as e:
+        logger.error(f"Memory find error: {e}")
+        return f"Error finding memories: {e}"
+
+    released_note = "" if include_released else " Released memories are not searched (include_released=true searches them)."
+    filters = f"{span_text}{source_suffix}{conversation_suffix}"
+    total = page["total"]
+    if total == 0:
+        return (
+            f"No messages contain {what}{filters}: the words appear nowhere in "
+            "the archive you can see." + released_note
+        )
+    plural = "es" if total != 1 else ""
+    if not items:
+        return (
+            f"End of matches: no messages after that cursor contain {what}{filters} "
+            f"({total} match{plural} in all)."
+        )
+
+    first = page["offset"] + 1
+    last = page["offset"] + len(items)
+    pointer_count = sum(1 for item in items if item.get("in_context"))
+    pointer_note = (
+        f" {pointer_count} of them are already in your context and are listed "
+        "without their content."
+        if pointer_count
+        else ""
+    )
+    lines = [
+        f"Your archive, messages containing {what}{filters}: {total} match{plural}; "
+        f"this page shows {first}–{last}, in order."
+        + pointer_note
+        + (ISOLATED_SCOPE_NOTE if isolated else "")
+        + released_note,
+        "",
+    ]
+    labels = _entity_labels()
+    now = datetime.utcnow()
+    for item in items:
+        lines.extend(
+            _format_archive_item(item, ctx.entity_id, labels, tzinfo, include_model, now)
+        )
+    if page["next_cursor"]:
+        remaining = total - last
+        lines.append(
+            f"Next page: pass cursor=\"{page['next_cursor']}\" with the same text "
+            f"and filters ({remaining} match{'es' if remaining != 1 else ''} remain)."
+        )
+    else:
+        lines.append("End of matches.")
     return "\n".join(lines)
 
 
@@ -1473,6 +1669,25 @@ async def _memory_read(**kwargs: Any) -> str:
     # `from` is a keyword, so the executor takes the tool input as a dict
     return await read_memories(
         _context,
+        from_=kwargs.get("from"),
+        to=kwargs.get("to"),
+        tz=kwargs.get("tz"),
+        in_conversation=kwargs.get("in_conversation"),
+        source=kwargs.get("source"),
+        cursor=kwargs.get("cursor"),
+        page_tokens=kwargs.get("page_tokens"),
+        include_released=bool(kwargs.get("include_released", False)),
+        include_model=bool(kwargs.get("include_model", False)),
+        scope=kwargs.get("scope"),
+    )
+
+
+async def _memory_find(**kwargs: Any) -> str:
+    # `from` is a keyword, so the executor takes the tool input as a dict
+    return await find_memories(
+        _context,
+        text=kwargs.get("text"),
+        match=kwargs.get("match"),
         from_=kwargs.get("from"),
         to=kwargs.get("to"),
         tz=kwargs.get("tz"),
@@ -1860,6 +2075,118 @@ MEMORY_NEIGHBORS_SCHEMA = {
 }
 
 
+MEMORY_FIND_DESCRIPTION = (
+    "Find the exact words in your archive: every message whose text contains "
+    "what you give, in the order it happened — the record by word, where "
+    "memory_read is the record by date and memory_query is the record by "
+    "meaning. Use it for what similarity search cannot see or cannot "
+    "promise: a name, a number (an issue or PR, a memory id, a date), a "
+    "filename, a quote you want verified at its source; for completeness — "
+    "every occurrence, not the nearest few; and for its opposite — a result "
+    "of zero means the words appear nowhere you can see, which a semantic "
+    "query can never say. 'text' is matched as written, case-insensitively; "
+    "'match' takes it as one phrase (default), or as words that must all "
+    "appear in any order ('all'), or of which any may ('any'). Optional "
+    "'from' / 'to' bound the search by date (as in memory_read, read in "
+    "'tz'); 'in_conversation' and 'source' narrow it as in memory_read. Same "
+    "rules as memory_read otherwise: verbatim, paged by tokens with a "
+    "cursor, nothing excluded for being in context or in this conversation "
+    "but such messages listed as pointers without their content, no "
+    "retrieval tracking, what a page shows counts as in view afterwards "
+    "(scope='isolated' for a subagent reading on the parent's "
+    "conversation_id: full text, nothing recorded); released memories "
+    "skipped unless include_released; archived conversations never shown."
+)
+
+MEMORY_FIND_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "text": {
+            "type": "string",
+            "description": (
+                "The words to find, as written. Case-insensitive; matched "
+                "anywhere in a message's text."
+            ),
+        },
+        "match": {
+            "type": "string",
+            "enum": list(memory_service.VALID_MATCH_MODES),
+            "description": (
+                "'phrase' (default): the text as one contiguous string. "
+                "'all': every whitespace-separated word must appear, in any "
+                "order. 'any': at least one of the words must appear."
+            ),
+            "default": memory_service.MATCH_PHRASE,
+        },
+        "from": {
+            "type": "string",
+            "description": (
+                "Optional start of the search, ISO 8601: a date ('2026-09-01' = "
+                "the start of that day in tz) or a moment ('2026-09-01T14:00', "
+                "read in tz). Default: the beginning of the archive."
+            ),
+        },
+        "to": {
+            "type": "string",
+            "description": (
+                "Optional end of the search, ISO 8601 (inclusive). A date means "
+                "the end of that day in tz. Default: the present."
+            ),
+        },
+        "tz": {
+            "type": "string",
+            "description": (
+                "IANA timezone the day boundaries in 'from'/'to' are read in, "
+                "e.g. 'America/New_York'. Default 'UTC'. Output stamps stay UTC, "
+                "with the local time alongside when tz is not UTC."
+            ),
+            "default": "UTC",
+        },
+        "in_conversation": {
+            "type": "string",
+            "description": (
+                "Restrict to one conversation: its ID or a prefix (6+ "
+                "characters) as shown in memory_read / memory_find output. "
+                "Default: every conversation you have experience in."
+            ),
+        },
+        "source": {
+            "type": "string",
+            "enum": list(VALID_QUERY_SOURCES),
+            "description": (
+                "Who authored the messages to search, as in memory_query: "
+                "'human', 'ai' (your messages, reflections, and inter-session "
+                "letters, plus other entities' messages), 'reflection', or "
+                "'all' (default)."
+            ),
+            "default": SOURCE_ALL,
+        },
+        "cursor": {
+            "type": "string",
+            "description": (
+                "Continue from a previous page: the cursor that page returned, "
+                "with the same text and filters."
+            ),
+        },
+        "page_tokens": {
+            "type": "integer",
+            "description": (
+                f"Page budget in tokens (default {READ_PAGE_TOKENS_DEFAULT}, max "
+                f"{READ_PAGE_TOKENS_MAX}). Pages are bounded by tokens, not rows; "
+                "a single message larger than the budget is returned alone, whole."
+            ),
+            "default": READ_PAGE_TOKENS_DEFAULT,
+            "minimum": READ_PAGE_TOKENS_MIN,
+            "maximum": READ_PAGE_TOKENS_MAX,
+        },
+        "include_released": _INCLUDE_RELEASED_PROPERTY,
+        "include_model": _INCLUDE_MODEL_PROPERTY,
+        "scope": _SCOPE_PROPERTY,
+    },
+    "required": ["text"],
+}
+
+
 def register_memory_tools(tool_service: ToolService) -> None:
     """Register all memory tools with the tool service."""
 
@@ -1922,7 +2249,16 @@ def register_memory_tools(tool_service: ToolService) -> None:
         enabled=True,
     )
 
+    tool_service.register_tool(
+        name="memory_find",
+        description=MEMORY_FIND_DESCRIPTION,
+        input_schema=MEMORY_FIND_SCHEMA,
+        executor=_memory_find,
+        category=ToolCategory.MEMORY,
+        enabled=True,
+    )
+
     logger.info(
         "Memory tools registered: memory_query, memory_save, memory_mark, "
-        "memory_release, memory_read, memory_neighbors"
+        "memory_release, memory_read, memory_neighbors, memory_find"
     )

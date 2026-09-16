@@ -1504,50 +1504,30 @@ class MemoryService:
             )
         return matches[0], None
 
-    async def read_messages_in_span(
+    async def _read_archive_page(
         self,
         db: AsyncSession,
-        entity_id: str,
-        start: datetime,
-        end: datetime,
-        role_filter: Optional[str] = None,
-        conversation_id: Optional[str] = None,
-        include_released: bool = False,
-        cursor: Optional[str] = None,
-        page_tokens: int = 8000,
-        batch_size: int = 200,
-        in_context_ids: Optional[Set[str]] = None,
-        live_conversation_id: Optional[str] = None,
-        live_after: Optional[datetime] = None,
+        conditions: list,
+        cursor: Optional[str],
+        page_tokens: int,
+        batch_size: int,
+        in_context_ids: Optional[Set[str]],
+        live_conversation_id: Optional[str],
+        live_after: Optional[datetime],
+        log_label: str,
     ) -> Dict[str, Any]:
         """
-        Read the entity's archive between two naive-UTC moments (inclusive),
-        in (created_at, id) order, one token-bounded page at a time.
-
-        Backs the memory_read tool. Scope is the entity's experience
-        (_entity_experience_clause) narrowed by the same role filter
-        memory_query's `source` uses and optionally to one conversation.
-        Released memories are skipped unless include_released (they were
-        withdrawn on purpose) and archived conversations are hidden entirely,
-        as everywhere else (archiving removes a conversation where something
-        went wrong from every memory surface). The current conversation is
-        NOT excluded, but rows whose content is already in live context
-        (see _row_in_context) come back flagged in_context so the tool
-        renders them as pointers — the page stays whole and in order without
-        duplicating what the reader can already see. Nothing here touches
-        times_retrieved.
-
-        The page fills until adding the next row would exceed page_tokens
+        The paging core shared by read_messages_in_span and find_messages:
+        every row matching `conditions` (a Message/Conversation join), in
+        (created_at, id) order, one token-bounded page at a time. The page
+        fills until adding the next row would exceed page_tokens
         (token_count, or a length estimate); an oversized first row is
-        returned alone and whole. Returns {"items", "total", "offset",
-        "next_cursor"}: total is the span's row count under the same
-        filters, offset how many rows precede this page, next_cursor None
-        at the end of the span.
+        returned alone and whole. Rows already in the reader's live context
+        (see _row_in_context) come back flagged in_context so the tool
+        renders them as pointers. Returns {"items", "total", "offset",
+        "next_cursor"}: total is the row count under the same conditions,
+        offset how many rows precede this page, next_cursor None at the end.
         """
-        conditions = self._span_conditions(
-            entity_id, role_filter, conversation_id, include_released
-        ) + [Message.created_at >= start, Message.created_at <= end]
-
         total = int((await db.execute(
             select(func.count(Message.id))
             .join(Conversation, Conversation.id == Message.conversation_id)
@@ -1605,10 +1585,144 @@ class MemoryService:
                 exhausted = True
 
         logger.info(
-            f"[MEMORY] Archive read: {len(items)} of {total} rows in span for "
-            f"entity={entity_id} (offset={offset}, tokens~{used})"
+            f"[MEMORY] {log_label}: {len(items)} of {total} rows "
+            f"(offset={offset}, tokens~{used})"
         )
         return {"items": items, "total": total, "offset": offset, "next_cursor": next_cursor}
+
+    # Text-match modes for find_messages / the memory_find tool
+    MATCH_PHRASE = "phrase"
+    MATCH_ALL = "all"
+    MATCH_ANY = "any"
+    VALID_MATCH_MODES = (MATCH_PHRASE, MATCH_ALL, MATCH_ANY)
+
+    _LIKE_ESCAPE = "\\"
+
+    @classmethod
+    def _like_pattern(cls, text: str) -> str:
+        """A LIKE pattern matching `text` anywhere in a column, with LIKE's
+        own wildcards in the text taken literally."""
+        escaped = (
+            text.replace(cls._LIKE_ESCAPE, cls._LIKE_ESCAPE * 2)
+            .replace("%", cls._LIKE_ESCAPE + "%")
+            .replace("_", cls._LIKE_ESCAPE + "_")
+        )
+        return f"%{escaped}%"
+
+    @classmethod
+    def text_match_clause(cls, text: str, match: str = MATCH_PHRASE):
+        """
+        The SQL condition for "Message.content contains `text`", as the
+        memory_find tool means it: case-insensitive (ilike renders as
+        lower() LIKE on SQLite and ILIKE on Postgres), the text taken as
+        written. `phrase` (default) matches it as one contiguous string;
+        `all` splits it on whitespace and requires every word, in any
+        order; `any` requires at least one. Raises ValueError for empty
+        text or an unknown mode.
+        """
+        text = str(text or "").strip()
+        if not text:
+            raise ValueError("text is empty")
+        if match not in cls.VALID_MATCH_MODES:
+            raise ValueError(f"unknown match mode '{match}'")
+        if match == cls.MATCH_PHRASE:
+            return Message.content.ilike(cls._like_pattern(text), escape=cls._LIKE_ESCAPE)
+        clauses = [
+            Message.content.ilike(cls._like_pattern(word), escape=cls._LIKE_ESCAPE)
+            for word in text.split()
+        ]
+        if len(clauses) == 1:
+            return clauses[0]
+        return and_(*clauses) if match == cls.MATCH_ALL else or_(*clauses)
+
+    async def find_messages(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        text: str,
+        match: str = MATCH_PHRASE,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+        role_filter: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        include_released: bool = False,
+        cursor: Optional[str] = None,
+        page_tokens: int = 8000,
+        batch_size: int = 200,
+        in_context_ids: Optional[Set[str]] = None,
+        live_conversation_id: Optional[str] = None,
+        live_after: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """
+        Every message in the entity's archive whose content contains `text`
+        (see text_match_clause), in (created_at, id) order, one
+        token-bounded page at a time — the memory_find tool. The record by
+        WORD, where read_messages_in_span is the record by position: pure
+        SQL, no Pinecone, no ranking, no retrieval tracking, and the same
+        visibility rules (the entity's experience, memory_query's role
+        filter, optional single conversation, released skipped unless
+        asked, archived hidden, in-context rows flagged for pointer
+        rendering). `start` / `end` (naive UTC, inclusive) optionally bound
+        the search; either may be None. Paging and the return shape:
+        _read_archive_page. A total of 0 is a real answer — the words
+        appear nowhere the entity can see — which similarity search cannot
+        give.
+        """
+        conditions = self._span_conditions(
+            entity_id, role_filter, conversation_id, include_released
+        ) + [self.text_match_clause(text, match)]
+        if start is not None:
+            conditions.append(Message.created_at >= start)
+        if end is not None:
+            conditions.append(Message.created_at <= end)
+        return await self._read_archive_page(
+            db, conditions, cursor, page_tokens, batch_size,
+            in_context_ids, live_conversation_id, live_after,
+            log_label=f"Archive find ({match}) for entity={entity_id}",
+        )
+
+    async def read_messages_in_span(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        start: datetime,
+        end: datetime,
+        role_filter: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        include_released: bool = False,
+        cursor: Optional[str] = None,
+        page_tokens: int = 8000,
+        batch_size: int = 200,
+        in_context_ids: Optional[Set[str]] = None,
+        live_conversation_id: Optional[str] = None,
+        live_after: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """
+        Read the entity's archive between two naive-UTC moments (inclusive),
+        in (created_at, id) order, one token-bounded page at a time.
+
+        Backs the memory_read tool. Scope is the entity's experience
+        (_entity_experience_clause) narrowed by the same role filter
+        memory_query's `source` uses and optionally to one conversation.
+        Released memories are skipped unless include_released (they were
+        withdrawn on purpose) and archived conversations are hidden entirely,
+        as everywhere else (archiving removes a conversation where something
+        went wrong from every memory surface). The current conversation is
+        NOT excluded, but rows whose content is already in live context
+        (see _row_in_context) come back flagged in_context so the tool
+        renders them as pointers — the page stays whole and in order without
+        duplicating what the reader can already see. Nothing here touches
+        times_retrieved. Paging and the return shape: _read_archive_page
+        (total is the span's row count under the same filters).
+        """
+        conditions = self._span_conditions(
+            entity_id, role_filter, conversation_id, include_released
+        ) + [Message.created_at >= start, Message.created_at <= end]
+        return await self._read_archive_page(
+            db, conditions, cursor, page_tokens, batch_size,
+            in_context_ids, live_conversation_id, live_after,
+            log_label=f"Archive read in span for entity={entity_id}",
+        )
 
     async def read_message_neighbors(
         self,

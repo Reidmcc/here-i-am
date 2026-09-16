@@ -889,7 +889,9 @@ class TestReloadAndMcp:
             "there\n"
         )
         assert _MEMORY_QUERY_RESULT_ID_RE.findall(text) == ["0123abcd", "89abcdef"]
-        assert set(MEMORY_RESULT_STAMPING_TOOLS) == {"memory_query", "memory_read", "memory_neighbors"}
+        assert set(MEMORY_RESULT_STAMPING_TOOLS) == {
+            "memory_query", "memory_read", "memory_neighbors", "memory_find",
+        }
 
     async def test_mcp_read_and_neighbors(self, db, async_client):
         room = await make_conversation(
