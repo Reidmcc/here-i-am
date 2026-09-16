@@ -936,17 +936,21 @@ class TestPostCompact:
         assert "An earlier conclusion about gardens." in bulk
         # The entity is re-told its conversation_id, in the inline block
         assert conversation_id in body["context"]
-        # ...and pointed at memory_read for the pre-compaction stretch, with
-        # this conversation and the boundary filled in (issue #343)
+        # ...and pointed at memory_read for the pre-compaction stretch, read
+        # backward from the boundary, with this conversation and the boundary
+        # filled in (issues #343, #351); no 'from' — the conversation's start
+        # is the default stop
         result = await db_session.execute(
             select(Conversation).where(Conversation.id == conversation_id)
         )
         row = result.scalar_one()
         assert (
-            f'memory_read: in_conversation="{conversation_id}", '
-            f'from="{row.created_at.strftime("%Y-%m-%dT%H:%M")}", '
-            f'to="{row.last_compacted_at.strftime("%Y-%m-%dT%H:%M:%S")}" (UTC)'
+            f'memory_read(direction="backward", '
+            f'to="{row.last_compacted_at.strftime("%Y-%m-%dT%H:%M:%S")}", '
+            f'in_conversation="{conversation_id}") (UTC)'
         ) in body["context"]
+        assert 'from="' not in body["context"]
+        assert "read back until you have the stretch the summary doesn't carry" in body["context"]
 
         # No duplicate links: one per reflection across start + compact
         result = await db_session.execute(

@@ -410,3 +410,79 @@ class TestSurfaces:
         response = await async_client.post("/mcp", json=rpc({"conversation_id": room.id}))
         assert response.json()["result"]["isError"] is True
         assert "'text' is required" in response.json()["result"]["content"][0]["text"]
+
+
+class TestBackward:
+    """direction="backward" on memory_find: the newest matches first across
+    pages, each page still in archive order — "when did I last say this"."""
+
+    async def test_backward_returns_newest_matches_first_across_pages(self, db, tools_db):
+        conversation = await make_conversation(db)
+        hits = []
+        for i in range(5):
+            hits.append(await make_message(
+                db, conversation, content=f"watercress {i}", created_at=at(minutes=i), token_count=300,
+            ))
+            await make_message(db, conversation, content=f"filler {i}", created_at=at(minutes=i, seconds=30), token_count=300)
+
+        first = await find_memories(native_ctx(), text="watercress", direction="backward", page_tokens=700)
+        assert ids_in_order(first) == [h.id[:8] for h in hits[3:]]
+        assert "5 matches; read backward from the newest, this page shows 4–5, in order." in first
+        assert "Next page (earlier): pass cursor=" in first
+        assert "(3 earlier matches remain)" in first
+        cursor = first.split('cursor="')[1].split('"')[0]
+        assert cursor.endswith("|backward")
+
+        second = await find_memories(
+            native_ctx(), text="watercress", direction="backward", page_tokens=700, cursor=cursor
+        )
+        assert ids_in_order(second) == [h.id[:8] for h in hits[1:3]]
+        assert "this page shows 2–3" in second
+        assert "(1 earlier match remains)" in second
+        cursor = second.split('cursor="')[1].split('"')[0]
+
+        third = await find_memories(
+            native_ctx(), text="watercress", direction="backward", page_tokens=700, cursor=cursor
+        )
+        assert ids_in_order(third) == [hits[0].id[:8]]
+        assert third.rstrip().endswith("Start of your archive: no earlier matches.")
+
+        past_start = memory_service.encode_read_cursor(hits[0].created_at, hits[0].id, backward=True)
+        result = await find_memories(native_ctx(), text="watercress", direction="backward", cursor=past_start)
+        assert result.startswith("Start of matches: no messages before that cursor contain")
+        assert "(5 matches in all)" in result
+
+        # A forward cursor is refused in a backward read, and the reverse
+        forward = await find_memories(native_ctx(), text="watercress", page_tokens=700)
+        forward_cursor = forward.split('cursor="')[1].split('"')[0]
+        wrong = await find_memories(
+            native_ctx(), text="watercress", direction="backward", cursor=forward_cursor
+        )
+        assert wrong.startswith("Error: That cursor came from a memory_find page read direction=\"forward\"")
+
+        # Within one conversation with no 'from', the stop is its beginning
+        result = await find_memories(
+            native_ctx(), text="watercress", direction="backward", in_conversation=conversation.id[:8]
+        )
+        assert ids_in_order(result) == [h.id[:8] for h in hits]
+        assert result.rstrip().endswith("Start of the conversation: no earlier matches.")
+        assert "direction" in MEMORY_FIND_SCHEMA["properties"]
+
+    async def test_backward_pointers_and_isolated_scope(self, db, tools_db):
+        here = await make_conversation(db, title="Here")
+        own = await make_message(db, here, content="seal here", created_at=at())
+        elsewhere = await make_conversation(db, title="Elsewhere")
+        fresh = await make_message(db, elsewhere, content="seal there", created_at=at(minutes=1))
+
+        ctx = native_ctx(conversation_id=here.id)
+        result = await find_memories(ctx, text="seal", direction="backward")
+        assert ids_in_order(result) == [own.id[:8], fresh.id[:8]]
+        assert result.count(IN_CONTEXT_POINTER) == 1
+        assert "seal here" not in result and "seal there" in result
+        assert set(ctx.last_query_memory_ids) == {own.id, fresh.id}
+
+        ctx = native_ctx(conversation_id=here.id)
+        result = await find_memories(ctx, text="seal", direction="backward", scope="isolated")
+        assert IN_CONTEXT_POINTER not in result
+        assert "seal here" in result
+        assert ctx.last_query_memory_ids == []

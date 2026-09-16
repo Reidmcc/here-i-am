@@ -15,7 +15,9 @@ neighbors at the start and end of a conversation; prefix resolution and the
 ambiguity error; archived conversations hidden; the reload-side re-stamping of what a page showed; the
 isolated scope (issue #345: a reader whose context is not the
 conversation's gets every row in full and leaves no trace in the
-conversation's dedup); and the MCP exposure.
+conversation's dedup); direction="backward" (issue #351: the newest rows
+first across pages, each page still in order, the cursor walking toward
+the start — the post-compaction call); and the MCP exposure.
 
 These run against a real (in-memory SQLite) database: both readers are
 SQL, and the point of them is what the SQL selects and in what order.
@@ -45,6 +47,7 @@ from app.services.memory_service import memory_service
 from app.services.memory_tools import (
     IN_CONTEXT_POINTER,
     ISOLATED_SCOPE_NOTE,
+    MEMORY_READ_SCHEMA,
     MEMORY_RESULT_STAMPING_TOOLS,
     MemoryToolContext,
     is_isolated_read,
@@ -992,3 +995,258 @@ class TestReloadAndMcp:
             assert scope["enum"] == ["conversation", "isolated"]
             assert scope["default"] == "conversation"
         assert "scope" not in tools["memory_query"]["inputSchema"]["properties"]
+
+
+# ============================================================
+# memory_read: direction="backward" (issue #351)
+# ============================================================
+
+class TestBackward:
+    """A backward page starts at `to` (default now), takes the newest rows
+    not yet shown, renders them oldest-first so the page still reads like
+    the archive, and its cursor walks further back toward `from` (default
+    the start of the archive) — the page a freshly compacted session wants,
+    whatever its dates."""
+
+    async def test_backward_page_selects_newest_and_renders_oldest_first(self, db, tools_db):
+        conversation = await make_conversation(db)
+        messages = [
+            await make_message(
+                db, conversation, content=f"message {i}", created_at=at(minutes=i), token_count=300
+            )
+            for i in range(6)
+        ]
+
+        page1 = await read_memories(
+            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1000
+        )
+        # The newest three, in archive order within the page
+        assert ids_in_order(page1) == [m.id[:8] for m in messages[3:]]
+        assert "6 messages in the span; read backward from its end, this page shows 4–6, in order." in page1
+        assert "Next page (earlier): pass cursor=" in page1
+        assert "(3 earlier messages remain)" in page1
+        cursor = page1.split('cursor="', 1)[1].split('"', 1)[0]
+        # The cursor is the page's older edge, tagged with its direction
+        assert cursor == memory_service.encode_read_cursor(
+            messages[3].created_at, messages[3].id, backward=True
+        )
+        assert cursor.endswith("|backward")
+
+        page2 = await read_memories(
+            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1000, cursor=cursor
+        )
+        assert ids_in_order(page2) == [m.id[:8] for m in messages[:3]]
+        assert "this page shows 1–3, in order" in page2
+        assert page2.rstrip().endswith("Start of span: nothing earlier.")
+
+        # A cursor at the very first row is an explicit start, not an empty page
+        past = memory_service.encode_read_cursor(
+            messages[0].created_at, messages[0].id, backward=True
+        )
+        start = await read_memories(
+            native_ctx(), from_="2026-09-01", direction="backward", cursor=past
+        )
+        assert start.startswith("Start of span: no messages before that cursor between")
+        assert "(6 in the span)" in start
+
+    async def test_backward_needs_no_from_and_ends_at_now(self, db, tools_db):
+        conversation = await make_conversation(db)
+        old = await make_message(db, conversation, content="long ago", created_at=at(days=-400))
+        recent = await make_message(db, conversation, content="lately", created_at=at())
+
+        result = await read_memories(native_ctx(), direction="backward")
+        assert ids_in_order(result) == [old.id[:8], recent.id[:8]]
+        assert "Your archive, the start of your archive to now:" in result
+        assert result.rstrip().endswith("Start of your archive: nothing earlier.")
+
+        # Confined to one conversation with no 'from', the stop is the
+        # conversation's own beginning, and the last page says so
+        result = await read_memories(
+            native_ctx(), direction="backward", in_conversation=conversation.id[:8]
+        )
+        assert result.rstrip().endswith("Start of the conversation: nothing earlier.")
+
+        # 'to' alone bounds the start of the read; 'from' stays the stop
+        # 7 AM Eastern is 11:00 UTC, an hour before `recent`
+        result = await read_memories(
+            native_ctx(), direction="backward", to="2026-09-01T07:00", tz="America/New_York"
+        )
+        assert ids_in_order(result) == [old.id[:8]]
+        assert "[America/New_York; UTC the start to 2026-09-01 11:00:00]" in result
+
+        # Forward still requires 'from', and the error points at the alternative
+        error = await read_memories(native_ctx())
+        assert error.startswith("Error: 'from' is required")
+        assert 'direction="backward"' in error
+
+    async def test_backward_from_a_boundary_reads_the_stretch_just_before_it(self, db, tools_db):
+        """The compaction use: 'to' is the boundary, the first page is the
+        talk right before it, and older pages follow on request."""
+        conversation = await make_conversation(db)
+        messages = [
+            await make_message(
+                db, conversation, content=f"message {i}", created_at=at(minutes=i), token_count=300
+            )
+            for i in range(6)
+        ]
+        boundary = at(minutes=3, seconds=30)
+
+        page1 = await read_memories(
+            native_ctx(), direction="backward", to=boundary.isoformat(), page_tokens=1000
+        )
+        # Rows after the boundary are out; the three just before it are in
+        assert ids_in_order(page1) == [m.id[:8] for m in messages[1:4]]
+        assert "4 messages in the span; read backward from its end, this page shows 2–4" in page1
+        assert "the start of your archive to 2026-09-01 12:03:30 UTC" in page1
+        cursor = page1.split('cursor="', 1)[1].split('"', 1)[0]
+        page2 = await read_memories(
+            native_ctx(), direction="backward", to=boundary.isoformat(), page_tokens=1000, cursor=cursor
+        )
+        assert ids_in_order(page2) == [messages[0].id[:8]]
+        assert page2.rstrip().endswith("Start of your archive: nothing earlier.")
+
+    async def test_same_span_forward_and_backward_yield_the_same_rows(self, db, tools_db):
+        porch = await make_conversation(db, title="Porch")
+        workshop = await make_conversation(db, title="Workshop")
+        expected = []
+        for i in range(7):
+            room = porch if i % 2 else workshop
+            expected.append(await make_message(
+                db, room, content=f"m{i}", created_at=at(minutes=i), token_count=300
+            ))
+
+        async def collect(direction):
+            pages, cursor = [], None
+            while True:
+                page = await read_memories(
+                    native_ctx(), from_="2026-09-01", direction=direction,
+                    page_tokens=700, cursor=cursor,
+                )
+                pages.append(ids_in_order(page))
+                if 'cursor="' not in page:
+                    return pages
+                cursor = page.split('cursor="', 1)[1].split('"', 1)[0]
+
+        forward = await collect("forward")
+        backward = await collect("backward")
+        assert [i for page in forward for i in page] == [m.id[:8] for m in expected]
+        # Backward walks the same rows from the other end; each page is
+        # itself in archive order, so reversing the page order restores it
+        assert [i for page in reversed(backward) for i in page] == [m.id[:8] for m in expected]
+        # Seven rows, two per page
+        assert len(backward) == len(forward) == 4
+
+    async def test_oversized_message_backward_comes_alone_and_whole(self, db, tools_db):
+        conversation = await make_conversation(db)
+        small = await make_message(db, conversation, content="small", created_at=at(), token_count=100)
+        huge_text = "word " * 5000
+        huge = await make_message(db, conversation, content=huge_text, created_at=at(minutes=1))
+        after = await make_message(db, conversation, content="after", created_at=at(minutes=2), token_count=100)
+
+        page1 = await read_memories(native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1000)
+        assert ids_in_order(page1) == [after.id[:8]]
+        cursor = page1.split('cursor="', 1)[1].split('"', 1)[0]
+        page2 = await read_memories(
+            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1000, cursor=cursor
+        )
+        assert ids_in_order(page2) == [huge.id[:8]]
+        assert huge_text.rstrip() in page2
+        cursor = page2.split('cursor="', 1)[1].split('"', 1)[0]
+        page3 = await read_memories(
+            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1000, cursor=cursor
+        )
+        assert ids_in_order(page3) == [small.id[:8]]
+        assert page3.rstrip().endswith("Start of span: nothing earlier.")
+
+    async def test_pointers_and_isolated_scope_hold_in_both_directions(self, db, tools_db):
+        here = await make_conversation(db, title="Here")
+        own = await make_message(db, here, content="said in this very conversation", created_at=at())
+        elsewhere = await make_conversation(db, title="Elsewhere")
+        retrieved = await make_message(db, elsewhere, content="pulled in earlier", created_at=at(minutes=1))
+        fresh = await make_message(db, elsewhere, content="never seen", created_at=at(minutes=2))
+
+        for direction in ("forward", "backward"):
+            ctx = native_ctx(conversation_id=here.id)
+            ctx.extra_exclude_ids = {retrieved.id}
+            with patch.object(memory_service, "update_retrieval_count") as tracker:
+                result = await read_memories(ctx, from_="2026-09-01", direction=direction)
+                tracker.assert_not_called()
+            assert ids_in_order(result) == [own.id[:8], retrieved.id[:8], fresh.id[:8]]
+            assert "said in this very conversation" not in result
+            assert "pulled in earlier" not in result
+            assert "never seen" in result
+            assert result.count(IN_CONTEXT_POINTER) == 2
+            assert set(ctx.last_query_memory_ids) == {own.id, retrieved.id, fresh.id}
+
+            ctx = native_ctx(conversation_id=here.id)
+            ctx.extra_exclude_ids = {retrieved.id}
+            result = await read_memories(ctx, from_="2026-09-01", direction=direction, scope="isolated")
+            assert ids_in_order(result) == [own.id[:8], retrieved.id[:8], fresh.id[:8]]
+            assert IN_CONTEXT_POINTER not in result
+            assert "pulled in earlier" in result
+            assert ISOLATED_SCOPE_NOTE.strip() in result
+            assert ctx.last_query_memory_ids == []
+            assert ctx.turn_query_memory_ids == set()
+
+    async def test_cursor_is_only_resumed_in_its_own_direction(self, db, tools_db):
+        conversation = await make_conversation(db)
+        for i in range(4):
+            await make_message(db, conversation, content=f"m{i}", created_at=at(minutes=i), token_count=300)
+
+        forward = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=700)
+        forward_cursor = forward.split('cursor="', 1)[1].split('"', 1)[0]
+        backward = await read_memories(
+            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=700
+        )
+        backward_cursor = backward.split('cursor="', 1)[1].split('"', 1)[0]
+
+        wrong = await read_memories(
+            native_ctx(), from_="2026-09-01", direction="backward", cursor=forward_cursor
+        )
+        assert wrong.startswith("Error: That cursor came from a memory_read page read direction=\"forward\"")
+        wrong = await read_memories(native_ctx(), from_="2026-09-01", cursor=backward_cursor)
+        assert wrong.startswith("Error: That cursor came from a memory_read page read direction=\"backward\"")
+        assert memory_service.decode_read_cursor("2026-09-01T12:00:00|abc|sideways") is None
+        assert "Unknown direction 'sideways'" in await read_memories(
+            native_ctx(), from_="2026-09-01", direction="sideways"
+        )
+        assert "direction" in MEMORY_READ_SCHEMA["properties"]
+        assert "from" not in MEMORY_READ_SCHEMA.get("required", [])
+
+    async def test_mcp_backward_from_the_compaction_boundary(self, db, async_client):
+        """The post-compaction block's call, end to end over MCP: read
+        backward from last_compacted_at within this conversation. The rows
+        after the boundary are outside the span; the ones before it survive
+        only as summary, so they come back in full; the last page says it
+        reached the conversation's start; and the read is linked once."""
+        room = await make_conversation(
+            db, title="Room", source=ConversationSource.CLAUDE_CODE.value,
+            external_session_id="sess-back", last_compacted_at=at(minutes=5),
+        )
+        first = await make_message(db, room, role=MessageRole.HUMAN, content="the first thing", created_at=at())
+        last_before = await make_message(db, room, content="just before the boundary", created_at=at(minutes=4))
+        await make_message(db, room, role=MessageRole.HUMAN, content="after the boundary", created_at=at(minutes=6))
+
+        response = await async_client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "memory_read", "arguments": {
+                "direction": "backward",
+                "to": room.last_compacted_at.strftime("%Y-%m-%dT%H:%M:%S"),
+                "in_conversation": room.id,
+                "conversation_id": room.id,
+            }},
+        })
+        body = response.json()["result"]
+        assert body["isError"] is False
+        text = body["content"][0]["text"]
+        assert ids_in_order(text) == [first.id[:8], last_before.id[:8]]
+        assert "just before the boundary" in text
+        assert "after the boundary" not in text
+        assert IN_CONTEXT_POINTER not in text
+        assert "read backward from its end" in text
+        assert text.rstrip().endswith("Start of the conversation: nothing earlier.")
+        links = (await db.execute(
+            select(ConversationMemoryLink.message_id)
+            .where(ConversationMemoryLink.conversation_id == room.id)
+        )).scalars().all()
+        assert sorted(links) == sorted([first.id, last_before.id])

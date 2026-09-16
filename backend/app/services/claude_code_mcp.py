@@ -476,6 +476,7 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
                 include_released=bool(arguments.get("include_released", False)),
                 include_model=bool(arguments.get("include_model", False)),
                 scope=arguments.get("scope"),
+                direction=arguments.get("direction"),
             )
         if name == "memory_find":
             return await memory_tools.find_memories(
@@ -493,6 +494,7 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
                 include_released=bool(arguments.get("include_released", False)),
                 include_model=bool(arguments.get("include_model", False)),
                 scope=arguments.get("scope"),
+                direction=arguments.get("direction"),
             )
         if name == "memory_neighbors":
             return await memory_tools.neighbor_memories(

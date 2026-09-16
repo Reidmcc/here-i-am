@@ -652,23 +652,33 @@ are the entity's verbatim carriers across that boundary.
   `times_retrieved` stays untouched as with all recency injections.
 - **The pre-compaction talk is readable verbatim, on request.** The
   reorientation header also names the `memory_read` call that returns
-  this session's own pre-compaction stretch in order
-  (`in_conversation=<this conversation>`, `from=<the conversation's
-  start>`, `to=<last_compacted_at>`). Pull beats push here: the entity
-  knows a compaction happened, the boundary is already stamped, and one
-  call gets the lost stretch verbatim, as much of it as it wants, where a
-  fixed re-injection would have to guess the window. This depends on
-  `memory_read` never excluding the current conversation — the issue's
-  rule, and this is the use that needs it. The boundary below is applied
-  the other way round: rows of this conversation created at or after
-  `last_compacted_at` are still in live context and render as header-only
-  pointers, rows before it survive only as summary and render in full, so
-  the call returns exactly the lost stretch without duplicating what is
-  still in view. (Measured 2026-09-09 on local transcripts:
-  auto-compaction fires near 1M tokens and leaves a ~10k post-compaction
-  context, so the page budget's 8k default and 20k ceiling are
-  conservative, not tight — and the archive holds only the talk, no tool
-  results, so a span page is small relative to a context.)
+  this session's own pre-compaction stretch, read **backward from the
+  boundary** (issue #351): `memory_read(direction="backward",
+  to=<last_compacted_at>, in_conversation=<this conversation>)`, with the
+  instruction to start at the boundary and read back until it has the
+  stretch the summary doesn't carry. The first page is the talk just
+  before the boundary, whatever its dates; each page holds the most
+  recent messages not yet shown, still in order; its cursor walks
+  further back; and with no `from` the stop is the conversation's own
+  first message, which the last page announces. (The original call read
+  the conversation forward from its first message — the wrong end for a
+  nine-day room, found by the porch on a manual `/compact` 2026-09-16,
+  which also confirmed the block fires on manual compactions.) Pull
+  beats push here: the entity knows a compaction happened, the boundary
+  is already stamped, and one call gets the lost stretch verbatim, as
+  much of it as it wants, where a fixed re-injection would have to guess
+  the window. This depends on `memory_read` never excluding the current
+  conversation — the issue's rule, and this is the use that needs it.
+  The boundary below is applied the other way round: rows of this
+  conversation created at or after `last_compacted_at` are still in live
+  context and render as header-only pointers, rows before it survive
+  only as summary and render in full, so the call returns exactly the
+  lost stretch without duplicating what is still in view. (Measured
+  2026-09-09 on local transcripts: auto-compaction fires near 1M tokens
+  and leaves a ~10k post-compaction context, so the page budget's 8k
+  default and 20k ceiling are conservative, not tight — and the archive
+  holds only the talk, no tool results, so a span page is small relative
+  to a context.)
 - **Pre-compaction memory becomes retrievable again.** The compact
   `session-start` stamps `Conversation.last_compacted_at` (before the
   re-injection runs), and that stamp is the same-conversation eligibility

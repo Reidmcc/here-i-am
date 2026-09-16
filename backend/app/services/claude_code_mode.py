@@ -365,7 +365,8 @@ async def build_session_start_context(
             "[HERE I AM MEMORY TOOLS] When the here-i-am MCP server is "
             "connected, you also have deliberate memory tools: memory_query "
             "(recall by chosen text), memory_read (read the archive in order "
-            "over a span of time: open a date and read it), memory_neighbors "
+            "over a span of time: open a date and read it, or read backward "
+            "from a moment), memory_neighbors "
             "(the messages around one memory), memory_find (every message "
             "containing the exact words — a name, a number, a quote), "
             "memory_save (save a reflection "
@@ -479,15 +480,21 @@ async def build_post_compact_context(
     # compaction happened and the boundary is stamped, so one memory_read
     # call recovers the lost stretch verbatim, as much of it as it wants —
     # memory_read never excludes the current conversation and ignores the
-    # eligibility boundary, which is exactly what this use depends on.
+    # eligibility boundary, which is exactly what this use depends on. The
+    # call reads BACKWARD from the boundary (issue #351): what a compacted
+    # session wants is the stretch just before it, whatever its dates, not
+    # the conversation from its first message forward.
     boundary = conversation.last_compacted_at or datetime.utcnow()
     parts.append(
         "Everything said in this session before the compaction is still "
-        "readable verbatim, in order, with memory_read: in_conversation="
-        f'"{conversation.id}", from="{conversation.created_at.strftime("%Y-%m-%dT%H:%M")}", '
-        f'to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}" (UTC). memory_read never '
-        "excludes this conversation, so that call returns the pre-compaction "
-        "stretch itself, not a summary of it."
+        "readable verbatim, in order, with memory_read: "
+        f'memory_read(direction="backward", to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}", '
+        f'in_conversation="{conversation.id}") (UTC). Start at the boundary and '
+        "read back until you have the stretch the summary doesn't carry: each "
+        "page holds the most recent messages not yet shown, in order, and its "
+        "cursor walks further back, to the conversation's start if you want "
+        "it all. memory_read never excludes this conversation, so those pages "
+        "are the pre-compaction talk itself, not a summary of it."
     )
 
     notes_paths = build_notes_paths_block(entity)
