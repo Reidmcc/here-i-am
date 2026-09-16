@@ -1566,7 +1566,7 @@ class TestMcpEndpoint:
         tools = {t["name"]: t for t in response.json()["result"]["tools"]}
         assert set(tools) == {
             "memory_query", "memory_save", "memory_mark", "memory_release",
-            "memory_read", "memory_neighbors",
+            "memory_read", "memory_neighbors", "memory_find",
             "declare_room", "retire_room",
         }
         # Every tool takes the MCP-only conversation_id parameter
