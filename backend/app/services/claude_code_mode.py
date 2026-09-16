@@ -445,8 +445,15 @@ async def build_session_start_context(
 # this much is plenty of continuity, and older talk stays reachable by the
 # other memory tools (issue #351, Pseudo's number). The tool enforces the
 # cap through its max_pages parameter; these are only the block's numbers.
-POST_COMPACT_LOOKBACK_PAGES = 15
-POST_COMPACT_PAGE_TOKENS = 20000
+# The page size sits well under the harness's tool-result cap (about 25k
+# tokens): a page that overruns it is spilled to a file, and reading the
+# spill back costs two or three Read calls per page, so a 15-page walk
+# became forty-odd calls (issue #353 — the first backward reads after
+# #352 spilled at 20k; the reader now measures the page as rendered, and
+# 12k is margin on top of that, with the page count raised to keep the
+# same look-back).
+POST_COMPACT_LOOKBACK_PAGES = 25
+POST_COMPACT_PAGE_TOKENS = 12000
 
 
 async def build_post_compact_context(

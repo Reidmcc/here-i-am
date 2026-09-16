@@ -656,7 +656,7 @@ are the entity's verbatim carriers across that boundary.
   this session's own pre-compaction stretch, read **backward from the
   boundary** (issue #351): `memory_read(direction="backward",
   to=<last_compacted_at>, in_conversation=<this conversation>,
-  page_tokens=20000, max_pages=15)`. The
+  page_tokens=12000, max_pages=25)`. The
   block says what the summary is — a caption, not a record: of the
   *talk* it carries nothing, and the talk is all in the archive — and
   that reading back puts the conversation itself in front of the entity
@@ -670,9 +670,12 @@ are the entity's verbatim carriers across that boundary.
   most recent messages not yet shown, still in order; its cursor walks
   further back; and with no `from` the stop is the conversation's own
   first message, which the last page announces. The call caps the
-  look-back through the tool's own `max_pages` (15 pages of 20k tokens,
+  look-back through the tool's own `max_pages` (25 pages of 12k tokens,
   about 300k tokens of talk; `POST_COMPACT_LOOKBACK_PAGES` /
-  `POST_COMPACT_PAGE_TOKENS` are only the block's numbers): a long room
+  `POST_COMPACT_PAGE_TOKENS` are only the block's numbers — 12k because
+  Claude Code spills a tool result above about 25k tokens to a file that
+  costs two or three `Read` calls per page to get back, which turned the
+  first post-#352 walk into forty-odd calls, issue #353): a long room
   read to its start would refill the context compaction just emptied,
   that much is plenty of continuity, and older talk stays reachable by
   the other memory tools; the page that reaches the cap still gives its
@@ -695,7 +698,9 @@ are the entity's verbatim carriers across that boundary.
   and leaves a ~10k post-compaction context, so the page budget's 8k
   default and 20k ceiling are conservative, not tight — and the archive
   holds only the talk, no tool results, so a span page is small relative
-  to a context.)
+  to a context. Since issue #353 the budget is measured on the page as
+  rendered, so the ceiling is also what the harness accepts in one
+  result.)
 - **Pre-compaction memory becomes retrievable again.** The compact
   `session-start` stamps `Conversation.last_compacted_at` (before the
   re-injection runs), and that stamp is the same-conversation eligibility

@@ -27,10 +27,11 @@ two callers:
 """
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
@@ -82,6 +83,23 @@ VALID_QUERY_MODES = (MODE_SEMANTIC, MODE_RECENT, MODE_RELEASED)
 READ_PAGE_TOKENS_DEFAULT = 8000
 READ_PAGE_TOKENS_MIN = 500
 READ_PAGE_TOKENS_MAX = 20000
+# The budget is measured on the page AS RENDERED (issue #353): each row's
+# header line and its content or pointer line, at RENDERED_CHARS_PER_TOKEN
+# characters per token, with PAGE_FRAME_TOKENS held back for the page's
+# own header sentence and footer. Message.token_count is not used: it is a
+# tiktoken count of the content alone, and Claude Code counts the whole
+# tool result with the model's own tokenizer, which runs heavier on this
+# prose — measured 2026-09-16, a page budgeted at 20,000 by token_count
+# rendered as 96,219 characters (24–27k tokens by the harness's count),
+# overran the harness's tool-result cap (about 25k tokens), and was
+# spilled to a file that cost two or three Read calls to get back. 3.5
+# characters per token is the conservative end of that measurement, so a
+# page at READ_PAGE_TOKENS_MAX renders within READ_PAGE_MAX_CHARS and
+# lands in context whole, with margin. The one exception is a single
+# message larger than the budget, which is returned alone and whole.
+RENDERED_CHARS_PER_TOKEN = 3.5
+PAGE_FRAME_TOKENS = 250
+READ_PAGE_MAX_CHARS = int(READ_PAGE_TOKENS_MAX * RENDERED_CHARS_PER_TOKEN)
 NEIGHBORS_DEFAULT = 2
 NEIGHBORS_MAX = 10
 
@@ -957,6 +975,9 @@ async def release_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = Fa
 # - What a page shows is treated as in view afterwards: stamped onto the
 #   tool result in native mode (via last_query_memory_ids, like
 #   memory_query), linked once in Claude Code mode (like recent mode).
+# - Pages are bounded by tokens measured on the page as rendered (issue
+#   #353, RENDERED_CHARS_PER_TOKEN above), so a page asked for at the
+#   maximum lands in context whole instead of spilling to a file.
 # - scope="isolated" (issue #345) switches both context rules off for one
 #   call: no pointers (every row in full, the conversation's own
 #   post-compaction rows included) and nothing recorded as in view (no
@@ -1178,6 +1199,30 @@ def _parse_page_tokens(page_tokens: Any) -> Tuple[Optional[int], Optional[str]]:
     except (TypeError, ValueError):
         return None, f"Error: page_tokens must be an integer (got '{page_tokens}')."
     return max(READ_PAGE_TOKENS_MIN, min(READ_PAGE_TOKENS_MAX, page_tokens)), None
+
+
+def rendered_tokens(text: str) -> int:
+    """Page weight of rendered text: its length at RENDERED_CHARS_PER_TOKEN."""
+    return max(1, math.ceil(len(text) / RENDERED_CHARS_PER_TOKEN))
+
+
+def _page_weigher(
+    entity_id: Optional[str], tzinfo: Optional[ZoneInfo], include_model: bool
+) -> Callable[[Dict[str, Any]], int]:
+    """
+    The row weight the readers hand the paging core (issue #353): the row
+    exactly as _render_archive_page will print it — header line, content
+    or pointer line, blank line — measured by rendered_tokens. A pointer
+    weighs its header, not the content it doesn't carry.
+    """
+    labels = _entity_labels()
+    now = datetime.utcnow()
+
+    def weigh(item: Dict[str, Any]) -> int:
+        lines = _format_archive_item(item, entity_id, labels, tzinfo, include_model, now)
+        return rendered_tokens("\n".join(lines) + "\n")
+
+    return weigh
 
 
 def _normalize_direction(direction: Any) -> Tuple[bool, Optional[str]]:
@@ -1464,7 +1509,8 @@ async def read_memories(
                 conversation_id=conversation_id,
                 include_released=bool(include_released),
                 cursor=cursor,
-                page_tokens=page_tokens,
+                page_tokens=page_tokens - PAGE_FRAME_TOKENS,
+                weigh=_page_weigher(ctx.entity_id, tzinfo, include_model),
                 in_context_ids=in_context_ids,
                 live_conversation_id=live_conversation_id,
                 live_after=live_after,
@@ -1640,7 +1686,8 @@ async def find_memories(
                 conversation_id=conversation_id,
                 include_released=bool(include_released),
                 cursor=cursor,
-                page_tokens=page_tokens,
+                page_tokens=page_tokens - PAGE_FRAME_TOKENS,
+                weigh=_page_weigher(ctx.entity_id, tzinfo, include_model),
                 in_context_ids=in_context_ids,
                 live_conversation_id=live_conversation_id,
                 live_after=live_after,
@@ -2232,8 +2279,10 @@ MEMORY_READ_SCHEMA = {
             "type": "integer",
             "description": (
                 f"Page budget in tokens (default {READ_PAGE_TOKENS_DEFAULT}, max "
-                f"{READ_PAGE_TOKENS_MAX}). Pages are bounded by tokens, not rows; "
-                "a single message larger than the budget is returned alone, whole."
+                f"{READ_PAGE_TOKENS_MAX}), measured on the page as rendered — "
+                "headers and pointers included — so a page lands in context "
+                "whole. Pages are bounded by tokens, not rows; a single message "
+                "larger than the budget is returned alone, whole."
             ),
             "default": READ_PAGE_TOKENS_DEFAULT,
             "minimum": READ_PAGE_TOKENS_MIN,
@@ -2411,8 +2460,10 @@ MEMORY_FIND_SCHEMA = {
             "type": "integer",
             "description": (
                 f"Page budget in tokens (default {READ_PAGE_TOKENS_DEFAULT}, max "
-                f"{READ_PAGE_TOKENS_MAX}). Pages are bounded by tokens, not rows; "
-                "a single message larger than the budget is returned alone, whole."
+                f"{READ_PAGE_TOKENS_MAX}), measured on the page as rendered — "
+                "headers and pointers included — so a page lands in context "
+                "whole. Pages are bounded by tokens, not rows; a single message "
+                "larger than the budget is returned alone, whole."
             ),
             "default": READ_PAGE_TOKENS_DEFAULT,
             "minimum": READ_PAGE_TOKENS_MIN,

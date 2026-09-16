@@ -2,7 +2,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple
 
 from pinecone import Pinecone
 from sqlalchemy import and_, func, or_, select, update
@@ -1479,9 +1479,13 @@ class MemoryService:
     @staticmethod
     def estimate_message_tokens(row: Dict[str, Any]) -> int:
         """
-        Page-budget weight of a row: the stored token_count, or a length
-        estimate when the row predates counting; a pointer's fixed weight
-        when the row is already in context. Display/budgeting only.
+        The paging core's default row weight, when the caller passes no
+        `weigh`: the stored token_count, or a length estimate when the row
+        predates counting; a pointer's fixed weight when the row is already
+        in context. The tools don't use it (issue #353): token_count is a
+        tiktoken count of the content alone, and a page budgeted by it
+        overran the harness's tool-result cap, so they weigh the row as
+        rendered instead (memory_tools._page_weigher). Display/budgeting only.
         """
         if row.get("in_context"):
             return MemoryService.POINTER_TOKENS
@@ -1563,16 +1567,18 @@ class MemoryService:
         live_after: Optional[datetime],
         log_label: str,
         backward: bool = False,
+        weigh: Optional[Callable[[Dict[str, Any]], int]] = None,
     ) -> Dict[str, Any]:
         """
         The paging core shared by read_messages_in_span and find_messages:
         every row matching `conditions` (a Message/Conversation join), in
         (created_at, id) order, one token-bounded page at a time. The page
-        fills until adding the next row would exceed page_tokens
-        (token_count, or a length estimate); an oversized first row is
-        returned alone and whole. Rows already in the reader's live context
-        (see _row_in_context) come back flagged in_context so the tool
-        renders them as pointers.
+        fills until adding the next row would exceed page_tokens, each row
+        weighed by `weigh` (default estimate_message_tokens; the tools pass
+        one that measures the row as rendered, issue #353); an oversized
+        first row is returned alone and whole. Rows already in the reader's
+        live context (see _row_in_context) come back flagged in_context so
+        the tool renders them as pointers.
 
         `backward` (issue #351) reads from the other end: the page takes
         the newest rows not yet shown, walking toward the oldest, and the
@@ -1611,6 +1617,7 @@ class MemoryService:
                 ))
             )).scalar_one() or 0)
 
+        weigh = weigh or self.estimate_message_tokens
         items: List[Dict[str, Any]] = []
         used = 0
         next_cursor: Optional[str] = None
@@ -1640,7 +1647,7 @@ class MemoryService:
                         message, in_context_ids, live_conversation_id, live_after
                     ),
                 )
-                weight = self.estimate_message_tokens(row)
+                weight = weigh(row)
                 if items and used + weight > page_tokens:
                     # The page's leading edge: the last row taken, which is
                     # the oldest one when reading backward
@@ -1751,6 +1758,7 @@ class MemoryService:
         live_conversation_id: Optional[str] = None,
         live_after: Optional[datetime] = None,
         backward: bool = False,
+        weigh: Optional[Callable[[Dict[str, Any]], int]] = None,
     ) -> Dict[str, Any]:
         """
         Every message in the entity's archive whose content contains `text`
@@ -1779,7 +1787,7 @@ class MemoryService:
             db, conditions, cursor, page_tokens, batch_size,
             in_context_ids, live_conversation_id, live_after,
             log_label=f"Archive find ({match}) for entity={entity_id}",
-            backward=backward,
+            backward=backward, weigh=weigh,
         )
 
     async def read_messages_in_span(
@@ -1798,6 +1806,7 @@ class MemoryService:
         live_conversation_id: Optional[str] = None,
         live_after: Optional[datetime] = None,
         backward: bool = False,
+        weigh: Optional[Callable[[Dict[str, Any]], int]] = None,
     ) -> Dict[str, Any]:
         """
         Read the entity's archive between two naive-UTC moments (inclusive;
@@ -1831,7 +1840,7 @@ class MemoryService:
             db, conditions, cursor, page_tokens, batch_size,
             in_context_ids, live_conversation_id, live_after,
             log_label=f"Archive read in span for entity={entity_id}",
-            backward=backward,
+            backward=backward, weigh=weigh,
         )
 
     async def read_message_neighbors(

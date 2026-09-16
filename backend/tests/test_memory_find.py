@@ -46,6 +46,7 @@ from tests.test_memory_read import (  # noqa: F401
     make_conversation,
     make_message,
     native_ctx,
+    prose,
     session_factory,
     test_engine,
     tools_db,
@@ -339,23 +340,23 @@ class TestPagination:
         hits = []
         for i in range(5):
             hits.append(await make_message(
-                db, conversation, content=f"watercress {i}", created_at=at(minutes=i), token_count=300,
+                db, conversation, content=prose(300, f"watercress {i}"), created_at=at(minutes=i),
             ))
             await make_message(db, conversation, content=f"filler {i}", created_at=at(minutes=i, seconds=30), token_count=300)
 
-        first = await find_memories(native_ctx(), text="watercress", page_tokens=700)
+        first = await find_memories(native_ctx(), text="watercress", page_tokens=1070)
         assert ids_in_order(first) == [h.id[:8] for h in hits[:2]]
         assert "5 matches; this page shows 1–2" in first
         assert "(3 matches remain)" in first
         cursor = first.split('cursor="')[1].split('"')[0]
 
-        second = await find_memories(native_ctx(), text="watercress", page_tokens=700, cursor=cursor)
+        second = await find_memories(native_ctx(), text="watercress", page_tokens=1070, cursor=cursor)
         assert ids_in_order(second) == [h.id[:8] for h in hits[2:4]]
         assert "this page shows 3–4" in second
         assert "(1 match remains)" in second
         cursor = second.split('cursor="')[1].split('"')[0]
 
-        third = await find_memories(native_ctx(), text="watercress", page_tokens=700, cursor=cursor)
+        third = await find_memories(native_ctx(), text="watercress", page_tokens=1070, cursor=cursor)
         assert ids_in_order(third) == [hits[4].id[:8]]
         assert third.rstrip().endswith("End of matches.")
         cursor = memory_service.encode_read_cursor(hits[4].created_at, hits[4].id)
@@ -421,11 +422,11 @@ class TestBackward:
         hits = []
         for i in range(5):
             hits.append(await make_message(
-                db, conversation, content=f"watercress {i}", created_at=at(minutes=i), token_count=300,
+                db, conversation, content=prose(300, f"watercress {i}"), created_at=at(minutes=i),
             ))
             await make_message(db, conversation, content=f"filler {i}", created_at=at(minutes=i, seconds=30), token_count=300)
 
-        first = await find_memories(native_ctx(), text="watercress", direction="backward", page_tokens=700)
+        first = await find_memories(native_ctx(), text="watercress", direction="backward", page_tokens=1070)
         assert ids_in_order(first) == [h.id[:8] for h in hits[3:]]
         assert "5 matches; read backward from the newest, this page shows 4–5, in order." in first
         assert "Next page (earlier): pass cursor=" in first
@@ -434,7 +435,7 @@ class TestBackward:
         assert cursor.endswith("|backward|page=1")
 
         second = await find_memories(
-            native_ctx(), text="watercress", direction="backward", page_tokens=700, cursor=cursor
+            native_ctx(), text="watercress", direction="backward", page_tokens=1070, cursor=cursor
         )
         assert ids_in_order(second) == [h.id[:8] for h in hits[1:3]]
         assert "this page shows 2–3" in second
@@ -442,7 +443,7 @@ class TestBackward:
         cursor = second.split('cursor="')[1].split('"')[0]
 
         third = await find_memories(
-            native_ctx(), text="watercress", direction="backward", page_tokens=700, cursor=cursor
+            native_ctx(), text="watercress", direction="backward", page_tokens=1070, cursor=cursor
         )
         assert ids_in_order(third) == [hits[0].id[:8]]
         assert third.rstrip().endswith("Start of your archive: no earlier matches.")
@@ -458,7 +459,7 @@ class TestBackward:
         assert result.startswith("Start of the conversation: no messages before that cursor contain")
 
         # A forward cursor is refused in a backward read, and the reverse
-        forward = await find_memories(native_ctx(), text="watercress", page_tokens=700)
+        forward = await find_memories(native_ctx(), text="watercress", page_tokens=1070)
         forward_cursor = forward.split('cursor="')[1].split('"')[0]
         wrong = await find_memories(
             native_ctx(), text="watercress", direction="backward", cursor=forward_cursor
@@ -476,7 +477,7 @@ class TestBackward:
 
         # max_pages caps the walk here too, with the cursor still given
         capped = await find_memories(
-            native_ctx(), text="watercress", direction="backward", page_tokens=700, max_pages=1
+            native_ctx(), text="watercress", direction="backward", page_tokens=1070, max_pages=1
         )
         assert ids_in_order(capped) == [h.id[:8] for h in hits[3:]]
         assert "Page cap reached (max_pages=1; this was page 1): 3 earlier matches remain unread." in capped

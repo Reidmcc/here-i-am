@@ -948,7 +948,7 @@ class TestPostCompact:
         assert (
             f'memory_read(direction="backward", '
             f'to="{row.last_compacted_at.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
-            f'in_conversation="{conversation_id}", page_tokens=20000, max_pages=15):'
+            f'in_conversation="{conversation_id}", page_tokens=12000, max_pages=25):'
         ) in body["context"]
         assert 'from="' not in body["context"]
         # The summary is a caption of the talk (the talk is all in the
@@ -959,7 +959,7 @@ class TestPostCompact:
             "The summary above is a caption, not a record: of the talk it carries nothing"
         ) in body["context"]
         assert "which the summary is the one record of" in body["context"]
-        assert "15 pages of 20k tokens is about 300k tokens of talk" in body["context"]
+        assert "25 pages of 12k tokens is about 300k tokens of talk" in body["context"]
         assert "the summary doesn't carry" not in body["context"]
         assert "summary is fresh" not in body["context"]
         assert "memory_save" not in body["context"]

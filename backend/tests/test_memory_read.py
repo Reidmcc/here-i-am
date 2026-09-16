@@ -49,10 +49,16 @@ from app.services.memory_tools import (
     ISOLATED_SCOPE_NOTE,
     MEMORY_READ_SCHEMA,
     MEMORY_RESULT_STAMPING_TOOLS,
+    PAGE_FRAME_TOKENS,
+    READ_PAGE_MAX_CHARS,
+    READ_PAGE_TOKENS_MAX,
+    READ_PAGE_TOKENS_MIN,
+    RENDERED_CHARS_PER_TOKEN,
     MemoryToolContext,
     is_isolated_read,
     neighbor_memories,
     read_memories,
+    rendered_tokens,
 )
 from app.services.session_manager import _MEMORY_QUERY_RESULT_ID_RE
 
@@ -176,6 +182,14 @@ async def make_message(
 
 def ids_in_order(text: str):
     return _MEMORY_QUERY_RESULT_ID_RE.findall(text)
+
+
+def prose(tokens: int, prefix: str = "") -> str:
+    """Content that weighs about `tokens` on a page by the rendered-text
+    measure (issue #353); the row's header line adds ~30 more. The stored
+    token_count plays no part in paging, so the tests size the text."""
+    text = "x" * int(tokens * RENDERED_CHARS_PER_TOKEN)
+    return f"{prefix} {text}" if prefix else text
 
 
 def native_ctx(conversation_id="current-conversation"):
@@ -406,9 +420,9 @@ class TestReadSpan:
         """A page of pointers is not charged the content it doesn't carry."""
         here = await make_conversation(db, title="Here")
         for i in range(5):
-            await make_message(db, here, content=f"m{i}", created_at=at(minutes=i), token_count=5000)
+            await make_message(db, here, content=prose(5000, f"m{i}"), created_at=at(minutes=i))
         ctx = native_ctx(conversation_id=here.id)
-        result = await read_memories(ctx, from_="2026-09-01", page_tokens=1000)
+        result = await read_memories(ctx, from_="2026-09-01", page_tokens=1400)
         assert len(ids_in_order(result)) == 5
         assert result.rstrip().endswith("End of span.")
 
@@ -455,15 +469,16 @@ class TestReadReleasedAndModel:
 class TestReadPagination:
     async def test_pages_are_bounded_by_tokens_and_resume_from_cursor(self, db, tools_db):
         conversation = await make_conversation(db)
-        # Six messages of 300 tokens each; a 1000-token page holds three
+        # Six messages of ~330 tokens each as rendered; a 1400-token page
+        # (250 of it the frame) holds three
         messages = [
             await make_message(
-                db, conversation, content=f"message {i}", created_at=at(minutes=i), token_count=300
+                db, conversation, content=prose(300, f"message {i}"), created_at=at(minutes=i)
             )
             for i in range(6)
         ]
 
-        page1 = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=1000)
+        page1 = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=1400)
         assert ids_in_order(page1) == [m.id[:8] for m in messages[:3]]
         assert "6 messages in the span; this page shows 1–3" in page1
         assert "Next page: pass cursor=" in page1
@@ -471,7 +486,7 @@ class TestReadPagination:
         cursor = page1.split('cursor="', 1)[1].split('"', 1)[0]
 
         page2 = await read_memories(
-            native_ctx(), from_="2026-09-01", page_tokens=1000, cursor=cursor
+            native_ctx(), from_="2026-09-01", page_tokens=1400, cursor=cursor
         )
         assert ids_in_order(page2) == [m.id[:8] for m in messages[3:]]
         assert "this page shows 4–6" in page2
@@ -481,34 +496,34 @@ class TestReadPagination:
         last = messages[-1]
         past = memory_service.encode_read_cursor(last.created_at, last.id)
         end = await read_memories(
-            native_ctx(), from_="2026-09-01", page_tokens=1000, cursor=past
+            native_ctx(), from_="2026-09-01", page_tokens=1400, cursor=past
         )
         assert end.startswith("End of span: no messages after that cursor")
 
     async def test_oversized_message_is_returned_alone_and_whole(self, db, tools_db):
         conversation = await make_conversation(db)
         small = await make_message(db, conversation, content="small", created_at=at(), token_count=100)
-        huge_text = "word " * 5000  # ~6250 tokens by length estimate, token_count left NULL
+        huge_text = "word " * 5000  # ~7,150 tokens as rendered
         huge = await make_message(db, conversation, content=huge_text, created_at=at(minutes=1))
         after = await make_message(db, conversation, content="after", created_at=at(minutes=2), token_count=100)
 
-        page1 = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=1000)
+        page1 = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=1400)
         assert ids_in_order(page1) == [small.id[:8]]
         cursor = page1.split('cursor="', 1)[1].split('"', 1)[0]
 
-        page2 = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=1000, cursor=cursor)
+        page2 = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=1400, cursor=cursor)
         assert ids_in_order(page2) == [huge.id[:8]]
         assert huge_text.rstrip() in page2  # never truncated
         cursor = page2.split('cursor="', 1)[1].split('"', 1)[0]
 
-        page3 = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=1000, cursor=cursor)
+        page3 = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=1400, cursor=cursor)
         assert ids_in_order(page3) == [after.id[:8]]
 
     async def test_page_tokens_is_clamped(self, db, tools_db):
         conversation = await make_conversation(db)
         for i in range(3):
-            await make_message(db, conversation, content=f"m{i}", created_at=at(minutes=i), token_count=400)
-        # 1 clamps up to the 500 minimum: one 400-token row per page
+            await make_message(db, conversation, content=prose(400, f"m{i}"), created_at=at(minutes=i))
+        # 1 clamps up to the 500 minimum (250 for rows): one ~430-token row per page
         result = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=1)
         assert len(ids_in_order(result)) == 1
         assert "must be an integer" in await read_memories(
@@ -1012,13 +1027,13 @@ class TestBackward:
         conversation = await make_conversation(db)
         messages = [
             await make_message(
-                db, conversation, content=f"message {i}", created_at=at(minutes=i), token_count=300
+                db, conversation, content=prose(300, f"message {i}"), created_at=at(minutes=i)
             )
             for i in range(6)
         ]
 
         page1 = await read_memories(
-            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1000
+            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1400
         )
         # The newest three, in archive order within the page
         assert ids_in_order(page1) == [m.id[:8] for m in messages[3:]]
@@ -1034,7 +1049,7 @@ class TestBackward:
         assert cursor.endswith("|backward|page=1")
 
         page2 = await read_memories(
-            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1000, cursor=cursor
+            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1400, cursor=cursor
         )
         assert ids_in_order(page2) == [m.id[:8] for m in messages[:3]]
         assert "this page shows 1–3, in order" in page2
@@ -1094,14 +1109,14 @@ class TestBackward:
         conversation = await make_conversation(db)
         messages = [
             await make_message(
-                db, conversation, content=f"message {i}", created_at=at(minutes=i), token_count=300
+                db, conversation, content=prose(300, f"message {i}"), created_at=at(minutes=i)
             )
             for i in range(6)
         ]
         boundary = at(minutes=3, seconds=30)
 
         page1 = await read_memories(
-            native_ctx(), direction="backward", to=boundary.isoformat(), page_tokens=1000
+            native_ctx(), direction="backward", to=boundary.isoformat(), page_tokens=1400
         )
         # Rows after the boundary are out; the three just before it are in
         assert ids_in_order(page1) == [m.id[:8] for m in messages[1:4]]
@@ -1109,7 +1124,7 @@ class TestBackward:
         assert "the start of your archive to 2026-09-01 12:03:30 UTC" in page1
         cursor = page1.split('cursor="', 1)[1].split('"', 1)[0]
         page2 = await read_memories(
-            native_ctx(), direction="backward", to=boundary.isoformat(), page_tokens=1000, cursor=cursor
+            native_ctx(), direction="backward", to=boundary.isoformat(), page_tokens=1400, cursor=cursor
         )
         assert ids_in_order(page2) == [messages[0].id[:8]]
         assert page2.rstrip().endswith("Start of your archive: nothing earlier.")
@@ -1121,7 +1136,7 @@ class TestBackward:
         for i in range(7):
             room = porch if i % 2 else workshop
             expected.append(await make_message(
-                db, room, content=f"m{i}", created_at=at(minutes=i), token_count=300
+                db, room, content=prose(300, f"m{i}"), created_at=at(minutes=i)
             ))
 
         async def collect(direction):
@@ -1129,7 +1144,7 @@ class TestBackward:
             while True:
                 page = await read_memories(
                     native_ctx(), from_="2026-09-01", direction=direction,
-                    page_tokens=700, cursor=cursor,
+                    page_tokens=1070, cursor=cursor,
                 )
                 pages.append(ids_in_order(page))
                 if 'cursor="' not in page:
@@ -1152,17 +1167,17 @@ class TestBackward:
         huge = await make_message(db, conversation, content=huge_text, created_at=at(minutes=1))
         after = await make_message(db, conversation, content="after", created_at=at(minutes=2), token_count=100)
 
-        page1 = await read_memories(native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1000)
+        page1 = await read_memories(native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1400)
         assert ids_in_order(page1) == [after.id[:8]]
         cursor = page1.split('cursor="', 1)[1].split('"', 1)[0]
         page2 = await read_memories(
-            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1000, cursor=cursor
+            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1400, cursor=cursor
         )
         assert ids_in_order(page2) == [huge.id[:8]]
         assert huge_text.rstrip() in page2
         cursor = page2.split('cursor="', 1)[1].split('"', 1)[0]
         page3 = await read_memories(
-            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1000, cursor=cursor
+            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1400, cursor=cursor
         )
         assert ids_in_order(page3) == [small.id[:8]]
         assert page3.rstrip().endswith("Start of span: nothing earlier.")
@@ -1200,12 +1215,12 @@ class TestBackward:
     async def test_cursor_is_only_resumed_in_its_own_direction(self, db, tools_db):
         conversation = await make_conversation(db)
         for i in range(4):
-            await make_message(db, conversation, content=f"m{i}", created_at=at(minutes=i), token_count=300)
+            await make_message(db, conversation, content=prose(300, f"m{i}"), created_at=at(minutes=i))
 
-        forward = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=700)
+        forward = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=1070)
         forward_cursor = forward.split('cursor="', 1)[1].split('"', 1)[0]
         backward = await read_memories(
-            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=700
+            native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1070
         )
         backward_cursor = backward.split('cursor="', 1)[1].split('"', 1)[0]
 
@@ -1237,11 +1252,11 @@ class TestBackward:
         conversation = await make_conversation(db)
         messages = [
             await make_message(
-                db, conversation, content=f"message {i}", created_at=at(minutes=i), token_count=300
+                db, conversation, content=prose(300, f"message {i}"), created_at=at(minutes=i)
             )
             for i in range(6)
         ]
-        kwargs = dict(from_="2026-09-01", direction="backward", page_tokens=700)
+        kwargs = dict(from_="2026-09-01", direction="backward", page_tokens=1070)
 
         page1 = await read_memories(native_ctx(), max_pages=2, **kwargs)
         assert ids_in_order(page1) == [m.id[:8] for m in messages[4:]]
@@ -1268,7 +1283,7 @@ class TestBackward:
         ]
 
         # Forward too, and the cap counts from page 1
-        forward = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=700, max_pages=1)
+        forward = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=1070, max_pages=1)
         assert "Page cap reached (max_pages=1; this was page 1): 4 messages remain unread." in forward
         assert "earlier" not in forward.split("Page cap reached", 1)[1]
 
@@ -1312,3 +1327,70 @@ class TestBackward:
             .where(ConversationMemoryLink.conversation_id == room.id)
         )).scalars().all()
         assert sorted(links) == sorted([first.id, last_before.id])
+
+
+# ============================================================
+# memory_read / memory_find: the page budget (issue #353)
+# ============================================================
+
+class TestPageBudget:
+    """Issue #353: the budget is measured on the page as rendered, so a page
+    asked for at the maximum lands in Claude Code's context whole instead
+    of spilling to a file that costs two or three Read calls to get back."""
+
+    def test_rendered_measure_and_ceiling(self):
+        assert rendered_tokens("") == 1
+        assert rendered_tokens("x" * 35) == 10
+        assert rendered_tokens("x" * 36) == 11
+        assert READ_PAGE_MAX_CHARS == 70000
+        assert PAGE_FRAME_TOKENS < READ_PAGE_TOKENS_MIN
+
+    async def test_a_page_at_the_maximum_stays_within_the_character_ceiling(self, db, tools_db):
+        """Rows with long content and a light stored token_count (the old
+        measure, which would have kept filling): every page — headers,
+        pointers, and footer included — renders within READ_PAGE_MAX_CHARS,
+        and the pages fill rather than shrink."""
+        here = await make_conversation(db, title="Here")
+        elsewhere = await make_conversation(db, title="Elsewhere")
+        by_prefix = {}
+        for i in range(60):
+            content = f"turn {i} " + "prose " * (300 + (i % 7) * 400)  # 1.8k–16k characters
+            room = here if i % 5 == 0 else elsewhere
+            message = await make_message(
+                db, room, content=content, created_at=at(minutes=i), token_count=len(content) // 5
+            )
+            by_prefix[message.id[:8]] = message
+        ctx = native_ctx(conversation_id=here.id)  # Here's own rows render as pointers
+        pages, cursor = [], None
+        while True:
+            page = await read_memories(
+                ctx, from_="2026-09-01", page_tokens=READ_PAGE_TOKENS_MAX, cursor=cursor
+            )
+            pages.append(page)
+            if 'cursor="' not in page:
+                break
+            cursor = page.split('cursor="', 1)[1].split('"', 1)[0]
+        assert len(pages) > 1
+        assert all(len(page) <= READ_PAGE_MAX_CHARS for page in pages)
+        assert max(len(page) for page in pages) > READ_PAGE_MAX_CHARS * 0.7
+        assert sum(len(ids_in_order(page)) for page in pages) == 60
+        assert sum(page.count(IN_CONTEXT_POINTER) for page in pages) == 12
+        # By the stored counts the first page was still under budget, so the
+        # content-only measure would have kept filling it past the ceiling
+        stored = sum(by_prefix[prefix].token_count for prefix in ids_in_order(pages[0]))
+        assert stored < READ_PAGE_TOKENS_MAX
+
+    async def test_headers_and_pointers_are_budgeted(self, db, tools_db):
+        """Forty in-context rows of one character each are charged their
+        header and pointer lines: they don't all fit the smallest page, and
+        the page renders within its budget."""
+        here = await make_conversation(db, title="Here")
+        for i in range(40):
+            await make_message(db, here, content="x", created_at=at(minutes=i))
+        ctx = native_ctx(conversation_id=here.id)
+        page = await read_memories(ctx, from_="2026-09-01", page_tokens=READ_PAGE_TOKENS_MIN)
+        shown = len(ids_in_order(page))
+        assert 0 < shown < 40
+        assert page.count(IN_CONTEXT_POINTER) == shown
+        assert len(page) <= READ_PAGE_TOKENS_MIN * RENDERED_CHARS_PER_TOKEN
+        assert "Next page: pass cursor=" in page
