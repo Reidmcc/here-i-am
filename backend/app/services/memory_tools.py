@@ -27,10 +27,11 @@ two callers:
 """
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
@@ -81,7 +82,41 @@ VALID_QUERY_MODES = (MODE_SEMANTIC, MODE_RECENT, MODE_RELEASED)
 # length estimate) and memory_neighbors window bounds (issue #343).
 READ_PAGE_TOKENS_DEFAULT = 8000
 READ_PAGE_TOKENS_MIN = 500
-READ_PAGE_TOKENS_MAX = 20000
+# What Claude Code does with a large tool result, measured 2026-09-16 on
+# the live backend (issue #353, the review session's bracket; re-measure
+# with one memory_read(scope="isolated", max_pages=1) per size — landed vs
+# persisted is the readout, and Read on a spilled file over the cap prints
+# the counter's number). Two limits, the lower one binding:
+# - Any result above about 50 KB is persisted to a file with a 2 KB
+#   preview inline (48,365 bytes landed; 51,286 bytes were persisted).
+#   Getting it back costs two or three Read calls per page, which is the
+#   cost #353 is about.
+# - Above about 25k tokens the result is refused outright ("exceeds
+#   maximum allowed tokens") and spilled the same way. The counter behind
+#   that cap counted a 93,521-character page as 32,982 tokens — 2.84
+#   characters per token, about 1.45× tiktoken's count of the same text.
+HARNESS_PERSIST_BYTES = 51_200
+HARNESS_RESULT_CAP_TOKENS = 25_000
+HARNESS_CHARS_PER_TOKEN = 2.8
+# The budget is measured on the page AS RENDERED (issue #353): each row's
+# header line and its content or pointer line, in UTF-8 bytes (the persist
+# line is bytes) at RENDERED_CHARS_PER_TOKEN per token — the harness's
+# measured ratio, so page_tokens means what it says in the units the
+# harness decides with — with PAGE_FRAME_TOKENS held back for the page's
+# own header sentence and footer. Message.token_count is not used: it is a
+# tiktoken count of the content alone, which the harness counts ~1.45×
+# heavier, and the headers and pointers were never charged, so a page
+# budgeted at 20,000 by it rendered at 93k characters and spilled. The
+# maximum is set by the persist line: a page at READ_PAGE_TOKENS_MAX
+# renders within READ_PAGE_MAX_BYTES, under 50 KB with margin and ~16k by
+# the cap's counter; no page over about 17k honest tokens can land in this
+# harness at all. The one exception is a single message larger than the
+# budget, which is returned alone and whole. test_memory_read pins the
+# maximum page and the post-compaction block's page against both limits.
+RENDERED_CHARS_PER_TOKEN = HARNESS_CHARS_PER_TOKEN
+READ_PAGE_TOKENS_MAX = 16000
+PAGE_FRAME_TOKENS = 250
+READ_PAGE_MAX_BYTES = int(READ_PAGE_TOKENS_MAX * RENDERED_CHARS_PER_TOKEN)
 NEIGHBORS_DEFAULT = 2
 NEIGHBORS_MAX = 10
 
@@ -957,6 +992,9 @@ async def release_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = Fa
 # - What a page shows is treated as in view afterwards: stamped onto the
 #   tool result in native mode (via last_query_memory_ids, like
 #   memory_query), linked once in Claude Code mode (like recent mode).
+# - Pages are bounded by tokens measured on the page as rendered (issue
+#   #353, RENDERED_CHARS_PER_TOKEN above), so a page asked for at the
+#   maximum lands in context whole instead of spilling to a file.
 # - scope="isolated" (issue #345) switches both context rules off for one
 #   call: no pointers (every row in full, the conversation's own
 #   post-compaction rows included) and nothing recorded as in view (no
@@ -1178,6 +1216,33 @@ def _parse_page_tokens(page_tokens: Any) -> Tuple[Optional[int], Optional[str]]:
     except (TypeError, ValueError):
         return None, f"Error: page_tokens must be an integer (got '{page_tokens}')."
     return max(READ_PAGE_TOKENS_MIN, min(READ_PAGE_TOKENS_MAX, page_tokens)), None
+
+
+def rendered_tokens(text: str) -> int:
+    """Page weight of rendered text: its UTF-8 size at RENDERED_CHARS_PER_TOKEN
+    bytes per token (the harness's persist line is in bytes; on this
+    archive's prose bytes and characters differ by a tenth of a percent,
+    on a page of emoji they don't)."""
+    return max(1, math.ceil(len(text.encode("utf-8")) / RENDERED_CHARS_PER_TOKEN))
+
+
+def _page_weigher(
+    entity_id: Optional[str], tzinfo: Optional[ZoneInfo], include_model: bool
+) -> Callable[[Dict[str, Any]], int]:
+    """
+    The row weight the readers hand the paging core (issue #353): the row
+    exactly as _render_archive_page will print it — header line, content
+    or pointer line, blank line — measured by rendered_tokens. A pointer
+    weighs its header, not the content it doesn't carry.
+    """
+    labels = _entity_labels()
+    now = datetime.utcnow()
+
+    def weigh(item: Dict[str, Any]) -> int:
+        lines = _format_archive_item(item, entity_id, labels, tzinfo, include_model, now)
+        return rendered_tokens("\n".join(lines) + "\n")
+
+    return weigh
 
 
 def _normalize_direction(direction: Any) -> Tuple[bool, Optional[str]]:
@@ -1464,7 +1529,8 @@ async def read_memories(
                 conversation_id=conversation_id,
                 include_released=bool(include_released),
                 cursor=cursor,
-                page_tokens=page_tokens,
+                page_tokens=page_tokens - PAGE_FRAME_TOKENS,
+                weigh=_page_weigher(ctx.entity_id, tzinfo, include_model),
                 in_context_ids=in_context_ids,
                 live_conversation_id=live_conversation_id,
                 live_after=live_after,
@@ -1640,7 +1706,8 @@ async def find_memories(
                 conversation_id=conversation_id,
                 include_released=bool(include_released),
                 cursor=cursor,
-                page_tokens=page_tokens,
+                page_tokens=page_tokens - PAGE_FRAME_TOKENS,
+                weigh=_page_weigher(ctx.entity_id, tzinfo, include_model),
                 in_context_ids=in_context_ids,
                 live_conversation_id=live_conversation_id,
                 live_after=live_after,
@@ -2232,8 +2299,10 @@ MEMORY_READ_SCHEMA = {
             "type": "integer",
             "description": (
                 f"Page budget in tokens (default {READ_PAGE_TOKENS_DEFAULT}, max "
-                f"{READ_PAGE_TOKENS_MAX}). Pages are bounded by tokens, not rows; "
-                "a single message larger than the budget is returned alone, whole."
+                f"{READ_PAGE_TOKENS_MAX}), measured on the page as rendered — "
+                "headers and pointers included — so a page lands in context "
+                "whole. Pages are bounded by tokens, not rows; a single message "
+                "larger than the budget is returned alone, whole."
             ),
             "default": READ_PAGE_TOKENS_DEFAULT,
             "minimum": READ_PAGE_TOKENS_MIN,
@@ -2411,8 +2480,10 @@ MEMORY_FIND_SCHEMA = {
             "type": "integer",
             "description": (
                 f"Page budget in tokens (default {READ_PAGE_TOKENS_DEFAULT}, max "
-                f"{READ_PAGE_TOKENS_MAX}). Pages are bounded by tokens, not rows; "
-                "a single message larger than the budget is returned alone, whole."
+                f"{READ_PAGE_TOKENS_MAX}), measured on the page as rendered — "
+                "headers and pointers included — so a page lands in context "
+                "whole. Pages are bounded by tokens, not rows; a single message "
+                "larger than the budget is returned alone, whole."
             ),
             "default": READ_PAGE_TOKENS_DEFAULT,
             "minimum": READ_PAGE_TOKENS_MIN,
