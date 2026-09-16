@@ -2,7 +2,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 
 from pinecone import Pinecone
 from sqlalchemy import and_, func, or_, select, update
@@ -109,6 +109,16 @@ async def run_pinecone(fn, *args, **kwargs):
     server stays responsive either way.
     """
     return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+
+class ReadCursor(NamedTuple):
+    """A decoded archive-reader page cursor (see MemoryService.encode_read_cursor)."""
+
+    created_at: datetime
+    message_id: str
+    backward: bool
+    page: int
 
 
 class MemoryService:
@@ -1346,24 +1356,60 @@ class MemoryService:
     # and a cursor can resume it. Nothing is ever truncated: a single
     # message larger than the page budget comes back alone, whole.
 
-    @staticmethod
-    def encode_read_cursor(created_at: datetime, message_id: str) -> str:
-        """A page cursor: the sort key of the last row shown, readable on purpose."""
-        return f"{created_at.isoformat()}|{message_id}"
+    # Tags a cursor carries after its sort key (issue #351). The direction
+    # tag means a cursor is never resumed in the other direction by mistake:
+    # the two directions read the key from opposite sides, and a forward
+    # cursor fed to a backward call would re-show the page it came from.
+    # The page tag numbers the page the cursor came from, so a walk can be
+    # capped by page count (the readers' max_pages) even though every page
+    # is its own call.
+    CURSOR_BACKWARD_TAG = "backward"
+    CURSOR_PAGE_TAG = "page="
 
-    @staticmethod
-    def decode_read_cursor(cursor: str) -> Optional[Tuple[datetime, str]]:
-        """The inverse of encode_read_cursor; None when the cursor is malformed."""
+    @classmethod
+    def encode_read_cursor(
+        cls, created_at: datetime, message_id: str, backward: bool = False, page: int = 1
+    ) -> str:
+        """
+        A page cursor, readable on purpose: the sort key of the row at the
+        page's leading edge — the last row shown reading forward, the
+        oldest row shown reading backward (then tagged with the direction)
+        — and the number of the page it came from.
+        """
+        cursor = f"{created_at.isoformat()}|{message_id}"
+        if backward:
+            cursor += f"|{cls.CURSOR_BACKWARD_TAG}"
+        return f"{cursor}|{cls.CURSOR_PAGE_TAG}{int(page)}"
+
+    @classmethod
+    def decode_read_cursor(cls, cursor: str) -> Optional["ReadCursor"]:
+        """
+        The inverse of encode_read_cursor: a ReadCursor (created_at,
+        message_id, backward, page); None when the cursor is malformed. A
+        cursor with no page tag (built by hand) counts as page 1.
+        """
         try:
-            stamp, message_id = str(cursor).strip().split("|", 1)
+            parts = str(cursor).strip().split("|")
+            if len(parts) < 2:
+                return None
+            stamp, message_id = parts[0], parts[1]
             parsed = datetime.fromisoformat(stamp)
         except (TypeError, ValueError):
             return None
+        backward = False
+        page = 1
+        for tag in parts[2:]:
+            if tag == cls.CURSOR_BACKWARD_TAG:
+                backward = True
+            elif tag.startswith(cls.CURSOR_PAGE_TAG) and tag[len(cls.CURSOR_PAGE_TAG):].isdigit():
+                page = max(1, int(tag[len(cls.CURSOR_PAGE_TAG):]))
+            else:
+                return None
         if parsed.tzinfo is not None:
             parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
         if not message_id:
             return None
-        return parsed, message_id
+        return ReadCursor(parsed, message_id, backward, page)
 
     @staticmethod
     def _after_key(created_at: datetime, message_id: str):
@@ -1516,6 +1562,7 @@ class MemoryService:
         live_conversation_id: Optional[str],
         live_after: Optional[datetime],
         log_label: str,
+        backward: bool = False,
     ) -> Dict[str, Any]:
         """
         The paging core shared by read_messages_in_span and find_messages:
@@ -1525,9 +1572,21 @@ class MemoryService:
         (token_count, or a length estimate); an oversized first row is
         returned alone and whole. Rows already in the reader's live context
         (see _row_in_context) come back flagged in_context so the tool
-        renders them as pointers. Returns {"items", "total", "offset",
-        "next_cursor"}: total is the row count under the same conditions,
-        offset how many rows precede this page, next_cursor None at the end.
+        renders them as pointers.
+
+        `backward` (issue #351) reads from the other end: the page takes
+        the newest rows not yet shown, walking toward the oldest, and the
+        cursor marks the page's older edge. Its items still come back
+        oldest-first, so a page reads like the archive in either direction.
+
+        Returns {"items", "total", "offset", "remaining", "next_cursor",
+        "backward", "page"}: total is the row count under the same
+        conditions, offset how many rows precede this page in archive order
+        (so the page's positions are offset+1 .. offset+len(items) either
+        way), remaining how many rows are still unread in the reading
+        direction (later rows forward, earlier rows backward), next_cursor
+        None at the end, page this page's number in the walk (1 without a
+        cursor; the cursor's page + 1 with one).
         """
         total = int((await db.execute(
             select(func.count(Message.id))
@@ -1535,22 +1594,26 @@ class MemoryService:
             .where(*conditions)
         )).scalar_one() or 0)
 
-        offset = 0
+        # Rows already shown on earlier pages: at or before the cursor key
+        # reading forward, at or after it reading backward
+        shown = 0
         position = self.decode_read_cursor(cursor) if cursor else None
-        if position is not None:
-            offset = int((await db.execute(
+        key = (position.created_at, position.message_id) if position is not None else None
+        page_number = position.page + 1 if position is not None else 1
+        if key is not None:
+            beyond = self._after_key(*key) if backward else self._before_key(*key)
+            shown = int((await db.execute(
                 select(func.count(Message.id))
                 .join(Conversation, Conversation.id == Message.conversation_id)
                 .where(*conditions, or_(
-                    self._before_key(*position),
-                    and_(Message.created_at == position[0], Message.id == position[1]),
+                    beyond,
+                    and_(Message.created_at == key[0], Message.id == key[1]),
                 ))
             )).scalar_one() or 0)
 
         items: List[Dict[str, Any]] = []
         used = 0
         next_cursor: Optional[str] = None
-        key = position
         exhausted = False
         while not exhausted and next_cursor is None:
             query = (
@@ -1559,9 +1622,14 @@ class MemoryService:
                 .where(*conditions)
             )
             if key is not None:
-                query = query.where(self._after_key(*key))
-            query = query.order_by(Message.created_at.asc(), Message.id.asc()).limit(batch_size)
-            rows = (await db.execute(query)).all()
+                query = query.where(
+                    self._before_key(*key) if backward else self._after_key(*key)
+                )
+            if backward:
+                query = query.order_by(Message.created_at.desc(), Message.id.desc())
+            else:
+                query = query.order_by(Message.created_at.asc(), Message.id.asc())
+            rows = (await db.execute(query.limit(batch_size))).all()
             if len(rows) < batch_size:
                 exhausted = True
             for message, conversation in rows:
@@ -1574,9 +1642,12 @@ class MemoryService:
                 )
                 weight = self.estimate_message_tokens(row)
                 if items and used + weight > page_tokens:
+                    # The page's leading edge: the last row taken, which is
+                    # the oldest one when reading backward
                     last = items[-1]
                     next_cursor = self.encode_read_cursor(
-                        datetime.fromisoformat(last["created_at"]), last["id"]
+                        datetime.fromisoformat(last["created_at"]), last["id"],
+                        backward=backward, page=page_number,
                     )
                     break
                 items.append(row)
@@ -1585,11 +1656,29 @@ class MemoryService:
             if not rows:
                 exhausted = True
 
+        if backward:
+            # Selected newest-first; rendered oldest-first like any page
+            items.reverse()
+            remaining = max(0, total - shown - len(items))
+            offset = remaining
+        else:
+            offset = shown
+            remaining = max(0, total - shown - len(items))
+
         logger.info(
             f"[MEMORY] {log_label}: {len(items)} of {total} rows "
-            f"(offset={offset}, tokens~{used})"
+            f"(page={page_number}, offset={offset}, remaining={remaining}, "
+            f"direction={'backward' if backward else 'forward'}, tokens~{used})"
         )
-        return {"items": items, "total": total, "offset": offset, "next_cursor": next_cursor}
+        return {
+            "items": items,
+            "total": total,
+            "offset": offset,
+            "remaining": remaining,
+            "next_cursor": next_cursor,
+            "backward": backward,
+            "page": page_number,
+        }
 
     # Text-match modes for find_messages / the memory_find tool
     MATCH_PHRASE = "phrase"
@@ -1661,6 +1750,7 @@ class MemoryService:
         in_context_ids: Optional[Set[str]] = None,
         live_conversation_id: Optional[str] = None,
         live_after: Optional[datetime] = None,
+        backward: bool = False,
     ) -> Dict[str, Any]:
         """
         Every message in the entity's archive whose content contains `text`
@@ -1672,7 +1762,8 @@ class MemoryService:
         filter, optional single conversation, released skipped unless
         asked, archived hidden, in-context rows flagged for pointer
         rendering). `start` / `end` (naive UTC, inclusive) optionally bound
-        the search; either may be None. Paging and the return shape:
+        the search; either may be None. `backward` pages from the newest
+        match toward the oldest. Paging and the return shape:
         _read_archive_page. A total of 0 is a real answer — the words
         appear nowhere the entity can see — which similarity search cannot
         give.
@@ -1688,14 +1779,15 @@ class MemoryService:
             db, conditions, cursor, page_tokens, batch_size,
             in_context_ids, live_conversation_id, live_after,
             log_label=f"Archive find ({match}) for entity={entity_id}",
+            backward=backward,
         )
 
     async def read_messages_in_span(
         self,
         db: AsyncSession,
         entity_id: str,
-        start: datetime,
-        end: datetime,
+        start: Optional[datetime],
+        end: Optional[datetime],
         role_filter: Optional[str] = None,
         conversation_id: Optional[str] = None,
         include_released: bool = False,
@@ -1705,10 +1797,14 @@ class MemoryService:
         in_context_ids: Optional[Set[str]] = None,
         live_conversation_id: Optional[str] = None,
         live_after: Optional[datetime] = None,
+        backward: bool = False,
     ) -> Dict[str, Any]:
         """
-        Read the entity's archive between two naive-UTC moments (inclusive),
-        in (created_at, id) order, one token-bounded page at a time.
+        Read the entity's archive between two naive-UTC moments (inclusive;
+        None leaves that end open), in (created_at, id) order, one
+        token-bounded page at a time — or, with `backward`, from the newest
+        row in the span toward the oldest (issue #351: the page a compacted
+        session wants is the stretch just before the boundary).
 
         Backs the memory_read tool. Scope is the entity's experience
         (_entity_experience_clause) narrowed by the same role filter
@@ -1726,11 +1822,16 @@ class MemoryService:
         """
         conditions = self._span_conditions(
             entity_id, role_filter, conversation_id, include_released
-        ) + [Message.created_at >= start, Message.created_at <= end]
+        )
+        if start is not None:
+            conditions.append(Message.created_at >= start)
+        if end is not None:
+            conditions.append(Message.created_at <= end)
         return await self._read_archive_page(
             db, conditions, cursor, page_tokens, batch_size,
             in_context_ids, live_conversation_id, live_after,
             log_label=f"Archive read in span for entity={entity_id}",
+            backward=backward,
         )
 
     async def read_message_neighbors(

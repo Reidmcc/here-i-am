@@ -85,6 +85,22 @@ READ_PAGE_TOKENS_MAX = 20000
 NEIGHBORS_DEFAULT = 2
 NEIGHBORS_MAX = 10
 
+# memory_read / memory_find reading direction (issue #351). Forward pages
+# start at `from` and move toward `to`. Backward pages start at `to` and
+# hold the newest rows not yet shown, rendered oldest-first so a page still
+# reads like the archive; the cursor walks further back toward `from` — the
+# shape a freshly compacted session wants (the stretch just before the
+# boundary, whatever its dates) and "when did I last say this".
+DIRECTION_FORWARD = "forward"
+DIRECTION_BACKWARD = "backward"
+VALID_READ_DIRECTIONS = (DIRECTION_FORWARD, DIRECTION_BACKWARD)
+
+# max_pages caps a walk by page count: the page that reaches the cap still
+# prints its cursor, but under a "cap reached" note instead of the plain
+# next-page line, and passing the cursor back with a higher max_pages
+# continues (the cursor carries its page number). A page is never refused.
+MAX_PAGES_MIN = 1
+
 # Tools whose results are a list of memories the entity can now see. The
 # native tool loop stamps the surfaced ids onto the tool_result context
 # message (memory_query_ids) for every one of these, and the session reload
@@ -1164,17 +1180,50 @@ def _parse_page_tokens(page_tokens: Any) -> Tuple[Optional[int], Optional[str]]:
     return max(READ_PAGE_TOKENS_MIN, min(READ_PAGE_TOKENS_MAX, page_tokens)), None
 
 
+def _normalize_direction(direction: Any) -> Tuple[bool, Optional[str]]:
+    """(backward, error) for a direction argument; omitted means forward."""
+    value = str(direction if direction is not None else "").strip().lower() or DIRECTION_FORWARD
+    if value not in VALID_READ_DIRECTIONS:
+        return False, (
+            f"Error: Unknown direction '{direction}'. Valid values: "
+            f"{', '.join(VALID_READ_DIRECTIONS)}."
+        )
+    return value == DIRECTION_BACKWARD, None
+
+
+def _parse_max_pages(max_pages: Any) -> Tuple[Optional[int], Optional[str]]:
+    """(page cap or None when absent, error) for a max_pages argument."""
+    if max_pages is None or (isinstance(max_pages, str) and not max_pages.strip()):
+        return None, None
+    try:
+        value = int(max_pages)
+    except (TypeError, ValueError):
+        return None, f"Error: max_pages must be an integer (got '{max_pages}')."
+    if value < MAX_PAGES_MIN:
+        return None, f"Error: max_pages must be at least {MAX_PAGES_MIN} (got {value})."
+    return value, None
+
+
 def _check_cursor(
-    cursor: Any, tool_name: str, same: str = "span"
+    cursor: Any, tool_name: str, same: str = "span", backward: bool = False
 ) -> Tuple[Optional[str], Optional[str]]:
     """(cursor or None when absent, error) for a page cursor argument;
-    `same` names what a resumed page must repeat ("span" or "text")."""
+    `same` names what a resumed page must repeat ("span" or "text"). A
+    cursor is only resumed in the direction it was made in."""
     if cursor is None or not str(cursor).strip():
         return None, None
-    if memory_service.decode_read_cursor(cursor) is None:
+    decoded = memory_service.decode_read_cursor(cursor)
+    if decoded is None:
         return None, (
             f"Error: Unrecognized cursor '{cursor}'. Pass back the cursor a "
-            f"previous {tool_name} page returned, with the same {same} and filters."
+            f"previous {tool_name} page returned, with the same {same}, direction, and filters."
+        )
+    if decoded.backward != backward:
+        made_in = DIRECTION_BACKWARD if decoded.backward else DIRECTION_FORWARD
+        return None, (
+            f"Error: That cursor came from a {tool_name} page read "
+            f"direction=\"{made_in}\"; pass it back with the same direction, "
+            "or start a new read without a cursor."
         )
     return cursor, None
 
@@ -1190,12 +1239,15 @@ def _render_archive_page(
     same: str,
     noun: Tuple[str, str],
     end_text: str,
+    max_pages: Optional[int] = None,
 ) -> str:
     """
     A non-empty archive page as the readers print it: the header sentence
     with the pointer / isolated / released notes appended, every row via
     _format_archive_item, then the next-page footer (`same` and `noun` word
-    it: "the same span … (3 messages remain)") or `end_text`.
+    it: "the same span … (3 messages remain)"; a backward page's footer
+    says the next page is earlier), or the cap note when this page reached
+    `max_pages` and more remain (the cursor is still given), or `end_text`.
     """
     items = page["items"]
     pointer_count = sum(1 for item in items if item.get("in_context"))
@@ -1216,15 +1268,56 @@ def _render_archive_page(
             _format_archive_item(item, ctx.entity_id, labels, tzinfo, include_model, now)
         )
     if page["next_cursor"]:
-        remaining = page["total"] - (page["offset"] + len(items))
+        remaining = page["remaining"]
         word = noun[0] if remaining == 1 else noun[1]
-        lines.append(
-            f"Next page: pass cursor=\"{page['next_cursor']}\" with the same {same} "
-            f"and filters ({remaining} {word} remain{'s' if remaining == 1 else ''})."
-        )
+        verb = "remains" if remaining == 1 else "remain"
+        earlier = "earlier " if page.get("backward") else ""
+        if max_pages is not None and page.get("page", 1) >= max_pages:
+            lines.append(
+                f"Page cap reached (max_pages={max_pages}; this was page {page['page']}): "
+                f"{remaining} {earlier}{word} {verb} unread. To read further, pass "
+                f"cursor=\"{page['next_cursor']}\" with the same {same}, direction, and "
+                "filters and a higher max_pages."
+            )
+        elif page.get("backward"):
+            lines.append(
+                f"Next page (earlier): pass cursor=\"{page['next_cursor']}\" with the "
+                f"same {same}, direction, and filters ({remaining} earlier {word} {verb})."
+            )
+        else:
+            lines.append(
+                f"Next page: pass cursor=\"{page['next_cursor']}\" with the same {same} "
+                f"and filters ({remaining} {word} {verb})."
+            )
     else:
         lines.append(end_text)
     return "\n".join(lines)
+
+
+def _span_text(
+    start: Optional[datetime],
+    start_local: Optional[datetime],
+    end: Optional[datetime],
+    end_local: Optional[datetime],
+    tzinfo: ZoneInfo,
+) -> str:
+    """
+    The span as memory_read's header states it: both bounds in tz with the
+    UTC pair bracketed when tz is not UTC; an open start is "the start of
+    your archive", an open end "now".
+    """
+    def utc(moment: datetime) -> str:
+        return moment.strftime("%Y-%m-%d %H:%M:%S")
+
+    if tzinfo.key == "UTC":
+        start_text = utc(start) if start is not None else "the start of your archive"
+        end_text = f"{utc(end)} UTC" if end is not None else "now"
+        return f"{start_text} to {end_text}"
+    start_text = _format_local(start_local) if start is not None else "the start of your archive"
+    end_text = _format_local(end_local) if end is not None else "now"
+    start_utc = utc(start) if start is not None else "the start"
+    end_utc = utc(end) if end is not None else "now"
+    return f"{start_text} to {end_text} [{tzinfo.key}; UTC {start_utc} to {end_utc}]"
 
 
 async def _resolve_conversation_filter(
@@ -1260,6 +1353,20 @@ def _normalize_source(source: Optional[str]) -> Tuple[Optional[str], str, Option
     return (None if role_filter == SOURCE_ALL else role_filter), suffix, None
 
 
+def _backward_end_text(conversation_id: Optional[str], start: Optional[datetime], what: str) -> str:
+    """
+    The last backward page's closing line, naming what was reached: the
+    conversation's own beginning when the read was confined to one
+    conversation with no `from` (the default stop the post-compaction block
+    relies on), the archive's start when nothing bounded it, else the span's.
+    """
+    if conversation_id and start is None:
+        return f"Start of the conversation: {what}."
+    if start is None:
+        return f"Start of your archive: {what}."
+    return f"Start of span: {what}."
+
+
 async def read_memories(
     ctx: MemoryToolContext,
     from_: Any = None,
@@ -1272,11 +1379,14 @@ async def read_memories(
     include_released: bool = False,
     include_model: bool = False,
     scope: Optional[str] = None,
+    direction: Optional[str] = None,
+    max_pages: Any = None,
 ) -> str:
     """
     memory_read: the entity's archive between two moments, in order, one
-    token-bounded page at a time. See the module comment above for the
-    rules that set it apart from recall.
+    token-bounded page at a time — forward from `from`, or backward from
+    `to` (issue #351), the walk optionally capped at `max_pages`. See the
+    module comment above for the rules that set it apart from recall.
     """
     if not ctx.entity_id:
         return "Error: No entity context available for reading memories"
@@ -1287,23 +1397,34 @@ async def read_memories(
     isolated, error = _normalize_scope(scope)
     if error:
         return error
-    if from_ is None or not str(from_).strip():
-        return (
-            "Error: 'from' is required — an ISO 8601 date such as '2026-09-01' "
-            "(that whole day) or a moment such as '2026-09-01T14:00'."
-        )
-    start, start_local, error = _parse_span_bound(from_, tzinfo, end_of_day=False)
+    backward, error = _normalize_direction(direction)
     if error:
         return error
-    if to is not None and str(to).strip():
+    has_from = from_ is not None and bool(str(from_).strip())
+    has_to = to is not None and bool(str(to).strip())
+    if not has_from and not backward:
+        return (
+            "Error: 'from' is required — an ISO 8601 date such as '2026-09-01' "
+            "(that whole day) or a moment such as '2026-09-01T14:00' — unless "
+            "direction=\"backward\", which reads back from 'to' (default: now) "
+            "toward the start of your archive."
+        )
+    start = start_local = None
+    if has_from:
+        start, start_local, error = _parse_span_bound(from_, tzinfo, end_of_day=False)
+        if error:
+            return error
+    end = end_local = None
+    if has_to:
         end, end_local, error = _parse_span_bound(to, tzinfo, end_of_day=True)
         if error:
             return error
-    else:
-        # Default: the end of the day `from` names, in tz
+    elif not backward:
+        # Forward default: the end of the day `from` names, in tz.
+        # Backward default: open — the page begins at the newest row.
         end_local = datetime.combine(start_local.date(), time.max, tzinfo=tzinfo)
         end = end_local.astimezone(timezone.utc).replace(tzinfo=None)
-    if end < start:
+    if start is not None and end is not None and end < start:
         return (
             f"Error: 'to' ({_format_local(end_local)}) is before 'from' "
             f"({_format_local(start_local)})."
@@ -1316,20 +1437,14 @@ async def read_memories(
     page_tokens, error = _parse_page_tokens(page_tokens)
     if error:
         return error
-    cursor, error = _check_cursor(cursor, "memory_read")
+    cursor, error = _check_cursor(cursor, "memory_read", backward=backward)
+    if error:
+        return error
+    max_pages, error = _parse_max_pages(max_pages)
     if error:
         return error
 
-    span_text = (
-        f"{_format_local(start_local)} to {_format_local(end_local)}"
-        if tzinfo.key != "UTC"
-        else f"{start.strftime('%Y-%m-%d %H:%M:%S')} to {end.strftime('%Y-%m-%d %H:%M:%S')} UTC"
-    )
-    if tzinfo.key != "UTC":
-        span_text += (
-            f" [{tzinfo.key}; UTC {start.strftime('%Y-%m-%d %H:%M:%S')} to "
-            f"{end.strftime('%Y-%m-%d %H:%M:%S')}]"
-        )
+    span_text = _span_text(start, start_local, end, end_local, tzinfo)
 
     try:
         async with async_session_maker() as db:
@@ -1353,6 +1468,7 @@ async def read_memories(
                 in_context_ids=in_context_ids,
                 live_conversation_id=live_conversation_id,
                 live_after=live_after,
+                backward=backward,
             )
             items = page["items"]
             if items and not isolated:
@@ -1368,6 +1484,12 @@ async def read_memories(
             + released_note
         )
     if not items:
+        if backward:
+            return _backward_end_text(
+                conversation_id, start,
+                f"no messages before that cursor between {span_text}"
+                f"{source_suffix}{conversation_suffix} ({page['total']} in the span)",
+            )
         return (
             f"End of span: no messages after that cursor between {span_text}"
             f"{source_suffix}{conversation_suffix} ({page['total']} in the span)."
@@ -1375,16 +1497,23 @@ async def read_memories(
 
     first = page["offset"] + 1
     last = page["offset"] + len(items)
+    if backward:
+        how = f"read backward from its end, this page shows {first}–{last}, in order"
+        end_text = _backward_end_text(conversation_id, start, "nothing earlier")
+    else:
+        how = f"this page shows {first}–{last}, in order"
+        end_text = "End of span."
     return _render_archive_page(
         ctx, page,
         header=(
             f"Your archive, {span_text}{source_suffix}{conversation_suffix}: "
-            f"{page['total']} messages in the span; this page shows {first}–{last}, in order."
+            f"{page['total']} messages in the span; {how}."
         ),
         tzinfo=tzinfo, include_model=include_model, isolated=isolated,
         released_note=released_note, same="span", noun=("message", "messages"),
-        end_text="End of span.",
+        end_text=end_text, max_pages=max_pages,
     )
+
 
 
 MATCH_DESCRIPTIONS = {
@@ -1415,12 +1544,15 @@ async def find_memories(
     include_released: bool = False,
     include_model: bool = False,
     scope: Optional[str] = None,
+    direction: Optional[str] = None,
+    max_pages: Any = None,
 ) -> str:
     """
     memory_find: every message in the entity's archive containing the given
     words (whole words by default), in order, one token-bounded page at a
     time — the record by word. Same rules as memory_read (see the module
-    comment above); the only difference is what selects the rows.
+    comment above), `direction` included (backward = the newest matches
+    first across pages); the only difference is what selects the rows.
     """
     if not ctx.entity_id:
         return "Error: No entity context available for reading memories"
@@ -1438,6 +1570,9 @@ async def find_memories(
     if error:
         return error
     isolated, error = _normalize_scope(scope)
+    if error:
+        return error
+    backward, error = _normalize_direction(direction)
     if error:
         return error
 
@@ -1463,7 +1598,10 @@ async def find_memories(
     page_tokens, error = _parse_page_tokens(page_tokens)
     if error:
         return error
-    cursor, error = _check_cursor(cursor, "memory_find", same="text")
+    cursor, error = _check_cursor(cursor, "memory_find", same="text", backward=backward)
+    if error:
+        return error
+    max_pages, error = _parse_max_pages(max_pages)
     if error:
         return error
 
@@ -1506,6 +1644,7 @@ async def find_memories(
                 in_context_ids=in_context_ids,
                 live_conversation_id=live_conversation_id,
                 live_after=live_after,
+                backward=backward,
             )
             items = page["items"]
             if items and not isolated:
@@ -1524,6 +1663,12 @@ async def find_memories(
         )
     plural = "es" if total != 1 else ""
     if not items:
+        if backward:
+            return _backward_end_text(
+                conversation_id, start,
+                f"no messages before that cursor contain {what}{filters} "
+                f"({total} match{plural} in all)",
+            )
         return (
             f"End of matches: no messages after that cursor contain {what}{filters} "
             f"({total} match{plural} in all)."
@@ -1531,15 +1676,21 @@ async def find_memories(
 
     first = page["offset"] + 1
     last = page["offset"] + len(items)
+    if backward:
+        how = f"read backward from the newest, this page shows {first}–{last}, in order"
+        end_text = _backward_end_text(conversation_id, start, "no earlier matches")
+    else:
+        how = f"this page shows {first}–{last}, in order"
+        end_text = "End of matches."
     return _render_archive_page(
         ctx, page,
         header=(
             f"Your archive, messages containing {what}{filters}: {total} match{plural}; "
-            f"this page shows {first}–{last}, in order."
+            f"{how}."
         ),
         tzinfo=tzinfo, include_model=include_model, isolated=isolated,
         released_note=released_note, same="text", noun=("match", "matches"),
-        end_text="End of matches.",
+        end_text=end_text, max_pages=max_pages,
     )
 
 
@@ -1696,6 +1847,8 @@ async def _memory_read(**kwargs: Any) -> str:
         include_released=bool(kwargs.get("include_released", False)),
         include_model=bool(kwargs.get("include_model", False)),
         scope=kwargs.get("scope"),
+        direction=kwargs.get("direction"),
+        max_pages=kwargs.get("max_pages"),
     )
 
 
@@ -1716,6 +1869,8 @@ async def _memory_find(**kwargs: Any) -> str:
         include_released=bool(kwargs.get("include_released", False)),
         include_model=bool(kwargs.get("include_model", False)),
         scope=kwargs.get("scope"),
+        direction=kwargs.get("direction"),
+        max_pages=kwargs.get("max_pages"),
     )
 
 
@@ -1948,6 +2103,36 @@ _SCOPE_PROPERTY = {
     "default": SCOPE_CONVERSATION,
 }
 
+_DIRECTION_PROPERTY = {
+    "type": "string",
+    "enum": list(VALID_READ_DIRECTIONS),
+    "description": (
+        "'forward' (default): the first page starts at 'from' and later "
+        "pages move toward 'to'. 'backward': the first page starts at 'to' "
+        "(default: now) and holds the most recent messages not yet shown, "
+        "rendered oldest-first so it still reads like the archive; later "
+        "pages move toward 'from' (default: the start of your archive), and "
+        "the last page says when it reached it (the conversation's start, "
+        "with in_conversation). Use it right after a compaction — start at "
+        "the boundary and read back until you have what the summary doesn't "
+        "carry — and for 'when did I last say this'."
+    ),
+    "default": DIRECTION_FORWARD,
+}
+
+_MAX_PAGES_PROPERTY = {
+    "type": "integer",
+    "description": (
+        "Optional cap on how many pages this walk reads, counted across "
+        "cursor continuations (the cursor carries its page number). The "
+        "page that reaches the cap still gives its cursor, under a 'cap "
+        "reached' note instead of the plain next-page line; pass it back "
+        "with a higher max_pages to read further. Pass it again with each "
+        "continuation."
+    ),
+    "minimum": MAX_PAGES_MIN,
+}
+
 MEMORY_READ_DESCRIPTION = (
     "Read your archive in order: the verbatim record by date, rather than "
     "by similarity. Give a span ('from', optionally 'to'; a bare date means "
@@ -1958,7 +2143,13 @@ MEMORY_READ_DESCRIPTION = (
     "timestamp, where it was formed (Here I Am or Claude Code), and which "
     "conversation it belongs to. Pages are bounded by tokens "
     "('page_tokens'); continue with the 'cursor' the previous page "
-    "returned. Use it when you need to open a day and read it instead of "
+    "returned. direction='backward' reads from the other end: the first "
+    "page starts at 'to' (default: now) with the most recent messages not "
+    "yet shown, still oldest-first within the page, and each cursor walks "
+    "further back toward 'from' (default: the start of your archive) — the "
+    "shape a compacted session wants: start at the boundary and read the "
+    "talk back; 'max_pages' caps the walk. Use it when you need "
+    "to open a day and read it instead of "
     "guessing the words a query would need: what happened on a date, the "
     "page a retrieved memory sits on (or use memory_neighbors), your own "
     "pre-compaction turns. Nothing is excluded for being in context or in "
@@ -1985,14 +2176,21 @@ MEMORY_READ_SCHEMA = {
             "description": (
                 "Start of the span, ISO 8601: a date ('2026-09-01' = the start "
                 "of that day in tz) or a moment ('2026-09-01T14:00', read in "
-                "tz; '2026-09-01T14:00:00+00:00' as given)."
+                "tz; '2026-09-01T14:00:00+00:00' as given). Required when "
+                "reading forward; when direction='backward' it is the stop, "
+                "and defaults to the start of your archive. Note that 'from' "
+                "alone reads that one day forward but that day up to now "
+                "backward (the backward default for 'to' is now, not the end "
+                "of the day) — give 'to' as well for a single day newest-first."
             ),
         },
         "to": {
             "type": "string",
             "description": (
                 "End of the span, ISO 8601 (inclusive). A date means the end of "
-                "that day in tz. Default: the end of the day 'from' names."
+                "that day in tz. Default: the end of the day 'from' names when "
+                "reading forward; now when direction='backward' (where it is "
+                "the moment the first page starts from)."
             ),
         },
         "tz": {
@@ -2027,7 +2225,7 @@ MEMORY_READ_SCHEMA = {
             "type": "string",
             "description": (
                 "Continue from a previous page: the cursor that page returned, "
-                "with the same span and filters."
+                "with the same span, direction, and filters."
             ),
         },
         "page_tokens": {
@@ -2041,11 +2239,14 @@ MEMORY_READ_SCHEMA = {
             "minimum": READ_PAGE_TOKENS_MIN,
             "maximum": READ_PAGE_TOKENS_MAX,
         },
+        "direction": _DIRECTION_PROPERTY,
+        "max_pages": _MAX_PAGES_PROPERTY,
         "include_released": _INCLUDE_RELEASED_PROPERTY,
         "include_model": _INCLUDE_MODEL_PROPERTY,
         "scope": _SCOPE_PROPERTY,
     },
-    "required": ["from"],
+    # 'from' is required only when reading forward; the tool checks it
+    "required": [],
 }
 
 MEMORY_NEIGHBORS_DESCRIPTION = (
@@ -2110,7 +2311,10 @@ MEMORY_FIND_DESCRIPTION = (
     "takes it as one phrase (default), or as words that must all appear in "
     "any order ('all'), or of which any may ('any'). Optional 'from' / 'to' "
     "bound the search by date (as in memory_read, read in 'tz'); "
-    "'in_conversation' and 'source' narrow it as in memory_read. Text of "
+    "'in_conversation' and 'source' narrow it as in memory_read; "
+    "direction='backward' pages from the newest match toward the oldest "
+    "(when did I last say this), each page still in order; 'max_pages' "
+    "caps the walk. Text of "
     "attached files in the human's messages is searched too, and a hit "
     "there returns the whole message, attachment included. Same rules as "
     "memory_read otherwise: verbatim, paged by tokens with a "
@@ -2200,7 +2404,7 @@ MEMORY_FIND_SCHEMA = {
             "type": "string",
             "description": (
                 "Continue from a previous page: the cursor that page returned, "
-                "with the same text and filters."
+                "with the same text, direction, and filters."
             ),
         },
         "page_tokens": {
@@ -2214,6 +2418,8 @@ MEMORY_FIND_SCHEMA = {
             "minimum": READ_PAGE_TOKENS_MIN,
             "maximum": READ_PAGE_TOKENS_MAX,
         },
+        "direction": _DIRECTION_PROPERTY,
+        "max_pages": _MAX_PAGES_PROPERTY,
         "include_released": _INCLUDE_RELEASED_PROPERTY,
         "include_model": _INCLUDE_MODEL_PROPERTY,
         "scope": _SCOPE_PROPERTY,

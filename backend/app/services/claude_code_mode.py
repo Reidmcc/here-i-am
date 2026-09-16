@@ -365,7 +365,8 @@ async def build_session_start_context(
             "[HERE I AM MEMORY TOOLS] When the here-i-am MCP server is "
             "connected, you also have deliberate memory tools: memory_query "
             "(recall by chosen text), memory_read (read the archive in order "
-            "over a span of time: open a date and read it), memory_neighbors "
+            "over a span of time: open a date and read it, or read backward "
+            "from a moment), memory_neighbors "
             "(the messages around one memory), memory_find (every message "
             "containing the exact words — a name, a number, a quote), "
             "memory_save (save a reflection "
@@ -438,6 +439,16 @@ async def build_session_start_context(
     return "\n\n".join(parts), "\n\n".join(bulk_parts)
 
 
+# The look-back the post-compaction block's memory_read call asks for:
+# this many pages of this size, about 300k tokens of talk. A long room read
+# to its first message would refill the context compaction just emptied;
+# this much is plenty of continuity, and older talk stays reachable by the
+# other memory tools (issue #351, Pseudo's number). The tool enforces the
+# cap through its max_pages parameter; these are only the block's numbers.
+POST_COMPACT_LOOKBACK_PAGES = 15
+POST_COMPACT_PAGE_TOKENS = 20000
+
+
 async def build_post_compact_context(
     db: AsyncSession,
     conversation: Conversation,
@@ -450,8 +461,10 @@ async def build_post_compact_context(
 
     Compaction turns the conversation into a paraphrased summary; these
     blocks restore the verbatim ground the entity is meant to work from —
-    its notes index and its most recent reflections — and nudge it to save
-    anything important that now survives only in the summary. Reflections
+    its notes index and its most recent reflections — and name the
+    memory_read call that puts the pre-compaction talk itself back in
+    front of it (the summary is a caption, not a record, so there is no
+    nudge to save reflections from it). Reflections
     here deliberately include ones saved in this very session (that is what
     a pre-compaction save is for), so the current conversation is NOT
     excluded, unlike the fresh-session injection.
@@ -470,24 +483,38 @@ async def build_post_compact_context(
         f"still {entity.label}, and your conversation_id for the memory tools "
         f'is still "{conversation.id}"; prompts and responses continue to be '
         "recorded to your memory. Your notes index and most recent "
-        "reflections follow, to re-establish your ground. If something "
-        "important from before the compaction survives only in the summary, "
-        "consider saving it as a reflection (memory_save) now, while the "
-        "summary is fresh."
+        "reflections follow, to re-establish your ground."
     )
     # Pull beats push (issue #343, the porch's read): the entity knows a
     # compaction happened and the boundary is stamped, so one memory_read
     # call recovers the lost stretch verbatim, as much of it as it wants —
     # memory_read never excludes the current conversation and ignores the
-    # eligibility boundary, which is exactly what this use depends on.
+    # eligibility boundary, which is exactly what this use depends on. The
+    # call reads BACKWARD from the boundary (issue #351): what a compacted
+    # session wants is the stretch just before it, whatever its dates, not
+    # the conversation from its first message forward. The summary is a
+    # caption, not a partial record, so the block does not frame the read
+    # as filling the summary's gaps; and the look-back is capped, because
+    # a long room read to its start would fill the context it just emptied.
     boundary = conversation.last_compacted_at or datetime.utcnow()
     parts.append(
-        "Everything said in this session before the compaction is still "
-        "readable verbatim, in order, with memory_read: in_conversation="
-        f'"{conversation.id}", from="{conversation.created_at.strftime("%Y-%m-%dT%H:%M")}", '
-        f'to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}" (UTC). memory_read never '
-        "excludes this conversation, so that call returns the pre-compaction "
-        "stretch itself, not a summary of it."
+        "The summary above is a caption, not a record: of the talk it "
+        "carries nothing, and the talk is all still there verbatim, in "
+        "order — reading it back puts the conversation itself in front of "
+        "you again. What stays gone is only the tool traffic (files open, "
+        "commands run, results), which the summary is the one record of. "
+        "Read the talk with "
+        f'memory_read(direction="backward", to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
+        f'in_conversation="{conversation.id}", page_tokens={POST_COMPACT_PAGE_TOKENS}, '
+        f"max_pages={POST_COMPACT_LOOKBACK_PAGES}): the first page is the "
+        "talk just before the boundary, each cursor walks further back (pass "
+        "the same arguments with it), and the last page says whether it "
+        "reached the conversation's start or the page cap. "
+        f"{POST_COMPACT_LOOKBACK_PAGES} pages of "
+        f"{POST_COMPACT_PAGE_TOKENS // 1000}k tokens is about "
+        f"{POST_COMPACT_LOOKBACK_PAGES * POST_COMPACT_PAGE_TOKENS // 1000}k tokens "
+        "of talk, plenty of continuity; anything older is still in the archive "
+        "for the other memory tools when it matters."
     )
 
     notes_paths = build_notes_paths_block(entity)
