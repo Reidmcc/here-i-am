@@ -636,9 +636,10 @@ are the entity's verbatim carriers across that boundary.
   reaches the model — `PreCompact` output does not — so nothing can be
   said to the entity at the moment before compaction. Instead the
   session-start identity block instructs the entity to save reflections as
-  durable conclusions form and when it notices context running low, and the
-  post-compaction block nudges again (see below) while the summary is
-  fresh.
+  durable conclusions form and when it notices context running low. The
+  post-compaction block does not repeat the nudge: the summary is a
+  caption, and the pre-compaction talk comes back verbatim on request
+  (below), so there is nothing to save *from the summary*.
 - **Post-compaction re-injection.** `SessionStart` fires with
   `source: "compact"` right after compaction, and its stdout is injected;
   the backend answers with `build_post_compact_context`: a reorientation
@@ -654,7 +655,8 @@ are the entity's verbatim carriers across that boundary.
   reorientation header also names the `memory_read` call that returns
   this session's own pre-compaction stretch, read **backward from the
   boundary** (issue #351): `memory_read(direction="backward",
-  to=<last_compacted_at>, in_conversation=<this conversation>)`. The
+  to=<last_compacted_at>, in_conversation=<this conversation>,
+  page_tokens=20000, max_pages=15)`. The
   block says what the summary is — a caption, not a record, carrying
   nothing — and that reading back puts the conversation itself in front
   of the entity again, only the tool traffic staying gone; it does not
@@ -662,12 +664,15 @@ are the entity's verbatim carriers across that boundary.
   talk just before the boundary, whatever its dates; each page holds the
   most recent messages not yet shown, still in order; its cursor walks
   further back; and with no `from` the stop is the conversation's own
-  first message, which the last page announces. The block suggests
-  capping the look-back at about 300k tokens
-  (`POST_COMPACT_LOOKBACK_TOKENS`, 15 pages at the 20k ceiling): a long
-  room read to its start would refill the context compaction just
-  emptied, that much is plenty of continuity, and older talk stays
-  reachable by the other memory tools. (The original call read
+  first message, which the last page announces. The call caps the
+  look-back through the tool's own `max_pages` (15 pages of 20k tokens,
+  about 300k tokens of talk; `POST_COMPACT_LOOKBACK_PAGES` /
+  `POST_COMPACT_PAGE_TOKENS` are only the block's numbers): a long room
+  read to its start would refill the context compaction just emptied,
+  that much is plenty of continuity, and older talk stays reachable by
+  the other memory tools; the page that reaches the cap still gives its
+  cursor, so reading further is a deliberate choice, not a wall. (The
+  original call read
   the conversation forward from its first message — the wrong end for a
   nine-day room, found by the porch on a manual `/compact` 2026-09-16,
   which also confirmed the block fires on manual compactions.) Pull

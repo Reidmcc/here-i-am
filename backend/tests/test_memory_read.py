@@ -1027,10 +1027,11 @@ class TestBackward:
         assert "(3 earlier messages remain)" in page1
         cursor = page1.split('cursor="', 1)[1].split('"', 1)[0]
         # The cursor is the page's older edge, tagged with its direction
+        # and the page it came from
         assert cursor == memory_service.encode_read_cursor(
-            messages[3].created_at, messages[3].id, backward=True
+            messages[3].created_at, messages[3].id, backward=True, page=1
         )
-        assert cursor.endswith("|backward")
+        assert cursor.endswith("|backward|page=1")
 
         page2 = await read_memories(
             native_ctx(), from_="2026-09-01", direction="backward", page_tokens=1000, cursor=cursor
@@ -1207,11 +1208,64 @@ class TestBackward:
         wrong = await read_memories(native_ctx(), from_="2026-09-01", cursor=backward_cursor)
         assert wrong.startswith("Error: That cursor came from a memory_read page read direction=\"backward\"")
         assert memory_service.decode_read_cursor("2026-09-01T12:00:00|abc|sideways") is None
+        # A hand-built cursor with no page tag is page 1
+        assert memory_service.decode_read_cursor("2026-09-01T12:00:00|abc") == (
+            datetime(2026, 9, 1, 12, 0), "abc", False, 1
+        )
+        assert memory_service.decode_read_cursor("2026-09-01T12:00:00|abc|backward|page=4") == (
+            datetime(2026, 9, 1, 12, 0), "abc", True, 4
+        )
         assert "Unknown direction 'sideways'" in await read_memories(
             native_ctx(), from_="2026-09-01", direction="sideways"
         )
         assert "direction" in MEMORY_READ_SCHEMA["properties"]
+        assert "max_pages" in MEMORY_READ_SCHEMA["properties"]
         assert "from" not in MEMORY_READ_SCHEMA.get("required", [])
+
+    async def test_max_pages_caps_the_walk_but_never_refuses_a_page(self, db, tools_db):
+        """The page that reaches the cap still gives its cursor, under a cap
+        note instead of the next-page line; passing it back with a higher
+        cap continues; a lower cap never refuses the page asked for."""
+        conversation = await make_conversation(db)
+        messages = [
+            await make_message(
+                db, conversation, content=f"message {i}", created_at=at(minutes=i), token_count=300
+            )
+            for i in range(6)
+        ]
+        kwargs = dict(from_="2026-09-01", direction="backward", page_tokens=700)
+
+        page1 = await read_memories(native_ctx(), max_pages=2, **kwargs)
+        assert ids_in_order(page1) == [m.id[:8] for m in messages[4:]]
+        assert "Next page (earlier): pass cursor=" in page1
+        cursor = page1.split('cursor="', 1)[1].split('"', 1)[0]
+        assert cursor.endswith("|backward|page=1")
+
+        page2 = await read_memories(native_ctx(), max_pages=2, cursor=cursor, **kwargs)
+        assert ids_in_order(page2) == [m.id[:8] for m in messages[2:4]]
+        assert "Next page" not in page2
+        assert "Page cap reached (max_pages=2; this was page 2): 2 earlier messages remain unread." in page2
+        assert "with the same span, direction, and filters and a higher max_pages" in page2
+        cursor = page2.split('cursor="', 1)[1].split('"', 1)[0]
+        assert cursor.endswith("|backward|page=2")
+
+        # A higher cap continues from the same cursor; the walk then ends
+        page3 = await read_memories(native_ctx(), max_pages=3, cursor=cursor, **kwargs)
+        assert ids_in_order(page3) == [m.id[:8] for m in messages[:2]]
+        assert page3.rstrip().endswith("Start of span: nothing earlier.")
+        # The same cursor with the old cap is still served (the cap is a
+        # note on the walk, never a refusal)
+        assert ids_in_order(await read_memories(native_ctx(), max_pages=2, cursor=cursor, **kwargs)) == [
+            m.id[:8] for m in messages[:2]
+        ]
+
+        # Forward too, and the cap counts from page 1
+        forward = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=700, max_pages=1)
+        assert "Page cap reached (max_pages=1; this was page 1): 4 messages remain unread." in forward
+        assert "earlier" not in forward.split("Page cap reached", 1)[1]
+
+        assert "must be an integer" in await read_memories(native_ctx(), from_="2026-09-01", max_pages="many")
+        assert "at least 1" in await read_memories(native_ctx(), from_="2026-09-01", max_pages=0)
 
     async def test_mcp_backward_from_the_compaction_boundary(self, db, async_client):
         """The post-compaction block's call, end to end over MCP: read

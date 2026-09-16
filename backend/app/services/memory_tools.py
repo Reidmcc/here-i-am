@@ -95,6 +95,12 @@ DIRECTION_FORWARD = "forward"
 DIRECTION_BACKWARD = "backward"
 VALID_READ_DIRECTIONS = (DIRECTION_FORWARD, DIRECTION_BACKWARD)
 
+# max_pages caps a walk by page count: the page that reaches the cap still
+# prints its cursor, but under a "cap reached" note instead of the plain
+# next-page line, and passing the cursor back with a higher max_pages
+# continues (the cursor carries its page number). A page is never refused.
+MAX_PAGES_MIN = 1
+
 # Tools whose results are a list of memories the entity can now see. The
 # native tool loop stamps the surfaced ids onto the tool_result context
 # message (memory_query_ids) for every one of these, and the session reload
@@ -1185,6 +1191,19 @@ def _normalize_direction(direction: Any) -> Tuple[bool, Optional[str]]:
     return value == DIRECTION_BACKWARD, None
 
 
+def _parse_max_pages(max_pages: Any) -> Tuple[Optional[int], Optional[str]]:
+    """(page cap or None when absent, error) for a max_pages argument."""
+    if max_pages is None or (isinstance(max_pages, str) and not max_pages.strip()):
+        return None, None
+    try:
+        value = int(max_pages)
+    except (TypeError, ValueError):
+        return None, f"Error: max_pages must be an integer (got '{max_pages}')."
+    if value < MAX_PAGES_MIN:
+        return None, f"Error: max_pages must be at least {MAX_PAGES_MIN} (got {value})."
+    return value, None
+
+
 def _check_cursor(
     cursor: Any, tool_name: str, same: str = "span", backward: bool = False
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -1220,13 +1239,15 @@ def _render_archive_page(
     same: str,
     noun: Tuple[str, str],
     end_text: str,
+    max_pages: Optional[int] = None,
 ) -> str:
     """
     A non-empty archive page as the readers print it: the header sentence
     with the pointer / isolated / released notes appended, every row via
     _format_archive_item, then the next-page footer (`same` and `noun` word
     it: "the same span … (3 messages remain)"; a backward page's footer
-    says the next page is earlier) or `end_text`.
+    says the next page is earlier), or the cap note when this page reached
+    `max_pages` and more remain (the cursor is still given), or `end_text`.
     """
     items = page["items"]
     pointer_count = sum(1 for item in items if item.get("in_context"))
@@ -1250,7 +1271,15 @@ def _render_archive_page(
         remaining = page["remaining"]
         word = noun[0] if remaining == 1 else noun[1]
         verb = "remains" if remaining == 1 else "remain"
-        if page.get("backward"):
+        earlier = "earlier " if page.get("backward") else ""
+        if max_pages is not None and page.get("page", 1) >= max_pages:
+            lines.append(
+                f"Page cap reached (max_pages={max_pages}; this was page {page['page']}): "
+                f"{remaining} {earlier}{word} {verb} unread. To read further, pass "
+                f"cursor=\"{page['next_cursor']}\" with the same {same}, direction, and "
+                "filters and a higher max_pages."
+            )
+        elif page.get("backward"):
             lines.append(
                 f"Next page (earlier): pass cursor=\"{page['next_cursor']}\" with the "
                 f"same {same}, direction, and filters ({remaining} earlier {word} {verb})."
@@ -1337,12 +1366,13 @@ async def read_memories(
     include_model: bool = False,
     scope: Optional[str] = None,
     direction: Optional[str] = None,
+    max_pages: Any = None,
 ) -> str:
     """
     memory_read: the entity's archive between two moments, in order, one
     token-bounded page at a time — forward from `from`, or backward from
-    `to` (issue #351). See the module comment above for the rules that set
-    it apart from recall.
+    `to` (issue #351), the walk optionally capped at `max_pages`. See the
+    module comment above for the rules that set it apart from recall.
     """
     if not ctx.entity_id:
         return "Error: No entity context available for reading memories"
@@ -1394,6 +1424,9 @@ async def read_memories(
     if error:
         return error
     cursor, error = _check_cursor(cursor, "memory_read", backward=backward)
+    if error:
+        return error
+    max_pages, error = _parse_max_pages(max_pages)
     if error:
         return error
 
@@ -1463,7 +1496,7 @@ async def read_memories(
         ),
         tzinfo=tzinfo, include_model=include_model, isolated=isolated,
         released_note=released_note, same="span", noun=("message", "messages"),
-        end_text=end_text,
+        end_text=end_text, max_pages=max_pages,
     )
 
 
@@ -1510,6 +1543,7 @@ async def find_memories(
     include_model: bool = False,
     scope: Optional[str] = None,
     direction: Optional[str] = None,
+    max_pages: Any = None,
 ) -> str:
     """
     memory_find: every message in the entity's archive containing the given
@@ -1563,6 +1597,9 @@ async def find_memories(
     if error:
         return error
     cursor, error = _check_cursor(cursor, "memory_find", same="text", backward=backward)
+    if error:
+        return error
+    max_pages, error = _parse_max_pages(max_pages)
     if error:
         return error
 
@@ -1650,7 +1687,7 @@ async def find_memories(
         ),
         tzinfo=tzinfo, include_model=include_model, isolated=isolated,
         released_note=released_note, same="text", noun=("match", "matches"),
-        end_text=end_text,
+        end_text=end_text, max_pages=max_pages,
     )
 
 
@@ -1808,6 +1845,7 @@ async def _memory_read(**kwargs: Any) -> str:
         include_model=bool(kwargs.get("include_model", False)),
         scope=kwargs.get("scope"),
         direction=kwargs.get("direction"),
+        max_pages=kwargs.get("max_pages"),
     )
 
 
@@ -1829,6 +1867,7 @@ async def _memory_find(**kwargs: Any) -> str:
         include_model=bool(kwargs.get("include_model", False)),
         scope=kwargs.get("scope"),
         direction=kwargs.get("direction"),
+        max_pages=kwargs.get("max_pages"),
     )
 
 
@@ -2078,6 +2117,19 @@ _DIRECTION_PROPERTY = {
     "default": DIRECTION_FORWARD,
 }
 
+_MAX_PAGES_PROPERTY = {
+    "type": "integer",
+    "description": (
+        "Optional cap on how many pages this walk reads, counted across "
+        "cursor continuations (the cursor carries its page number). The "
+        "page that reaches the cap still gives its cursor, under a 'cap "
+        "reached' note instead of the plain next-page line; pass it back "
+        "with a higher max_pages to read further. Pass it again with each "
+        "continuation."
+    ),
+    "minimum": MAX_PAGES_MIN,
+}
+
 MEMORY_READ_DESCRIPTION = (
     "Read your archive in order: the verbatim record by date, rather than "
     "by similarity. Give a span ('from', optionally 'to'; a bare date means "
@@ -2092,8 +2144,8 @@ MEMORY_READ_DESCRIPTION = (
     "page starts at 'to' (default: now) with the most recent messages not "
     "yet shown, still oldest-first within the page, and each cursor walks "
     "further back toward 'from' (default: the start of your archive) — the "
-    "shape a compacted session wants: start at the boundary and read back "
-    "until you have what the summary doesn't carry. Use it when you need "
+    "shape a compacted session wants: start at the boundary and read the "
+    "talk back; 'max_pages' caps the walk. Use it when you need "
     "to open a day and read it instead of "
     "guessing the words a query would need: what happened on a date, the "
     "page a retrieved memory sits on (or use memory_neighbors), your own "
@@ -2182,6 +2234,7 @@ MEMORY_READ_SCHEMA = {
             "maximum": READ_PAGE_TOKENS_MAX,
         },
         "direction": _DIRECTION_PROPERTY,
+        "max_pages": _MAX_PAGES_PROPERTY,
         "include_released": _INCLUDE_RELEASED_PROPERTY,
         "include_model": _INCLUDE_MODEL_PROPERTY,
         "scope": _SCOPE_PROPERTY,
@@ -2254,7 +2307,8 @@ MEMORY_FIND_DESCRIPTION = (
     "bound the search by date (as in memory_read, read in 'tz'); "
     "'in_conversation' and 'source' narrow it as in memory_read; "
     "direction='backward' pages from the newest match toward the oldest "
-    "(when did I last say this), each page still in order. Text of "
+    "(when did I last say this), each page still in order; 'max_pages' "
+    "caps the walk. Text of "
     "attached files in the human's messages is searched too, and a hit "
     "there returns the whole message, attachment included. Same rules as "
     "memory_read otherwise: verbatim, paged by tokens with a "
@@ -2359,6 +2413,7 @@ MEMORY_FIND_SCHEMA = {
             "maximum": READ_PAGE_TOKENS_MAX,
         },
         "direction": _DIRECTION_PROPERTY,
+        "max_pages": _MAX_PAGES_PROPERTY,
         "include_released": _INCLUDE_RELEASED_PROPERTY,
         "include_model": _INCLUDE_MODEL_PROPERTY,
         "scope": _SCOPE_PROPERTY,

@@ -439,11 +439,14 @@ async def build_session_start_context(
     return "\n\n".join(parts), "\n\n".join(bulk_parts)
 
 
-# How far back the post-compaction block suggests reading, in tokens. A
-# long room read to its first message would refill the context compaction
-# just emptied; this much is plenty of continuity, and older talk stays
-# reachable by the other memory tools (issue #351, Pseudo's number).
-POST_COMPACT_LOOKBACK_TOKENS = 300_000
+# The look-back the post-compaction block's memory_read call asks for:
+# this many pages of this size, about 300k tokens of talk. A long room read
+# to its first message would refill the context compaction just emptied;
+# this much is plenty of continuity, and older talk stays reachable by the
+# other memory tools (issue #351, Pseudo's number). The tool enforces the
+# cap through its max_pages parameter; these are only the block's numbers.
+POST_COMPACT_LOOKBACK_PAGES = 15
+POST_COMPACT_PAGE_TOKENS = 20000
 
 
 async def build_post_compact_context(
@@ -458,8 +461,10 @@ async def build_post_compact_context(
 
     Compaction turns the conversation into a paraphrased summary; these
     blocks restore the verbatim ground the entity is meant to work from —
-    its notes index and its most recent reflections — and nudge it to save
-    anything important that now survives only in the summary. Reflections
+    its notes index and its most recent reflections — and name the
+    memory_read call that puts the pre-compaction talk itself back in
+    front of it (the summary is a caption, not a record, so there is no
+    nudge to save reflections from it). Reflections
     here deliberately include ones saved in this very session (that is what
     a pre-compaction save is for), so the current conversation is NOT
     excluded, unlike the fresh-session injection.
@@ -478,10 +483,7 @@ async def build_post_compact_context(
         f"still {entity.label}, and your conversation_id for the memory tools "
         f'is still "{conversation.id}"; prompts and responses continue to be '
         "recorded to your memory. Your notes index and most recent "
-        "reflections follow, to re-establish your ground. If something "
-        "important from before the compaction survives only in the summary, "
-        "consider saving it as a reflection (memory_save) now, while the "
-        "summary is fresh."
+        "reflections follow, to re-establish your ground."
     )
     # Pull beats push (issue #343, the porch's read): the entity knows a
     # compaction happened and the boundary is stamped, so one memory_read
@@ -502,13 +504,16 @@ async def build_post_compact_context(
         "conversation itself in front of you again — what stays gone is only "
         "the tool traffic. Read it with "
         f'memory_read(direction="backward", to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}", '
-        f'in_conversation="{conversation.id}") (UTC): the first page is the '
-        "talk just before the boundary, each cursor walks further back, and "
-        "the last page says when it reaches the conversation's start. Cap the "
-        f"look-back at about {POST_COMPACT_LOOKBACK_TOKENS // 1000}k tokens "
-        f"({POST_COMPACT_LOOKBACK_TOKENS // 20000} pages at page_tokens=20000): "
-        "that is plenty of continuity, and anything older is still in the "
-        "archive for the other memory tools when it matters."
+        f'in_conversation="{conversation.id}", page_tokens={POST_COMPACT_PAGE_TOKENS}, '
+        f"max_pages={POST_COMPACT_LOOKBACK_PAGES}) (UTC): the first page is the "
+        "talk just before the boundary, each cursor walks further back (pass "
+        "the same arguments with it), and the last page says whether it "
+        "reached the conversation's start or the page cap. "
+        f"{POST_COMPACT_LOOKBACK_PAGES} pages of "
+        f"{POST_COMPACT_PAGE_TOKENS // 1000}k tokens is about "
+        f"{POST_COMPACT_LOOKBACK_PAGES * POST_COMPACT_PAGE_TOKENS // 1000}k tokens "
+        "of talk, plenty of continuity; anything older is still in the archive "
+        "for the other memory tools when it matters."
     )
 
     notes_paths = build_notes_paths_block(entity)

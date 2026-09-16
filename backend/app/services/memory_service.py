@@ -1346,48 +1346,60 @@ class MemoryService:
     # and a cursor can resume it. Nothing is ever truncated: a single
     # message larger than the page budget comes back alone, whole.
 
-    # Tag a backward page's cursor carries (issue #351), so a cursor is never
-    # resumed in the other direction by mistake: the two directions read the
-    # key from opposite sides, and a forward cursor fed to a backward call
-    # would re-show the page it came from.
+    # Tags a cursor carries after its sort key (issue #351). The direction
+    # tag means a cursor is never resumed in the other direction by mistake:
+    # the two directions read the key from opposite sides, and a forward
+    # cursor fed to a backward call would re-show the page it came from.
+    # The page tag numbers the page the cursor came from, so a walk can be
+    # capped by page count (the readers' max_pages) even though every page
+    # is its own call.
     CURSOR_BACKWARD_TAG = "backward"
+    CURSOR_PAGE_TAG = "page="
 
     @classmethod
     def encode_read_cursor(
-        cls, created_at: datetime, message_id: str, backward: bool = False
+        cls, created_at: datetime, message_id: str, backward: bool = False, page: int = 1
     ) -> str:
         """
         A page cursor, readable on purpose: the sort key of the row at the
         page's leading edge — the last row shown reading forward, the
-        oldest row shown reading backward (then tagged with the direction).
+        oldest row shown reading backward (then tagged with the direction)
+        — and the number of the page it came from.
         """
         cursor = f"{created_at.isoformat()}|{message_id}"
-        return f"{cursor}|{cls.CURSOR_BACKWARD_TAG}" if backward else cursor
+        if backward:
+            cursor += f"|{cls.CURSOR_BACKWARD_TAG}"
+        return f"{cursor}|{cls.CURSOR_PAGE_TAG}{int(page)}"
 
     @classmethod
-    def decode_read_cursor(cls, cursor: str) -> Optional[Tuple[datetime, str, bool]]:
+    def decode_read_cursor(cls, cursor: str) -> Optional[Tuple[datetime, str, bool, int]]:
         """
         The inverse of encode_read_cursor: (created_at, message_id,
-        backward); None when the cursor is malformed.
+        backward, page); None when the cursor is malformed. A cursor with
+        no page tag (built by hand) counts as page 1.
         """
         try:
             parts = str(cursor).strip().split("|")
-            if len(parts) not in (2, 3):
+            if len(parts) < 2:
                 return None
             stamp, message_id = parts[0], parts[1]
             parsed = datetime.fromisoformat(stamp)
         except (TypeError, ValueError):
             return None
         backward = False
-        if len(parts) == 3:
-            if parts[2] != cls.CURSOR_BACKWARD_TAG:
+        page = 1
+        for tag in parts[2:]:
+            if tag == cls.CURSOR_BACKWARD_TAG:
+                backward = True
+            elif tag.startswith(cls.CURSOR_PAGE_TAG) and tag[len(cls.CURSOR_PAGE_TAG):].isdigit():
+                page = max(1, int(tag[len(cls.CURSOR_PAGE_TAG):]))
+            else:
                 return None
-            backward = True
         if parsed.tzinfo is not None:
             parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
         if not message_id:
             return None
-        return parsed, message_id, backward
+        return parsed, message_id, backward, page
 
     @staticmethod
     def _after_key(created_at: datetime, message_id: str):
@@ -1558,12 +1570,13 @@ class MemoryService:
         oldest-first, so a page reads like the archive in either direction.
 
         Returns {"items", "total", "offset", "remaining", "next_cursor",
-        "backward"}: total is the row count under the same conditions,
-        offset how many rows precede this page in archive order (so the
-        page's positions are offset+1 .. offset+len(items) either way),
-        remaining how many rows are still unread in the reading direction
-        (later rows forward, earlier rows backward), next_cursor None at
-        the end.
+        "backward", "page"}: total is the row count under the same
+        conditions, offset how many rows precede this page in archive order
+        (so the page's positions are offset+1 .. offset+len(items) either
+        way), remaining how many rows are still unread in the reading
+        direction (later rows forward, earlier rows backward), next_cursor
+        None at the end, page this page's number in the walk (1 without a
+        cursor; the cursor's page + 1 with one).
         """
         total = int((await db.execute(
             select(func.count(Message.id))
@@ -1576,6 +1589,7 @@ class MemoryService:
         shown = 0
         position = self.decode_read_cursor(cursor) if cursor else None
         key = position[:2] if position is not None else None
+        page_number = position[3] + 1 if position is not None else 1
         if key is not None:
             beyond = self._after_key(*key) if backward else self._before_key(*key)
             shown = int((await db.execute(
@@ -1623,7 +1637,7 @@ class MemoryService:
                     last = items[-1]
                     next_cursor = self.encode_read_cursor(
                         datetime.fromisoformat(last["created_at"]), last["id"],
-                        backward=backward,
+                        backward=backward, page=page_number,
                     )
                     break
                 items.append(row)
@@ -1643,7 +1657,7 @@ class MemoryService:
 
         logger.info(
             f"[MEMORY] {log_label}: {len(items)} of {total} rows "
-            f"(offset={offset}, remaining={remaining}, "
+            f"(page={page_number}, offset={offset}, remaining={remaining}, "
             f"direction={'backward' if backward else 'forward'}, tokens~{used})"
         )
         return {
@@ -1653,6 +1667,7 @@ class MemoryService:
             "remaining": remaining,
             "next_cursor": next_cursor,
             "backward": backward,
+            "page": page_number,
         }
 
     # Text-match modes for find_messages / the memory_find tool

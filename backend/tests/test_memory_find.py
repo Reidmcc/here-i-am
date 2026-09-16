@@ -431,7 +431,7 @@ class TestBackward:
         assert "Next page (earlier): pass cursor=" in first
         assert "(3 earlier matches remain)" in first
         cursor = first.split('cursor="')[1].split('"')[0]
-        assert cursor.endswith("|backward")
+        assert cursor.endswith("|backward|page=1")
 
         second = await find_memories(
             native_ctx(), text="watercress", direction="backward", page_tokens=700, cursor=cursor
@@ -467,6 +467,15 @@ class TestBackward:
         assert ids_in_order(result) == [h.id[:8] for h in hits]
         assert result.rstrip().endswith("Start of the conversation: no earlier matches.")
         assert "direction" in MEMORY_FIND_SCHEMA["properties"]
+        assert "max_pages" in MEMORY_FIND_SCHEMA["properties"]
+
+        # max_pages caps the walk here too, with the cursor still given
+        capped = await find_memories(
+            native_ctx(), text="watercress", direction="backward", page_tokens=700, max_pages=1
+        )
+        assert ids_in_order(capped) == [h.id[:8] for h in hits[3:]]
+        assert "Page cap reached (max_pages=1; this was page 1): 3 earlier matches remain unread." in capped
+        assert "Next page" not in capped
 
     async def test_backward_pointers_and_isolated_scope(self, db, tools_db):
         here = await make_conversation(db, title="Here")

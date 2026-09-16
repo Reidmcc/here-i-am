@@ -947,14 +947,17 @@ class TestPostCompact:
         assert (
             f'memory_read(direction="backward", '
             f'to="{row.last_compacted_at.strftime("%Y-%m-%dT%H:%M:%S")}", '
-            f'in_conversation="{conversation_id}") (UTC)'
+            f'in_conversation="{conversation_id}", page_tokens=20000, max_pages=15) (UTC)'
         ) in body["context"]
         assert 'from="' not in body["context"]
         # The summary is a caption, the read is the conversation itself,
-        # and the look-back is capped
+        # the look-back is capped by the call, and nothing asks for a
+        # reflection saved from the summary
         assert "The summary above is a caption, not a record" in body["context"]
-        assert "Cap the look-back at about 300k tokens (15 pages at page_tokens=20000)" in body["context"]
+        assert "15 pages of 20k tokens is about 300k tokens of talk" in body["context"]
         assert "the summary doesn't carry" not in body["context"]
+        assert "summary is fresh" not in body["context"]
+        assert "memory_save" not in body["context"]
 
         # No duplicate links: one per reflection across start + compact
         result = await db_session.execute(
