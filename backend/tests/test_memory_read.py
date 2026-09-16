@@ -43,14 +43,18 @@ from app.models import (
     Message,
     MessageRole,
 )
+from app.services.claude_code_mode import POST_COMPACT_PAGE_TOKENS
 from app.services.memory_service import memory_service
 from app.services.memory_tools import (
+    HARNESS_CHARS_PER_TOKEN,
+    HARNESS_PERSIST_BYTES,
+    HARNESS_RESULT_CAP_TOKENS,
     IN_CONTEXT_POINTER,
     ISOLATED_SCOPE_NOTE,
     MEMORY_READ_SCHEMA,
     MEMORY_RESULT_STAMPING_TOOLS,
     PAGE_FRAME_TOKENS,
-    READ_PAGE_MAX_CHARS,
+    READ_PAGE_MAX_BYTES,
     READ_PAGE_TOKENS_MAX,
     READ_PAGE_TOKENS_MIN,
     RENDERED_CHARS_PER_TOKEN,
@@ -186,7 +190,7 @@ def ids_in_order(text: str):
 
 def prose(tokens: int, prefix: str = "") -> str:
     """Content that weighs about `tokens` on a page by the rendered-text
-    measure (issue #353); the row's header line adds ~30 more. The stored
+    measure (issue #353); the row's header line adds ~40 more. The stored
     token_count plays no part in paging, so the tests size the text."""
     text = "x" * int(tokens * RENDERED_CHARS_PER_TOKEN)
     return f"{prefix} {text}" if prefix else text
@@ -469,7 +473,7 @@ class TestReadReleasedAndModel:
 class TestReadPagination:
     async def test_pages_are_bounded_by_tokens_and_resume_from_cursor(self, db, tools_db):
         conversation = await make_conversation(db)
-        # Six messages of ~330 tokens each as rendered; a 1400-token page
+        # Six messages of ~340 tokens each as rendered; a 1400-token page
         # (250 of it the frame) holds three
         messages = [
             await make_message(
@@ -503,7 +507,7 @@ class TestReadPagination:
     async def test_oversized_message_is_returned_alone_and_whole(self, db, tools_db):
         conversation = await make_conversation(db)
         small = await make_message(db, conversation, content="small", created_at=at(), token_count=100)
-        huge_text = "word " * 5000  # ~7,150 tokens as rendered
+        huge_text = "word " * 5000  # ~8,900 tokens as rendered
         huge = await make_message(db, conversation, content=huge_text, created_at=at(minutes=1))
         after = await make_message(db, conversation, content="after", created_at=at(minutes=2), token_count=100)
 
@@ -523,7 +527,7 @@ class TestReadPagination:
         conversation = await make_conversation(db)
         for i in range(3):
             await make_message(db, conversation, content=prose(400, f"m{i}"), created_at=at(minutes=i))
-        # 1 clamps up to the 500 minimum (250 for rows): one ~430-token row per page
+        # 1 clamps up to the 500 minimum (250 for rows): one ~440-token row per page
         result = await read_memories(native_ctx(), from_="2026-09-01", page_tokens=1)
         assert len(ids_in_order(result)) == 1
         assert "must be an integer" in await read_memories(
@@ -1334,27 +1338,44 @@ class TestBackward:
 # ============================================================
 
 class TestPageBudget:
-    """Issue #353: the budget is measured on the page as rendered, so a page
-    asked for at the maximum lands in Claude Code's context whole instead
-    of spilling to a file that costs two or three Read calls to get back."""
+    """Issue #353: the budget is measured on the page as rendered, in the
+    harness's units, so a page asked for at the maximum lands in Claude
+    Code's context whole instead of spilling to a file that costs two or
+    three Read calls to get back."""
 
-    def test_rendered_measure_and_ceiling(self):
+    def test_rendered_measure(self):
         assert rendered_tokens("") == 1
-        assert rendered_tokens("x" * 35) == 10
-        assert rendered_tokens("x" * 36) == 11
-        assert READ_PAGE_MAX_CHARS == 70000
+        assert rendered_tokens("x" * 28) == 10
+        assert rendered_tokens("x" * 29) == 11
+        # Bytes, not characters: the persist line is in bytes (an em dash is three)
+        assert rendered_tokens("\u2014" * 28) == rendered_tokens("x" * 84)
         assert PAGE_FRAME_TOKENS < READ_PAGE_TOKENS_MIN
 
-    async def test_a_page_at_the_maximum_stays_within_the_character_ceiling(self, db, tools_db):
+    def test_the_maximum_page_and_the_block_page_clear_both_harness_limits(self):
+        """The two limits are measured constants (memory_tools, 2026-09-16);
+        a re-measurement is a constant edit this test checks. The maximum
+        page must clear the 50 KB persist line by a tenth and the 25k-token
+        cap by a third at the harness's own ratio; the post-compaction
+        block's page, walked 25 times after a compaction, by more."""
+        assert RENDERED_CHARS_PER_TOKEN == HARNESS_CHARS_PER_TOKEN
+        assert READ_PAGE_MAX_BYTES == int(READ_PAGE_TOKENS_MAX * RENDERED_CHARS_PER_TOKEN)
+        assert READ_PAGE_MAX_BYTES <= HARNESS_PERSIST_BYTES * 0.9
+        assert READ_PAGE_MAX_BYTES / HARNESS_CHARS_PER_TOKEN <= HARNESS_RESULT_CAP_TOKENS * 2 / 3
+        block_bytes = POST_COMPACT_PAGE_TOKENS * RENDERED_CHARS_PER_TOKEN
+        assert block_bytes <= HARNESS_PERSIST_BYTES * 0.7
+        assert POST_COMPACT_PAGE_TOKENS <= READ_PAGE_TOKENS_MAX
+
+    async def test_a_page_at_the_maximum_stays_within_the_byte_ceiling(self, db, tools_db):
         """Rows with long content and a light stored token_count (the old
         measure, which would have kept filling): every page — headers,
-        pointers, and footer included — renders within READ_PAGE_MAX_CHARS,
-        and the pages fill rather than shrink."""
+        pointers, and footer included — renders within READ_PAGE_MAX_BYTES,
+        under the harness's persist line, and the pages fill rather than
+        shrink."""
         here = await make_conversation(db, title="Here")
         elsewhere = await make_conversation(db, title="Elsewhere")
         by_prefix = {}
         for i in range(60):
-            content = f"turn {i} " + "prose " * (300 + (i % 7) * 400)  # 1.8k–16k characters
+            content = f"turn {i} " + "prose " * (300 + (i % 7) * 250)  # 1.8k–10.8k characters
             room = here if i % 5 == 0 else elsewhere
             message = await make_message(
                 db, room, content=content, created_at=at(minutes=i), token_count=len(content) // 5
@@ -1371,8 +1392,10 @@ class TestPageBudget:
                 break
             cursor = page.split('cursor="', 1)[1].split('"', 1)[0]
         assert len(pages) > 1
-        assert all(len(page) <= READ_PAGE_MAX_CHARS for page in pages)
-        assert max(len(page) for page in pages) > READ_PAGE_MAX_CHARS * 0.7
+        sizes = [len(page.encode("utf-8")) for page in pages]
+        assert all(size <= READ_PAGE_MAX_BYTES for size in sizes)
+        assert all(size < HARNESS_PERSIST_BYTES for size in sizes)
+        assert max(sizes) > READ_PAGE_MAX_BYTES * 0.7
         assert sum(len(ids_in_order(page)) for page in pages) == 60
         assert sum(page.count(IN_CONTEXT_POINTER) for page in pages) == 12
         # By the stored counts the first page was still under budget, so the
@@ -1392,5 +1415,5 @@ class TestPageBudget:
         shown = len(ids_in_order(page))
         assert 0 < shown < 40
         assert page.count(IN_CONTEXT_POINTER) == shown
-        assert len(page) <= READ_PAGE_TOKENS_MIN * RENDERED_CHARS_PER_TOKEN
+        assert len(page.encode("utf-8")) <= READ_PAGE_TOKENS_MIN * RENDERED_CHARS_PER_TOKEN
         assert "Next page: pass cursor=" in page

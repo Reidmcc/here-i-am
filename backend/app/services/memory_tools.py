@@ -82,24 +82,41 @@ VALID_QUERY_MODES = (MODE_SEMANTIC, MODE_RECENT, MODE_RELEASED)
 # length estimate) and memory_neighbors window bounds (issue #343).
 READ_PAGE_TOKENS_DEFAULT = 8000
 READ_PAGE_TOKENS_MIN = 500
-READ_PAGE_TOKENS_MAX = 20000
+# What Claude Code does with a large tool result, measured 2026-09-16 on
+# the live backend (issue #353, the review session's bracket; re-measure
+# with one memory_read(scope="isolated", max_pages=1) per size — landed vs
+# persisted is the readout, and Read on a spilled file over the cap prints
+# the counter's number). Two limits, the lower one binding:
+# - Any result above about 50 KB is persisted to a file with a 2 KB
+#   preview inline (48,365 bytes landed; 51,286 bytes were persisted).
+#   Getting it back costs two or three Read calls per page, which is the
+#   cost #353 is about.
+# - Above about 25k tokens the result is refused outright ("exceeds
+#   maximum allowed tokens") and spilled the same way. The counter behind
+#   that cap counted a 93,521-character page as 32,982 tokens — 2.84
+#   characters per token, about 1.45× tiktoken's count of the same text.
+HARNESS_PERSIST_BYTES = 51_200
+HARNESS_RESULT_CAP_TOKENS = 25_000
+HARNESS_CHARS_PER_TOKEN = 2.8
 # The budget is measured on the page AS RENDERED (issue #353): each row's
-# header line and its content or pointer line, at RENDERED_CHARS_PER_TOKEN
-# characters per token, with PAGE_FRAME_TOKENS held back for the page's
+# header line and its content or pointer line, in UTF-8 bytes (the persist
+# line is bytes) at RENDERED_CHARS_PER_TOKEN per token — the harness's
+# measured ratio, so page_tokens means what it says in the units the
+# harness decides with — with PAGE_FRAME_TOKENS held back for the page's
 # own header sentence and footer. Message.token_count is not used: it is a
-# tiktoken count of the content alone, and Claude Code counts the whole
-# tool result with the model's own tokenizer, which runs heavier on this
-# prose — measured 2026-09-16, a page budgeted at 20,000 by token_count
-# rendered as 96,219 characters (24–27k tokens by the harness's count),
-# overran the harness's tool-result cap (about 25k tokens), and was
-# spilled to a file that cost two or three Read calls to get back. 3.5
-# characters per token is the conservative end of that measurement, so a
-# page at READ_PAGE_TOKENS_MAX renders within READ_PAGE_MAX_CHARS and
-# lands in context whole, with margin. The one exception is a single
-# message larger than the budget, which is returned alone and whole.
-RENDERED_CHARS_PER_TOKEN = 3.5
+# tiktoken count of the content alone, which the harness counts ~1.45×
+# heavier, and the headers and pointers were never charged, so a page
+# budgeted at 20,000 by it rendered at 93k characters and spilled. The
+# maximum is set by the persist line: a page at READ_PAGE_TOKENS_MAX
+# renders within READ_PAGE_MAX_BYTES, under 50 KB with margin and ~16k by
+# the cap's counter; no page over about 17k honest tokens can land in this
+# harness at all. The one exception is a single message larger than the
+# budget, which is returned alone and whole. test_memory_read pins the
+# maximum page and the post-compaction block's page against both limits.
+RENDERED_CHARS_PER_TOKEN = HARNESS_CHARS_PER_TOKEN
+READ_PAGE_TOKENS_MAX = 16000
 PAGE_FRAME_TOKENS = 250
-READ_PAGE_MAX_CHARS = int(READ_PAGE_TOKENS_MAX * RENDERED_CHARS_PER_TOKEN)
+READ_PAGE_MAX_BYTES = int(READ_PAGE_TOKENS_MAX * RENDERED_CHARS_PER_TOKEN)
 NEIGHBORS_DEFAULT = 2
 NEIGHBORS_MAX = 10
 
@@ -1202,8 +1219,11 @@ def _parse_page_tokens(page_tokens: Any) -> Tuple[Optional[int], Optional[str]]:
 
 
 def rendered_tokens(text: str) -> int:
-    """Page weight of rendered text: its length at RENDERED_CHARS_PER_TOKEN."""
-    return max(1, math.ceil(len(text) / RENDERED_CHARS_PER_TOKEN))
+    """Page weight of rendered text: its UTF-8 size at RENDERED_CHARS_PER_TOKEN
+    bytes per token (the harness's persist line is in bytes; on this
+    archive's prose bytes and characters differ by a tenth of a percent,
+    on a page of emoji they don't)."""
+    return max(1, math.ceil(len(text.encode("utf-8")) / RENDERED_CHARS_PER_TOKEN))
 
 
 def _page_weigher(

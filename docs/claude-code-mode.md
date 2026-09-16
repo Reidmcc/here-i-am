@@ -673,9 +673,10 @@ are the entity's verbatim carriers across that boundary.
   look-back through the tool's own `max_pages` (25 pages of 12k tokens,
   about 300k tokens of talk; `POST_COMPACT_LOOKBACK_PAGES` /
   `POST_COMPACT_PAGE_TOKENS` are only the block's numbers — 12k because
-  Claude Code spills a tool result above about 25k tokens to a file that
-  costs two or three `Read` calls per page to get back, which turned the
-  first post-#352 walk into forty-odd calls, issue #353): a long room
+  Claude Code persists a tool result above about 50 KB (and refuses one
+  above about 25k tokens) to a file that costs two or three `Read` calls
+  per page to get back, which turned the first post-#352 walk into
+  forty-odd calls; 12k renders within ~33.6 KB, issue #353): a long room
   read to its start would refill the context compaction just emptied,
   that much is plenty of continuity, and older talk stays reachable by
   the other memory tools; the page that reaches the cap still gives its
@@ -696,11 +697,12 @@ are the entity's verbatim carriers across that boundary.
   lost stretch without duplicating what is still in view. (Measured
   2026-09-09 on local transcripts: auto-compaction fires near 1M tokens
   and leaves a ~10k post-compaction context, so the page budget's 8k
-  default and 20k ceiling are conservative, not tight — and the archive
+  default and 16k ceiling are small against the context — and the archive
   holds only the talk, no tool results, so a span page is small relative
-  to a context. Since issue #353 the budget is measured on the page as
-  rendered, so the ceiling is also what the harness accepts in one
-  result.)
+  to a context. The ceiling is set by what the harness accepts in one
+  tool result, not by the context: since issue #353 the budget is
+  measured on the page as rendered in the harness's own units, and the
+  16k maximum is the largest page that clears its 50 KB persist line.)
 - **Pre-compaction memory becomes retrievable again.** The compact
   `session-start` stamps `Conversation.last_compacted_at` (before the
   re-injection runs), and that stamp is the same-conversation eligibility
