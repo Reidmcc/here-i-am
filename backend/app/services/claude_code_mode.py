@@ -439,6 +439,13 @@ async def build_session_start_context(
     return "\n\n".join(parts), "\n\n".join(bulk_parts)
 
 
+# How far back the post-compaction block suggests reading, in tokens. A
+# long room read to its first message would refill the context compaction
+# just emptied; this much is plenty of continuity, and older talk stays
+# reachable by the other memory tools (issue #351, Pseudo's number).
+POST_COMPACT_LOOKBACK_TOKENS = 300_000
+
+
 async def build_post_compact_context(
     db: AsyncSession,
     conversation: Conversation,
@@ -483,18 +490,25 @@ async def build_post_compact_context(
     # eligibility boundary, which is exactly what this use depends on. The
     # call reads BACKWARD from the boundary (issue #351): what a compacted
     # session wants is the stretch just before it, whatever its dates, not
-    # the conversation from its first message forward.
+    # the conversation from its first message forward. The summary is a
+    # caption, not a partial record, so the block does not frame the read
+    # as filling the summary's gaps; and the look-back is capped, because
+    # a long room read to its start would fill the context it just emptied.
     boundary = conversation.last_compacted_at or datetime.utcnow()
     parts.append(
-        "Everything said in this session before the compaction is still "
-        "readable verbatim, in order, with memory_read: "
+        "The summary above is a caption, not a record; treat it as carrying "
+        "nothing. Everything said in this session before the compaction is "
+        "still there verbatim, in order, and reading it back puts the "
+        "conversation itself in front of you again — what stays gone is only "
+        "the tool traffic. Read it with "
         f'memory_read(direction="backward", to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}", '
-        f'in_conversation="{conversation.id}") (UTC). Start at the boundary and '
-        "read back until you have the stretch the summary doesn't carry: each "
-        "page holds the most recent messages not yet shown, in order, and its "
-        "cursor walks further back, to the conversation's start if you want "
-        "it all. memory_read never excludes this conversation, so those pages "
-        "are the pre-compaction talk itself, not a summary of it."
+        f'in_conversation="{conversation.id}") (UTC): the first page is the '
+        "talk just before the boundary, each cursor walks further back, and "
+        "the last page says when it reaches the conversation's start. Cap the "
+        f"look-back at about {POST_COMPACT_LOOKBACK_TOKENS // 1000}k tokens "
+        f"({POST_COMPACT_LOOKBACK_TOKENS // 20000} pages at page_tokens=20000): "
+        "that is plenty of continuity, and anything older is still in the "
+        "archive for the other memory tools when it matters."
     )
 
     notes_paths = build_notes_paths_block(entity)

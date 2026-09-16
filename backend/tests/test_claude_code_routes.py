@@ -950,7 +950,11 @@ class TestPostCompact:
             f'in_conversation="{conversation_id}") (UTC)'
         ) in body["context"]
         assert 'from="' not in body["context"]
-        assert "read back until you have the stretch the summary doesn't carry" in body["context"]
+        # The summary is a caption, the read is the conversation itself,
+        # and the look-back is capped
+        assert "The summary above is a caption, not a record" in body["context"]
+        assert "Cap the look-back at about 300k tokens (15 pages at page_tokens=20000)" in body["context"]
+        assert "the summary doesn't carry" not in body["context"]
 
         # No duplicate links: one per reflection across start + compact
         result = await db_session.execute(

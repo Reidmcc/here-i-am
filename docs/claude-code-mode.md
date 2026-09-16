@@ -654,13 +654,20 @@ are the entity's verbatim carriers across that boundary.
   reorientation header also names the `memory_read` call that returns
   this session's own pre-compaction stretch, read **backward from the
   boundary** (issue #351): `memory_read(direction="backward",
-  to=<last_compacted_at>, in_conversation=<this conversation>)`, with the
-  instruction to start at the boundary and read back until it has the
-  stretch the summary doesn't carry. The first page is the talk just
-  before the boundary, whatever its dates; each page holds the most
-  recent messages not yet shown, still in order; its cursor walks
+  to=<last_compacted_at>, in_conversation=<this conversation>)`. The
+  block says what the summary is — a caption, not a record, carrying
+  nothing — and that reading back puts the conversation itself in front
+  of the entity again, only the tool traffic staying gone; it does not
+  frame the read as filling the summary's gaps. The first page is the
+  talk just before the boundary, whatever its dates; each page holds the
+  most recent messages not yet shown, still in order; its cursor walks
   further back; and with no `from` the stop is the conversation's own
-  first message, which the last page announces. (The original call read
+  first message, which the last page announces. The block suggests
+  capping the look-back at about 300k tokens
+  (`POST_COMPACT_LOOKBACK_TOKENS`, 15 pages at the 20k ceiling): a long
+  room read to its start would refill the context compaction just
+  emptied, that much is plenty of continuity, and older talk stays
+  reachable by the other memory tools. (The original call read
   the conversation forward from its first message — the wrong end for a
   nine-day room, found by the porch on a manual `/compact` 2026-09-16,
   which also confirmed the block fires on manual compactions.) Pull
