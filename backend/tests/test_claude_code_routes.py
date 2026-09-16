@@ -944,16 +944,21 @@ class TestPostCompact:
             select(Conversation).where(Conversation.id == conversation_id)
         )
         row = result.scalar_one()
+        # The boundary carries its own offset, so the call is UTC by construction
         assert (
             f'memory_read(direction="backward", '
-            f'to="{row.last_compacted_at.strftime("%Y-%m-%dT%H:%M:%S")}", '
-            f'in_conversation="{conversation_id}", page_tokens=20000, max_pages=15) (UTC)'
+            f'to="{row.last_compacted_at.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
+            f'in_conversation="{conversation_id}", page_tokens=20000, max_pages=15):'
         ) in body["context"]
         assert 'from="' not in body["context"]
-        # The summary is a caption, the read is the conversation itself,
-        # the look-back is capped by the call, and nothing asks for a
-        # reflection saved from the summary
-        assert "The summary above is a caption, not a record" in body["context"]
+        # The summary is a caption of the talk (the talk is all in the
+        # archive; the tool traffic is what the summary alone records), the
+        # read is the conversation itself, the look-back is capped by the
+        # call, and nothing asks for a reflection saved from the summary
+        assert (
+            "The summary above is a caption, not a record: of the talk it carries nothing"
+        ) in body["context"]
+        assert "which the summary is the one record of" in body["context"]
         assert "15 pages of 20k tokens is about 300k tokens of talk" in body["context"]
         assert "the summary doesn't carry" not in body["context"]
         assert "summary is fresh" not in body["context"]

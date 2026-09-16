@@ -498,14 +498,15 @@ async def build_post_compact_context(
     # a long room read to its start would fill the context it just emptied.
     boundary = conversation.last_compacted_at or datetime.utcnow()
     parts.append(
-        "The summary above is a caption, not a record; treat it as carrying "
-        "nothing. Everything said in this session before the compaction is "
-        "still there verbatim, in order, and reading it back puts the "
-        "conversation itself in front of you again — what stays gone is only "
-        "the tool traffic. Read it with "
-        f'memory_read(direction="backward", to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}", '
+        "The summary above is a caption, not a record: of the talk it "
+        "carries nothing, and the talk is all still there verbatim, in "
+        "order — reading it back puts the conversation itself in front of "
+        "you again. What stays gone is only the tool traffic (files open, "
+        "commands run, results), which the summary is the one record of. "
+        "Read the talk with "
+        f'memory_read(direction="backward", to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
         f'in_conversation="{conversation.id}", page_tokens={POST_COMPACT_PAGE_TOKENS}, '
-        f"max_pages={POST_COMPACT_LOOKBACK_PAGES}) (UTC): the first page is the "
+        f"max_pages={POST_COMPACT_LOOKBACK_PAGES}): the first page is the "
         "talk just before the boundary, each cursor walks further back (pass "
         "the same arguments with it), and the last page says whether it "
         "reached the conversation's start or the page cap. "

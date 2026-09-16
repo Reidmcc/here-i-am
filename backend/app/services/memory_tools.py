@@ -1218,8 +1218,8 @@ def _check_cursor(
             f"Error: Unrecognized cursor '{cursor}'. Pass back the cursor a "
             f"previous {tool_name} page returned, with the same {same}, direction, and filters."
         )
-    if decoded[2] != backward:
-        made_in = DIRECTION_BACKWARD if decoded[2] else DIRECTION_FORWARD
+    if decoded.backward != backward:
+        made_in = DIRECTION_BACKWARD if decoded.backward else DIRECTION_FORWARD
         return None, (
             f"Error: That cursor came from a {tool_name} page read "
             f"direction=\"{made_in}\"; pass it back with the same direction, "
@@ -1353,6 +1353,20 @@ def _normalize_source(source: Optional[str]) -> Tuple[Optional[str], str, Option
     return (None if role_filter == SOURCE_ALL else role_filter), suffix, None
 
 
+def _backward_end_text(conversation_id: Optional[str], start: Optional[datetime], what: str) -> str:
+    """
+    The last backward page's closing line, naming what was reached: the
+    conversation's own beginning when the read was confined to one
+    conversation with no `from` (the default stop the post-compaction block
+    relies on), the archive's start when nothing bounded it, else the span's.
+    """
+    if conversation_id and start is None:
+        return f"Start of the conversation: {what}."
+    if start is None:
+        return f"Start of your archive: {what}."
+    return f"Start of span: {what}."
+
+
 async def read_memories(
     ctx: MemoryToolContext,
     from_: Any = None,
@@ -1471,9 +1485,10 @@ async def read_memories(
         )
     if not items:
         if backward:
-            return (
-                f"Start of span: no messages before that cursor between {span_text}"
-                f"{source_suffix}{conversation_suffix} ({page['total']} in the span)."
+            return _backward_end_text(
+                conversation_id, start,
+                f"no messages before that cursor between {span_text}"
+                f"{source_suffix}{conversation_suffix} ({page['total']} in the span)",
             )
         return (
             f"End of span: no messages after that cursor between {span_text}"
@@ -1499,19 +1514,6 @@ async def read_memories(
         end_text=end_text, max_pages=max_pages,
     )
 
-
-def _backward_end_text(conversation_id: Optional[str], start: Optional[datetime], what: str) -> str:
-    """
-    The last backward page's closing line, naming what was reached: the
-    conversation's own beginning when the read was confined to one
-    conversation with no `from` (the default stop the post-compaction block
-    relies on), the archive's start when nothing bounded it, else the span's.
-    """
-    if conversation_id and start is None:
-        return f"Start of the conversation: {what}."
-    if start is None:
-        return f"Start of your archive: {what}."
-    return f"Start of span: {what}."
 
 
 MATCH_DESCRIPTIONS = {
@@ -1662,9 +1664,10 @@ async def find_memories(
     plural = "es" if total != 1 else ""
     if not items:
         if backward:
-            return (
-                f"Start of matches: no messages before that cursor contain {what}{filters} "
-                f"({total} match{plural} in all)."
+            return _backward_end_text(
+                conversation_id, start,
+                f"no messages before that cursor contain {what}{filters} "
+                f"({total} match{plural} in all)",
             )
         return (
             f"End of matches: no messages after that cursor contain {what}{filters} "
@@ -2175,7 +2178,10 @@ MEMORY_READ_SCHEMA = {
                 "of that day in tz) or a moment ('2026-09-01T14:00', read in "
                 "tz; '2026-09-01T14:00:00+00:00' as given). Required when "
                 "reading forward; when direction='backward' it is the stop, "
-                "and defaults to the start of your archive."
+                "and defaults to the start of your archive. Note that 'from' "
+                "alone reads that one day forward but that day up to now "
+                "backward (the backward default for 'to' is now, not the end "
+                "of the day) — give 'to' as well for a single day newest-first."
             ),
         },
         "to": {

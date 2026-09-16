@@ -2,7 +2,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 
 from pinecone import Pinecone
 from sqlalchemy import and_, func, or_, select, update
@@ -109,6 +109,16 @@ async def run_pinecone(fn, *args, **kwargs):
     server stays responsive either way.
     """
     return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+
+class ReadCursor(NamedTuple):
+    """A decoded archive-reader page cursor (see MemoryService.encode_read_cursor)."""
+
+    created_at: datetime
+    message_id: str
+    backward: bool
+    page: int
 
 
 class MemoryService:
@@ -1372,11 +1382,11 @@ class MemoryService:
         return f"{cursor}|{cls.CURSOR_PAGE_TAG}{int(page)}"
 
     @classmethod
-    def decode_read_cursor(cls, cursor: str) -> Optional[Tuple[datetime, str, bool, int]]:
+    def decode_read_cursor(cls, cursor: str) -> Optional["ReadCursor"]:
         """
-        The inverse of encode_read_cursor: (created_at, message_id,
-        backward, page); None when the cursor is malformed. A cursor with
-        no page tag (built by hand) counts as page 1.
+        The inverse of encode_read_cursor: a ReadCursor (created_at,
+        message_id, backward, page); None when the cursor is malformed. A
+        cursor with no page tag (built by hand) counts as page 1.
         """
         try:
             parts = str(cursor).strip().split("|")
@@ -1399,7 +1409,7 @@ class MemoryService:
             parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
         if not message_id:
             return None
-        return parsed, message_id, backward, page
+        return ReadCursor(parsed, message_id, backward, page)
 
     @staticmethod
     def _after_key(created_at: datetime, message_id: str):
@@ -1588,8 +1598,8 @@ class MemoryService:
         # reading forward, at or after it reading backward
         shown = 0
         position = self.decode_read_cursor(cursor) if cursor else None
-        key = position[:2] if position is not None else None
-        page_number = position[3] + 1 if position is not None else 1
+        key = (position.created_at, position.message_id) if position is not None else None
+        page_number = position.page + 1 if position is not None else 1
         if key is not None:
             beyond = self._after_key(*key) if backward else self._before_key(*key)
             shown = int((await db.execute(

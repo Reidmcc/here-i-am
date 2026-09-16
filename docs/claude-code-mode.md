@@ -657,10 +657,15 @@ are the entity's verbatim carriers across that boundary.
   boundary** (issue #351): `memory_read(direction="backward",
   to=<last_compacted_at>, in_conversation=<this conversation>,
   page_tokens=20000, max_pages=15)`. The
-  block says what the summary is — a caption, not a record, carrying
-  nothing — and that reading back puts the conversation itself in front
-  of the entity again, only the tool traffic staying gone; it does not
-  frame the read as filling the summary's gaps. The first page is the
+  block says what the summary is — a caption, not a record: of the
+  *talk* it carries nothing, and the talk is all in the archive — and
+  that reading back puts the conversation itself in front of the entity
+  again. What stays gone is only the tool traffic (files open, commands
+  run, results), and the summary is the one record of that: a workshop
+  compacted mid-build reads the summary for where the work stood and
+  the archive for what was said. The block does not frame the read as
+  filling the summary's gaps. The `to` value carries its `+00:00`
+  offset, so the call is UTC by construction. The first page is the
   talk just before the boundary, whatever its dates; each page holds the
   most recent messages not yet shown, still in order; its cursor walks
   further back; and with no `from` the stop is the conversation's own

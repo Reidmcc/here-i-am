@@ -449,8 +449,13 @@ class TestBackward:
 
         past_start = memory_service.encode_read_cursor(hits[0].created_at, hits[0].id, backward=True)
         result = await find_memories(native_ctx(), text="watercress", direction="backward", cursor=past_start)
-        assert result.startswith("Start of matches: no messages before that cursor contain")
+        assert result.startswith("Start of your archive: no messages before that cursor contain")
         assert "(5 matches in all)" in result
+        result = await find_memories(
+            native_ctx(), text="watercress", direction="backward", cursor=past_start,
+            in_conversation=conversation.id[:8],
+        )
+        assert result.startswith("Start of the conversation: no messages before that cursor contain")
 
         # A forward cursor is refused in a backward read, and the reverse
         forward = await find_memories(native_ctx(), text="watercress", page_tokens=700)

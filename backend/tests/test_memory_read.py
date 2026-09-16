@@ -1066,6 +1066,14 @@ class TestBackward:
             native_ctx(), direction="backward", in_conversation=conversation.id[:8]
         )
         assert result.rstrip().endswith("Start of the conversation: nothing earlier.")
+        # ...and so does an empty page past it, or past the archive's start
+        past = memory_service.encode_read_cursor(old.created_at, old.id, backward=True)
+        result = await read_memories(
+            native_ctx(), direction="backward", in_conversation=conversation.id[:8], cursor=past
+        )
+        assert result.startswith("Start of the conversation: no messages before that cursor")
+        result = await read_memories(native_ctx(), direction="backward", cursor=past)
+        assert result.startswith("Start of your archive: no messages before that cursor")
 
         # 'to' alone bounds the start of the read; 'from' stays the stop
         # 7 AM Eastern is 11:00 UTC, an hour before `recent`
@@ -1212,9 +1220,9 @@ class TestBackward:
         assert memory_service.decode_read_cursor("2026-09-01T12:00:00|abc") == (
             datetime(2026, 9, 1, 12, 0), "abc", False, 1
         )
-        assert memory_service.decode_read_cursor("2026-09-01T12:00:00|abc|backward|page=4") == (
-            datetime(2026, 9, 1, 12, 0), "abc", True, 4
-        )
+        decoded = memory_service.decode_read_cursor("2026-09-01T12:00:00|abc|backward|page=4")
+        assert decoded == (datetime(2026, 9, 1, 12, 0), "abc", True, 4)
+        assert (decoded.backward, decoded.page) == (True, 4)
         assert "Unknown direction 'sideways'" in await read_memories(
             native_ctx(), from_="2026-09-01", direction="sideways"
         )
