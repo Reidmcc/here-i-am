@@ -1,4 +1,4 @@
-# Guide for agents conducting code review sessions
+# Kira's code review guide
 
 ## Read first, in this order, before forming a view
 
