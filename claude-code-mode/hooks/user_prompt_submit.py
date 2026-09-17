@@ -21,11 +21,12 @@ wakeup-driven loop session. Every recorded prompt's output ends with a
 one-line reminder of the sentinel convention, so it is in view on any
 turn where the entity might schedule a prompt to itself.
 
-When the memory block would blow the inline hook-output budget (Claude Code
-silently truncates oversized hook output), it is written to a file and the
-backend's compact per-memory summary is printed with a pointer instead —
-the entity still sees inline what surfaced and where the verbatim text
-went. See hook_util.py.
+When the memory block would go over the hook-stdout line (Claude Code
+persists oversized hook output to a file behind a 2 KB preview), the hook
+fits it: whole memories in rank order while they fit the budget, the rest
+as one-line summaries, and a pointer to the file holding the full block —
+most turns land everything, and a large pull still lands its top memories
+verbatim with the rest named. See hook_util.py.
 
 An empty retrieval is never silent (issue #326): from inside a session,
 "retrieval ran and nothing matched" and "no retrieval ran" feel identical,
@@ -178,7 +179,10 @@ def main() -> None:
     # A block was printed: if the dedup suppressed anything, say what
     # (issue #328) — right after the block, before the mailbox and reminder
     tail = [part for part in (dedup_stamp(body), *tail) if part]
-    if hook_util.output_bytes(context) <= hook_util.inline_budget():
+    budget = hook_util.inline_budget(body)
+    # The whole stdout is what the harness measures — the block AND the
+    # lines after it
+    if hook_util.output_chars("\n\n".join([context, *tail])) <= budget:
         print("\n\n".join([context, *tail]))
         return
 
@@ -186,11 +190,45 @@ def main() -> None:
     # session is never overwritten
     name = "retrieval-" + time.strftime("%H%M%S")
     path = hook_util.spill(context, session_id, name)
+    items = [
+        item for item in (body.get("context_items") or [])
+        if isinstance(item, dict) and item.get("text") and item.get("summary")
+    ]
+    header = (body.get("context_header") or "").strip()
+    if items and header:
+        # Fit, then point: whole memories in rank order while they fit,
+        # summary lines for the rest, and the pointer names the file
+        pointer_reserve = 320 + len(path)
+        tail_text = "\n\n".join(tail)
+        fitted, shown = hook_util.fit_retrieval(
+            header, items, budget - hook_util.output_chars(tail_text) - pointer_reserve - 8
+        )
+        count = len(items)
+        if shown:
+            pointer = (
+                f"[HERE I AM] {shown} of the {count} retrieved memories are shown "
+                f"above in full; the other {count - shown} were too large to inject "
+                "inline and are listed by summary line. Their full verbatim text is "
+                f"written to:\n{path}\nRead it if you want their words. "
+                + hook_util.READ_TOOL_ADVICE
+            )
+        else:
+            pointer = (
+                "[HERE I AM] The retrieved memories were too large to inject inline "
+                "and are listed above by summary line. Their full verbatim text is "
+                f"written to:\n{path}\nRead that file before responding. "
+                + hook_util.READ_TOOL_ADVICE
+            )
+        print("\n\n".join([fitted, pointer, *tail]))
+        return
+
+    # A backend that predates per-memory fitting: its summary block in
+    # place of the whole
     summary = (body.get("context_summary") or "").strip()
     pointer = (
         "[HERE I AM] The retrieved memories were too large to inject inline. "
         f"Their full verbatim text is written to:\n{path}\n"
-        "Read that file before responding."
+        "Read that file before responding. " + hook_util.READ_TOOL_ADVICE
     )
     parts = [part for part in (summary, pointer, *tail) if part]
     print("\n\n".join(parts))

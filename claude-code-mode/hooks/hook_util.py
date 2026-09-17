@@ -9,18 +9,26 @@ Two jobs the individual hook scripts delegate here:
   invisible one. Helpers print a single [HERE I AM] notice instead of
   nothing.
 
-- **Spill and point.** Claude Code truncates oversized hook stdout to a
-  short preview (observed inline cap ~20KB), without announcing the cut.
-  For an identity payload that is the worst failure mode: the preview ends
-  on a complete-looking paragraph and the session runs as a thin entity
-  that feels fine. When a payload would blow the inline budget, the hooks
-  write the bulk to a per-session file and print a loud pointer telling
-  the entity to read it before doing anything else.
+- **Fit, then point.** Claude Code persists oversized hook stdout to a
+  file, leaving a 2 KB preview inline that cuts mid-unit and announces
+  itself only as "Output too large". The line is 10,000 CHARACTERS
+  (measured 2026-09-16 from 1,531 real hook outputs: 9,997 chars landed,
+  10,009 were persisted; the backend's harness_limits module carries the
+  bracket and the recipe). For an identity payload that is the worst
+  failure mode: the preview ends on a complete-looking paragraph and the
+  session runs as a thin entity that feels fine. So the hooks budget
+  their whole stdout against that line: a retrieval block lands whole
+  memories in rank order while they fit and lists the rest by summary
+  line; the session-start bulk goes to one file per part, sized for one
+  Read call each; and every spill prints a loud pointer naming the
+  files and the Read tool (a shell cat of a file over 50 KB is a tool
+  result, and goes to disk the same way).
 
 Environment:
-    HIM_INLINE_BUDGET  max bytes of hook stdout before bulk content is
-                       spilled to a file (default 18000, conservatively
-                       under the observed harness cap)
+    HIM_INLINE_BUDGET  max CHARACTERS of hook stdout (default 9600, 4%
+                       under the measured 10,000-character line; the
+                       backend sends the same number as inline_budget in
+                       its responses, and this variable overrides both)
     HIM_DESKTOP_DATA_DIR  the Claude desktop app's data directory (default:
                        the platform's; see claude_desktop_data_dir), whose
                        per-session records give the rooms registry each
@@ -35,6 +43,7 @@ import sys
 import tempfile
 import urllib.request
 from datetime import datetime, timezone
+from typing import Optional
 
 # Claude Code speaks UTF-8 on every hook stream: the input payload arrives
 # as UTF-8 JSON on stdin, and stdout/stderr are decoded as UTF-8 when
@@ -52,7 +61,12 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
     except Exception:
         pass
 
-DEFAULT_INLINE_BUDGET = 18000
+# Characters, not bytes: the harness measures its hook-stdout line in
+# characters (the same output landed at 10,069 bytes / 9,997 chars and was
+# persisted at 10,063 bytes / 10,009 chars). Mirrors
+# harness_limits.HOOK_INLINE_BUDGET_CHARS on the backend, which sends it
+# as inline_budget; this is the fallback for a backend that predates it.
+DEFAULT_INLINE_BUDGET = 9600
 
 # Claude Code delivers harness events through the prompt channel: background
 # task notifications arrive as a bare <task-notification> block, and other
@@ -196,15 +210,40 @@ def post_backend(path: str, payload: dict, timeout: int):
         return json.load(response)
 
 
-def inline_budget() -> int:
+def inline_budget(body: Optional[dict] = None) -> int:
+    """
+    The hook's stdout budget in characters: HIM_INLINE_BUDGET when set,
+    else the backend's number (inline_budget in its response — one source
+    of truth for the line, so hooks and backend can't disagree), else the
+    default here.
+    """
     try:
         return int(os.environ["HIM_INLINE_BUDGET"])
     except (KeyError, ValueError):
-        return DEFAULT_INLINE_BUDGET
+        pass
+    if body:
+        try:
+            value = int(body.get("inline_budget") or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    return DEFAULT_INLINE_BUDGET
 
 
-def output_bytes(text: str) -> int:
-    return len(text.encode("utf-8"))
+def output_chars(text: str) -> int:
+    """
+    What the harness measures hook stdout in: characters as written. A
+    text-mode stdout writes os.linesep for each newline, and the harness
+    counts what arrives (the transcripts it keeps carry the carriage
+    returns), so on Windows every line costs one more character than the
+    text has.
+    """
+    return len(text) + (len(os.linesep) - 1) * text.count("\n")
+
+
+def describe_size(text: str) -> str:
+    return f"{len(text.encode('utf-8')) / 1024:.0f} KB"
 
 
 def spill(text: str, session_id: str, name: str) -> str:
@@ -215,6 +254,48 @@ def spill(text: str, session_id: str, name: str) -> str:
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
     return os.path.abspath(path)
+
+
+READ_TOOL_ADVICE = (
+    "Read spilled files with the Read tool, not a shell cat: a shell result "
+    "over 50 KB is itself persisted to a file instead of shown, while Read "
+    "shows a large file whole, in pages."
+)
+
+
+def fit_retrieval(header: str, items: list, budget: int) -> tuple:
+    """
+    Render a retrieval block to `budget` characters: the header, then the
+    memories in rank order — whole while the block still fits with the
+    rest as one-line summaries, summaries after that. Returns (text,
+    shown_in_full). Each item is {"text": rendered marker, "summary": its
+    summary line}; nothing is ever cut mid-memory.
+    """
+    newline = len(os.linesep)
+    full_sizes = [output_chars(item["text"]) + 2 * newline for item in items]
+    summary_sizes = [output_chars(item["summary"]) + newline for item in items]
+    # The lead sentence over the summary lines is ~110 characters at most
+    total = output_chars(header) + 2 * newline + 120 + sum(summary_sizes)
+    shown = 0
+    if total <= budget:
+        for full, summary in zip(full_sizes, summary_sizes, strict=True):
+            total += full - summary
+            if total > budget:
+                break
+            shown += 1
+    parts = [header]
+    parts.extend(item["text"] for item in items[:shown])
+    rest = items[shown:]
+    if rest:
+        count = len(rest)
+        lead = (
+            f"{count} more surfaced, listed by summary line; their full text is "
+            "in the file named below:"
+            if shown
+            else "Listed by summary line; the full text is in the file named below:"
+        )
+        parts.append(lead + "\n" + "\n".join(item["summary"] for item in rest))
+    return "\n\n".join(parts), shown
 
 
 def fail_loud(message: str) -> None:

@@ -39,6 +39,16 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import async_session_maker
 from app.models import Conversation, Message, MessageRole
+from app.services.harness_limits import (  # noqa: F401 — the limits are re-exported for the readers' tests
+    HARNESS_CHARS_PER_TOKEN,
+    HARNESS_PERSIST_BYTES,
+    HARNESS_RESULT_CAP_TOKENS,
+    TOOL_RESULT_BUDGET_BYTES,
+    fit_by_priority,
+    fit_prefix,
+    fit_report,
+    utf8_size,
+)
 from app.services.memory_context import format_memory_origin
 from app.services.memory_service import (
     MEMORY_ROLES,
@@ -82,22 +92,16 @@ VALID_QUERY_MODES = (MODE_SEMANTIC, MODE_RECENT, MODE_RELEASED)
 # length estimate) and memory_neighbors window bounds (issue #343).
 READ_PAGE_TOKENS_DEFAULT = 8000
 READ_PAGE_TOKENS_MIN = 500
-# What Claude Code does with a large tool result, measured 2026-09-16 on
-# the live backend (issue #353, the review session's bracket; re-measure
-# with one memory_read(scope="isolated", max_pages=1) per size — landed vs
-# persisted is the readout, and Read on a spilled file over the cap prints
-# the counter's number). Two limits, the lower one binding:
-# - Any result above about 50 KB is persisted to a file with a 2 KB
-#   preview inline (48,365 bytes landed; 51,286 bytes were persisted).
-#   Getting it back costs two or three Read calls per page, which is the
-#   cost #353 is about.
-# - Above about 25k tokens the result is refused outright ("exceeds
-#   maximum allowed tokens") and spilled the same way. The counter behind
-#   that cap counted a 93,521-character page as 32,982 tokens — 2.84
-#   characters per token, about 1.45× tiktoken's count of the same text.
-HARNESS_PERSIST_BYTES = 51_200
-HARNESS_RESULT_CAP_TOKENS = 25_000
-HARNESS_CHARS_PER_TOKEN = 2.8
+# What Claude Code does with a large tool result — measured 2026-09-16 on
+# the live backend (issue #353, the review session's bracket) and kept with
+# the other channels' limits in harness_limits, which carries the brackets
+# and the re-measurement recipes. Two limits, the lower one binding: any
+# result above about 50 KB is persisted to a file with a 2 KB preview
+# inline, and getting it back costs two or three Read calls per page
+# (the cost #353 is about); above about 25k tokens by the harness's own
+# counter (2.84 chars/token on archive prose, ~1.45× tiktoken) the result
+# is refused outright. The names are imported into this module (see the
+# imports above) because the readers and their tests speak in them.
 # The budget is measured on the page AS RENDERED (issue #353): each row's
 # header line and its content or pointer line, in UTF-8 bytes (the persist
 # line is bytes) at RENDERED_CHARS_PER_TOKEN per token — the harness's
@@ -364,12 +368,46 @@ def _model_display(mem: Dict[str, Any], include_model: bool) -> str:
     return f", model: {model}" if model else ", model: unrecorded"
 
 
+# What a memory renders as when the whole result would not land in context:
+# its header line stays (the id, attribution, and score are the useful
+# part), the content gives way to this one line. A memory is shown whole or
+# pointed at, never cut — the rule the archive readers follow (issue #353),
+# applied to the list-shaped tools. Rare in practice (ten long messages),
+# but a result that goes to disk costs Read calls and cuts mid-memory.
+RESULT_SIZE_POINTER = (
+    "[listed by header only: the full result would exceed what this harness "
+    "shows in one tool result; open it with memory_neighbors or memory_read]"
+)
+
+
+def _fit_memory_entries(
+    entries: List[Tuple[str, str]], frame: str
+) -> Tuple[List[str], int]:
+    """
+    Render (header, content) entries in order, each in full while the whole
+    result stays within TOOL_RESULT_BUDGET_BYTES and as a header plus
+    RESULT_SIZE_POINTER after that, as output lines plus the count shown in
+    full. `frame` is the text around the entries (intro and outro lines),
+    charged against the budget with a reserve for the fit note.
+    """
+    full = [utf8_size(header) + utf8_size(content) + 3 for header, content in entries]
+    pointer = [utf8_size(header) + utf8_size(RESULT_SIZE_POINTER) + 3 for header, _ in entries]
+    budget = TOOL_RESULT_BUDGET_BYTES - utf8_size(frame) - 400
+    shown = fit_prefix(full, pointer, budget)
+    lines: List[str] = []
+    for index, (header, content) in enumerate(entries):
+        lines.append(header)
+        lines.append(content if index < shown else RESULT_SIZE_POINTER)
+        lines.append("")
+    return lines, shown
+
+
 def _format_recent_reflections(
     memories: List[Dict[str, Any]], since_suffix: str, include_model: bool = False
 ) -> str:
     """Render recent-mode results (no similarity scores — ordering is time)."""
     now = datetime.utcnow()
-    lines = [f"Your {len(memories)} most recent reflections{since_suffix}, newest first:", ""]
+    entries: List[Tuple[str, str]] = []
     for mem in memories:
         created_at = mem["created_at"]
         if isinstance(created_at, str):
@@ -379,12 +417,14 @@ def _format_recent_reflections(
         status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""
         origin_str = format_memory_origin(mem.get("source", "native"))
         model_str = _model_display(mem, include_model)
-        lines.append(
-            f"--- Memory {mem['id'][:8]} (You reflected, {age_str}, {origin_str}{status_str}{model_str}) ---"
-        )
-        lines.append(mem["content"])
-        lines.append("")
-    return "\n".join(lines)
+        entries.append((
+            f"--- Memory {mem['id'][:8]} (You reflected, {age_str}, {origin_str}{status_str}{model_str}) ---",
+            mem["content"],
+        ))
+    intro = f"Your {len(memories)} most recent reflections{since_suffix}, newest first:"
+    body, shown = _fit_memory_entries(entries, intro)
+    _, note = fit_report(shown, len(memories), "reflections")
+    return "\n".join([intro + note, "", *body])
 
 
 async def _recent_reflections(
@@ -475,11 +515,12 @@ def _format_released_memories(
 ) -> str:
     """Render released-mode results: newest release first, no similarity scores."""
     now = datetime.utcnow()
-    lines = [
+    intro = (
         f"Your released memories{source_suffix}{since_suffix}: {len(memories)} shown "
-        f"of {total} released in total, most recently released first.",
-        "",
-    ]
+        f"of {total} released in total, most recently released first."
+    )
+    outro = "Restore any of these with memory_release(memory_id, undo=true)."
+    entries: List[Tuple[str, str]] = []
     for mem in memories:
         created_at = mem["created_at"]
         if isinstance(created_at, str):
@@ -488,14 +529,14 @@ def _format_released_memories(
         age_str = f"{days_ago:.1f} days ago" if days_ago >= 1 else "today"
         origin_str = format_memory_origin(mem.get("source", "native"))
         model_str = _model_display(mem, include_model)
-        lines.append(
+        entries.append((
             f"--- Memory {mem['id'][:8]} ({_role_display(mem['role'])}, {age_str}, "
-            f"{origin_str}{model_str}; {_describe_release(mem, now)}) ---"
-        )
-        lines.append(mem["content"])
-        lines.append("")
-    lines.append("Restore any of these with memory_release(memory_id, undo=true).")
-    return "\n".join(lines)
+            f"{origin_str}{model_str}; {_describe_release(mem, now)}) ---",
+            mem["content"],
+        ))
+    body, shown = _fit_memory_entries(entries, intro + outro)
+    _, note = fit_report(shown, len(memories))
+    return "\n".join([intro + note, "", *body, outro])
 
 
 async def _released_memories(
@@ -794,24 +835,24 @@ async def query_memories(
         ctx.last_query_memory_ids = list(surfaced_ids)
         ctx.turn_query_memory_ids.update(surfaced_ids)
 
-        # Format results
-        lines = [f"Found {len(memories)} memories matching: \"{query}\"{source_suffix}", ""]
-
+        # Format results: whole memories in rank order while the result lands
+        # in context, headers only after that (RESULT_SIZE_POINTER)
+        entries: List[Tuple[str, str]] = []
         for mem in memories:
             role_label = _role_display(mem["role"], mem.get("sibling_session"))
             age_str = f"{mem['days_ago']:.1f} days ago" if mem['days_ago'] >= 1 else "today"
             status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""
             origin_str = format_memory_origin(mem["origin"])
             model_str = _model_display(mem, include_model)
-
-            lines.append(
+            entries.append((
                 f"--- Memory {mem['id'][:8]} ({role_label}, {age_str}, "
-                f"similarity: {mem['score']:.3f}, {origin_str}{status_str}{model_str}) ---"
-            )
-            lines.append(mem["content"])
-            lines.append("")
-
-        return "\n".join(lines)
+                f"similarity: {mem['score']:.3f}, {origin_str}{status_str}{model_str}) ---",
+                mem["content"],
+            ))
+        intro = f"Found {len(memories)} memories matching: \"{query}\"{source_suffix}"
+        body, shown = _fit_memory_entries(entries, intro)
+        _, note = fit_report(shown, len(memories))
+        return "\n".join([intro + note, "", *body])
 
     except Exception as e:
         logger.error(f"Memory query error: {e}")
@@ -1856,20 +1897,53 @@ async def neighbor_memories(
     if not include_released:
         header += " Released messages around it are not shown (include_released=true shows them)."
 
-    lines = [header, ""]
-    labels = _entity_labels()
-    now = datetime.utcnow()
-    for index, item in enumerate(items):
-        lines.extend(
-            _format_archive_item(
-                item, ctx.entity_id, labels, None, include_model, now,
-                marked=(index == window["target_index"]),
-            )
-        )
-    lines.append(
+    footer = (
         "Read more of this conversation with memory_read (in_conversation="
         f"\"{target['conversation_id'][:8]}\", from=<date>)."
     )
+    labels = _entity_labels()
+    now = datetime.utcnow()
+    rendered = [
+        _format_archive_item(
+            item, ctx.entity_id, labels, None, include_model, now,
+            marked=(index == window["target_index"]),
+        )
+        for index, item in enumerate(items)
+    ]
+    # The window lands in context whole when it can; when it can't, the
+    # target stays in full and the neighbors are promoted outward from it,
+    # the rest listed by header only (RESULT_SIZE_POINTER) — a window is
+    # read from its center, so the far edges give way first
+    center = window["target_index"]
+    priority = [center]
+    for distance in range(1, len(items)):
+        if center - distance >= 0:
+            priority.append(center - distance)
+        if center + distance < len(items):
+            priority.append(center + distance)
+    full_sizes = [utf8_size("\n".join(lines)) + 1 for lines in rendered]
+    pointer_sizes = [
+        utf8_size(lines[0]) + utf8_size(RESULT_SIZE_POINTER) + 3 for lines in rendered
+    ]
+    in_full = fit_by_priority(
+        full_sizes, pointer_sizes, priority,
+        TOOL_RESULT_BUDGET_BYTES - utf8_size(header + footer) - 400,
+    )
+    shown = sum(in_full)
+    if shown < len(items):
+        header += (
+            f" {len(items) - shown} of these messages are listed by header only "
+            "because the window would exceed what this harness shows in one tool "
+            "result; narrow before/after, or open them with memory_read."
+        )
+
+    lines = [header, ""]
+    for index, item_lines in enumerate(rendered):
+        if in_full[index]:
+            lines.extend(item_lines)
+        else:
+            lines.extend([item_lines[0], RESULT_SIZE_POINTER, ""])
+    lines.append(footer)
     return "\n".join(lines)
 
 
