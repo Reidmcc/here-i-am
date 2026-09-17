@@ -99,31 +99,77 @@ The integration has two channels:
    is loop-guarded by `stop_hook_active`. Only `HIM_DISABLE`, the
    deliberate off switch, stays silent.
 
-### Hook output limits (spill-and-point)
+### Context channels (fit, then point)
 
-Claude Code truncates oversized hook stdout to a short preview (~2KB shown,
-observed inline cap ~20KB), **silently** — for an identity payload that is
-an unannounced identity loss: the preview ends on a complete-looking
-paragraph and the session runs as a thin entity that reports feeling fine.
-A lived-in entity's session-start payload (index.md + reflections) runs to
-150KB+, so the design splits it deliberately:
+Everything Here I Am pushes into a Claude Code session goes through one of
+the harness's channels, and each has a measured limit past which the
+harness takes over: it persists the content to a file and leaves a 2 KB
+preview inline, which cuts mid-unit, announces itself only as "Output too
+large", and costs `Read` calls to get back. For an identity payload that
+is an identity loss that barely announces itself; for a retrieval block it
+is most of the pull gone unless the entity goes and reads the file. So
+every producer budgets against its channel, lands whole units up to the
+limit, and points at the rest. The limits live in one module,
+`services/harness_limits.py`, each with its bracket and re-measurement
+recipe, and `tests/test_harness_limits.py` pins the budgets under them.
+Measured 2026-09-16 on this Claude Code build:
 
-- The backend returns **two blocks**: `context`, the small always-inline
-  part (framing, system prompt, memory-tool instructions with the
-  conversation ID, notes paths), and `bulk_context` (notes indexes + recent
-  reflections). Same split for the post-compaction payload.
-- The hook prints both inline when their combined size fits the budget
-  (`HIM_INLINE_BUDGET`, default 18000 bytes — conservatively under the
-  observed cap). Otherwise it writes `bulk_context` to
-  `<tmp>/here-i-am-sessions/<session_id>-session-start.md` (or
-  `...-post-compact.md`) and prints a loud pointer telling the entity to
-  read the file before doing anything else — fail-loud applied to a size
-  failure, at the cost of one tool call at session start.
-- `UserPromptSubmit` does the same for an oversized retrieval block:
-  spill to a timestamped per-retrieval file, print the backend's
-  `context_summary` (one line per memory: short id, date, provenance
-  labels, first-line snippet) plus the pointer, so what surfaced is still
-  visible inline.
+| channel | limit | over it |
+|---|---|---|
+| hook stdout (SessionStart, UserPromptSubmit) | 10,000 **characters** (as written — Windows' `\r\n` counts two) | persisted, 2 KB preview inline |
+| tool result (Bash, MCP) | ~50 KB (51,200 bytes) | persisted, 2 KB preview inline |
+| MCP tool result | ~25k tokens by the harness's counter (2.84 chars/token) | refused outright |
+| the `Read` tool | 25k tokens per page | a partial view with offset paging; nothing persisted, nothing lost |
+
+The hook-stdout line was bracketed from 1,531 real hook outputs (9,997
+characters landed, 10,009 were persisted): the hooks' earlier 18 KB budget
+had been set against a tool-result observation, so a retrieval block in
+the 10–18 KB band was printed whole and persisted by the harness — 150 of
+825 blocks. The `Read` tool is the one channel that never persists, which
+is why every pointer names it: a shell `cat` of a spill file is itself a
+tool result and goes to disk over 50 KB.
+
+- **The budget** is `HIM_INLINE_BUDGET` if set, else the backend's
+  `inline_budget` (sent in every session-start and retrieve response, so
+  hooks and backend can't disagree), else the hooks' own default — all
+  9,600 characters, 4% under the line. The hooks measure their **whole**
+  stdout against it, the block and the lines after it.
+- **Session start and post-compaction.** The backend returns `context`,
+  the small always-inline part (framing, system prompt, memory-tool
+  instructions with the conversation ID, notes paths), and the bulk
+  (notes indexes + recent reflections) as named `bulk_parts` (joined as
+  `bulk_context` for older hooks). Everything prints inline when it fits;
+  otherwise each part goes to its own file —
+  `<tmp>/here-i-am-sessions/<session_id>-session-start-notes-index.md`,
+  `...-reflections.md` (or `...-post-compact-...`) — sized to land in one
+  `Read` each, and the pointer lists the files with their sizes and names
+  the `Read` tool. If even the identity block is over the line (a long
+  system prompt), it is filed too and the pointer prints *first*, so the
+  harness's preview carries the pointer rather than two kilobytes of
+  identity.
+- **Retrieval.** The backend returns the block's header and one entry per
+  memory in rank order (`context_items`: the rendered marker and a
+  one-line summary — short id, date, provenance labels, first-line
+  snippet). When the block is over, the hook prints memories **whole in
+  rank order while they fit** and the rest as summary lines, then a
+  pointer to the file holding the full block; nothing is ever cut
+  mid-memory. Most turns land everything (the median block is 5 KB); a
+  large pull lands its top memories verbatim with the rest named. An older
+  backend without `context_items` gets the whole `context_summary` in
+  place of the block, as before.
+- **The list-shaped MCP tools** (`memory_query` in every mode,
+  `memory_neighbors`) fit the same way to the tool-result line: whole
+  memories while the result lands, headers only after that (a
+  `[listed by header only …]` line in place of the content, the id still
+  usable with `memory_neighbors` / `memory_read`); `memory_neighbors`
+  promotes from its target outward, so the far edges of a window give way
+  first. Over MCP only — the budget sits on the tool context
+  (`MemoryToolContext.result_budget_bytes`) and the MCP endpoint is the
+  one place that sets it; a native tool result has no such line. Only what
+  is shown in full counts as retrieved (tracking, stamp, link), so a
+  header-only memory stays openable through the readers instead of
+  rendering as an in-context pointer there. `memory_read` / `memory_find`
+  page by the same budget already (issue #353, below).
 
 2. **MCP tools** (deliberate acts): the entity's `memory_query` /
    `memory_save` / `memory_mark` / `memory_release`, the archive readers
@@ -780,8 +826,10 @@ files the native notes tools use:
 Hook-side environment (set in `.claude/settings.json` `env`, which the
 desktop app reads even when launched from the Dock): `HIM_BACKEND_URL`
 (default `http://localhost:8000`), `HIM_ENTITY` (index name or label;
-default entity if unset), `HIM_DISABLE`, `HIM_INLINE_BUDGET` (max bytes of
-hook stdout before bulk content is spilled to a file; default 18000).
+default entity if unset), `HIM_DISABLE`, `HIM_INLINE_BUDGET` (max
+characters of hook stdout, overriding the backend's `inline_budget`; the
+default is 9,600, under the measured 10,000-character line — see "Context
+channels").
 
 ### Endpoints
 

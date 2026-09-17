@@ -37,6 +37,7 @@ from app.config import settings
 from app.database import async_session_maker
 from app.models import Conversation, ConversationSource
 from app.services import memory_tools
+from app.services.harness_limits import TOOL_RESULT_BUDGET_BYTES
 from app.services.memory_service import memory_service
 from app.services.memory_tools import MemoryToolContext
 from app.services.rooms_registry import RegistryWriteError, rooms_registry
@@ -289,6 +290,10 @@ async def build_tool_context(
         # are safe here and make automatic retrieval skip query results
         link_query_results=True,
         exclude_conversation_after=last_compacted_at,
+        # A tool result over Claude Code's persist line goes to a file
+        # behind a 2 KB preview, so the list-shaped tools fit to it here —
+        # and only here; a native tool result has no such line
+        result_budget_bytes=TOOL_RESULT_BUDGET_BYTES,
     ), None
 
 

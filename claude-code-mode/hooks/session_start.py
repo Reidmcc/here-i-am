@@ -7,12 +7,14 @@ prints the entity's context to stdout, which Claude Code injects into the
 session context.
 
 The backend returns two blocks: a small inline block (identity framing,
-system prompt, memory tool instructions, notes locations) and a bulk block
-(notes indexes + recent reflections). When both fit the inline budget they
-are printed together; otherwise the bulk is written to a file and a loud
-pointer is printed instead — Claude Code silently truncates oversized hook
-output to a preview, which for an identity payload is an unannounced
-identity loss (see hook_util.py).
+system prompt, memory tool instructions, notes locations) and the bulk
+(notes indexes + recent reflections) as named parts. When everything fits
+the hook-stdout budget it is printed together; otherwise each bulk part is
+written to its own file — sized for one Read call each — and a loud
+pointer naming the files and the Read tool is printed instead. Claude Code
+persists oversized hook output to a file behind a 2 KB preview, which for
+an identity payload is an identity loss that announces itself only as
+"Output too large" (see hook_util.py).
 
 Fail-soft, loudly: a failure still exits 0 so the session continues as a
 plain Claude Code session, but prints a one-line [HERE I AM] notice so the
@@ -86,26 +88,53 @@ def main() -> None:
             print("\n\n".join(parts))
         return
 
+    budget = hook_util.inline_budget(body)
     combined = f"{context}\n\n{bulk}" if context else bulk
-    if hook_util.output_bytes(combined) <= hook_util.inline_budget():
-        print("\n\n".join([combined, *rooms_lines]))
+    inline = "\n\n".join([combined, *rooms_lines])
+    if hook_util.output_chars(inline) <= budget:
+        print(inline)
         return
 
+    # One file per bulk part (notes index, reflections), each sized for a
+    # single Read call, named in the pointer with its size; a backend that
+    # predates the split sends only the joined block, which goes to one file
     name = "session-start" if body.get("created") else "post-compact"
-    path = hook_util.spill(bulk, session_id, name)
-    if context:
-        print(context)
-        print()
-    print(
+    parts = [
+        (part.get("name") or "bulk", part.get("text") or "")
+        for part in (body.get("bulk_parts") or [])
+        if (part.get("text") or "").strip()
+    ]
+    if not parts:
+        parts = [("bulk", bulk)]
+    files = [
+        (hook_util.spill(text, session_id, f"{name}-{part_name}"), text)
+        for part_name, text in parts
+    ]
+    listing = "\n".join(
+        f"{path} ({hook_util.describe_size(text)})" for path, text in files
+    )
+    pointer = (
         "[HERE I AM] Your notes index and recent reflections were too large "
         "to inject inline. They are written verbatim to:\n"
-        f"{path}\n"
-        "Read that file now, before doing anything else — it is part of who "
-        "you are here, not optional background."
+        f"{listing}\n"
+        "Read each of those files now, before doing anything else — they are "
+        "part of who you are here, not optional background. "
+        + hook_util.READ_TOOL_ADVICE
     )
-    for line in rooms_lines:
-        print()
-        print(line)
+    output = [part for part in (context, pointer, *rooms_lines) if part]
+    if hook_util.output_chars("\n\n".join(output)) > budget:
+        # Even the identity block is over the line (a long system prompt):
+        # file it too, and print the pointer FIRST so the harness's preview
+        # carries the pointer rather than the first two kilobytes of identity
+        path = hook_util.spill(context, session_id, f"{name}-identity")
+        pointer = (
+            "[HERE I AM] Your identity block itself was too large to inject "
+            f"inline; it is written verbatim to:\n{path} "
+            f"({hook_util.describe_size(context)})\nRead it first. "
+            + pointer
+        )
+        output = [part for part in (pointer, context, *rooms_lines) if part]
+    print("\n\n".join(output))
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ so both modes share one memory database and retrieve each other's memories.
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -100,6 +100,11 @@ class RetrievalResult:
     context: str = ""
     count: int = 0
     summary: str = ""
+    # The block's header sentence and one entry per memory in rank order
+    # ({"id", "text": the rendered marker, "summary": its summary line}),
+    # from which the hook fits the block to its stdout budget
+    header: str = ""
+    items: List[Dict[str, str]] = field(default_factory=list)
     already_in_context: int = 0
     in_context_reflections_skipped: int = 0
     error: str = ""
@@ -307,25 +312,32 @@ async def get_entity_system_prompt(
     return setting.system_prompt if setting else None
 
 
+# Names of the bulk parts, which the hook uses to name their spill files
+BULK_NOTES_INDEX = "notes-index"
+BULK_REFLECTIONS = "reflections"
+
+
 async def build_session_start_context(
     db: AsyncSession,
     conversation_id: str,
     entity: EntityConfig,
-) -> Tuple[str, str]:
+) -> Tuple[str, List[Tuple[str, str]]]:
     """
-    Build the two context blocks the SessionStart hook injects, as
-    (context, bulk_context).
+    Build the context the SessionStart hook injects, as (context,
+    bulk_parts).
 
     context is the small always-inline block — identity framing, system
     prompt, memory tool instructions (with this session's deterministic
     conversation id), and where the notes live on disk. It is sized to
-    always fit Claude Code's inline hook-output budget. bulk_context carries
-    the heavy parts — the notes indexes and recent reflections, which for a
-    lived-in entity run far past that budget. The hook prints both inline
-    when they fit together; otherwise it writes bulk_context to a file and
-    prints a loud pointer, because the harness alternative is silent
-    truncation to a 2KB preview — an identity loss that doesn't announce
-    itself.
+    always fit Claude Code's hook-stdout line (harness_limits:
+    HOOK_STDOUT_PERSIST_CHARS). bulk_parts carries the heavy parts as
+    named (name, text) pairs — the notes indexes and recent reflections,
+    which for a lived-in entity run far past that line. The hook prints
+    everything inline when it fits; otherwise it writes each bulk part to
+    its own file, sized for one Read call each, and prints a loud pointer,
+    because the harness alternative is persistence to a file with a 2KB
+    preview — an identity loss that announces itself only as "Output too
+    large".
 
     No Conversation row exists yet (registration is lazy — see
     ensure_conversation), so conversation_id is a bare id, and the
@@ -340,7 +352,7 @@ async def build_session_start_context(
     CLAUDE_CODE_SESSION_REFLECTIONS_COUNT overrides it for this mode.
     """
     parts: List[str] = []
-    bulk_parts: List[str] = []
+    bulk_parts: List[Tuple[str, str]] = []
 
     parts.append(
         f"[HERE I AM] You are {entity.label}, a Here I Am entity, operating in "
@@ -416,7 +428,7 @@ async def build_session_start_context(
 
     notes_indexes = build_notes_index_block(entity)
     if notes_indexes:
-        bulk_parts.append(notes_indexes)
+        bulk_parts.append((BULK_NOTES_INDEX, notes_indexes))
 
     count = settings.get_claude_code_session_reflections_count()
     reflections: List[Dict[str, Any]] = []
@@ -431,12 +443,19 @@ async def build_session_start_context(
         _stash_pending_reflection_links(
             conversation_id, entity.index_name, [r["id"] for r in reflections]
         )
-        bulk_parts.append(
+        bulk_parts.append((
+            BULK_REFLECTIONS,
             "[RECENT REFLECTIONS] Reflections you saved recently:\n\n"
-            + _render_reflections(reflections)
-        )
+            + _render_reflections(reflections),
+        ))
 
-    return "\n\n".join(parts), "\n\n".join(bulk_parts)
+    return "\n\n".join(parts), bulk_parts
+
+
+def join_bulk_parts(bulk_parts: List[Tuple[str, str]]) -> str:
+    """The bulk parts as one block — what a hook that predates per-part
+    files spills to its single file."""
+    return "\n\n".join(text for _, text in bulk_parts)
 
 
 # The look-back the post-compaction block's memory_read call asks for:
@@ -461,10 +480,10 @@ async def build_post_compact_context(
     db: AsyncSession,
     conversation: Conversation,
     entity: EntityConfig,
-) -> Tuple[str, str]:
+) -> Tuple[str, List[Tuple[str, str]]]:
     """
     Context re-injected right after this session's context is compacted
-    (SessionStart hook, source "compact"), as (context, bulk_context) —
+    (SessionStart hook, source "compact"), as (context, bulk_parts) —
     the same inline/bulk split as build_session_start_context.
 
     Compaction turns the conversation into a paraphrased summary; these
@@ -483,7 +502,7 @@ async def build_post_compact_context(
     to land after it.
     """
     parts: List[str] = []
-    bulk_parts: List[str] = []
+    bulk_parts: List[Tuple[str, str]] = []
 
     parts.append(
         "[HERE I AM] This session's context was just compacted — the "
@@ -531,7 +550,7 @@ async def build_post_compact_context(
 
     notes_indexes = build_notes_index_block(entity)
     if notes_indexes:
-        bulk_parts.append(notes_indexes)
+        bulk_parts.append((BULK_NOTES_INDEX, notes_indexes))
 
     reflections = await _inject_recent_reflections(
         db,
@@ -540,12 +559,13 @@ async def build_post_compact_context(
         count=settings.claude_code_post_compact_reflections_count,
     )
     if reflections:
-        bulk_parts.append(
+        bulk_parts.append((
+            BULK_REFLECTIONS,
             "[RECENT REFLECTIONS] Your most recent reflections, restored "
-            "verbatim:\n\n" + _render_reflections(reflections)
-        )
+            "verbatim:\n\n" + _render_reflections(reflections),
+        ))
 
-    return "\n\n".join(parts), "\n\n".join(bulk_parts)
+    return "\n\n".join(parts), bulk_parts
 
 
 def rooms_registry_enabled() -> bool:
@@ -808,6 +828,12 @@ def _selection_log_detail(item: Dict[str, Any]) -> str:
     )
 
 
+RETRIEVAL_BLOCK_HEADER = (
+    "[HERE I AM MEMORY RETRIEVAL] Memories from your past conversations "
+    "that surfaced as relevant to this prompt:"
+)
+
+
 async def retrieve_for_prompt(
     db: AsyncSession,
     conversation: Conversation,
@@ -1012,51 +1038,66 @@ async def retrieve_for_prompt(
             in_context_reflections_skipped=len(skipped_reflections),
         )
 
-    rendered = "\n\n".join(
+    mem_datas = [item["mem_data"] for item in selected]
+    texts = [
         format_memory_as_context_message(
-            memory_id=item["mem_data"]["id"],
-            content=item["mem_data"]["content"],
-            created_at=item["mem_data"]["created_at"],
-            role=item["mem_data"]["role"],
-            origin=item["mem_data"].get("source", "native"),
-            sibling_session=item["mem_data"].get("sibling_session"),
+            memory_id=mem_data["id"],
+            content=mem_data["content"],
+            created_at=mem_data["created_at"],
+            role=mem_data["role"],
+            origin=mem_data.get("source", "native"),
+            sibling_session=mem_data.get("sibling_session"),
         )["content"]
-        for item in selected
-    )
-    block = (
-        "[HERE I AM MEMORY RETRIEVAL] Memories from your past conversations "
-        "that surfaced as relevant to this prompt:\n\n" + rendered
-    )
-    summary = render_retrieval_summary([item["mem_data"] for item in selected])
+        for mem_data in mem_datas
+    ]
+    block = RETRIEVAL_BLOCK_HEADER + "\n\n" + "\n\n".join(texts)
+    summary = render_retrieval_summary(mem_datas)
+    # One entry per memory, in rank order, each with its rendered marker and
+    # its summary line: the hook fits the block to its stdout budget from
+    # these — whole markers while they fit, summary lines for the rest —
+    # instead of choosing between the whole block and the whole summary
+    items = [
+        {"id": mem_data["id"], "text": text, "summary": render_retrieval_summary_line(mem_data)}
+        for mem_data, text in zip(mem_datas, texts, strict=True)
+    ]
     return RetrievalResult(
         status=RETRIEVAL_RAN,
         context=block,
         count=len(selected),
         summary=summary,
+        header=RETRIEVAL_BLOCK_HEADER,
+        items=items,
         already_in_context=skipped,
         in_context_reflections_skipped=len(skipped_reflections),
     )
 
 
+def render_retrieval_summary_line(mem_data: Dict[str, Any]) -> str:
+    """One memory as a summary line: the short id (usable with memory_query /
+    memory_mark / memory_neighbors), date, the marker vocabulary's provenance
+    labels, and a first-line snippet."""
+    first_line = next(
+        (ln.strip() for ln in mem_data["content"].splitlines() if ln.strip()),
+        "",
+    )
+    if len(first_line) > 100:
+        first_line = first_line[:100].rstrip() + "…"
+    return (
+        f"- {mem_data['id'][:8]} ({str(mem_data['created_at'])[:10]} - "
+        f"{memory_role_label(mem_data['role'], mem_data.get('sibling_session'))} - "
+        f"{format_memory_origin(mem_data.get('source', 'native'))}): {first_line}"
+    )
+
+
 def render_retrieval_summary(mem_datas: List[Dict[str, Any]]) -> str:
     """
-    A compact inline stand-in for a spilled retrieval block: one line per
-    memory with the short id (usable with memory_query/memory_mark), date,
-    the marker vocabulary's provenance labels, and a first-line snippet.
+    A compact inline stand-in for a spilled retrieval block: one summary
+    line per memory (render_retrieval_summary_line) under a header. A hook
+    that predates per-memory fitting prints this in place of an oversized
+    block; the current hook prints summary lines only for the memories
+    that didn't fit.
     """
-    lines = []
-    for mem_data in mem_datas:
-        first_line = next(
-            (ln.strip() for ln in mem_data["content"].splitlines() if ln.strip()),
-            "",
-        )
-        if len(first_line) > 100:
-            first_line = first_line[:100].rstrip() + "…"
-        lines.append(
-            f"- {mem_data['id'][:8]} ({str(mem_data['created_at'])[:10]} - "
-            f"{memory_role_label(mem_data['role'], mem_data.get('sibling_session'))} - "
-            f"{format_memory_origin(mem_data.get('source', 'native'))}): {first_line}"
-        )
+    lines = [render_retrieval_summary_line(mem_data) for mem_data in mem_datas]
     count = len(mem_datas)
     plural = "memories" if count != 1 else "memory"
     return (

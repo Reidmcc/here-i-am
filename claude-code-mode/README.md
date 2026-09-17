@@ -32,13 +32,18 @@ database (by the row ids it chose) before saying whether the words were
 recorded — "recorded, retrieval didn't complete", "not recorded", partly,
 or, if even the check failed, "unconfirmed".
 
-Claude Code silently truncates oversized hook stdout to a ~2KB preview, so
-the hooks never hand it more than `HIM_INLINE_BUDGET` (default 18KB): the
-session-start bulk (notes indexes + reflections — 150KB+ for a lived-in
-entity) and any oversized retrieval block are written to
-`<tmp>/here-i-am-sessions/` instead, with a loud pointer injected telling
-the entity to read the file before doing anything else. Small payloads
-stay fully inline.
+Claude Code persists hook stdout over 10,000 characters to a file behind a
+~2KB preview (measured 2026-09-16; the limits of every channel are in the
+backend's `services/harness_limits.py`), so the hooks fit their whole
+output to a budget under that line — the backend's `inline_budget`, or
+`HIM_INLINE_BUDGET` — and point at the rest: the session-start bulk (notes
+index and reflections, 80KB+ for a lived-in entity) goes to one file per
+part in `<tmp>/here-i-am-sessions/`, each sized for one `Read` call, with a
+loud pointer naming the files; an oversized retrieval block lands its
+memories whole in rank order while they fit and lists the rest by summary
+line, with the full block in a file. Small payloads stay fully inline;
+nothing is ever cut mid-memory. Spill files are read with the `Read` tool
+(a shell `cat` over 50KB is persisted the same way).
 
 An MCP server (`.mcp.json`, pointing at `http://localhost:8000/mcp`) gives
 the entity its deliberate memory tools in the session: `memory_query`,
@@ -310,7 +315,7 @@ documentation out of that directory.
 | `HIM_BACKEND_URL` | `http://localhost:8000` | Here I Am backend base URL |
 | `HIM_ENTITY` | backend's default entity | Entity index name or label |
 | `HIM_DISABLE` | unset | Set to anything to turn the hooks off (silently — this is the deliberate off switch) |
-| `HIM_INLINE_BUDGET` | `18000` | Max bytes of hook stdout before bulk content is spilled to a file with an inline pointer (Claude Code truncates oversized hook output silently; the default sits under the observed ~20KB cap) |
+| `HIM_INLINE_BUDGET` | backend's `inline_budget` (`9600`) | Max characters of hook stdout; past it the hooks fit what they can and spill the rest to files with an inline pointer. Overrides the number the backend sends. Claude Code persists hook output over 10,000 characters (measured 2026-09-16) behind a 2KB preview |
 | `CLAUDE_CONFIG_DIR` | unset (`~/.claude`) | Claude Code's own config-dir override, honored when the hooks look for the live sessions registry (`<config dir>/sessions/`) that feeds the rooms registry |
 | `HIM_DESKTOP_DATA_DIR` | unset (platform default: `%APPDATA%\Claude`, `~/Library/Application Support/Claude`, `~/.config/Claude`) | Where the hooks look for the Claude desktop app's per-session records (`claude-code-sessions/`), which carry each session's messaging address for the rooms registry |
 

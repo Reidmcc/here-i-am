@@ -35,6 +35,7 @@ from app.database import get_db
 from app.models import Message, MessageRole
 from app.services import claude_code_mcp
 from app.services import claude_code_mode as cc
+from app.services.harness_limits import HOOK_INLINE_BUDGET_CHARS
 from app.services.memory_service import memory_service
 from app.services.notes_vector_service import notes_vector_service
 
@@ -83,6 +84,22 @@ class SessionStartRequest(BaseModel):
     sessions: List[SessionObservationIn] = []
 
 
+class BulkPart(BaseModel):
+    """One named part of the session-start bulk (notes-index, reflections),
+    which the hook spills to its own file when the whole doesn't fit."""
+    name: str
+    text: str
+
+
+class ContextItem(BaseModel):
+    """One retrieved memory as the hook fits it: the rendered [MEMORY]
+    marker and the one-line summary that stands in for it when it
+    doesn't fit."""
+    id: str
+    text: str
+    summary: str
+
+
 class SessionStartResponse(BaseModel):
     # The session's conversation id — deterministic, and handed out before
     # the row exists (lazy registration; see services/claude_code_mode.py)
@@ -94,11 +111,18 @@ class SessionStartResponse(BaseModel):
     created: bool
     context: str
     # Notes indexes + recent reflections. Separate from `context` because the
-    # hook must keep its stdout under Claude Code's inline budget (oversized
-    # hook output is silently truncated to a preview): when the combined
-    # blocks don't fit, the hook writes this to a file and prints a loud
-    # pointer instead.
+    # hook must keep its stdout under Claude Code's hook-stdout line
+    # (harness_limits: oversized hook output is persisted to a file with a
+    # 2 KB preview): when the combined blocks don't fit, the hook writes the
+    # bulk to files and prints a loud pointer instead. bulk_parts is the
+    # same content as named parts, one file each (notes-index, reflections),
+    # so each lands in one Read call; bulk_context is the parts joined, for
+    # a hook that predates the split.
     bulk_context: str = ""
+    bulk_parts: List[BulkPart] = []
+    # The hook's stdout budget in characters (harness_limits), so hooks and
+    # backend can't disagree about the line; HIM_INLINE_BUDGET overrides it
+    inline_budget: int = HOOK_INLINE_BUDGET_CHARS
     # Rooms registry (issue #323): a one-line notice about this session's
     # registry row, and — never silent — a write failure carrying the row
     # the entity can write by hand
@@ -151,9 +175,16 @@ class RetrieveResponse(BaseModel):
     human_message_id: Optional[str]
     context: str
     memories_retrieved: int
-    # One line per retrieved memory; the hook prints it in place of an
-    # oversized `context` it had to spill to a file
+    # One line per retrieved memory; a hook that predates per-memory fitting
+    # prints it in place of an oversized `context` it had to spill to a file
     context_summary: str = ""
+    # The block's header sentence and one entry per memory in rank order
+    # (rendered marker + summary line): the hook renders whole markers while
+    # they fit its stdout budget and summary lines for the rest, pointing at
+    # the spilled full block (fit, then point)
+    context_header: str = ""
+    context_items: List[ContextItem] = []
+    inline_budget: int = HOOK_INLINE_BUDGET_CHARS
     # Reflections the entity saved in other sessions since this conversation
     # began, not yet surfaced here. The hook prints a one-line mailbox flag
     # when nonzero; the entity pulls the content with memory_query
@@ -266,11 +297,11 @@ async def session_start(
         )
 
     context = ""
-    bulk_context = ""
+    bulk_parts = []
     fresh = conversation is None
     if fresh:
         conversation_id = cc.conversation_id_for_session(data.session_id)
-        context, bulk_context = await cc.build_session_start_context(
+        context, bulk_parts = await cc.build_session_start_context(
             db, conversation_id, entity
         )
     else:
@@ -280,7 +311,7 @@ async def session_start(
             # by the post-compact injection must land after it (see
             # mark_conversation_compacted)
             await cc.mark_conversation_compacted(db, conversation)
-            context, bulk_context = await cc.build_post_compact_context(
+            context, bulk_parts = await cc.build_post_compact_context(
                 db, conversation, entity
             )
 
@@ -306,7 +337,8 @@ async def session_start(
         entity_label=entity.label,
         created=fresh,
         context=context,
-        bulk_context=bulk_context,
+        bulk_context=cc.join_bulk_parts(bulk_parts),
+        bulk_parts=[BulkPart(name=name, text=text) for name, text in bulk_parts],
         rooms_notice=rooms_notice,
         rooms_error=rooms_error,
     )
@@ -458,6 +490,8 @@ async def retrieve(
         context=retrieval.context,
         memories_retrieved=retrieval.count,
         context_summary=retrieval.summary,
+        context_header=retrieval.header,
+        context_items=[ContextItem(**item) for item in retrieval.items],
         new_sibling_reflections=sibling_reflections,
         peer_message_ids=peer_message_ids,
         retrieval_status=retrieval.status,
