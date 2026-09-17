@@ -97,6 +97,18 @@ class TestFitByPriority:
     def test_all_fit(self):
         assert hl.fit_by_priority([1, 1, 1], [1, 1, 1], [1, 0, 2], 10) == [True, True, True]
 
+    def test_an_item_no_larger_than_its_pointer_is_always_in_full(self):
+        # A row the reader already lists as in context (a short pointer
+        # line) or a one-line message costs nothing to show in full, so it
+        # is shown even past the point where promotion stopped — the
+        # reviewer's nit on the neighbors window
+        full = [10, 10, 10, 3, 10]
+        pointer = [5, 5, 5, 5, 5]
+        flags = hl.fit_by_priority(full, pointer, [2, 1, 3, 0, 4], 26)
+        # center (10) + 4 pointers (20) = 30 > 26 — nothing promoted, but
+        # index 3 is cheaper in full than as a pointer
+        assert flags == [False, False, False, True, False]
+
 
 class TestFitReport:
     def test_silent_when_everything_was_shown(self):

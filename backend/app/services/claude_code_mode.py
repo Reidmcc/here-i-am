@@ -312,6 +312,11 @@ async def get_entity_system_prompt(
     return setting.system_prompt if setting else None
 
 
+# Names of the bulk parts, which the hook uses to name their spill files
+BULK_NOTES_INDEX = "notes-index"
+BULK_REFLECTIONS = "reflections"
+
+
 async def build_session_start_context(
     db: AsyncSession,
     conversation_id: str,
@@ -445,11 +450,6 @@ async def build_session_start_context(
         ))
 
     return "\n\n".join(parts), bulk_parts
-
-
-# Names of the bulk parts, which the hook uses to name their spill files
-BULK_NOTES_INDEX = "notes-index"
-BULK_REFLECTIONS = "reflections"
 
 
 def join_bulk_parts(bulk_parts: List[Tuple[str, str]]) -> str:
@@ -828,6 +828,12 @@ def _selection_log_detail(item: Dict[str, Any]) -> str:
     )
 
 
+RETRIEVAL_BLOCK_HEADER = (
+    "[HERE I AM MEMORY RETRIEVAL] Memories from your past conversations "
+    "that surfaced as relevant to this prompt:"
+)
+
+
 async def retrieve_for_prompt(
     db: AsyncSession,
     conversation: Conversation,
@@ -1064,12 +1070,6 @@ async def retrieve_for_prompt(
         already_in_context=skipped,
         in_context_reflections_skipped=len(skipped_reflections),
     )
-
-
-RETRIEVAL_BLOCK_HEADER = (
-    "[HERE I AM MEMORY RETRIEVAL] Memories from your past conversations "
-    "that surfaced as relevant to this prompt:"
-)
 
 
 def render_retrieval_summary_line(mem_data: Dict[str, Any]) -> str:

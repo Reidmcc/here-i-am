@@ -67,7 +67,11 @@ TOOL_RESULT_BUDGET_BYTES = int(HARNESS_PERSIST_BYTES * 0.875)
 READ_TOOL_CAP_TOKENS = 25_000
 # A spill file this size or smaller lands in one Read call (at the
 # counter's ratio, with a margin for prose that tokenizes heavier); larger
-# files still arrive whole, in partial views the entity pages through.
+# files still arrive whole, in partial views the entity pages through. A
+# documented sizing target, not an enforced one: nothing splits a bulk
+# part against it — the session-start pointer states each file's size, and
+# a part over it (a notes index that has grown past ~60 KB) costs a second
+# Read page rather than anything lost.
 READ_TOOL_ONE_CALL_BYTES = int(READ_TOOL_CAP_TOKENS * HARNESS_CHARS_PER_TOKEN * 0.85)
 
 
@@ -117,6 +121,13 @@ def fit_by_priority(
     flags = [False] * len(full_sizes)
     for i in priority[:kept]:
         flags[i] = True
+    # An item whose full rendering is no larger than its pointer (a row the
+    # reader already lists as in context, a one-line message) costs nothing
+    # to show in full, so it always is — a pointer would send the entity to
+    # open something smaller than the pointer
+    for i, (full, pointer) in enumerate(zip(full_sizes, pointer_sizes, strict=True)):
+        if full <= pointer:
+            flags[i] = True
     return flags
 
 

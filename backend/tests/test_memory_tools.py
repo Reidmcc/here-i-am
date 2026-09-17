@@ -934,10 +934,10 @@ class TestMemoryQueryIncludeModel:
             {"id": "ref-2", "content": "An older one.", "created_at": now,
              "source": "native", "model": None},
         ]
-        quiet = _format_recent_reflections(memories, "")
+        quiet, _ = _format_recent_reflections(memories, "")
         assert "model:" not in quiet
 
-        loud = _format_recent_reflections(memories, "", include_model=True)
+        loud, _ = _format_recent_reflections(memories, "", include_model=True)
         assert "model: claude-fable-5-1) ---" in loud
         assert "model: unrecorded) ---" in loud
 
@@ -953,10 +953,10 @@ class TestMemoryQueryIncludeModel:
              "source": "native", "memory_status": "released", "status_set_by": None,
              "status_set_at": None, "model": None},
         ]
-        quiet = _format_released_memories(memories, 2, "", "")
+        quiet, _ = _format_released_memories(memories, 2, "", "")
         assert "model:" not in quiet
 
-        loud = _format_released_memories(memories, 2, "", "", include_model=True)
+        loud, _ = _format_released_memories(memories, 2, "", "", include_model=True)
         assert "model: claude-fable-5-1;" in loud
         assert "model: unrecorded;" in loud
 

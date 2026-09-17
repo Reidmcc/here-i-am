@@ -175,6 +175,57 @@ def test_the_whole_stdout_is_measured_not_just_the_block(tmp_path):
     assert "listed by summary line" in out
 
 
+def test_sweep_never_writes_past_the_budget(tmp_path):
+    """The reviewer's sweep: six-memory blocks over a fine ladder of item
+    sizes, the whole stdout measured as written. The fit's reserves are
+    exact (the pointer is built before the fit), so no size lands over the
+    budget — pinned where it bites, at every granularity, not at one."""
+    script = tmp_path / "sweep.py"
+    script.write_text(
+        "import io, json, os, sys\n"
+        f"sys.path.insert(0, {str(HOOKS_DIR)!r})\n"
+        "import hook_util\n"
+        "import user_prompt_submit\n"
+        f"HEADER = {HEADER!r}\n"
+        "def items(size):\n"
+        "    out = []\n"
+        "    for i in range(6):\n"
+        "        body = f'MEMORY-{i}-' + 'm' * (size - 40)\n"
+        "        out.append({'id': f'{i:08d}-aaaa', 'text': f'[MEMORY {i:08d} from 2026-09-01 - originally from you - via Claude Code]\\n{body}\\n[/MEMORY]', 'summary': f'- {i:08d} (2026-09-01 - originally from you - via Claude Code): MEMORY-{i} snippet'})\n"
+        "    return out\n"
+        "worst = (0, 0)\n"
+        "for size in range(600, 3400, 37):\n"
+        "    its = items(size)\n"
+        "    body = {'context': HEADER + '\\n\\n' + '\\n\\n'.join(i['text'] for i in its), 'context_header': HEADER, 'context_items': its, 'retrieval_status': 'ran', 'new_sibling_reflections': 3, 'already_in_context': 2, 'in_context_reflections_skipped': 1}\n"
+        "    hook_util.post_backend = lambda path, payload, timeout=30, body=body: body\n"
+        "    sys.stdin = io.StringIO(json.dumps({'session_id': 'sweep', 'prompt': 'hello'}))\n"
+        "    buf = io.StringIO()\n"
+        "    real = sys.stdout\n"
+        "    sys.stdout = buf\n"
+        "    try:\n"
+        "        user_prompt_submit.main()\n"
+        "    finally:\n"
+        "        sys.stdout = real\n"
+        "    written = hook_util.output_chars(buf.getvalue())\n"
+        "    if written > worst[0]:\n"
+        "        worst = (written, size)\n"
+        "print(json.dumps({'worst': worst[0], 'at': worst[1], 'budget': hook_util.inline_budget()}))\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, **tmp_env(tmp_path)}
+    env.pop("HIM_DISABLE", None)
+    env.pop("HIM_INLINE_BUDGET", None)
+    result = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, cwd=HOOKS_DIR, env=env, timeout=120
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    report = json.loads(result.stdout.decode("utf-8").strip().splitlines()[-1])
+    assert report["budget"] == DEFAULT_BUDGET
+    assert report["worst"] <= DEFAULT_BUDGET, report
+    # And the fit is using the channel, not hiding under it
+    assert report["worst"] >= DEFAULT_BUDGET * 0.8, report
+
+
 def test_nothing_fits_in_full_lists_everything_by_summary(tmp_path):
     items = memory_items(3, 5000)
     out = run_prompt_hook(retrieval_body(items), tmp_path, extra_env={"HIM_INLINE_BUDGET": "1200"})

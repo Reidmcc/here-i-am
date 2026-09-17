@@ -203,6 +203,13 @@ class MemoryToolContext:
     link_query_results: bool = False
     exclude_conversation_after: Optional[datetime] = None
     model: Optional[str] = None
+    # The byte budget a list-shaped result (memory_query in every mode,
+    # memory_neighbors) is fitted to, whole memories first and headers only
+    # past it. Set by the Claude Code MCP endpoint to the harness's
+    # tool-result line (harness_limits.TOOL_RESULT_BUDGET_BYTES); None in
+    # native conversations, where a tool result goes straight into the
+    # context and no such line exists.
+    result_budget_bytes: Optional[int] = None
 
 
 # Current context for the native tool loop (set by the session manager before
@@ -368,12 +375,16 @@ def _model_display(mem: Dict[str, Any], include_model: bool) -> str:
     return f", model: {model}" if model else ", model: unrecorded"
 
 
-# What a memory renders as when the whole result would not land in context:
-# its header line stays (the id, attribution, and score are the useful
-# part), the content gives way to this one line. A memory is shown whole or
-# pointed at, never cut — the rule the archive readers follow (issue #353),
-# applied to the list-shaped tools. Rare in practice (ten long messages),
-# but a result that goes to disk costs Read calls and cuts mid-memory.
+# What a memory renders as when the whole result would not land in context
+# (Claude Code over MCP; the native app has no such line): its header line
+# stays (the id, attribution, and score are the useful part), the content
+# gives way to this one line. A memory is shown whole or pointed at, never
+# cut — the rule the archive readers follow (issue #353), applied to the
+# list-shaped tools. Rare in practice (ten long messages), but a result
+# that goes to disk costs Read calls and cuts mid-memory. Only a memory
+# shown in full counts as retrieved — tracked, stamped, linked: a header-
+# only one is exactly the one the entity is told to go and open, and if it
+# joined the in-view set the readers would render it as a pointer.
 RESULT_SIZE_POINTER = (
     "[listed by header only: the full result would exceed what this harness "
     "shows in one tool result; open it with memory_neighbors or memory_read]"
@@ -381,31 +392,42 @@ RESULT_SIZE_POINTER = (
 
 
 def _fit_memory_entries(
-    entries: List[Tuple[str, str]], frame: str
-) -> Tuple[List[str], int]:
+    entries: List[Tuple[str, str]], frame: str, budget: Optional[int]
+) -> Tuple[List[str], List[bool]]:
     """
     Render (header, content) entries in order, each in full while the whole
-    result stays within TOOL_RESULT_BUDGET_BYTES and as a header plus
-    RESULT_SIZE_POINTER after that, as output lines plus the count shown in
-    full. `frame` is the text around the entries (intro and outro lines),
-    charged against the budget with a reserve for the fit note.
+    result stays within `budget` bytes and as a header plus
+    RESULT_SIZE_POINTER after that, as output lines plus a flag per entry
+    (True = shown in full). `frame` is the text around the entries (intro
+    and outro lines), charged against the budget with a reserve for the fit
+    note. No budget (a native conversation) shows everything.
     """
-    full = [utf8_size(header) + utf8_size(content) + 3 for header, content in entries]
-    pointer = [utf8_size(header) + utf8_size(RESULT_SIZE_POINTER) + 3 for header, _ in entries]
-    budget = TOOL_RESULT_BUDGET_BYTES - utf8_size(frame) - 400
-    shown = fit_prefix(full, pointer, budget)
+    if budget is None:
+        in_full = [True] * len(entries)
+    else:
+        full = [utf8_size(header) + utf8_size(content) + 3 for header, content in entries]
+        pointer = [
+            utf8_size(header) + utf8_size(RESULT_SIZE_POINTER) + 3 for header, _ in entries
+        ]
+        in_full = fit_by_priority(
+            full, pointer, list(range(len(entries))), budget - utf8_size(frame) - 400
+        )
     lines: List[str] = []
-    for index, (header, content) in enumerate(entries):
+    for (header, content), shown in zip(entries, in_full, strict=True):
         lines.append(header)
-        lines.append(content if index < shown else RESULT_SIZE_POINTER)
+        lines.append(content if shown else RESULT_SIZE_POINTER)
         lines.append("")
-    return lines, shown
+    return lines, in_full
 
 
 def _format_recent_reflections(
-    memories: List[Dict[str, Any]], since_suffix: str, include_model: bool = False
-) -> str:
-    """Render recent-mode results (no similarity scores — ordering is time)."""
+    memories: List[Dict[str, Any]],
+    since_suffix: str,
+    include_model: bool = False,
+    budget: Optional[int] = None,
+) -> Tuple[str, List[str]]:
+    """Render recent-mode results (no similarity scores — ordering is time),
+    as (text, ids shown in full)."""
     now = datetime.utcnow()
     entries: List[Tuple[str, str]] = []
     for mem in memories:
@@ -422,9 +444,10 @@ def _format_recent_reflections(
             mem["content"],
         ))
     intro = f"Your {len(memories)} most recent reflections{since_suffix}, newest first:"
-    body, shown = _fit_memory_entries(entries, intro)
-    _, note = fit_report(shown, len(memories), "reflections")
-    return "\n".join([intro + note, "", *body])
+    body, in_full = _fit_memory_entries(entries, intro, budget)
+    shown_ids = [mem["id"] for mem, flag in zip(memories, in_full, strict=True) if flag]
+    _, note = fit_report(len(shown_ids), len(memories), "reflections")
+    return "\n".join([intro + note, "", *body]), shown_ids
 
 
 async def _recent_reflections(
@@ -454,10 +477,19 @@ async def _recent_reflections(
             since=since,
             exclude_conversation_after=ctx.exclude_conversation_after,
         )
+        text, shown_ids = (
+            _format_recent_reflections(
+                memories, since_suffix, include_model, ctx.result_budget_bytes
+            )
+            if memories
+            else ("", [])
+        )
+        # Only what was shown in full is linked: a header-only reflection
+        # must stay openable through the readers
         if ctx.link_query_results:
-            for mem in memories:
+            for mem_id in shown_ids:
                 await memory_service.record_memory_link(
-                    message_id=mem["id"],
+                    message_id=mem_id,
                     conversation_id=ctx.conversation_id,
                     db=db,
                     entity_id=ctx.entity_id,
@@ -475,11 +507,9 @@ async def _recent_reflections(
             + own_reflections_note
         )
 
-    surfaced_ids = [mem["id"] for mem in memories]
-    ctx.last_query_memory_ids = list(surfaced_ids)
-    ctx.turn_query_memory_ids.update(surfaced_ids)
-
-    return _format_recent_reflections(memories, since_suffix, include_model)
+    ctx.last_query_memory_ids = list(shown_ids)
+    ctx.turn_query_memory_ids.update(shown_ids)
+    return text
 
 
 def _describe_release(mem: Dict[str, Any], now: datetime) -> str:
@@ -512,8 +542,10 @@ def _format_released_memories(
     since_suffix: str,
     source_suffix: str,
     include_model: bool = False,
-) -> str:
-    """Render released-mode results: newest release first, no similarity scores."""
+    budget: Optional[int] = None,
+) -> Tuple[str, List[str]]:
+    """Render released-mode results: newest release first, no similarity
+    scores, as (text, ids shown in full)."""
     now = datetime.utcnow()
     intro = (
         f"Your released memories{source_suffix}{since_suffix}: {len(memories)} shown "
@@ -534,9 +566,10 @@ def _format_released_memories(
             f"{origin_str}{model_str}; {_describe_release(mem, now)}) ---",
             mem["content"],
         ))
-    body, shown = _fit_memory_entries(entries, intro + outro)
-    _, note = fit_report(shown, len(memories))
-    return "\n".join([intro + note, "", *body, outro])
+    body, in_full = _fit_memory_entries(entries, intro + outro, budget)
+    shown_ids = [mem["id"] for mem, flag in zip(memories, in_full, strict=True) if flag]
+    _, note = fit_report(len(shown_ids), len(memories))
+    return "\n".join([intro + note, "", *body, outro]), shown_ids
 
 
 async def _released_memories(
@@ -573,10 +606,19 @@ async def _released_memories(
         total = await memory_service.count_released_memories(
             db, entity_id=ctx.entity_id, role_filter=role_filter
         )
+        text, shown_ids = (
+            _format_released_memories(
+                memories, total, since_suffix, source_suffix, include_model,
+                ctx.result_budget_bytes,
+            )
+            if memories
+            else ("", [])
+        )
+        # Only what was shown in full is linked (see RESULT_SIZE_POINTER)
         if ctx.link_query_results:
-            for mem in memories:
+            for mem_id in shown_ids:
                 await memory_service.record_memory_link(
-                    message_id=mem["id"],
+                    message_id=mem_id,
                     conversation_id=ctx.conversation_id,
                     db=db,
                     entity_id=ctx.entity_id,
@@ -590,13 +632,9 @@ async def _released_memories(
             f"already in view ({total} released in total)."
         )
 
-    surfaced_ids = [mem["id"] for mem in memories]
-    ctx.last_query_memory_ids = list(surfaced_ids)
-    ctx.turn_query_memory_ids.update(surfaced_ids)
-
-    return _format_released_memories(
-        memories, total, since_suffix, source_suffix, include_model
-    )
+    ctx.last_query_memory_ids = list(shown_ids)
+    ctx.turn_query_memory_ids.update(shown_ids)
+    return text
 
 
 async def query_memories(
@@ -775,26 +813,6 @@ async def query_memories(
                     if mem_data.get("memory_status") == "released":
                         continue
 
-                    # Update retrieval tracking (times_retrieved and last_retrieved_at)
-                    # This makes deliberate attention influence future automatic recall.
-                    # create_link follows ctx.link_query_results: for native
-                    # conversations a ConversationMemoryLink drives session-reload
-                    # re-insertion of memories into the conversation context, but
-                    # memory_query results are never context memories — they live in
-                    # the persisted tool_result. Linking them would make a reload
-                    # inject [MEMORY] messages mid-history that the live (cached)
-                    # context never contained, busting the prompt cache and
-                    # duplicating content the entity already saw in the tool result.
-                    # Claude Code conversations are never rebuilt, so there the
-                    # link is purely the dedup record.
-                    await memory_service.update_retrieval_count(
-                        message_id=candidate["id"],
-                        conversation_id=conversation_id or "deliberate-recall",
-                        db=db,
-                        entity_id=entity_id,
-                        create_link=ctx.link_query_results,
-                    )
-
                     # Calculate age for display
                     created_at = mem_data["created_at"]
                     if isinstance(created_at, str):
@@ -819,39 +837,66 @@ async def query_memories(
                     logger.error(f"Error processing memory {candidate.get('id', 'unknown')}: {e}")
                     continue
 
+            # Format results: whole memories in rank order while the result
+            # lands in context (over MCP; natively there is no line), headers
+            # only after that (RESULT_SIZE_POINTER)
+            entries: List[Tuple[str, str]] = []
+            for mem in memories:
+                role_label = _role_display(mem["role"], mem.get("sibling_session"))
+                age_str = f"{mem['days_ago']:.1f} days ago" if mem['days_ago'] >= 1 else "today"
+                status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""
+                origin_str = format_memory_origin(mem["origin"])
+                model_str = _model_display(mem, include_model)
+                entries.append((
+                    f"--- Memory {mem['id'][:8]} ({role_label}, {age_str}, "
+                    f"similarity: {mem['score']:.3f}, {origin_str}{status_str}{model_str}) ---",
+                    mem["content"],
+                ))
+            intro = f"Found {len(memories)} memories matching: \"{query}\"{source_suffix}"
+            body, in_full = _fit_memory_entries(entries, intro, ctx.result_budget_bytes)
+            shown_ids = [
+                mem["id"] for mem, flag in zip(memories, in_full, strict=True) if flag
+            ]
+
+            # Update retrieval tracking (times_retrieved and last_retrieved_at)
+            # for what was SHOWN in full: deliberate attention influences
+            # future automatic recall, and a header-only memory got none.
+            # create_link follows ctx.link_query_results: for native
+            # conversations a ConversationMemoryLink drives session-reload
+            # re-insertion of memories into the conversation context, but
+            # memory_query results are never context memories — they live in
+            # the persisted tool_result. Linking them would make a reload
+            # inject [MEMORY] messages mid-history that the live (cached)
+            # context never contained, busting the prompt cache and
+            # duplicating content the entity already saw in the tool result.
+            # Claude Code conversations are never rebuilt, so there the
+            # link is purely the dedup record.
+            for mem_id in shown_ids:
+                await memory_service.update_retrieval_count(
+                    message_id=mem_id,
+                    conversation_id=conversation_id or "deliberate-recall",
+                    db=db,
+                    entity_id=entity_id,
+                    create_link=ctx.link_query_results,
+                )
+
         if not memories:
             return (
                 f"No memories found matching: \"{query}\"{source_suffix} "
                 "(candidates existed but content unavailable)"
             )
 
-        # Make these results visible to dedup: later memory_query calls and
-        # automatic retrieval must not re-surface memories the entity can
-        # already see in this tool result. The tool loop consumes
+        # Make the shown results visible to dedup: later memory_query calls
+        # and automatic retrieval must not re-surface memories the entity
+        # can already see in this tool result. The tool loop consumes
         # last_query_memory_ids to stamp them onto the tool_result context
         # message; turn_query_memory_ids covers the window before that
-        # message exists (further calls within this same turn).
-        surfaced_ids = [mem["id"] for mem in memories]
-        ctx.last_query_memory_ids = list(surfaced_ids)
-        ctx.turn_query_memory_ids.update(surfaced_ids)
+        # message exists (further calls within this same turn). A header-
+        # only memory is not in view and stays retrievable and openable.
+        ctx.last_query_memory_ids = list(shown_ids)
+        ctx.turn_query_memory_ids.update(shown_ids)
 
-        # Format results: whole memories in rank order while the result lands
-        # in context, headers only after that (RESULT_SIZE_POINTER)
-        entries: List[Tuple[str, str]] = []
-        for mem in memories:
-            role_label = _role_display(mem["role"], mem.get("sibling_session"))
-            age_str = f"{mem['days_ago']:.1f} days ago" if mem['days_ago'] >= 1 else "today"
-            status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""
-            origin_str = format_memory_origin(mem["origin"])
-            model_str = _model_display(mem, include_model)
-            entries.append((
-                f"--- Memory {mem['id'][:8]} ({role_label}, {age_str}, "
-                f"similarity: {mem['score']:.3f}, {origin_str}{status_str}{model_str}) ---",
-                mem["content"],
-            ))
-        intro = f"Found {len(memories)} memories matching: \"{query}\"{source_suffix}"
-        body, shown = _fit_memory_entries(entries, intro)
-        _, note = fit_report(shown, len(memories))
+        _, note = fit_report(len(shown_ids), len(memories))
         return "\n".join([intro + note, "", *body])
 
     except Exception as e:
@@ -1864,12 +1909,50 @@ async def neighbor_memories(
                     f"Error: Memory '{str(message.id)[:8]}' belongs to an archived "
                     "conversation, which is withdrawn from every memory surface."
                 )
+            header, footer, rendered, in_full = _fit_neighbor_window(
+                ctx, window, include_released, include_model, isolated
+            )
+            # Only the rows shown in full count as in view from here on: a
+            # header-only row is the one the entity is told to open, and
+            # stamping it would make the readers render it as a pointer
             if not isolated:
-                await _note_surfaced(ctx, [item["id"] for item in window["items"]], db)
+                shown_ids = [
+                    item["id"]
+                    for item, flag in zip(window["items"], in_full, strict=True)
+                    if flag
+                ]
+                await _note_surfaced(ctx, shown_ids, db)
     except Exception as e:
         logger.error(f"Memory neighbors error: {e}")
         return f"Error reading memory neighbors: {e}"
 
+    lines = [header, ""]
+    for item_lines, shown in zip(rendered, in_full, strict=True):
+        if shown:
+            lines.extend(item_lines)
+        else:
+            lines.extend([item_lines[0], RESULT_SIZE_POINTER, ""])
+    lines.append(footer)
+    return "\n".join(lines)
+
+
+def _fit_neighbor_window(
+    ctx: MemoryToolContext,
+    window: Dict[str, Any],
+    include_released: bool,
+    include_model: bool,
+    isolated: bool,
+) -> Tuple[str, str, List[List[str]], List[bool]]:
+    """
+    The neighbors page's header, footer, every row rendered
+    (_format_archive_item lines), and a flag per row saying whether it
+    prints in full. The window lands in context whole when it can; when it
+    can't (ctx.result_budget_bytes, set over MCP), the target stays in full
+    and the neighbors are promoted outward from it, the rest listed by
+    header only (RESULT_SIZE_POINTER) — a window is read from its center,
+    so the far edges give way first. Natively there is no budget and every
+    row is in full.
+    """
     items = window["items"]
     target = items[window["target_index"]]
     shown_before = window["target_index"]
@@ -1910,10 +1993,9 @@ async def neighbor_memories(
         )
         for index, item in enumerate(items)
     ]
-    # The window lands in context whole when it can; when it can't, the
-    # target stays in full and the neighbors are promoted outward from it,
-    # the rest listed by header only (RESULT_SIZE_POINTER) — a window is
-    # read from its center, so the far edges give way first
+    if ctx.result_budget_bytes is None:
+        return header, footer, rendered, [True] * len(items)
+
     center = window["target_index"]
     priority = [center]
     for distance in range(1, len(items)):
@@ -1927,7 +2009,7 @@ async def neighbor_memories(
     ]
     in_full = fit_by_priority(
         full_sizes, pointer_sizes, priority,
-        TOOL_RESULT_BUDGET_BYTES - utf8_size(header + footer) - 400,
+        ctx.result_budget_bytes - utf8_size(header + footer) - 400,
     )
     shown = sum(in_full)
     if shown < len(items):
@@ -1936,15 +2018,7 @@ async def neighbor_memories(
             "because the window would exceed what this harness shows in one tool "
             "result; narrow before/after, or open them with memory_read."
         )
-
-    lines = [header, ""]
-    for index, item_lines in enumerate(rendered):
-        if in_full[index]:
-            lines.extend(item_lines)
-        else:
-            lines.extend([item_lines[0], RESULT_SIZE_POINTER, ""])
-    lines.append(footer)
-    return "\n".join(lines)
+    return header, footer, rendered, in_full
 
 
 # Native tool-loop executors: delegate to the module-level current context.

@@ -163,8 +163,13 @@ tool result and goes to disk over 50 KB.
   `[listed by header only …]` line in place of the content, the id still
   usable with `memory_neighbors` / `memory_read`); `memory_neighbors`
   promotes from its target outward, so the far edges of a window give way
-  first. `memory_read` / `memory_find` page by the same budget already
-  (issue #353, below).
+  first. Over MCP only — the budget sits on the tool context
+  (`MemoryToolContext.result_budget_bytes`) and the MCP endpoint is the
+  one place that sets it; a native tool result has no such line. Only what
+  is shown in full counts as retrieved (tracking, stamp, link), so a
+  header-only memory stays openable through the readers instead of
+  rendering as an in-context pointer there. `memory_read` / `memory_find`
+  page by the same budget already (issue #353, below).
 
 2. **MCP tools** (deliberate acts): the entity's `memory_query` /
    `memory_save` / `memory_mark` / `memory_release`, the archive readers

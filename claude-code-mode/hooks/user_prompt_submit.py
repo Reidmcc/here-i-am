@@ -197,29 +197,37 @@ def main() -> None:
     header = (body.get("context_header") or "").strip()
     if items and header:
         # Fit, then point: whole memories in rank order while they fit,
-        # summary lines for the rest, and the pointer names the file
-        pointer_reserve = 320 + len(path)
-        tail_text = "\n\n".join(tail)
-        fitted, shown = hook_util.fit_retrieval(
-            header, items, budget - hook_util.output_chars(tail_text) - pointer_reserve - 8
-        )
+        # summary lines for the rest, and the pointer names the file. The
+        # pointer is built before the fit so its exact size is reserved —
+        # both forms at their widest, since which one prints depends on
+        # the fit
         count = len(items)
-        if shown:
-            pointer = (
-                f"[HERE I AM] {shown} of the {count} retrieved memories are shown "
-                f"above in full; the other {count - shown} were too large to inject "
-                "inline and are listed by summary line. Their full verbatim text is "
-                f"written to:\n{path}\nRead it if you want their words. "
-                + hook_util.READ_TOOL_ADVICE
-            )
-        else:
-            pointer = (
+
+        def pointer_for(shown: int) -> str:
+            if shown:
+                return (
+                    f"[HERE I AM] {shown} of the {count} retrieved memories are shown "
+                    f"above in full; the other {count - shown} were too large to inject "
+                    "inline and are listed by summary line. Their full verbatim text is "
+                    f"written to:\n{path}\nRead it if you want their words. "
+                    + hook_util.READ_TOOL_ADVICE
+                )
+            return (
                 "[HERE I AM] The retrieved memories were too large to inject inline "
                 "and are listed above by summary line. Their full verbatim text is "
                 f"written to:\n{path}\nRead that file before responding. "
                 + hook_util.READ_TOOL_ADVICE
             )
-        print("\n\n".join([fitted, pointer, *tail]))
+
+        pointer_reserve = max(
+            hook_util.output_chars(pointer_for(count)),
+            hook_util.output_chars(pointer_for(0)),
+        ) + 4
+        tail_text = "\n\n".join(tail)
+        fitted, shown = hook_util.fit_retrieval(
+            header, items, budget - hook_util.output_chars(tail_text) - pointer_reserve - 8
+        )
+        print("\n\n".join([fitted, pointer_for(shown), *tail]))
         return
 
     # A backend that predates per-memory fitting: its summary block in
