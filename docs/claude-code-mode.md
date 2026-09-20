@@ -185,6 +185,15 @@ tool result and goes to disk over 50 KB.
    subset of the transport. The MCP tool variants take an extra
    `conversation_id` parameter (required for `memory_save`) — the
    session-start identity block tells the entity its conversation's ID.
+   It says which conversation is *calling*, on every tool: the entity,
+   the in-context view, where reflections and links land. It is not the
+   readers' `in_conversation`, which chooses what to *read* and may name
+   any conversation in the entity's experience (a previous room, say);
+   the post-compaction call carries both, with the same id in each,
+   because there the caller and the subject coincide. Without a
+   `conversation_id` the call runs as the default entity with no
+   conversation-level state — and an `in_conversation` that then fails to
+   resolve says so, since the default entity may not be the caller's.
    The entity is resolved from that conversation; passing a *native*
    conversation ID is refused (reflections and query links must not land on
    conversations with reload/cache invariants). Unlike native
@@ -700,9 +709,13 @@ are the entity's verbatim carriers across that boundary.
 - **The pre-compaction talk is readable verbatim, on request.** The
   reorientation header also names the `memory_read` call that returns
   this session's own pre-compaction stretch, read **backward from the
-  boundary** (issue #351): `memory_read(direction="backward",
-  to=<last_compacted_at>, in_conversation=<this conversation>,
-  page_tokens=12000, max_pages=25)`. The
+  boundary** (issue #351): `memory_read(conversation_id=<this
+  conversation>, direction="backward", to=<last_compacted_at>,
+  in_conversation=<this conversation>, page_tokens=12000,
+  max_pages=25)` — the id appears twice because `conversation_id` is
+  who is calling and `in_conversation` is what to read, and here they
+  coincide; leaving `conversation_id` off runs the read as the default
+  entity, where the conversation may not resolve at all. The
   block says what the summary is — a caption, not a record: of the
   *talk* it carries nothing, and the talk is all in the archive — and
   that reading back puts the conversation itself in front of the entity

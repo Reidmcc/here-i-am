@@ -523,6 +523,11 @@ async def build_post_compact_context(
     # caption, not a partial record, so the block does not frame the read
     # as filling the summary's gaps; and the look-back is capped, because
     # a long room read to its start would fill the context it just emptied.
+    # The call names the conversation twice on purpose: conversation_id is
+    # who is calling (the entity, the in-context view, the link target —
+    # every MCP tool takes it, and without it the call runs as the default
+    # entity, where this conversation may not resolve at all), and
+    # in_conversation is what to read, which here happens to be the same.
     boundary = conversation.last_compacted_at or datetime.utcnow()
     parts.append(
         "The summary above is a caption, not a record: of the talk it "
@@ -531,7 +536,8 @@ async def build_post_compact_context(
         "you again. What stays gone is only the tool traffic (files open, "
         "commands run, results), which the summary is the one record of. "
         "Read the talk with "
-        f'memory_read(direction="backward", to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
+        f'memory_read(conversation_id="{conversation.id}", direction="backward", '
+        f'to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
         f'in_conversation="{conversation.id}", page_tokens={POST_COMPACT_PAGE_TOKENS}, '
         f"max_pages={POST_COMPACT_LOOKBACK_PAGES}): the first page is the "
         "talk just before the boundary, each cursor walks further back (pass "

@@ -945,8 +945,11 @@ class TestPostCompact:
         )
         row = result.scalar_one()
         # The boundary carries its own offset, so the call is UTC by construction
+        # conversation_id (who is calling) and in_conversation (what to
+        # read) both appear, with the same id: without the former the read
+        # runs as the default entity, where this conversation may not resolve
         assert (
-            f'memory_read(direction="backward", '
+            f'memory_read(conversation_id="{conversation_id}", direction="backward", '
             f'to="{row.last_compacted_at.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
             f'in_conversation="{conversation_id}", page_tokens=12000, max_pages=25):'
         ) in body["context"]

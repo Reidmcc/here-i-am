@@ -162,7 +162,12 @@ def _conversation_id_property() -> Dict[str, Any]:
         "type": "string",
         "description": (
             "Your Here I Am conversation ID for this Claude Code session, "
-            "as given in your session-start context."
+            "as given in your session-start context. It says which "
+            "conversation is calling — the entity, what counts as already in "
+            "your context, where reflections and links land — and goes on "
+            "every call; it does not choose what to read (memory_read and "
+            "memory_find take in_conversation for that). Without it the call "
+            "runs as the default entity with no conversation-level state."
         ),
     }
 

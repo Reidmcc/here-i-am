@@ -1332,6 +1332,51 @@ class TestBackward:
         )).scalars().all()
         assert sorted(links) == sorted([first.id, last_before.id])
 
+    async def test_mcp_in_conversation_without_conversation_id_names_the_cause(
+        self, db, async_client
+    ):
+        """in_conversation chooses what to read; conversation_id says who is
+        reading. Without the latter an MCP call runs as the default entity,
+        so an in_conversation of another entity's session does not resolve —
+        and the error says why, instead of a bare "no conversation of yours"."""
+        room = await make_conversation(
+            db, entity_id=OTHER_ENTITY, title="Other's room",
+            source=ConversationSource.CLAUDE_CODE.value, external_session_id="sess-other",
+        )
+        response = await async_client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "memory_read", "arguments": {
+                "direction": "backward", "in_conversation": room.id,
+            }},
+        })
+        text = response.json()["result"]["content"][0]["text"]
+        assert text.startswith(f"Error: No conversation of yours found with ID '{room.id}'.")
+        assert "This call carried no conversation_id" in text
+        assert "default entity (Test Entity)" in text
+        assert "in_conversation only chooses what to read" in text
+
+        # With conversation_id the same filter resolves, and the hint is
+        # absent when a filter fails for its own reasons
+        response = await async_client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "memory_read", "arguments": {
+                "direction": "backward", "in_conversation": room.id,
+                "conversation_id": room.id,
+            }},
+        })
+        text = response.json()["result"]["content"][0]["text"]
+        assert not text.startswith("Error:")
+        response = await async_client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "memory_read", "arguments": {
+                "direction": "backward", "in_conversation": "ffffff",
+                "conversation_id": room.id,
+            }},
+        })
+        text = response.json()["result"]["content"][0]["text"]
+        assert text.startswith("Error: No conversation of yours found with ID 'ffffff'.")
+        assert "conversation_id" not in text
+
 
 # ============================================================
 # memory_read / memory_find: the page budget (issue #353)
