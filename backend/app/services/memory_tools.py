@@ -1475,7 +1475,12 @@ async def _resolve_conversation_filter(
     db, ctx: MemoryToolContext, in_conversation: Any
 ) -> Tuple[Optional[str], str, Optional[str]]:
     """(conversation id or None for all, echo suffix, error) for an
-    in_conversation argument, resolved within the entity's experience."""
+    in_conversation argument, resolved within the entity's experience.
+
+    in_conversation chooses what to read; it is not the conversation the
+    call belongs to (ctx.conversation_id — the MCP tools require it as
+    conversation_id on every call, and it is what resolves the entity the
+    filter is scoped to)."""
     if in_conversation is None or not str(in_conversation).strip():
         return None, "", None
     conversation, error = await memory_service.resolve_conversation_prefix(
@@ -2422,7 +2427,9 @@ MEMORY_READ_SCHEMA = {
             "description": (
                 "Restrict to one conversation: its ID or a prefix (6+ "
                 "characters) as shown in memory_read output. Default: every "
-                "conversation you have experience in."
+                "conversation you have experience in. This chooses what to "
+                "read; it does not replace conversation_id, which says which "
+                "conversation is calling and goes on every call."
             ),
         },
         "source": {
@@ -2603,7 +2610,9 @@ MEMORY_FIND_SCHEMA = {
             "description": (
                 "Restrict to one conversation: its ID or a prefix (6+ "
                 "characters) as shown in memory_read / memory_find output. "
-                "Default: every conversation you have experience in."
+                "Default: every conversation you have experience in. This "
+                "chooses what to read; it does not replace conversation_id, "
+                "which says which conversation is calling and goes on every call."
             ),
         },
         "source": {

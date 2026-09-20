@@ -434,10 +434,15 @@ def sibling_reflections_notice(body: dict) -> str:
     if count <= 0:
         return ""
     plural = "reflection" if count == 1 else "reflections"
+    # The recipe names everything the call requires: conversation_id is
+    # mandatory on every memory tool, so a printed call without it would
+    # be one the reader cannot copy
+    conversation_id = str(body.get("conversation_id") or "").strip()
+    with_id = f'conversation_id="{conversation_id}", ' if conversation_id else ""
     return (
         f"[HERE I AM] {count} {plural} saved in other sessions since this "
         "conversation began, not shown here. Use memory_query with "
-        'mode="recent" to read them if you want them.'
+        f'{with_id}mode="recent" to read them if you want them.'
     )
 
 

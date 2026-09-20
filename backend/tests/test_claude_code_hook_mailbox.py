@@ -53,6 +53,15 @@ def test_notice_alone_when_no_context():
     assert 'mode="recent"' in out
 
 
+def test_notice_recipe_carries_the_conversation_id():
+    """The printed call names what every memory tool requires."""
+    out = run_hook_with_response({
+        "context": "", "new_sibling_reflections": 1, "conversation_id": "conv-1234",
+    })
+    assert "1 reflection saved in other sessions" in out
+    assert 'memory_query with conversation_id="conv-1234", mode="recent"' in out
+
+
 def test_notice_appended_to_inline_context():
     out = run_hook_with_response(
         {"context": "[MEMORY] something", "new_sibling_reflections": 1}

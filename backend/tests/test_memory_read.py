@@ -1332,6 +1332,55 @@ class TestBackward:
         )).scalars().all()
         assert sorted(links) == sorted([first.id, last_before.id])
 
+    async def test_mcp_in_conversation_is_not_a_substitute_for_conversation_id(
+        self, db, async_client
+    ):
+        """in_conversation chooses what to read; conversation_id says who is
+        reading, and so whose archive the filter is scoped to. A read that
+        names only the former is refused outright — it is never run as a
+        guessed entity — and with the latter the filter resolves within
+        that entity's conversations, its own session included."""
+        room = await make_conversation(
+            db, entity_id=OTHER_ENTITY, title="Other's room",
+            source=ConversationSource.CLAUDE_CODE.value, external_session_id="sess-other",
+        )
+        response = await async_client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "memory_read", "arguments": {
+                "direction": "backward", "in_conversation": room.id,
+            }},
+        })
+        text = response.json()["result"]["content"][0]["text"]
+        assert text.startswith("Error: conversation_id is required")
+        assert "No conversation of yours" not in text
+
+        response = await async_client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "memory_read", "arguments": {
+                "direction": "backward", "in_conversation": room.id,
+                "conversation_id": room.id,
+            }},
+        })
+        text = response.json()["result"]["content"][0]["text"]
+        assert not text.startswith("Error:")
+        assert ', in "Other\'s room"' in text.split("\n")[0]
+
+        # The filter is scoped to the calling entity: the other entity's
+        # session cannot be opened from this one, whatever id is given
+        mine = await make_conversation(
+            db, title="Mine", source=ConversationSource.CLAUDE_CODE.value,
+            external_session_id="sess-mine",
+        )
+        response = await async_client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "memory_read", "arguments": {
+                "direction": "backward", "in_conversation": room.id,
+                "conversation_id": mine.id,
+            }},
+        })
+        text = response.json()["result"]["content"][0]["text"]
+        assert text.startswith(f"Error: No conversation of yours found with ID '{room.id}'.")
+
 
 # ============================================================
 # memory_read / memory_find: the page budget (issue #353)

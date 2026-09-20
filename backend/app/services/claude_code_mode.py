@@ -383,9 +383,10 @@ async def build_session_start_context(
             "containing the exact words — a name, a number, a quote), "
             "memory_save (save a reflection "
             "in your own words), memory_mark (pin against significance decay), "
-            "and memory_release (withdraw from retrieval). Pass conversation_id "
-            f'"{conversation_id}" when calling them so they act on this '
-            "session's conversation. Retrieved memories are labeled with "
+            "and memory_release (withdraw from retrieval). conversation_id "
+            f'"{conversation_id}" is required on every call: it says whose '
+            "memory the call may touch and makes them act on this session's "
+            "conversation. Retrieved memories are labeled with "
             "where they were formed: \"via Here I Am\" (a native "
             "conversation) or \"via Claude Code\" (a session like this one)."
         )
@@ -523,6 +524,11 @@ async def build_post_compact_context(
     # caption, not a partial record, so the block does not frame the read
     # as filling the summary's gaps; and the look-back is capped, because
     # a long room read to its start would fill the context it just emptied.
+    # The call names the conversation twice on purpose: conversation_id is
+    # who is calling (the entity, the in-context view, the link target —
+    # required on every MCP tool, which refuses a call without it rather
+    # than guess an entity), and in_conversation is what to read, which
+    # here happens to be the same.
     boundary = conversation.last_compacted_at or datetime.utcnow()
     parts.append(
         "The summary above is a caption, not a record: of the talk it "
@@ -531,7 +537,8 @@ async def build_post_compact_context(
         "you again. What stays gone is only the tool traffic (files open, "
         "commands run, results), which the summary is the one record of. "
         "Read the talk with "
-        f'memory_read(direction="backward", to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
+        f'memory_read(conversation_id="{conversation.id}", direction="backward", '
+        f'to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
         f'in_conversation="{conversation.id}", page_tokens={POST_COMPACT_PAGE_TOKENS}, '
         f"max_pages={POST_COMPACT_LOOKBACK_PAGES}): the first page is the "
         "talk just before the boundary, each cursor walks further back (pass "
