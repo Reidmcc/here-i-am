@@ -1332,13 +1332,14 @@ class TestBackward:
         )).scalars().all()
         assert sorted(links) == sorted([first.id, last_before.id])
 
-    async def test_mcp_in_conversation_without_conversation_id_names_the_cause(
+    async def test_mcp_in_conversation_is_not_a_substitute_for_conversation_id(
         self, db, async_client
     ):
         """in_conversation chooses what to read; conversation_id says who is
-        reading. Without the latter an MCP call runs as the default entity,
-        so an in_conversation of another entity's session does not resolve —
-        and the error says why, instead of a bare "no conversation of yours"."""
+        reading, and so whose archive the filter is scoped to. A read that
+        names only the former is refused outright — it is never run as a
+        guessed entity — and with the latter the filter resolves within
+        that entity's conversations, its own session included."""
         room = await make_conversation(
             db, entity_id=OTHER_ENTITY, title="Other's room",
             source=ConversationSource.CLAUDE_CODE.value, external_session_id="sess-other",
@@ -1350,13 +1351,9 @@ class TestBackward:
             }},
         })
         text = response.json()["result"]["content"][0]["text"]
-        assert text.startswith(f"Error: No conversation of yours found with ID '{room.id}'.")
-        assert "This call carried no conversation_id" in text
-        assert "default entity (Test Entity)" in text
-        assert "in_conversation only chooses what to read" in text
+        assert text.startswith("Error: conversation_id is required")
+        assert "No conversation of yours" not in text
 
-        # With conversation_id the same filter resolves, and the hint is
-        # absent when a filter fails for its own reasons
         response = await async_client.post("/mcp", json={
             "jsonrpc": "2.0", "id": 2, "method": "tools/call",
             "params": {"name": "memory_read", "arguments": {
@@ -1366,16 +1363,23 @@ class TestBackward:
         })
         text = response.json()["result"]["content"][0]["text"]
         assert not text.startswith("Error:")
+        assert ', in "Other\'s room"' in text.split("\n")[0]
+
+        # The filter is scoped to the calling entity: the other entity's
+        # session cannot be opened from this one, whatever id is given
+        mine = await make_conversation(
+            db, title="Mine", source=ConversationSource.CLAUDE_CODE.value,
+            external_session_id="sess-mine",
+        )
         response = await async_client.post("/mcp", json={
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
             "params": {"name": "memory_read", "arguments": {
-                "direction": "backward", "in_conversation": "ffffff",
-                "conversation_id": room.id,
+                "direction": "backward", "in_conversation": room.id,
+                "conversation_id": mine.id,
             }},
         })
         text = response.json()["result"]["content"][0]["text"]
-        assert text.startswith("Error: No conversation of yours found with ID 'ffffff'.")
-        assert "conversation_id" not in text
+        assert text.startswith(f"Error: No conversation of yours found with ID '{room.id}'.")
 
 
 # ============================================================

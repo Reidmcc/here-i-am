@@ -1588,11 +1588,32 @@ class TestMcpEndpoint:
             "memory_read", "memory_neighbors", "memory_find",
             "declare_room", "retire_room",
         }
-        # Every tool takes the MCP-only conversation_id parameter
+        # Every tool takes the MCP-only conversation_id parameter and
+        # requires it: it is what says whose memory the call may touch
         for tool in tools.values():
             assert "conversation_id" in tool["inputSchema"]["properties"]
-        # memory_save requires it (reflections need a home conversation)
-        assert "conversation_id" in tools["memory_save"]["inputSchema"]["required"]
+            assert "conversation_id" in tool["inputSchema"]["required"]
+
+    async def test_every_memory_tool_refuses_a_call_without_conversation_id(
+        self, async_client
+    ):
+        """No tool runs as a guessed entity: without conversation_id there
+        is nothing that says whose memory the call may touch, so each one
+        is refused before any lookup."""
+        from app.services.claude_code_mcp import MEMORY_TOOL_NAMES
+
+        for index, name in enumerate(MEMORY_TOOL_NAMES):
+            response = await async_client.post("/mcp", json={
+                "jsonrpc": "2.0", "id": index, "method": "tools/call",
+                "params": {"name": name, "arguments": {
+                    "query": "anything", "content": "anything",
+                    "memory_id": "abcdef12", "text": "anything",
+                    "from": "2026-09-01", "in_conversation": "abcdef",
+                }},
+            })
+            text = response.json()["result"]["content"][0]["text"]
+            assert text.startswith("Error: conversation_id is required"), name
+            assert "whose memory this call may touch" in text, name
 
     async def test_unknown_method_and_tool_errors(self, async_client):
         response = await async_client.post("/mcp", json=_rpc("resources/list"))
@@ -1614,15 +1635,27 @@ class TestMcpEndpoint:
         assert (await async_client.get("/mcp")).status_code == 405
         assert (await async_client.delete("/mcp")).status_code == 405
 
-    async def test_tool_call_without_memory_configured(self, async_client):
+    async def test_tool_call_without_memory_configured(self, async_client, test_engine):
         """Pinecone unconfigured: the tool responds with an error result, not
         a protocol error."""
-        response = await async_client.post(
-            "/mcp",
-            json=_rpc("tools/call", params={
-                "name": "memory_query", "arguments": {"query": "gardens"},
-            }),
+        session_id = str(uuid.uuid4())
+        started = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": session_id}
         )
+        conversation_id = started.json()["conversation_id"]
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "hello"},
+        )
+        maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        with patch("app.services.claude_code_mcp.async_session_maker", maker):
+            response = await async_client.post(
+                "/mcp",
+                json=_rpc("tools/call", params={
+                    "name": "memory_query",
+                    "arguments": {"query": "gardens", "conversation_id": conversation_id},
+                }),
+            )
         result = response.json()["result"]
         assert result["isError"] is True
         assert "not configured" in result["content"][0]["text"]
@@ -1770,14 +1803,38 @@ class TestMcpToolContext:
         # Only the post-compaction link still counts as in-context
         assert ctx.extra_exclude_ids == {memory.id}
 
-    async def test_no_conversation_falls_back_to_default_entity(self, cc_mode_enabled):
+    async def test_no_conversation_is_refused_not_defaulted(self, cc_mode_enabled):
+        """The conversation is the only thing that says whose memory a call
+        may touch; without one the context is refused, never built on the
+        default entity."""
         from app.services import claude_code_mcp
 
-        ctx, error = await claude_code_mcp.build_tool_context(None)
-        assert error is None
-        assert ctx.entity_id == "test-entity"
-        assert ctx.conversation_id is None
-        assert ctx.link_query_results is False
+        for missing in (None, ""):
+            ctx, error = await claude_code_mcp.build_tool_context(missing)
+            assert ctx is None
+            assert error.startswith("Error: conversation_id is required")
+
+    async def test_conversation_without_an_entity_is_refused(
+        self, async_client, db_session, test_engine
+    ):
+        """A Claude Code row that records no entity is refused for the same
+        reason: the tools will not guess whose archive to open."""
+        from app.services import claude_code_mcp
+
+        conversation = Conversation(
+            entity_id=None,
+            source=ConversationSource.CLAUDE_CODE.value,
+            external_session_id=str(uuid.uuid4()),
+        )
+        db_session.add(conversation)
+        await db_session.commit()
+
+        maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        with patch("app.services.claude_code_mcp.async_session_maker", maker):
+            ctx, error = await claude_code_mcp.build_tool_context(conversation.id)
+        assert ctx is None
+        assert "records no entity" in error
+        assert "will not guess" in error
 
     async def test_unknown_conversation_errors(
         self, async_client, test_engine

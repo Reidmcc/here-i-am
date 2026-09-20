@@ -16,13 +16,14 @@ Stateless JSON responses are a compliant subset of the streamable-HTTP
 transport (a server MAY return a single application/json response per POST
 and MAY omit session management).
 
-Tool calls carry an optional conversation_id (the SessionStart hook tells
-the entity its conversation's ID): the entity is resolved from that
+Every tool call carries a required conversation_id (the SessionStart hook
+tells the entity its conversation's ID): the entity is resolved from that
 conversation, query results are deduplicated against the conversation's
 ConversationMemoryLink set, and — for Claude Code conversations only —
 query results are linked so automatic retrieval won't re-surface them.
-Without it, tools fall back to the default entity with no
-conversation-level dedup.
+A call without it is refused, never run as a guessed entity: the id is
+the only thing that says whose memory the call may touch, and a default
+would let one entity's session read another's archive.
 
 Notes and git tools are deliberately not exposed: Claude Code's native
 tools cover them.
@@ -162,18 +163,18 @@ def _conversation_id_property() -> Dict[str, Any]:
         "type": "string",
         "description": (
             "Your Here I Am conversation ID for this Claude Code session, "
-            "as given in your session-start context. It says which "
-            "conversation is calling — the entity, what counts as already in "
-            "your context, where reflections and links land — and goes on "
-            "every call; it does not choose what to read (memory_read and "
-            "memory_find take in_conversation for that). Without it the call "
-            "runs as the default entity with no conversation-level state."
+            "as given in your session-start context. Required on every call: "
+            "it says which conversation is calling — the entity whose memory "
+            "the call may touch, what counts as already in your context, "
+            "where reflections and links land. It does not choose what to "
+            "read (memory_read and memory_find take in_conversation for that)."
         ),
     }
 
 
-def _with_conversation_id(schema: Dict[str, Any], required: bool = False) -> Dict[str, Any]:
-    """Extend a native tool schema with the MCP-only conversation_id parameter."""
+def _with_conversation_id(schema: Dict[str, Any], required: bool = True) -> Dict[str, Any]:
+    """Extend a native tool schema with the MCP-only conversation_id parameter,
+    required by default: no tool here may run without knowing whose it is."""
     extended = {
         **schema,
         "properties": {**schema["properties"], "conversation_id": _conversation_id_property()},
@@ -194,7 +195,7 @@ def get_tool_listing() -> List[Dict[str, Any]]:
         {
             "name": "memory_save",
             "description": memory_tools.MEMORY_SAVE_DESCRIPTION,
-            "inputSchema": _with_conversation_id(memory_tools.MEMORY_SAVE_SCHEMA, required=True),
+            "inputSchema": _with_conversation_id(memory_tools.MEMORY_SAVE_SCHEMA),
         },
         {
             "name": "memory_mark",
@@ -224,12 +225,12 @@ def get_tool_listing() -> List[Dict[str, Any]]:
         {
             "name": "declare_room",
             "description": DECLARE_ROOM_DESCRIPTION,
-            "inputSchema": _with_conversation_id(DECLARE_ROOM_SCHEMA, required=True),
+            "inputSchema": _with_conversation_id(DECLARE_ROOM_SCHEMA),
         },
         {
             "name": "retire_room",
             "description": RETIRE_ROOM_DESCRIPTION,
-            "inputSchema": _with_conversation_id(RETIRE_ROOM_SCHEMA, required=True),
+            "inputSchema": _with_conversation_id(RETIRE_ROOM_SCHEMA),
         },
     ]
 
@@ -240,20 +241,23 @@ async def build_tool_context(
     """
     Build a per-request MemoryToolContext for an MCP tool call.
 
-    With a conversation_id: the conversation must exist and belong to Claude
-    Code mode (reflections and query links must not land on native
-    conversations, whose reload/cache invariants they would break); the
-    entity is the conversation's, and the conversation's memory-link set
-    becomes the exclusion set. Without one: default entity, no
-    conversation-level state.
+    The conversation must exist, belong to Claude Code mode (reflections and
+    query links must not land on native conversations, whose reload/cache
+    invariants they would break), and name its entity; the entity is the
+    conversation's, and the conversation's memory-link set becomes the
+    exclusion set. The conversation is the only thing that says whose
+    memory the call may touch, so a call without one — or one whose row
+    records no entity — is refused rather than run as a guessed entity:
+    a default would let one entity's session read another's archive.
 
     Returns (context, error) — exactly one is None.
     """
     if not conversation_id:
-        default_entity = settings.get_default_entity()
-        return MemoryToolContext(
-            entity_id=default_entity.index_name if default_entity else None
-        ), None
+        return None, (
+            "Error: conversation_id is required — it says which conversation "
+            "is calling, and so whose memory this call may touch. Use the one "
+            "from your session-start context."
+        )
 
     async with async_session_maker() as db:
         result = await db.execute(
@@ -273,9 +277,13 @@ async def build_tool_context(
             )
 
         entity_id = conversation.entity_id
-        if entity_id is None:
-            default_entity = settings.get_default_entity()
-            entity_id = default_entity.index_name if default_entity else None
+        if not entity_id:
+            return None, (
+                f"Error: Conversation '{conversation_id}' records no entity, so "
+                "these tools cannot tell whose memory the call would touch and "
+                "will not guess. Use the conversation_id from your session-start "
+                "context."
+            )
 
         # After a compaction only post-compaction links still represent
         # in-context content, and only the post-compaction slice of this
@@ -340,11 +348,14 @@ async def resolve_claude_code_conversation(
 
 
 def _entity_label_for(conversation: Conversation) -> Optional[str]:
+    """The label of the conversation's own entity, or None — never the
+    default entity's: the label picks the private notes directory the
+    registry writes into, and a guess would write one entity's room into
+    another's notes."""
     for entity in settings.get_entities():
         if entity.index_name == conversation.entity_id:
             return entity.label
-    default_entity = settings.get_default_entity()
-    return default_entity.label if default_entity else None
+    return None
 
 
 async def execute_room_tool(name: str, arguments: Dict[str, Any]) -> str:

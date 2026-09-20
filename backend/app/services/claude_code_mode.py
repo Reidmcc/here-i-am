@@ -525,9 +525,9 @@ async def build_post_compact_context(
     # a long room read to its start would fill the context it just emptied.
     # The call names the conversation twice on purpose: conversation_id is
     # who is calling (the entity, the in-context view, the link target —
-    # every MCP tool takes it, and without it the call runs as the default
-    # entity, where this conversation may not resolve at all), and
-    # in_conversation is what to read, which here happens to be the same.
+    # required on every MCP tool, which refuses a call without it rather
+    # than guess an entity), and in_conversation is what to read, which
+    # here happens to be the same.
     boundary = conversation.last_compacted_at or datetime.utcnow()
     parts.append(
         "The summary above is a caption, not a record: of the talk it "

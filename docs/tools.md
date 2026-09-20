@@ -56,13 +56,13 @@ across substrates, not as a standing label.
 The six memory tools are also exposed over MCP for Claude Code mode
 (`POST /mcp`, gated by `CLAUDE_CODE_MODE_ENABLED` — see
 [claude-code-mode.md](claude-code-mode.md)). The MCP variants take an extra
-`conversation_id` parameter (required for `memory_save`) identifying the
-session's Claude Code conversation — the one *calling*, on every tool, which
-is not the readers' `in_conversation` (the one to *read*, any in the
-entity's experience); the post-compaction call passes both with the same
-id. Without a `conversation_id` the call runs as the default entity with no
-conversation-level state, and an `in_conversation` that then fails to
-resolve says so. There, `memory_query` results (and what
+`conversation_id` parameter, required on every tool, identifying the
+session's Claude Code conversation — the one *calling*, and so the entity
+whose memory the call may touch, which is not the readers' `in_conversation`
+(the one to *read*, any in the entity's experience); the post-compaction
+call passes both with the same id. A call without a `conversation_id` is
+refused, never run as the default entity: the id is the only thing that
+says whose archive the call opens. There, `memory_query` results (and what
 `memory_read` / `memory_neighbors` / `memory_find` show) *are* linked
 (`ConversationMemoryLink`), because Claude Code conversations are never
 rebuilt into context — the link is purely the dedup record that keeps

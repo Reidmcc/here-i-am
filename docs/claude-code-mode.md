@@ -183,17 +183,22 @@ tool result and goes to disk over 50 KB.
    than the MCP SDK, whose dependency floor conflicts with the repo's
    pinned FastAPI/starlette/httpx; stateless JSON responses are a compliant
    subset of the transport. The MCP tool variants take an extra
-   `conversation_id` parameter (required for `memory_save`) — the
+   `conversation_id` parameter, **required on every tool** — the
    session-start identity block tells the entity its conversation's ID.
-   It says which conversation is *calling*, on every tool: the entity,
-   the in-context view, where reflections and links land. It is not the
-   readers' `in_conversation`, which chooses what to *read* and may name
-   any conversation in the entity's experience (a previous room, say);
-   the post-compaction call carries both, with the same id in each,
-   because there the caller and the subject coincide. Without a
-   `conversation_id` the call runs as the default entity with no
-   conversation-level state — and an `in_conversation` that then fails to
-   resolve says so, since the default entity may not be the caller's.
+   It says which conversation is *calling*: the entity whose memory the
+   call may touch, the in-context view, where reflections and links land.
+   It is not the readers' `in_conversation`, which chooses what to *read*
+   and may name any conversation in the entity's experience (a previous
+   room, say); the post-compaction call carries both, with the same id in
+   each, because there the caller and the subject coincide. A call
+   without a `conversation_id`, or naming a conversation that records no
+   entity, is refused — never run as the default entity. The id is the
+   only thing that says whose archive the call opens, and a guessed
+   entity would let one entity's session read another's; the same
+   principle keeps `in_conversation` scoped to the calling entity's
+   conversations. (Before this rule a call without the id ran as the
+   default entity, and an `in_conversation` naming the caller's own
+   session came back "no conversation of yours" — true, and useless.)
    The entity is resolved from that conversation; passing a *native*
    conversation ID is refused (reflections and query links must not land on
    conversations with reload/cache invariants). Unlike native
@@ -714,8 +719,7 @@ are the entity's verbatim carriers across that boundary.
   in_conversation=<this conversation>, page_tokens=12000,
   max_pages=25)` — the id appears twice because `conversation_id` is
   who is calling and `in_conversation` is what to read, and here they
-  coincide; leaving `conversation_id` off runs the read as the default
-  entity, where the conversation may not resolve at all. The
+  coincide; a call without `conversation_id` is refused. The
   block says what the summary is — a caption, not a record: of the
   *talk* it carries nothing, and the talk is all in the archive — and
   that reading back puts the conversation itself in front of the entity

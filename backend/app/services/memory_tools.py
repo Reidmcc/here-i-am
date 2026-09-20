@@ -1478,26 +1478,15 @@ async def _resolve_conversation_filter(
     in_conversation argument, resolved within the entity's experience.
 
     in_conversation chooses what to read; it is not the conversation the
-    call belongs to (ctx.conversation_id — the MCP tools take it as
-    conversation_id on every call, and it is what resolves the entity).
-    A call that carried no conversation_id runs as the default entity, so
-    a filter that then fails to resolve names that as the likely cause
-    rather than leaving a bare "no conversation of yours"."""
+    call belongs to (ctx.conversation_id — the MCP tools require it as
+    conversation_id on every call, and it is what resolves the entity the
+    filter is scoped to)."""
     if in_conversation is None or not str(in_conversation).strip():
         return None, "", None
     conversation, error = await memory_service.resolve_conversation_prefix(
         db, ctx.entity_id, in_conversation
     )
     if error:
-        if ctx.conversation_id is None:
-            label = _entity_labels().get(ctx.entity_id, ctx.entity_id)
-            error += (
-                f" This call carried no conversation_id, so it ran as the "
-                f"default entity ({label}) and in_conversation was resolved "
-                "among that entity's conversations. conversation_id says which "
-                "conversation is calling (pass it on every call, from your "
-                "session-start context); in_conversation only chooses what to read."
-            )
         return None, "", f"Error: {error}"
     conversation_id = str(conversation.id)
     title = (conversation.title or "").strip()
