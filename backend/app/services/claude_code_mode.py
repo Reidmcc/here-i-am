@@ -383,9 +383,10 @@ async def build_session_start_context(
             "containing the exact words — a name, a number, a quote), "
             "memory_save (save a reflection "
             "in your own words), memory_mark (pin against significance decay), "
-            "and memory_release (withdraw from retrieval). Pass conversation_id "
-            f'"{conversation_id}" when calling them so they act on this '
-            "session's conversation. Retrieved memories are labeled with "
+            "and memory_release (withdraw from retrieval). conversation_id "
+            f'"{conversation_id}" is required on every call: it says whose '
+            "memory the call may touch and makes them act on this session's "
+            "conversation. Retrieved memories are labeled with "
             "where they were formed: \"via Here I Am\" (a native "
             "conversation) or \"via Claude Code\" (a session like this one)."
         )

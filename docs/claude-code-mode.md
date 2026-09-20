@@ -291,7 +291,11 @@ tool result and goes to disk over 50 KB.
   Code session: no identity block, no notes index, no automatic retrieval
   (the hooks fire for the main conversation only), so it is blind by
   construction — but the only `conversation_id` it can pass to the MCP
-  tools is the parent's, and the dedup record is keyed on it. Two
+  tools is the parent's, and the dedup record is keyed on it. The parent
+  passes its `conversation_id` in the subagent's launch prompt, alongside
+  the instruction to read with `scope="isolated"`; a subagent that omits
+  the id is refused (the id is required on every tool, and there is no
+  session-start context in a subagent to get it from). Two
   consequences: under the default scope, `memory_read`,
   `memory_neighbors`, and `memory_find` render everything in the *parent's* in-view set as
   header-only pointers (its session-start reflections, its retrieval

@@ -172,15 +172,15 @@ def _conversation_id_property() -> Dict[str, Any]:
     }
 
 
-def _with_conversation_id(schema: Dict[str, Any], required: bool = True) -> Dict[str, Any]:
+def _with_conversation_id(schema: Dict[str, Any]) -> Dict[str, Any]:
     """Extend a native tool schema with the MCP-only conversation_id parameter,
-    required by default: no tool here may run without knowing whose it is."""
+    always required: no tool here may run without knowing whose it is, and
+    there is deliberately no switch to make it optional."""
     extended = {
         **schema,
         "properties": {**schema["properties"], "conversation_id": _conversation_id_property()},
     }
-    if required:
-        extended["required"] = list(schema.get("required", [])) + ["conversation_id"]
+    extended["required"] = list(schema.get("required", [])) + ["conversation_id"]
     return extended
 
 
@@ -256,7 +256,8 @@ async def build_tool_context(
         return None, (
             "Error: conversation_id is required — it says which conversation "
             "is calling, and so whose memory this call may touch. Use the one "
-            "from your session-start context."
+            "from your session-start context, or, in a subagent, from the "
+            "prompt that launched you."
         )
 
     async with async_session_maker() as db:
