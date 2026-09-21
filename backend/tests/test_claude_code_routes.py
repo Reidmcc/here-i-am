@@ -2618,6 +2618,68 @@ class TestForkAdoption:
         )
         assert response.json()["conversation_id"] == parent_conv
 
+    async def test_retrieve_rekeys_the_rooms_row(
+        self, async_client, db_session, monkeypatch
+    ):
+        """The wire that broke once already: /retrieve is the endpoint a
+        rewind actually reaches, so it is the one that has to hand the
+        registry the old session id. A unit test of rekey_session and a
+        route test of the conversation id both passed while nothing
+        connected them — so this asserts the call itself."""
+        from app.services import rooms_registry as rr
+
+        monkeypatch.setattr(settings, "notes_enabled", True)
+        monkeypatch.setattr(settings, "claude_code_rooms_registry_enabled", True)
+        calls = []
+        monkeypatch.setattr(
+            rr.rooms_registry,
+            "rekey_session",
+            lambda label, old, new: calls.append((label, old, new)),
+        )
+        monkeypatch.setattr(
+            rr.rooms_registry, "observe", lambda *a, **k: rr.ObservationOutcome()
+        )
+
+        parent_session, _ = await self._record_parent_turn(
+            async_client, str(uuid.uuid4())
+        )
+        fork_session = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "first prompt after the rewind",
+                "prior_session_ids": [parent_session],
+            },
+        )
+        assert calls == [("Test Entity", parent_session, fork_session)]
+
+    async def test_retrieve_does_not_rekey_without_an_adoption(
+        self, async_client, db_session, monkeypatch
+    ):
+        from app.services import rooms_registry as rr
+
+        monkeypatch.setattr(settings, "notes_enabled", True)
+        monkeypatch.setattr(settings, "claude_code_rooms_registry_enabled", True)
+        calls = []
+        monkeypatch.setattr(
+            rr.rooms_registry,
+            "rekey_session",
+            lambda label, old, new: calls.append((label, old, new)),
+        )
+        monkeypatch.setattr(
+            rr.rooms_registry, "observe", lambda *a, **k: rr.ObservationOutcome()
+        )
+
+        session_id, _ = await self._record_parent_turn(
+            async_client, str(uuid.uuid4())
+        )
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "an ordinary prompt"},
+        )
+        assert calls == []
+
     async def test_retrieve_announces_the_adoption(self, async_client, db_session):
         """A rewind fires no SessionStart, so /retrieve is where the entity
         must hear that this session is a continuation."""

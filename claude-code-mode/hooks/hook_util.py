@@ -422,7 +422,13 @@ def desktop_sessions_index(desktop_dir=None):
             continue
         cli_session_id = _optional_str(data.get("cliSessionId"))
         desktop_session_id = _optional_str(data.get("sessionId"))
-        if not cli_session_id or not desktop_session_id:
+        # cliSessionId is the join and the only hard requirement. A record
+        # without a sessionId yields no messaging address (that field stays
+        # None, and the rooms snapshot treats None as "not observed"), but it
+        # can still carry the fork chain — and the prior-ids hint is the
+        # fallback that runs when the strong hint has already failed, which
+        # is the wrong moment to be stricter than the old direct scan was.
+        if not cli_session_id:
             continue
         prior = data.get("priorCliSessionIds")
         index[cli_session_id] = {
@@ -608,8 +614,15 @@ def live_sessions_snapshot(
         if record:
             entry["desktop_session_id"] = record["desktop_session_id"]
             entry["desktop_title"] = record["desktop_title"]
-    if own_session_id and own_session_id in desktop and not any(
-        entry["session_id"] == own_session_id for entry in snapshot
+    # Only worth appending when the record actually carries an address —
+    # that is the whole reason for this branch, and a record may now be
+    # indexed for its fork chain alone (see desktop_sessions_index)
+    if (
+        own_session_id
+        and (desktop.get(own_session_id) or {}).get("desktop_session_id")
+        and not any(
+            entry["session_id"] == own_session_id for entry in snapshot
+        )
     ):
         record = desktop[own_session_id]
         snapshot.append({

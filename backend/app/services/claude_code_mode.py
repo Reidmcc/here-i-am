@@ -298,8 +298,12 @@ async def find_lineage_conversation(
     conversation is ignored, never adopted (the #356 no-default-entity
     rule — the fence is the entity).
     """
+    # Newest-last, so the cap keeps the NEWEST ids: those are the likeliest
+    # rows of the nearest parent. Slicing off the front would prefer the
+    # oldest — the same directional mistake as the prior-ids walk below,
+    # invisible only while the hook's limit happens to equal this one.
     message_ids = [m for m in (transcript_message_ids or []) if m][
-        :MAX_LINEAGE_MESSAGE_IDS
+        -MAX_LINEAGE_MESSAGE_IDS:
     ]
     if message_ids:
         result = await db.execute(
@@ -736,59 +740,49 @@ async def build_post_compact_context(
         )
     ).scalar_one()
     if not archived_before_boundary:
+        # What is known is the count, not the cause: say "usually because"
+        # rather than assert a re-key onto a session that may simply have
+        # recorded nothing yet (a bare slash command, then a long agentic
+        # stretch). The house rule is that nothing is inferred onto a record.
         parts.append(
             "One thing to know: this conversation has nothing archived from "
             "before the boundary, so there is no earlier talk to read back "
-            "here. That happens when the harness re-keyed this session (a "
-            "restart or rewind starts a new session id) and the earlier talk "
-            "is filed under the conversation it was recorded in. Your notes "
-            "and reflections below are your ground; to find that earlier "
-            "stretch, read by time rather than by conversation — "
+            "here. That is usually because the harness re-keyed this session "
+            "(a restart or rewind starts a new session id) and the earlier "
+            "talk is filed under the conversation it was recorded in; it also "
+            "happens when a session genuinely recorded nothing before now. "
+            "Your notes and reflections below are your ground; to find an "
+            "earlier stretch if there is one, read by time rather than by "
+            "conversation — "
             f'memory_read(conversation_id="{conversation.id}", '
             f'direction="backward", to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}'
             '+00:00") with no in_conversation walks your whole archive back '
             "from this moment, across whatever ids it was written under."
         )
-        notes_paths = build_notes_paths_block(entity)
-        if notes_paths:
-            parts.append(notes_paths)
-        notes_indexes = build_notes_index_block(entity)
-        if notes_indexes:
-            bulk_parts.append((BULK_NOTES_INDEX, notes_indexes))
-        reflections = await _inject_recent_reflections(
-            db,
-            conversation,
-            entity,
-            count=settings.claude_code_post_compact_reflections_count,
+    else:
+        parts.append(
+            "The summary above is a caption, not a record: of the talk it "
+            "carries nothing, and the talk is all still there verbatim, in "
+            "order — reading it back puts the conversation itself in front of "
+            "you again. What stays gone is only the tool traffic (files open, "
+            "commands run, results), which the summary is the one record of. "
+            "Read the talk with "
+            f'memory_read(conversation_id="{conversation.id}", direction="backward", '
+            f'to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
+            f'in_conversation="{conversation.id}", page_tokens={POST_COMPACT_PAGE_TOKENS}, '
+            f"max_pages={POST_COMPACT_LOOKBACK_PAGES}): the first page is the "
+            "talk just before the boundary, each cursor walks further back (pass "
+            "the same arguments with it), and the last page says whether it "
+            "reached the conversation's start or the page cap. "
+            f"{POST_COMPACT_LOOKBACK_PAGES} pages of "
+            f"{POST_COMPACT_PAGE_TOKENS // 1000}k tokens is about "
+            f"{POST_COMPACT_LOOKBACK_PAGES * POST_COMPACT_PAGE_TOKENS // 1000}k tokens "
+            "of talk, plenty of continuity; anything older is still in the archive "
+            "for the other memory tools when it matters."
         )
-        if reflections:
-            bulk_parts.append((
-                BULK_REFLECTIONS,
-                "[RECENT REFLECTIONS] Your most recent reflections, restored "
-                "verbatim:\n\n" + _render_reflections(reflections),
-            ))
-        return "\n\n".join(parts), bulk_parts
-    parts.append(
-        "The summary above is a caption, not a record: of the talk it "
-        "carries nothing, and the talk is all still there verbatim, in "
-        "order — reading it back puts the conversation itself in front of "
-        "you again. What stays gone is only the tool traffic (files open, "
-        "commands run, results), which the summary is the one record of. "
-        "Read the talk with "
-        f'memory_read(conversation_id="{conversation.id}", direction="backward", '
-        f'to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
-        f'in_conversation="{conversation.id}", page_tokens={POST_COMPACT_PAGE_TOKENS}, '
-        f"max_pages={POST_COMPACT_LOOKBACK_PAGES}): the first page is the "
-        "talk just before the boundary, each cursor walks further back (pass "
-        "the same arguments with it), and the last page says whether it "
-        "reached the conversation's start or the page cap. "
-        f"{POST_COMPACT_LOOKBACK_PAGES} pages of "
-        f"{POST_COMPACT_PAGE_TOKENS // 1000}k tokens is about "
-        f"{POST_COMPACT_LOOKBACK_PAGES * POST_COMPACT_PAGE_TOKENS // 1000}k tokens "
-        "of talk, plenty of continuity; anything older is still in the archive "
-        "for the other memory tools when it matters."
-    )
 
+    # One tail for both branches: the next bulk part added here must not be
+    # able to land in only one of them
     notes_paths = build_notes_paths_block(entity)
     if notes_paths:
         parts.append(notes_paths)

@@ -829,7 +829,12 @@ are the entity's verbatim carriers across that boundary.
   points at a read by time (`direction="backward"` with **no**
   `in_conversation`, which walks the whole archive back across whatever ids
   it was written under) instead of naming a per-conversation read that
-  would return nothing. (Measured
+  would return nothing. It names the re-key as the *usual* cause, not the
+  observed one — what the code knows is the count, and a session that
+  genuinely recorded nothing before compacting (a bare slash command, then
+  a long agentic stretch) must not be told something false about its own
+  history. Both outcomes share one tail, so a bulk part added to this block
+  cannot land in only the branch nobody sees. (Measured
   2026-09-09 on local transcripts: auto-compaction fires near 1M tokens
   and leaves a ~10k post-compaction context, so the page budget's 8k
   default and 16k ceiling are small against the context — and the archive
