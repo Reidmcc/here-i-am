@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import EntityConfig, settings
 from app.models import (
     Conversation,
+    ConversationSessionAlias,
     ConversationSource,
     ConversationType,
     EntitySetting,
@@ -212,36 +213,186 @@ async def get_conversation_for_session(
     db: AsyncSession,
     external_session_id: str,
 ) -> Optional[Conversation]:
-    """Look up the conversation recording a Claude Code session, if any."""
+    """
+    Look up the conversation recording a Claude Code session, if any: the
+    conversation currently keyed on the id, or the one it was a former key
+    of (a fork's parent adopted the forked id and kept the old one as an
+    alias — issue #357). A late or retried hook carrying either id lands
+    on the same conversation.
+    """
     result = await db.execute(
         select(Conversation).where(
             Conversation.external_session_id == external_session_id,
             Conversation.source == ConversationSource.CLAUDE_CODE.value,
         )
     )
+    conversation = result.scalar_one_or_none()
+    if conversation is not None:
+        return conversation
+    result = await db.execute(
+        select(Conversation)
+        .join(
+            ConversationSessionAlias,
+            ConversationSessionAlias.conversation_id == Conversation.id,
+        )
+        .where(
+            ConversationSessionAlias.external_session_id == external_session_id,
+            Conversation.source == ConversationSource.CLAUDE_CODE.value,
+        )
+    )
     return result.scalar_one_or_none()
 
 
-async def ensure_conversation(
+# How many lineage hints a hook sends, at most; the backend matches any of
+# them (bounding the query and the payload)
+MAX_LINEAGE_MESSAGE_IDS = 100
+MAX_LINEAGE_SESSION_IDS = 50
+
+
+@dataclass
+class SessionResolution:
+    """What resolving a Claude Code session id to its conversation found."""
+    conversation: Conversation
+    # A brand-new row was created by this call
+    created: bool = False
+    # This call adopted a forked session: the conversation was keyed on
+    # another session id until now, and that former id is the value here
+    adopted_from: Optional[str] = None
+
+
+async def find_lineage_conversation(
+    db: AsyncSession,
+    entity: EntityConfig,
+    *,
+    prior_session_ids: Optional[List[str]] = None,
+    transcript_message_ids: Optional[List[str]] = None,
+) -> Optional[Conversation]:
+    """
+    The conversation an unregistered session id is a continuation of, from
+    the lineage hints a hook sends (issue #357), or None.
+
+    The desktop app forks a session under a NEW Claude Code session id on
+    restart, "continue", and rewind, copying the transcript. Two joins
+    recover the parent, neither documented by the harness but both on the
+    page, tried in order of strength:
+
+    - `transcript_message_ids`: end-of-turn assistant entry uuids from the
+      session's own transcript. A fork rewrites every entry's sessionId but
+      NOT its uuid, and the Stop hook stores that uuid as the Message row's
+      primary key — so any of them that is a row of one of this entity's
+      Claude Code conversations names the parent directly, needing nothing
+      from the desktop app.
+    - `prior_session_ids`: the desktop app's own record of the session's
+      former ids (its `priorCliSessionIds`), resolved through the same
+      current-key-or-alias lookup as a live session id.
+
+    Entity-scoped throughout: a hint that resolves to another entity's
+    conversation is ignored, never adopted (the #356 no-default-entity
+    rule — the fence is the entity).
+    """
+    message_ids = [m for m in (transcript_message_ids or []) if m][
+        :MAX_LINEAGE_MESSAGE_IDS
+    ]
+    if message_ids:
+        result = await db.execute(
+            select(Conversation)
+            .join(Message, Message.conversation_id == Conversation.id)
+            .where(
+                Message.id.in_(message_ids),
+                Conversation.source == ConversationSource.CLAUDE_CODE.value,
+                Conversation.entity_id == entity.index_name,
+            )
+            .order_by(Conversation.updated_at.desc().nullslast())
+            .limit(1)
+        )
+        conversation = result.scalars().first()
+        if conversation is not None:
+            return conversation
+
+    for prior in (prior_session_ids or [])[:MAX_LINEAGE_SESSION_IDS]:
+        if not prior:
+            continue
+        conversation = await get_conversation_for_session(db, prior)
+        if conversation is not None and conversation.entity_id == entity.index_name:
+            return conversation
+
+    return None
+
+
+async def _adopt_forked_session(
+    db: AsyncSession,
+    conversation: Conversation,
+    new_session_id: str,
+) -> None:
+    """
+    Re-key an existing conversation onto a forked session's new id, keeping
+    the old id as an alias (issue #357).
+
+    The conversation id is left UNCHANGED — it is the id already injected
+    into the forked session's context, so the memory tools keep working —
+    while `external_session_id` moves to the new id (later hooks key on it
+    directly) and the previous id becomes a `ConversationSessionAlias` (a
+    late or retried hook still carrying it resolves to the same row). No
+    messages, links, or memories move: the whole point is that they are
+    already the parent's.
+    """
+    old_session_id = conversation.external_session_id
+    conversation.external_session_id = new_session_id
+    if old_session_id and old_session_id != new_session_id:
+        existing = await db.get(ConversationSessionAlias, old_session_id)
+        if existing is None:
+            db.add(
+                ConversationSessionAlias(
+                    external_session_id=old_session_id,
+                    conversation_id=conversation.id,
+                )
+            )
+    await db.commit()
+    await db.refresh(conversation)
+    logger.info(
+        f"[CC MODE] Conversation {conversation.id[:8]}... adopted forked "
+        f"session {new_session_id[:8]}... (was {str(old_session_id)[:8]}...)"
+    )
+
+
+async def resolve_session(
     db: AsyncSession,
     external_session_id: str,
     entity: EntityConfig,
+    *,
     cwd: Optional[str] = None,
-) -> Tuple[Conversation, bool]:
+    create: bool,
+    prior_session_ids: Optional[List[str]] = None,
+    transcript_message_ids: Optional[List[str]] = None,
+) -> Optional[SessionResolution]:
     """
-    Find or create the conversation for a Claude Code session.
+    Resolve a Claude Code session id to its conversation, adopting a fork's
+    parent before ever creating a new row (issue #357).
 
-    Returns (conversation, created). Registration is lazy: /session-start
-    never calls this (background/utility sessions fire SessionStart without
-    ever speaking), so the first endpoint that records something creates the
-    row — under the session's deterministic conversation id, which the
-    session-start context already named for the memory tools. Any endpoint
-    may be that first one (the backend can restart mid-session, so /retrieve
-    or /log-assistant can arrive before the backend has seen the session).
+    Order: (1) the row currently keyed on this id, or aliased to it; (2) a
+    lineage match (the session is a fork — adopt its parent, re-keying onto
+    this id and returning adopted_from); (3) create a fresh row, but only
+    when `create` is True. `create=False` (session-start's lazy path)
+    returns None when nothing resolves, so a background/utility session
+    that never speaks still creates no row.
     """
     conversation = await get_conversation_for_session(db, external_session_id)
     if conversation is not None:
-        return conversation, False
+        return SessionResolution(conversation=conversation)
+
+    parent = await find_lineage_conversation(
+        db,
+        entity,
+        prior_session_ids=prior_session_ids,
+        transcript_message_ids=transcript_message_ids,
+    )
+    if parent is not None:
+        old_session_id = parent.external_session_id
+        await _adopt_forked_session(db, parent, external_session_id)
+        return SessionResolution(conversation=parent, adopted_from=old_session_id)
+
+    if not create:
+        return None
 
     title = "Claude Code session"
     if cwd:
@@ -268,14 +419,51 @@ async def ensure_conversation(
         conversation = await get_conversation_for_session(db, external_session_id)
         if conversation is None:
             raise
-        return conversation, False
+        return SessionResolution(conversation=conversation)
     await db.refresh(conversation)
     await _link_pending_reflections(db, conversation, entity)
     logger.info(
         f"[CC MODE] Created conversation {conversation.id[:8]}... for "
         f"Claude Code session {external_session_id[:8]}... (entity={entity.index_name})"
     )
-    return conversation, True
+    return SessionResolution(conversation=conversation, created=True)
+
+
+async def ensure_conversation(
+    db: AsyncSession,
+    external_session_id: str,
+    entity: EntityConfig,
+    cwd: Optional[str] = None,
+    *,
+    prior_session_ids: Optional[List[str]] = None,
+    transcript_message_ids: Optional[List[str]] = None,
+) -> Tuple[Conversation, bool]:
+    """
+    Find or create the conversation for a Claude Code session.
+
+    Returns (conversation, created). Registration is lazy: /session-start
+    never calls this (background/utility sessions fire SessionStart without
+    ever speaking), so the first endpoint that records something creates the
+    row — under the session's deterministic conversation id, which the
+    session-start context already named for the memory tools. Any endpoint
+    may be that first one (the backend can restart mid-session, so /retrieve
+    or /log-assistant can arrive before the backend has seen the session).
+
+    Lineage hints (issue #357) let that first recording endpoint adopt a
+    fork's parent instead of starting an empty conversation; `created` is
+    False for an adoption (it is a continuation, not a new row).
+    """
+    resolution = await resolve_session(
+        db,
+        external_session_id,
+        entity,
+        cwd=cwd,
+        create=True,
+        prior_session_ids=prior_session_ids,
+        transcript_message_ids=transcript_message_ids,
+    )
+    # create=True never returns None
+    return resolution.conversation, resolution.created
 
 
 async def mark_conversation_compacted(
@@ -590,6 +778,7 @@ def observe_rooms_for_hook(
     sessions: List[Dict[str, Any]],
     session_start: bool,
     delivered_from: Optional[List[str]] = None,
+    adopted_from: Optional[str] = None,
 ) -> Tuple[str, str]:
     """
     Feed a hook's live-session snapshot to the rooms registry (issue #323)
@@ -603,6 +792,11 @@ def observe_rooms_for_hook(
     with the prompt, which confirm their senders' registry addresses
     (issue #339).
 
+    `adopted_from` is set when this session was just adopted as a fork
+    (issue #357): the declared room's row is re-keyed from that former id
+    onto this session id first, so the observation below refreshes it as the
+    session's own and its liveness keeps tracking.
+
     notice: one line worth telling the entity — at session start, which
     room this session is registered as, its messaging address, and its
     current roster name; at prompt time, any roster rename the snapshot
@@ -613,6 +807,14 @@ def observe_rooms_for_hook(
     """
     if not rooms_registry_enabled():
         return "", ""
+
+    if adopted_from:
+        try:
+            rooms_registry.rekey_session(entity.label, adopted_from, session_id)
+        except RegistryWriteError as e:
+            return "", _rooms_write_error_text(e)
+        except Exception as e:  # never let the registry break a hook endpoint
+            logger.error(f"[ROOMS] Re-key after fork adoption failed: {e}")
 
     observations: List[SessionObservation] = []
     own: Optional[SessionObservation] = None

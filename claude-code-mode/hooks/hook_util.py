@@ -423,6 +423,93 @@ def desktop_sessions_index(desktop_dir=None):
     return index
 
 
+# How many transcript entry uuids to send as lineage evidence, at most
+# (the backend matches any of them; bounds the payload)
+LINEAGE_MESSAGE_ID_LIMIT = 60
+
+
+def desktop_prior_session_ids(session_id, desktop_dir=None):
+    """
+    A session's former Claude Code session ids, from the desktop app's own
+    record (its `priorCliSessionIds`), for fork adoption (issue #357).
+
+    The desktop app forks a session under a new id on restart/continue/
+    rewind and keeps the chain in this list. Empty when no record joins to
+    `session_id` or the directory is unreadable — a hook never fails over
+    it (the transcript-uuid join is the stronger signal anyway).
+    """
+    if not session_id:
+        return []
+    directory = os.path.join(
+        desktop_dir or claude_desktop_data_dir(), DESKTOP_SESSIONS_SUBDIR
+    )
+    try:
+        paths = sorted(glob.glob(os.path.join(directory, "*", "*", "local_*.json")))
+    except Exception:
+        return []
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        if _optional_str(data.get("cliSessionId")) != session_id:
+            continue
+        prior = data.get("priorCliSessionIds")
+        if not isinstance(prior, list):
+            return []
+        return [pid for pid in (_optional_str(p) for p in prior) if pid]
+    return []
+
+
+def transcript_assistant_uuids(transcript_path, limit=LINEAGE_MESSAGE_ID_LIMIT):
+    """
+    The last `limit` assistant entry uuids in a session's transcript, newest
+    last, for fork adoption (issue #357).
+
+    A fork copies the transcript and rewrites every entry's `sessionId` but
+    NOT its `uuid`, and the Stop hook stores each end-of-turn assistant
+    entry's uuid as the archive row's primary key — so any of these that is
+    a recorded row names the conversation this session forked from. Empty
+    when the transcript is unreadable; a hook never fails over it.
+    """
+    if not transcript_path:
+        return []
+    try:
+        with open(transcript_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception:
+        return []
+    uuids = []
+    for line in lines:
+        line = line.strip()
+        if not line or '"assistant"' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        if entry.get("type") != "assistant":
+            continue
+        uid = _optional_str(entry.get("uuid"))
+        if uid:
+            uuids.append(uid)
+    return uuids[-limit:]
+
+
+def lineage_hints(session_id, transcript_path, desktop_dir=None):
+    """
+    Both fork-adoption hints for a hook payload (issue #357):
+    {"prior_session_ids", "transcript_message_ids"}. Never raises.
+    """
+    return {
+        "prior_session_ids": desktop_prior_session_ids(session_id, desktop_dir),
+        "transcript_message_ids": transcript_assistant_uuids(transcript_path),
+    }
+
+
 def live_sessions_snapshot(config_dir=None, desktop_dir=None, own_session_id=None):
     """
     Every live session the per-process registry describes, as a list of

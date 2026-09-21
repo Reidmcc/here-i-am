@@ -59,6 +59,9 @@ def main() -> None:
         # liveness signal, and the snapshot of sibling sessions lets this
         # firing refresh their rows too
         "sessions": hook_util.live_sessions_snapshot(own_session_id=session_id),
+        # Fork adoption (issue #357): if the desktop app forked this session
+        # under a new id, these resolve it to the conversation it continues
+        **hook_util.lineage_hints(session_id, data.get("transcript_path")),
     }
     try:
         body = hook_util.post_backend(

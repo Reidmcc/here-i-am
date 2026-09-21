@@ -112,6 +112,9 @@ def main() -> None:
         # Which model wrote the message — from the transcript entry itself,
         # the one place it is knowable at write time (issue #321)
         "model": model,
+        # Fork adoption (issue #357): the first recorded event of a forked
+        # session may be this turn's Stop, so carry the lineage hints here too
+        **hook_util.lineage_hints(session_id, transcript_path),
     }
     base = os.environ.get("HIM_BACKEND_URL", "http://localhost:8000").rstrip("/")
     request = urllib.request.Request(

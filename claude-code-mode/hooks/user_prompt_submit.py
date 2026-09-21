@@ -132,6 +132,9 @@ def main() -> None:
         # Rooms registry: a prompt anywhere (a wakeup tick included) is a
         # chance to catch a roster rename in any live session
         "sessions": hook_util.live_sessions_snapshot(own_session_id=session_id),
+        # Fork adoption (issue #357): the first recorded event of a forked
+        # session may be this prompt, so carry the lineage hints here too
+        **hook_util.lineage_hints(session_id, data.get("transcript_path")),
     }
     try:
         body = hook_util.post_backend("/api/claude-code/retrieve", payload, timeout=30)
