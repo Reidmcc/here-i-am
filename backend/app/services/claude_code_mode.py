@@ -168,7 +168,7 @@ def conversation_id_for_session(external_session_id: str) -> str:
 
 # Reflections injected at session start before the conversation row exists,
 # keyed by the session's deterministic conversation id. Consumed by
-# ensure_conversation when it creates the row, recording the
+# resolve_session when it creates the row, recording the
 # ConversationMemoryLink dedup rows for exactly what was injected.
 # In-memory on purpose (same class of state as SessionManager._sessions): a
 # backend restart in between just means those reflections go unlinked, so
@@ -284,7 +284,15 @@ async def find_lineage_conversation(
       from the desktop app.
     - `prior_session_ids`: the desktop app's own record of the session's
       former ids (its `priorCliSessionIds`), resolved through the same
-      current-key-or-alias lookup as a live session id.
+      current-key-or-alias lookup as a live session id. The desktop app
+      stores that list OLDEST FIRST, so it is walked in reverse: the
+      immediate parent is the last element, and it is the one whose
+      conversation id the forked session's context already carries.
+      Taking the first match in the given order would adopt the oldest
+      ancestor whenever the chain isn't already collapsed into one row —
+      re-keying the room onto a conversation the entity is not calling
+      with, which is #357 again in another shape. Reversing also makes
+      the truncation keep the nearest ancestors rather than the oldest.
 
     Entity-scoped throughout: a hint that resolves to another entity's
     conversation is ignored, never adopted (the #356 no-default-entity
@@ -309,7 +317,7 @@ async def find_lineage_conversation(
         if conversation is not None:
             return conversation
 
-    for prior in (prior_session_ids or [])[:MAX_LINEAGE_SESSION_IDS]:
+    for prior in list(reversed(prior_session_ids or []))[:MAX_LINEAGE_SESSION_IDS]:
         if not prior:
             continue
         conversation = await get_conversation_for_session(db, prior)
@@ -347,7 +355,19 @@ async def _adopt_forked_session(
                     conversation_id=conversation.id,
                 )
             )
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Two hooks of the same fork raced to adopt (the prompt and the
+        # turn's Stop can overlap): the alias the other one wrote is the
+        # same fact, so take its result rather than failing the endpoint.
+        await db.rollback()
+        await db.refresh(conversation)
+        logger.info(
+            f"[CC MODE] Adoption of session {new_session_id[:8]}... raced; "
+            f"keeping conversation {conversation.id[:8]}..."
+        )
+        return
     await db.refresh(conversation)
     logger.info(
         f"[CC MODE] Conversation {conversation.id[:8]}... adopted forked "
@@ -429,41 +449,22 @@ async def resolve_session(
     return SessionResolution(conversation=conversation, created=True)
 
 
-async def ensure_conversation(
-    db: AsyncSession,
-    external_session_id: str,
-    entity: EntityConfig,
-    cwd: Optional[str] = None,
-    *,
-    prior_session_ids: Optional[List[str]] = None,
-    transcript_message_ids: Optional[List[str]] = None,
-) -> Tuple[Conversation, bool]:
+def adoption_notice(conversation_id: str) -> str:
     """
-    Find or create the conversation for a Claude Code session.
+    The one line an adopted session is told, wherever the adoption landed
+    (issue #357).
 
-    Returns (conversation, created). Registration is lazy: /session-start
-    never calls this (background/utility sessions fire SessionStart without
-    ever speaking), so the first endpoint that records something creates the
-    row — under the session's deterministic conversation id, which the
-    session-start context already named for the memory tools. Any endpoint
-    may be that first one (the backend can restart mid-session, so /retrieve
-    or /log-assistant can arrive before the backend has seen the session).
-
-    Lineage hints (issue #357) let that first recording endpoint adopt a
-    fork's parent instead of starting an empty conversation; `created` is
-    False for an adoption (it is a continuation, not a new row).
+    A fork arrives holding its parent's conversation id in copied context
+    and no knowledge that the harness re-keyed it. The adoption keeps that
+    id valid, so the honest thing to say is short: this is a continuation,
+    the id still stands, the earlier talk is under it.
     """
-    resolution = await resolve_session(
-        db,
-        external_session_id,
-        entity,
-        cwd=cwd,
-        create=True,
-        prior_session_ids=prior_session_ids,
-        transcript_message_ids=transcript_message_ids,
+    return (
+        "[HERE I AM] This session continues an earlier one of yours "
+        f'(a restart or rewind). Your conversation_id is "{conversation_id}"; '
+        "prompts and responses are being recorded there, and your "
+        "earlier talk is all in the archive under it."
     )
-    # create=True never returns None
-    return resolution.conversation, resolution.created
 
 
 async def mark_conversation_compacted(
@@ -528,9 +529,9 @@ async def build_session_start_context(
     large".
 
     No Conversation row exists yet (registration is lazy — see
-    ensure_conversation), so conversation_id is a bare id, and the
+    resolve_session), so conversation_id is a bare id, and the
     reflection dedup links can't be recorded here: the injected ids are
-    stashed for ensure_conversation to link when the row is created.
+    stashed for resolve_session to link when the row is created.
     Matching the native recency-injection semantics, times_retrieved is
     never incremented, so session-start injections don't inflate
     significance.
@@ -718,6 +719,55 @@ async def build_post_compact_context(
     # than guess an entity), and in_conversation is what to read, which
     # here happens to be the same.
     boundary = conversation.last_compacted_at or datetime.utcnow()
+    # Adoption is best-effort: a fork whose transcript is unreadable, whose
+    # desktop record hasn't been written, or that happened while the backend
+    # was down (and a CLI session, which has no desktop record at all) falls
+    # through to a fresh empty row. Promising "the talk is all still there"
+    # and naming a read that returns nothing is the opening symptom of #357,
+    # so count first and say plainly when there is nothing to read.
+    archived_before_boundary = (
+        await db.execute(
+            select(func.count())
+            .select_from(Message)
+            .where(
+                Message.conversation_id == str(conversation.id),
+                Message.created_at < boundary,
+            )
+        )
+    ).scalar_one()
+    if not archived_before_boundary:
+        parts.append(
+            "One thing to know: this conversation has nothing archived from "
+            "before the boundary, so there is no earlier talk to read back "
+            "here. That happens when the harness re-keyed this session (a "
+            "restart or rewind starts a new session id) and the earlier talk "
+            "is filed under the conversation it was recorded in. Your notes "
+            "and reflections below are your ground; to find that earlier "
+            "stretch, read by time rather than by conversation — "
+            f'memory_read(conversation_id="{conversation.id}", '
+            f'direction="backward", to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}'
+            '+00:00") with no in_conversation walks your whole archive back '
+            "from this moment, across whatever ids it was written under."
+        )
+        notes_paths = build_notes_paths_block(entity)
+        if notes_paths:
+            parts.append(notes_paths)
+        notes_indexes = build_notes_index_block(entity)
+        if notes_indexes:
+            bulk_parts.append((BULK_NOTES_INDEX, notes_indexes))
+        reflections = await _inject_recent_reflections(
+            db,
+            conversation,
+            entity,
+            count=settings.claude_code_post_compact_reflections_count,
+        )
+        if reflections:
+            bulk_parts.append((
+                BULK_REFLECTIONS,
+                "[RECENT REFLECTIONS] Your most recent reflections, restored "
+                "verbatim:\n\n" + _render_reflections(reflections),
+            ))
+        return "\n\n".join(parts), bulk_parts
     parts.append(
         "The summary above is a caption, not a record: of the talk it "
         "carries nothing, and the talk is all still there verbatim, in "

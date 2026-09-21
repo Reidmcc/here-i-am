@@ -49,6 +49,9 @@ def main() -> None:
     if not session_id:
         return
 
+    # One scan of the desktop app's session records serves both the rooms
+    # snapshot and the lineage hints (the records are ~80 KB each)
+    desktop_index = hook_util.desktop_sessions_index()
     payload = {
         "session_id": session_id,
         "entity": os.environ.get("HIM_ENTITY") or None,
@@ -58,10 +61,14 @@ def main() -> None:
         # Rooms registry: every SessionStart (startup, resume, compact) is a
         # liveness signal, and the snapshot of sibling sessions lets this
         # firing refresh their rows too
-        "sessions": hook_util.live_sessions_snapshot(own_session_id=session_id),
+        "sessions": hook_util.live_sessions_snapshot(
+            own_session_id=session_id, desktop_index=desktop_index
+        ),
         # Fork adoption (issue #357): if the desktop app forked this session
         # under a new id, these resolve it to the conversation it continues
-        **hook_util.lineage_hints(session_id, data.get("transcript_path")),
+        **hook_util.lineage_hints(
+            session_id, data.get("transcript_path"), desktop_index=desktop_index
+        ),
     }
     try:
         body = hook_util.post_backend(

@@ -221,6 +221,11 @@ class RetrieveResponse(BaseModel):
     # Rooms registry: renames observed this turn / a loud write failure
     rooms_notice: str = ""
     rooms_error: str = ""
+    # Set when this prompt's session turned out to be a fork and its parent
+    # conversation was adopted (issue #357). The hook prints it: a rewind
+    # usually fires no SessionStart, so /retrieve is where the entity hears
+    # that this session is a continuation and which id is recording it.
+    adoption_notice: str = ""
 
 
 class LogAssistantRequest(BaseModel):
@@ -347,12 +352,7 @@ async def session_start(
             # session was picked up as a continuation — the recording is
             # landing on the parent, under the conversation_id already in
             # context, not a new empty conversation.
-            context = (
-                "[HERE I AM] This session continues an earlier one of yours "
-                f'(a restart or rewind). Your conversation_id is "{conversation_id}"; '
-                "prompts and responses are being recorded there, and your "
-                "earlier talk is all in the archive under it."
-            )
+            context = cc.adoption_notice(conversation_id)
 
     # Rooms registry: refresh this session's row (if it declared a room) and
     # any sibling rows the hook's snapshot covers — every SessionStart,
@@ -404,18 +404,25 @@ async def retrieve(
     _require_enabled()
     entity = _resolve_entity_or_400(data.entity)
 
-    conversation, _ = await cc.ensure_conversation(
+    # A fork's first recorded event is almost always this prompt — the
+    # harness fires no SessionStart at a rewind boundary — so this is the
+    # endpoint that usually does the adopting (issue #357).
+    resolution = await cc.resolve_session(
         db,
         data.session_id,
         entity,
         cwd=data.cwd,
+        create=True,
         prior_session_ids=data.prior_session_ids,
         transcript_message_ids=data.transcript_message_ids,
     )
+    conversation = resolution.conversation
 
     # Rooms registry: a prompt in any room is a chance to catch a rename
     # anywhere (the snapshot covers every live session the hook could see),
-    # and a letter that arrived with it confirms its sender's address
+    # and a letter that arrived with it confirms its sender's address.
+    # adopted_from re-keys this room's row onto the forked session id, which
+    # matters most here: this is the path an ordinary rewind takes.
     rooms_notice, rooms_error = cc.observe_rooms_for_hook(
         entity,
         data.session_id,
@@ -428,6 +435,7 @@ async def retrieve(
             for peer in (data.peer_messages or [])
             if peer.sender_session
         ],
+        adopted_from=resolution.adopted_from,
     )
 
     prompt = data.prompt or ""
@@ -458,6 +466,11 @@ async def retrieve(
             retrieval_status=cc.RETRIEVAL_SKIPPED,
             rooms_notice=rooms_notice,
             rooms_error=rooms_error,
+            adoption_notice=(
+                cc.adoption_notice(str(conversation.id))
+                if resolution.adopted_from
+                else ""
+            ),
         )
 
     # Rows are persisted under the ids the hook chose (when valid), and a
@@ -545,6 +558,11 @@ async def retrieve(
         in_context_reflections_skipped=retrieval.in_context_reflections_skipped,
         rooms_notice=rooms_notice,
         rooms_error=rooms_error,
+        adoption_notice=(
+            cc.adoption_notice(str(conversation.id))
+            if resolution.adopted_from
+            else ""
+        ),
     )
 
 
@@ -642,14 +660,16 @@ async def log_assistant(
     _require_enabled()
     entity = _resolve_entity_or_400(data.entity)
 
-    conversation, _ = await cc.ensure_conversation(
+    resolution = await cc.resolve_session(
         db,
         data.session_id,
         entity,
         cwd=data.cwd,
+        create=True,
         prior_session_ids=data.prior_session_ids,
         transcript_message_ids=data.transcript_message_ids,
     )
+    conversation = resolution.conversation
 
     content = data.content or ""
     if not content.strip():

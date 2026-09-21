@@ -2591,6 +2591,63 @@ class TestForkAdoption:
         )
         assert response.json()["conversation_id"] == parent_conv
 
+    async def test_prior_session_ids_adopt_the_nearest_ancestor(
+        self, async_client, db_session
+    ):
+        """The desktop record stores priorCliSessionIds oldest first, so the
+        walk must run in reverse: the immediate parent is the last element,
+        and it is the one whose id the forked context already carries.
+        Taking the first match would adopt the grandparent."""
+        grandparent_session, grandparent_conv = await self._record_parent_turn(
+            async_client, str(uuid.uuid4())
+        )
+        parent_session, parent_conv = await self._record_parent_turn(
+            async_client, str(uuid.uuid4())
+        )
+        assert grandparent_conv != parent_conv
+
+        fork_session = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "a prompt in the fork",
+                # Desktop order: oldest first
+                "prior_session_ids": [grandparent_session, parent_session],
+            },
+        )
+        assert response.json()["conversation_id"] == parent_conv
+
+    async def test_retrieve_announces_the_adoption(self, async_client, db_session):
+        """A rewind fires no SessionStart, so /retrieve is where the entity
+        must hear that this session is a continuation."""
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "first prompt after the rewind",
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+        body = response.json()
+        assert parent_conv in body["adoption_notice"]
+        assert "continues an earlier one" in body["adoption_notice"]
+
+    async def test_no_adoption_notice_on_an_ordinary_prompt(
+        self, async_client, db_session
+    ):
+        session_id, _ = await self._record_parent_turn(
+            async_client, str(uuid.uuid4())
+        )
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "just a prompt"},
+        )
+        assert response.json()["adoption_notice"] == ""
+
     async def test_compact_after_fork_finds_the_talk(
         self, async_client, db_session
     ):
@@ -2666,6 +2723,42 @@ class TestForkAdoption:
         )
         # Not adopted across the entity boundary — a fresh row of my own
         assert response.json()["conversation_id"] == cc_conv_id(fork_session)
+
+    async def test_compact_without_adoption_says_there_is_nothing_to_read(
+        self, async_client, db_session
+    ):
+        """Adoption is best-effort (an unreadable transcript, a CLI session
+        with no desktop record, a fork while the backend was down). When it
+        misses, the post-compaction block must not promise talk that isn't
+        there and name a read that returns nothing — the opening symptom of
+        #357."""
+        fork_session = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": fork_session, "source": "compact"},
+        )
+        context = response.json()["context"]
+        assert "nothing archived from before the boundary" in context
+        assert "no in_conversation" in context
+        # It must not hand over the ordinary recipe, which would read empty
+        assert 'in_conversation="' not in context
+
+    async def test_compact_with_talk_keeps_the_ordinary_recipe(
+        self, async_client, db_session
+    ):
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        response = await async_client.post(
+            "/api/claude-code/session-start",
+            json={
+                "session_id": str(uuid.uuid4()),
+                "source": "compact",
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+        context = response.json()["context"]
+        assert f'in_conversation="{parent_conv}"' in context
+        assert "nothing archived from before the boundary" not in context
 
     async def test_recorded_resolves_through_alias_after_adoption(
         self, async_client, db_session
