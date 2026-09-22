@@ -30,6 +30,8 @@ from app.models import (
     Message,
     MessageRole,
 )
+from app.services import memory_tools
+from app.services.memory_service import memory_service
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -3077,6 +3079,90 @@ class TestLateForkAdoption:
         ).scalar_one()
         assert parent.last_compacted_at is not None
         assert parent.external_session_id == fork_session
+
+
+    async def test_a_retired_id_still_reads_as_in_conversation(
+        self, async_client, db_session, test_engine
+    ):
+        """The porch's live test surfaced this: `conversation_id=<retired>`
+        resolved but `in_conversation=<retired>` answered "No conversation
+        of yours found", which is false — the conversation exists under
+        another id, and the retired one is what the entity's notes,
+        reflections and saved recipes carry."""
+        from app.services import claude_code_mcp
+
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        retired = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": fork_session, "prompt": "a prompt in the fork"},
+            )
+        ).json()["conversation_id"]
+        await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={
+                "session_id": fork_session,
+                "content": "A reply.",
+                "message_uuid": str(uuid.uuid4()),
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+
+        conversation, error, via_alias = (
+            await memory_service.resolve_conversation_prefix(
+                db_session, "test-entity", retired
+            )
+        )
+        assert error is None, error
+        assert str(conversation.id) == parent_conv
+        assert via_alias is True
+
+        # And the read itself lands, naming the id it landed on
+        maker = async_sessionmaker(
+            test_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        with patch("app.services.claude_code_mcp.async_session_maker", maker):
+            ctx, ctx_error = await claude_code_mcp.build_tool_context(parent_conv)
+        assert ctx_error is None
+        with patch("app.services.memory_tools.async_session_maker", maker):
+            result = await memory_tools.read_memories(
+                ctx, from_="2020-01-01", to="2030-01-01",
+                in_conversation=retired, scope="isolated",
+            )
+        assert "No conversation of yours found" not in result
+        assert retired[:8] in result
+        assert parent_conv[:8] in result
+        assert "A reply." in result
+
+    async def test_a_live_conversation_is_never_shadowed_by_an_alias(
+        self, async_client, db_session
+    ):
+        """Current ids win: an id that is both a live conversation and
+        somebody's retired id resolves to the live one."""
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        other_session = str(uuid.uuid4())
+        other_conv = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": other_session, "prompt": "another room"},
+            )
+        ).json()["conversation_id"]
+        db_session.add(
+            ConversationIdAlias(alias_id=other_conv, conversation_id=parent_conv)
+        )
+        await db_session.commit()
+
+        conversation, error, via_alias = (
+            await memory_service.resolve_conversation_prefix(
+                db_session, "test-entity", other_conv
+            )
+        )
+        assert error is None, error
+        assert str(conversation.id) == other_conv
+        assert via_alias is False
 
     async def _adopted_conversation_with_both_aliases(self, async_client, db_session):
         """A parent adopted by a fork, with a row in each alias table: a

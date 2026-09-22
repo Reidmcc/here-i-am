@@ -332,7 +332,14 @@ tool result and goes to disk over 50 KB.
   ids and says plainly which one is now its own.
 
   **Every id the session has been told resolves**
-  (`_alias_derived_conversation_id`). The same timing can split the two
+  (`_alias_derived_conversation_id`), as the *conversation_id* a tool call
+  carries and as the *in_conversation* a read names —
+  `memory_service.resolve_conversation_prefix` falls through to the alias
+  table, and the tool's echo says which id the read landed on rather than
+  redirecting silently. Both matter: the first is the id the session is
+  operating under, the second is the id its own notes, reflections and
+  saved recipes carry. Current ids always win over retired ones, so a live
+  conversation is never shadowed. The same timing can split the two
   hooks the other way:
   SessionStart runs before the files exist, so with no hints it hands the
   entity `conversation_id_for_session(<fork id>)` in the identity block,
@@ -364,12 +371,42 @@ tool result and goes to disk over 50 KB.
   slash command leaves an empty one, and a fork adopting it would break
   every list call once the retention window passed.
 
-  **Why not just make the hook wait for the transcript.** It was considered
-  and left out: the file appeared three to six seconds after the hooks
-  fired, so the wait would have to be long enough to be felt on every
-  prompt — and a genuinely new session's transcript is missing at its first
-  prompt too, so the cost would land on every new session to save a merge
-  that costs nothing and completes within one turn.
+  **One turn of lag is inherent; it is not a defect to file.** Nothing on
+  the backend can win the fork's *first* prompt hook, because the harness
+  writes the files the hints come from two to eight seconds after it. Two
+  live rewinds, measured from the porch on this branch, both went: rewind
+  edge stamped, SessionStart about a minute later, the first prompt three
+  seconds after that, the fork's transcript two seconds after *that*, and
+  the desktop record three seconds later again. So the fork's first prompt
+  lands in a row of its own, always.
+
+  Two different things then catch up, and it is worth keeping them apart:
+
+  - The **record** is corrected at the first hook that carries hints, which
+    is normally that same turn's Stop — seconds after the files appear, and
+    before the entity says anything else. Everything recorded in the fork's
+    first turn moves onto the parent then.
+  - The **notice** waits for the next prompt, because the Stop hook's
+    stdout is not injected into context. So the entity learns its id
+    changed one prompt after the record already said so.
+
+  During that first turn the entity is operating under the new row's id.
+  The id works — it is a real conversation — but a read of it shows only
+  that turn, so a post-compaction recovery attempted right then finds
+  little. That is the case the post-compaction block already handles by
+  counting rows before the boundary and pointing at a read by time.
+
+  **Why not make the hook wait for the transcript.** It was considered and
+  left out: the file appears seconds after the hooks fire, so the wait
+  would have to be long enough to be felt on every prompt — and a genuinely
+  new session's transcript is missing at its first prompt too, so the cost
+  would land on every new session to save a merge that costs nothing and
+  completes within one turn. (A narrower version — SessionStart alone
+  waiting, since it does not block a prompt — would close the lag entirely
+  by adopting before the first prompt is recorded. It is not built, because
+  it needs a measurement nobody has taken: how soon a *genuinely new*
+  session's transcript appears relative to its SessionStart. If that is
+  fast, the poll returns immediately for everyone and only a fork pays.)
 
   **Diagnosing a miss.** Every resolution logs one line with the hint
   counts and the decision — `known` / `created` / `adopted` /

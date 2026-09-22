@@ -12,6 +12,7 @@ from app.config import settings
 from app.models import (
     Conversation,
     ConversationEntity,
+    ConversationIdAlias,
     ConversationMemoryLink,
     Message,
     MessageRole,
@@ -1523,16 +1524,27 @@ class MemoryService:
         db: AsyncSession,
         entity_id: str,
         id_or_prefix: str,
-    ) -> Tuple[Optional[Conversation], Optional[str]]:
+    ) -> Tuple[Optional[Conversation], Optional[str], bool]:
         """
         Resolve a conversation id or its prefix (as memory_read prints them)
-        to one of this entity's conversations. Returns (conversation,
-        error) — exactly one is None.
+        to one of this entity's conversations. Returns (conversation, error,
+        via_alias) — exactly one of the first two is None.
+
+        A retired id resolves too (issue #359). When a late fork adoption
+        merges a row away, its id lives on as a `ConversationIdAlias`, and
+        it is an id the entity has been handed and may have written down —
+        in a reflection, in notes, in a recipe it saved. "No conversation of
+        yours found" would be false of it: the conversation exists, under
+        another id. `via_alias` says so, so the caller can name the id the
+        read actually landed on rather than redirect silently.
+
+        Current ids win over retired ones at every step, and an exact match
+        wins over a prefix, so a live conversation is never shadowed.
         """
         id_or_prefix = str(id_or_prefix or "").strip()
         if len(id_or_prefix) < 6:
-            return None, "Conversation ID must be at least 6 characters."
-        query = (
+            return None, "Conversation ID must be at least 6 characters.", False
+        live_query = (
             select(Conversation)
             .where(
                 Conversation.id.like(f"{id_or_prefix}%"),
@@ -1541,19 +1553,49 @@ class MemoryService:
             )
             .limit(5)
         )
-        matches = (await db.execute(query)).scalars().all()
+        matches = (await db.execute(live_query)).scalars().all()
         exact = [c for c in matches if str(c.id) == id_or_prefix]
         if exact:
-            return exact[0], None
-        if not matches:
-            return None, f"No conversation of yours found with ID '{id_or_prefix}'."
+            return exact[0], None, False
+
+        alias_query = (
+            select(Conversation, ConversationIdAlias.alias_id)
+            .join(
+                ConversationIdAlias,
+                ConversationIdAlias.conversation_id == Conversation.id,
+            )
+            .where(
+                ConversationIdAlias.alias_id.like(f"{id_or_prefix}%"),
+                self._entity_experience_clause(entity_id),
+                Conversation.is_archived == False,
+            )
+            .limit(5)
+        )
+        alias_rows = (await db.execute(alias_query)).all()
+        alias_exact = [conv for conv, alias_id in alias_rows if alias_id == id_or_prefix]
+        if alias_exact:
+            return alias_exact[0], None, True
+
+        if len(matches) == 1:
+            return matches[0], None, False
         if len(matches) > 1:
             ids = ", ".join(str(c.id)[:12] + "..." for c in matches)
             return None, (
                 f"Conversation ID prefix '{id_or_prefix}' is ambiguous ({ids}). "
                 "Use a longer prefix."
-            )
-        return matches[0], None
+            ), False
+
+        # Several aliases can name one conversation; that is not ambiguity
+        alias_matches = {str(conv.id): conv for conv, _ in alias_rows}
+        if len(alias_matches) == 1:
+            return next(iter(alias_matches.values())), None, True
+        if len(alias_matches) > 1:
+            ids = ", ".join(cid[:12] + "..." for cid in alias_matches)
+            return None, (
+                f"Conversation ID prefix '{id_or_prefix}' is ambiguous ({ids}). "
+                "Use a longer prefix."
+            ), False
+        return None, f"No conversation of yours found with ID '{id_or_prefix}'.", False
 
     async def _read_archive_page(
         self,
