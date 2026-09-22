@@ -37,4 +37,6 @@ class ConversationIdAlias(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    conversation: Mapped["Conversation"] = relationship("Conversation")
+    conversation: Mapped["Conversation"] = relationship(
+        "Conversation", back_populates="id_aliases"
+    )

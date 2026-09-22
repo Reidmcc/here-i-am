@@ -352,6 +352,18 @@ tool result and goes to disk over 50 KB.
   The archive stays readable by time, which is what the post-compaction
   block points at when it counts zero rows before the boundary.
 
+  **Both alias tables are cascaded from `Conversation`.** After adoption
+  every room that has ever been restarted or rewound owns rows in them, so
+  an uncascaded foreign key would make exactly those conversations
+  undeletable wherever the constraint is enforced — Postgres always, SQLite
+  only with `PRAGMA foreign_keys=ON`, which is why it showed locally as
+  harmless dangling rows and would have been a 500 in production. The
+  sharper case is the conversation list's empty-row sweep, which deletes
+  rows without being asked: `/retrieve` creates the row before it decides
+  whether to record the prompt, so a session whose only input was a bare
+  slash command leaves an empty one, and a fork adopting it would break
+  every list call once the retention window passed.
+
   **Why not just make the hook wait for the transcript.** It was considered
   and left out: the file appeared three to six seconds after the hooks
   fired, so the wait would have to be long enough to be felt on every

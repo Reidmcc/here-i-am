@@ -486,30 +486,48 @@ async def _move_memory_links(
 ) -> None:
     """
     Move a merged row's memory links onto the conversation it merged into,
-    dropping any the target already holds for the same memory and entity.
+    collapsing a pair both rows hold onto the LATER `retrieved_at`.
 
     The link set is a dedup record — what this conversation has already
     been shown — so a duplicate pair is not just untidy: the post-compaction
     refresh walks these rows, and two of them for one memory make it count
-    twice.
+    twice. But which of the two survives matters as much as that one does.
+    `retrieved_at` is the boundary the dedup is measured against
+    (`get_retrieved_ids_for_conversation`'s `linked_after` keeps only links
+    strictly after `last_compacted_at`), and the merge carries over the
+    orphan's compaction stamp when it is the newer one. So in exactly that
+    case — the fork compacted before the evidence arrived — keeping the
+    parent's older timestamp would drop the surviving link behind the
+    boundary it is now measured against, and the memory the fork's
+    post-compact injection had just re-shown would be shown again. Taking
+    the later value keeps the record saying what it said: this conversation
+    has seen this memory since its last compaction.
     """
     result = await db.execute(
         select(ConversationMemoryLink).where(
             ConversationMemoryLink.conversation_id == to_conversation_id
         )
     )
-    held = {(link.message_id, link.entity_id) for link in result.scalars().all()}
+    held = {
+        (link.message_id, link.entity_id): link for link in result.scalars().all()
+    }
     result = await db.execute(
         select(ConversationMemoryLink).where(
             ConversationMemoryLink.conversation_id == from_conversation_id
         )
     )
     for link in result.scalars().all():
-        if (link.message_id, link.entity_id) in held:
+        key = (link.message_id, link.entity_id)
+        kept = held.get(key)
+        if kept is not None:
+            if link.retrieved_at is not None and (
+                kept.retrieved_at is None or link.retrieved_at > kept.retrieved_at
+            ):
+                kept.retrieved_at = link.retrieved_at
             await db.delete(link)
             continue
         link.conversation_id = to_conversation_id
-        held.add((link.message_id, link.entity_id))
+        held[key] = link
 
 
 async def _merge_into_parent(
@@ -848,7 +866,8 @@ def late_adoption_notice(conversation_id: str, retired_id: str) -> str:
         f'under "{retired_id}" has been moved onto that conversation, and '
         f'your conversation_id is now "{conversation_id}". The old id still '
         "resolves to the same conversation, so nothing you have already "
-        "called with breaks — use the new one from here."
+        "called with breaks — but the id in your session-start block is the "
+        "old one; use this one from here."
     )
 
 

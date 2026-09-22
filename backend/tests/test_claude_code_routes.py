@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -2938,6 +2938,251 @@ class TestLateForkAdoption:
         ).scalar_one()
         assert alias.conversation_id == parent_conv
 
+
+
+
+    async def test_a_collapsed_link_keeps_the_later_timestamp(
+        self, async_client, db_session
+    ):
+        """retrieved_at is the boundary the CC dedup is measured against, and
+        the merge carries over the fork's compaction stamp when it is newer.
+        Keeping the parent's older timestamp would drop the surviving link
+        behind that boundary and re-show the reflection the fork's
+        post-compact injection had just re-shown."""
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        orphan_conv = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": fork_session, "prompt": "a prompt"},
+            )
+        ).json()["conversation_id"]
+
+        memory = Message(
+            conversation_id=parent_conv,
+            role=MessageRole.REFLECTION,
+            content="A reflection both rows have shown.",
+            speaker_entity_id="test-entity",
+        )
+        db_session.add(memory)
+        await db_session.commit()
+
+        before = datetime(2026, 9, 22, 10, 0, 0)
+        boundary = datetime(2026, 9, 22, 11, 0, 0)
+        after = datetime(2026, 9, 22, 12, 0, 0)
+        db_session.add_all([
+            ConversationMemoryLink(
+                conversation_id=parent_conv,
+                message_id=memory.id,
+                entity_id="test-entity",
+                retrieved_at=before,
+            ),
+            ConversationMemoryLink(
+                conversation_id=orphan_conv,
+                message_id=memory.id,
+                entity_id="test-entity",
+                retrieved_at=after,
+            ),
+        ])
+        # The fork compacted before the evidence arrived
+        orphan = (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == orphan_conv)
+            )
+        ).scalar_one()
+        orphan.last_compacted_at = boundary
+        await db_session.commit()
+
+        await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={
+                "session_id": fork_session,
+                "content": "A reply.",
+                "message_uuid": str(uuid.uuid4()),
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+
+        links = (
+            await db_session.execute(
+                select(ConversationMemoryLink).where(
+                    ConversationMemoryLink.message_id == memory.id
+                )
+            )
+        ).scalars().all()
+        assert len(links) == 1
+        assert links[0].conversation_id == parent_conv
+        assert links[0].retrieved_at == after
+
+        # And the dedup that is measured against the carried-over boundary
+        # still counts it, so it is not re-shown
+        parent = (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == parent_conv)
+            )
+        ).scalar_one()
+        assert parent.last_compacted_at == boundary
+        from app.services.memory_service import memory_service
+
+        in_context = await memory_service.get_retrieved_ids_for_conversation(
+            parent_conv, db_session, entity_id="test-entity",
+            linked_after=parent.last_compacted_at,
+        )
+        assert memory.id in in_context
+
+    async def test_a_compact_can_be_the_late_adopter(
+        self, async_client, db_session
+    ):
+        """The 09-21 shape: fork, then /compact seconds later. If the
+        harness wrote the files in between, this is the call that merges —
+        and the boundary has to land on the parent, not on a row that is
+        about to stop existing."""
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        orphan_conv = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": fork_session, "prompt": "a prompt in the fork"},
+            )
+        ).json()["conversation_id"]
+        assert orphan_conv != parent_conv
+
+        compacted = await async_client.post(
+            "/api/claude-code/session-start",
+            json={
+                "session_id": fork_session,
+                "source": "compact",
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+        body = compacted.json()
+        assert body["conversation_id"] == parent_conv
+        assert body["created"] is False
+        # The late notice comes first, then the post-compaction block
+        assert body["context"].startswith("[HERE I AM] This session turned out")
+        assert orphan_conv in body["context"]
+        assert f'in_conversation="{parent_conv}"' in body["context"]
+
+        assert (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == orphan_conv)
+            )
+        ).scalar_one_or_none() is None
+        parent = (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == parent_conv)
+            )
+        ).scalar_one()
+        assert parent.last_compacted_at is not None
+        assert parent.external_session_id == fork_session
+
+    async def _adopted_conversation_with_both_aliases(self, async_client, db_session):
+        """A parent adopted by a fork, with a row in each alias table: a
+        session alias (its own former id) and a conversation-id alias (the
+        id the fork's SessionStart handed out). Returns the parent's id."""
+        parent_session, parent_conv = await self._record_parent_turn(
+            async_client, str(uuid.uuid4())
+        )
+        fork_session = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": fork_session}
+        )
+        adopted = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "the first prompt after the restart",
+                "prior_session_ids": [parent_session],
+            },
+        )
+        assert adopted.json()["conversation_id"] == parent_conv
+        assert (
+            await db_session.execute(
+                select(func.count())
+                .select_from(ConversationSessionAlias)
+                .where(ConversationSessionAlias.conversation_id == parent_conv)
+            )
+        ).scalar_one() == 1
+        assert (
+            await db_session.execute(
+                select(func.count())
+                .select_from(ConversationIdAlias)
+                .where(ConversationIdAlias.conversation_id == parent_conv)
+            )
+        ).scalar_one() == 1
+        return parent_conv
+
+    async def test_an_adopted_conversation_can_still_be_deleted(
+        self, async_client, db_session
+    ):
+        """After this PR every room that has ever been restarted or rewound
+        is an adopted conversation with rows in both alias tables. Postgres
+        enforces the foreign key unconditionally; SQLite only with the
+        pragma on, which is why the suite never saw it and the delete just
+        left the alias rows dangling."""
+        await db_session.execute(text("PRAGMA foreign_keys=ON"))
+        parent_conv = await self._adopted_conversation_with_both_aliases(
+            async_client, db_session
+        )
+
+        archived = await async_client.post(
+            f"/api/conversations/{parent_conv}/archive"
+        )
+        assert archived.status_code == 200
+        deleted = await async_client.delete(f"/api/conversations/{parent_conv}")
+        assert deleted.status_code == 200, deleted.text
+
+        for model, column in (
+            (ConversationSessionAlias, ConversationSessionAlias.conversation_id),
+            (ConversationIdAlias, ConversationIdAlias.conversation_id),
+        ):
+            left = (
+                await db_session.execute(
+                    select(func.count()).select_from(model).where(column == parent_conv)
+                )
+            ).scalar_one()
+            assert left == 0, f"{model.__name__} rows outlived their conversation"
+
+    async def test_the_empty_row_sweep_survives_an_adopted_conversation(
+        self, async_client, db_session
+    ):
+        """The sharper case: /retrieve creates the row before it decides
+        whether to record the prompt, so a session whose only input was a
+        bare slash command leaves an empty row. Fork it, and 24h later the
+        list endpoint's cleanup deletes a conversation the aliases point
+        at — on every call."""
+        await db_session.execute(text("PRAGMA foreign_keys=ON"))
+        empty_session = str(uuid.uuid4())
+        empty_conv = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": empty_session, "prompt": "/clear"},
+            )
+        ).json()["conversation_id"]
+        fork_session = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "/status",
+                "prior_session_ids": [empty_session],
+            },
+        )
+        conversation = (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == empty_conv)
+            )
+        ).scalar_one()
+        assert conversation.external_session_id == fork_session
+        conversation.updated_at = datetime.utcnow() - timedelta(days=2)
+        conversation.created_at = conversation.updated_at
+        await db_session.commit()
+
+        listed = await async_client.get("/api/conversations/")
+        assert listed.status_code == 200, listed.text
+        assert empty_conv not in [c["id"] for c in listed.json()]
 
     async def test_the_id_session_start_handed_out_survives_an_on_time_adoption(
         self, async_client, db_session, test_engine

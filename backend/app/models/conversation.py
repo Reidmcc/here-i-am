@@ -11,7 +11,9 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.models.conversation_entity import ConversationEntity
+    from app.models.conversation_id_alias import ConversationIdAlias
     from app.models.conversation_memory_link import ConversationMemoryLink
+    from app.models.conversation_session_alias import ConversationSessionAlias
     from app.models.message import Message
 
 
@@ -104,6 +106,25 @@ class Conversation(Base):
     # For multi-entity conversations: tracks which entities participate
     entities: Mapped[List["ConversationEntity"]] = relationship(
         "ConversationEntity",
+        back_populates="conversation",
+        cascade="all, delete-orphan"
+    )
+    # Former Claude Code session ids (#357) and former conversation ids
+    # (#359) that still resolve to this conversation. Cascaded like every
+    # other child table: after fork adoption every room that has ever been
+    # restarted or rewound owns rows here, and an uncascaded FK made those
+    # conversations undeletable wherever the constraint is enforced —
+    # Postgres always, SQLite only with the pragma on, which is why it
+    # showed here as dangling rows and there as a 500. The sharper case
+    # was the conversation list's empty-row sweep, which deletes rows
+    # without anyone asking it to, on every call.
+    session_aliases: Mapped[List["ConversationSessionAlias"]] = relationship(
+        "ConversationSessionAlias",
+        back_populates="conversation",
+        cascade="all, delete-orphan"
+    )
+    id_aliases: Mapped[List["ConversationIdAlias"]] = relationship(
+        "ConversationIdAlias",
         back_populates="conversation",
         cascade="all, delete-orphan"
     )
