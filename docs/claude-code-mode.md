@@ -371,6 +371,89 @@ tool result and goes to disk over 50 KB.
   slash command leaves an empty one, and a fork adopting it would break
   every list call once the retention window passed.
 
+  **The fork's first prompt adopts, through `hostSessionId`.** Getting
+  here took two wrong turns worth recording, because the fix is one join
+  and the reason it was missed is that the evidence was on disk under a key
+  nobody looked up.
+
+  What happens at a fork, measured on two live rewinds: the rewind edge is
+  stamped, a SessionStart may or may not fire, the first prompt hook fires,
+  and only *then* does the harness write the fork's transcript (about two
+  seconds later) and rewrite the desktop app's own session record (about
+  five). So at the fork's first prompt the transcript genuinely does not
+  exist. The first conclusion drawn from that — that nothing could win the
+  first hook, and one turn of lag was inherent — was wrong.
+
+  The prior-ids hint was looking itself up the wrong way. `desktop_sessions_index`
+  is keyed on `cliSessionId`, and a fork's own id matches no record for the
+  first seconds of its life, so the lookup returned nothing. But the record
+  that holds the chain is right there and readable: Claude Code's
+  per-process registry (`<CLAUDE_CONFIG_DIR|~/.claude>/sessions/<pid>.json`)
+  carries **`hostSessionId`** — the desktop app's own session id, written
+  when the process starts and **unchanged when Claude Code forks** — and the
+  desktop record is the file named for that id. Because that record is
+  rewritten only *after* the first prompt, at the first prompt it still
+  names the **parent** as its `cliSessionId`. So the chain, oldest first, is
+  its `priorCliSessionIds` plus that `cliSessionId`, the immediate parent
+  last (the backend reverses the list, so last is nearest).
+
+  `desktop_prior_session_ids` therefore has two ways in: the record that
+  already names this session, or, failing that, the record its
+  `hostSessionId` names. Nothing is inferred — the desktop app's record for
+  *this desktop session* says which Claude Code session it was last
+  running, and if that is not this one, this one continues it. A session
+  with no `hostSessionId` (a CLI session) gets nothing rather than a guess
+  at some other desktop session's record.
+
+  With that, adoption lands on the fork's **first prompt**, before the
+  model's turn, so the whole first turn runs under the room's own
+  conversation. Late adoption (below) remains the backstop for everything
+  that path can't cover: a CLI session with no desktop record, an
+  unreadable registry, or a fork whose first contact with the backend is
+  something other than a prompt.
+
+  **Why waiting for the transcript was the wrong answer.** It was the first
+  plan and the measurement killed it: a *genuinely new* session's transcript
+  is written about **5.7 seconds after its own first prompt** too (checked
+  across 140 non-fork transcripts on this machine — the first `type=user`
+  entry predates the file's birth in every one of them). So "the transcript
+  file is missing" was never a fork signal, and any wait keyed on it would
+  have delayed the first prompt of every session to buy nothing.
+
+  **One prompt of notice lag remains, and only for the paths that fall
+  through to late adoption.** There, the *record* is corrected at the first
+  hook carrying hints — often that turn's Stop — while the *notice* waits
+  for the next prompt, because the Stop hook's stdout is not injected into
+  context.
+
+  **Successive forks collapse onto one conversation, not a chain.** A live
+  log shows `c44d3765` re-keyed from one fork's session id onto the next
+  one's (`which now holds session c4aed985... (was e40799e3...)`), each
+  retired conversation id and each former session id still resolving to it.
+  A room that is rewound repeatedly stays one room, which is the whole point
+  of adopting rather than linking; `test_successive_late_adoptions_keep_one_conversation`
+  pins it.
+
+  **Diagnosing a miss.** Every resolution logs one line with the hint counts
+  and the decision — `known` / `created` / `adopted` / `late-adopted` /
+  `deferred`. That is what settled where adoption was landing (`Late fork
+  adoption: conversation 18bb8e2b... merged into c44d3765...` at 16:23:32
+  with `transcript_message_ids=16, prior_session_ids=6`, then `known` on the
+  next prompt), and a `created` line with both hint counts at zero is the
+  signature of the miss this section fixes.
+
+  **Both alias tables are cascaded from `Conversation`.** After adoption
+  every room that has ever been restarted or rewound owns rows in them, so
+  an uncascaded foreign key would make exactly those conversations
+  undeletable wherever the constraint is enforced — Postgres always, SQLite
+  only with `PRAGMA foreign_keys=ON`, which is why it showed locally as
+  harmless dangling rows and would have been a 500 in production. The
+  sharper case is the conversation list's empty-row sweep, which deletes
+  rows without being asked: `/retrieve` creates the row before it decides
+  whether to record the prompt, so a session whose only input was a bare
+  slash command leaves an empty one, and a fork adopting it would break
+  every list call once the retention window passed.
+
   **One turn of lag is inherent; it is not a defect to file.** Nothing on
   the backend can win the fork's *first* prompt hook, because the harness
   writes the files the hints come from two to eight seconds after it. Two

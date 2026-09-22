@@ -125,6 +125,9 @@ def main() -> None:
     # One scan of the desktop app's session records serves both the rooms
     # snapshot and the lineage hints (the records are ~80 KB each)
     desktop_index = hook_util.desktop_sessions_index()
+    sessions = hook_util.live_sessions_snapshot(
+        own_session_id=session_id, desktop_index=desktop_index
+    )
     payload = {
         "session_id": session_id,
         "prompt": prompt,
@@ -134,14 +137,15 @@ def main() -> None:
         "cwd": data.get("cwd"),
         # Rooms registry: a prompt anywhere (a wakeup tick included) is a
         # chance to catch a roster rename in any live session
-        "sessions": hook_util.live_sessions_snapshot(
-            own_session_id=session_id, desktop_index=desktop_index
-        ),
+        "sessions": sessions,
         # Fork adoption (issue #357): a rewind fires no SessionStart, so
         # this prompt is usually the first the backend sees of the forked
         # session id — the hints are what keep it on its own conversation
         **hook_util.lineage_hints(
-            session_id, data.get("transcript_path"), desktop_index=desktop_index
+            session_id,
+            data.get("transcript_path"),
+            desktop_index=desktop_index,
+            sessions=sessions,
         ),
     }
     try:
