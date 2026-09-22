@@ -533,6 +533,35 @@ class RoomsRegistry:
         self.save(entity_label, data, row=row)
         return row, superseded
 
+    def rekey_session(
+        self,
+        entity_label: str,
+        old_session_id: str,
+        new_session_id: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Move a declared room's row onto a forked session's new id (issue
+        #357), so its liveness keeps updating and rooms.md shows the id the
+        harness now reports. The conversation id is unchanged (adoption kept
+        it), and the messaging address is left as it was. No-op (returns
+        None) when no live row holds the old id, or the new id already has
+        one. Raises RegistryWriteError on a failed write.
+        """
+        if not old_session_id or not new_session_id or old_session_id == new_session_id:
+            return None
+        data = self.load(entity_label)
+        if self.find_row(data, new_session_id) is not None:
+            return None
+        row = self.find_row(data, old_session_id)
+        if row is None or row.get("retired_at"):
+            return None
+        row["session_id"] = new_session_id
+        row["last_seen"] = _now_iso(now)
+        self.save(entity_label, data, row=row)
+        return row
+
     def retire(
         self,
         entity_label: str,

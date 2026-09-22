@@ -227,6 +227,61 @@ tool result and goes to disk over 50 KB.
   mid-session backend restart). `claude --resume` keeps the session ID, so
   a resumed session lands in the same conversation; `/clear` issues a new
   session ID and therefore a new conversation.
+- **Fork adoption (issue #357).** The Claude *desktop app* does not resume a
+  session in place: on a restart, a "continue", or a rewind it **forks**,
+  assigning a NEW Claude Code session ID and copying the transcript (every
+  copied row's `sessionId` is rewritten to the new ID; the app keeps the
+  chain in its own record's `priorCliSessionIds` / `rewindEdges`). Left
+  unhandled, each fork would be a new, empty conversation whose
+  post-compaction recovery finds nothing, while the entity's context still
+  names the parent's id — the bug this section closes. Auto-compaction
+  *inside* a running session does not re-key; a restart can resume one room
+  in place and fork another in the same minute, so the fork is detected by
+  the id being unknown, never by what triggered it. On the first endpoint to
+  see an unknown session ID (`session-start`, `/retrieve`, or
+  `/log-assistant`), the backend resolves it to the conversation it
+  continues from two lineage hints the hooks send, and **adopts** that
+  conversation rather than create a new one: `resolve_session` /
+  `find_lineage_conversation`. The two hints, tried strongest first and
+  both entity-scoped (a hint into another entity's conversation is never
+  adopted — the #356 fence):
+  - `transcript_message_ids`: end-of-turn assistant entry uuids from the
+    session's own transcript tail. A fork copies these uuids unchanged, and
+    the Stop hook stores each as its Message row's primary key, so any that
+    is a row of one of this entity's Claude Code conversations names the
+    parent directly — no dependency on the desktop app.
+  - `prior_session_ids`: the desktop record's own `priorCliSessionIds`,
+    resolved through the same current-key-or-alias lookup. That list is
+    stored **oldest first**, so it is walked in reverse — the immediate
+    parent is the last element, and it is the one whose conversation id the
+    forked context already carries; first-match in the given order would
+    adopt the oldest ancestor whenever a chain isn't already collapsed.
+
+  The transcript hint keeps only **text-bearing** assistant entries, because
+  those are the ones the Stop hook records (a tool-use-only entry was never
+  a row). In an agentic session one turn can be dozens of tool-use entries,
+  which would otherwise crowd every recorded id out of the window.
+
+  Adoption keeps the conversation **id unchanged** (it is the id already in
+  the forked session's context, so the memory tools keep working), moves
+  `external_session_id` to the new id, and records the old id as a
+  `ConversationSessionAlias` so a late or retried hook still resolving on it
+  lands on the same row (`get_conversation_for_session` and `/recorded` both
+  read through the alias). The rooms-registry row re-keys to the new id too
+  (`rooms_registry.rekey_session`). `created` is False for an adoption — it
+  is a continuation, not a new row.
+
+  **Where adoption actually happens.** A rewind or restart fires **no**
+  SessionStart — measured across four consecutive porch forks, the first
+  entry written after each fork point is the user's prompt — so `/retrieve`
+  is the usual adopter and `session-start` only sees a fork when a
+  `/compact` follows immediately. Both therefore re-key the rooms row and
+  tell the entity: `session-start` returns the one-line notice as its
+  context, `/retrieve` returns it as `adoption_notice`, which the hook
+  prints ahead of the mailbox and rooms lines. (`/log-assistant` adopts too,
+  for correctness of the row it is about to write, but does not touch the
+  registry: a turn always has a prompt before it, so the prompt hook has
+  already re-keyed — and if it hadn't, the next prompt does.)
 - **Registration is lazy.** `session-start` builds the identity context but
   never creates the row — Claude Desktop fires SessionStart for
   background/utility sessions that never send a prompt, and eager
@@ -761,7 +816,25 @@ are the entity's verbatim carriers across that boundary.
   conversation created at or after `last_compacted_at` are still in live
   context and render as header-only pointers, rows before it survive
   only as summary and render in full, so the call returns exactly the
-  lost stretch without duplicating what is still in view. (Measured
+  lost stretch without duplicating what is still in view. When the
+  compacted session is a fork (a rewind or restart, then `/compact`), the
+  `session-start` adopts the parent first (see "Conversations" → fork
+  adoption), so the id the block names is the parent's — the one that holds
+  the talk — not a new empty conversation; this is the failure the
+  adoption fix closes (issue #357). Adoption is best-effort, though — an
+  unreadable transcript, a desktop record not yet written, a fork while the
+  backend was down, a CLI session with no desktop record at all — so the
+  block **counts before it promises**: rows of this conversation created
+  before the boundary. When that count is zero it says so plainly, and
+  points at a read by time (`direction="backward"` with **no**
+  `in_conversation`, which walks the whole archive back across whatever ids
+  it was written under) instead of naming a per-conversation read that
+  would return nothing. It names the re-key as the *usual* cause, not the
+  observed one — what the code knows is the count, and a session that
+  genuinely recorded nothing before compacting (a bare slash command, then
+  a long agentic stretch) must not be told something false about its own
+  history. Both outcomes share one tail, so a bulk part added to this block
+  cannot land in only the branch nobody sees. (Measured
   2026-09-09 on local transcripts: auto-compaction fires near 1M tokens
   and leaves a ~10k post-compaction context, so the page budget's 8k
   default and 16k ceiling are small against the context — and the archive
@@ -860,14 +933,20 @@ conversation on first contact; `/session-start` and `/session-end` never do
 (lazy registration — see "Conversations"):
 
 - `POST /session-start` `{session_id, entity?, cwd?, source?,
-  transcript_path?, sessions?}` →
-  `{conversation_id, entity_id, entity_label, created, context,
+  transcript_path?, sessions?, prior_session_ids?, transcript_message_ids?}`
+  → `{conversation_id, entity_id, entity_label, created, context,
   bulk_context, rooms_notice, rooms_error}` — full context when `created`
   (no conversation recorded for this session yet; `conversation_id` is
   the deterministic id the lazy registration will use), the
   post-compaction context when `source` is `"compact"` (which registers
   the conversation if its row is somehow missing), both empty on a plain
-  resume. `context` is the small always-inline block; `bulk_context`
+  resume. `prior_session_ids` / `transcript_message_ids` are the
+  fork-adoption lineage hints (see "Conversations"): when they resolve this
+  id to a parent conversation, it is adopted (id unchanged,
+  `external_session_id` re-keyed, old id aliased) and `created` is False —
+  so a fork's post-compaction recovery reads the parent, which has the
+  talk, not an empty new row. `context` is the small always-inline block;
+  `bulk_context`
   (notes indexes + reflections) is what the hook spills to a file when the
   combined output would exceed the inline budget. `sessions` is the hook's
   live-session snapshot for the rooms registry (`[{session_id, name?,
@@ -901,15 +980,24 @@ conversation on first contact; `/session-start` and `/session-end` never do
   `retrieval_status` `skipped`; otherwise the status is `ran`,
   `unconfigured`, or `failed` (a retrieval exception after the rows were
   committed — reported, not raised; see "Retrieval stamps" above).
+  `/retrieve` also takes the fork-adoption lineage hints
+  (`prior_session_ids`, `transcript_message_ids`) — this is the endpoint a
+  rewind actually reaches, since no SessionStart fires there — and returns
+  `adoption_notice`, the one line telling the entity this session is a
+  continuation and which conversation id is recording it (the hook prints
+  it ahead of the mailbox and rooms lines; empty when nothing was adopted).
 - `POST /recorded` `{session_id, message_ids}` → `{recorded, missing}` —
-  which of the ids exist as rows of the session's conversation. The hook's
+  which of the ids exist as rows of the session's conversation, resolved
+  alias-aware (an adopted fork's rows live under the parent). The hook's
   verification step after a failed `/retrieve`: SQL only, no side effects,
   creates no conversation.
 - `POST /log-assistant` `{session_id, content, entity?, cwd?,
-  message_uuid?, model?}` → `{conversation_id, message_id, deduplicated}` —
+  message_uuid?, model?, prior_session_ids?, transcript_message_ids?}` →
+  `{conversation_id, message_id, deduplicated}` —
   idempotent on `message_uuid` (the transcript entry's UUID becomes the
   Message row's primary key). `model` is the transcript entry's own
-  `message.model`, recorded verbatim onto the row; absent means NULL.
+  `message.model`, recorded verbatim onto the row; absent means NULL. The
+  lineage hints adopt a fork whose first event is this turn's Stop.
 
 ### Model attribution
 

@@ -34,6 +34,7 @@ Environment:
                        per-session records give the rooms registry each
                        session's messaging address
 """
+import collections
 import glob
 import json
 import os
@@ -393,10 +394,17 @@ def claude_desktop_data_dir() -> str:
 def desktop_sessions_index(desktop_dir=None):
     """
     The desktop app's session records, keyed by Claude Code session id:
-    {cli_session_id: {"desktop_session_id", "desktop_title"}}. Empty when
-    the records directory doesn't exist or nothing in it parses — a hook
-    never fails over this. A record without a cliSessionId is skipped (it
-    can't be joined to anything the hooks see).
+    {cli_session_id: {"desktop_session_id", "desktop_title",
+    "prior_session_ids"}}. Empty when the records directory doesn't exist
+    or nothing in it parses — a hook never fails over this. A record
+    without a cliSessionId is skipped (it can't be joined to anything the
+    hooks see).
+
+    `prior_session_ids` is the record's `priorCliSessionIds` (oldest
+    first), the fork-adoption fallback hint — carried here so one scan of
+    these files serves both the rooms snapshot and the lineage hints; the
+    records embed each session's MCP tool schemas and run ~80 KB each, so
+    the hooks read the directory once per firing.
     """
     directory = os.path.join(desktop_dir or claude_desktop_data_dir(), DESKTOP_SESSIONS_SUBDIR)
     index = {}
@@ -414,16 +422,145 @@ def desktop_sessions_index(desktop_dir=None):
             continue
         cli_session_id = _optional_str(data.get("cliSessionId"))
         desktop_session_id = _optional_str(data.get("sessionId"))
-        if not cli_session_id or not desktop_session_id:
+        # cliSessionId is the join and the only hard requirement. A record
+        # without a sessionId yields no messaging address (that field stays
+        # None, and the rooms snapshot treats None as "not observed"), but it
+        # can still carry the fork chain — and the prior-ids hint is the
+        # fallback that runs when the strong hint has already failed, which
+        # is the wrong moment to be stricter than the old direct scan was.
+        if not cli_session_id:
             continue
+        prior = data.get("priorCliSessionIds")
         index[cli_session_id] = {
             "desktop_session_id": desktop_session_id,
             "desktop_title": _optional_str(data.get("title")),
+            "prior_session_ids": (
+                [pid for pid in (_optional_str(p) for p in prior) if pid]
+                if isinstance(prior, list)
+                else []
+            ),
         }
     return index
 
 
-def live_sessions_snapshot(config_dir=None, desktop_dir=None, own_session_id=None):
+# How many transcript entry uuids to send as lineage evidence, at most
+# (the backend matches any of them, and accepts 100; bounds the payload).
+# Only END-OF-TURN assistant entries are archive row ids, and in an
+# agentic session one turn can be dozens of tool-use-only assistant
+# entries — measured on real transcripts, the last 60 assistant entries
+# held 14 end-of-turn ones in a porch fork but as few as 1 in a workshop.
+# So the collector keeps only text-bearing entries (the Stop hook records
+# the last assistant entry that has a non-empty text block) and the cap is
+# the backend's, which makes the strong hint the one that actually carries.
+LINEAGE_MESSAGE_ID_LIMIT = 100
+
+
+def desktop_prior_session_ids(session_id, desktop_dir=None, desktop_index=None):
+    """
+    A session's former Claude Code session ids, OLDEST FIRST, from the
+    desktop app's own record (its `priorCliSessionIds`), for fork adoption
+    (issue #357).
+
+    The desktop app forks a session under a new id on restart/continue/
+    rewind and keeps the chain in this list. Empty when no record joins to
+    `session_id` or the directory is unreadable — a hook never fails over
+    it (the transcript-uuid join is the stronger signal anyway). Pass
+    `desktop_index` to reuse a scan the caller already did.
+    """
+    if not session_id:
+        return []
+    index = (
+        desktop_index
+        if desktop_index is not None
+        else desktop_sessions_index(desktop_dir)
+    )
+    record = index.get(session_id) or {}
+    return list(record.get("prior_session_ids") or [])
+
+
+def _entry_has_text(entry):
+    """Whether an assistant transcript entry carries a non-empty text block
+    — the same test the Stop hook uses to pick the message it records, so
+    these are the entries whose uuids became archive row ids."""
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if not isinstance(content, list):
+        return False
+    for block in content:
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "text"
+            and str(block.get("text") or "").strip()
+        ):
+            return True
+    return False
+
+
+def transcript_assistant_uuids(transcript_path, limit=LINEAGE_MESSAGE_ID_LIMIT):
+    """
+    The last `limit` text-bearing assistant entry uuids in a session's
+    transcript, newest last, for fork adoption (issue #357).
+
+    A fork copies the transcript and rewrites every entry's `sessionId` but
+    NOT its `uuid`, and the Stop hook stores each end-of-turn assistant
+    entry's uuid as the archive row's primary key — so any of these that is
+    a recorded row names the conversation this session forked from. Only
+    text-bearing entries are kept: tool-use-only entries were never
+    recorded, and in an agentic session they outnumber the real ones badly
+    enough to crowd every usable id out of the window.
+
+    Read through a bounded deque rather than readlines(): these transcripts
+    reach tens of megabytes (38 MB measured here) and this runs on every
+    SessionStart, prompt and Stop. Empty when the transcript is unreadable;
+    a hook never fails over it.
+    """
+    if not transcript_path:
+        return []
+    uuids = collections.deque(maxlen=max(1, int(limit)))
+    try:
+        with open(transcript_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or '"assistant"' not in line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                if entry.get("type") != "assistant" or not _entry_has_text(entry):
+                    continue
+                uid = _optional_str(entry.get("uuid"))
+                if uid:
+                    uuids.append(uid)
+    except Exception:
+        return []
+    return list(uuids)
+
+
+def lineage_hints(session_id, transcript_path, desktop_dir=None, desktop_index=None):
+    """
+    Both fork-adoption hints for a hook payload (issue #357):
+    {"prior_session_ids", "transcript_message_ids"}. Never raises.
+
+    `desktop_index` lets a hook that already scanned the desktop records
+    for its rooms snapshot reuse that scan instead of walking those files
+    (~80 KB each) a second time in the same firing.
+    """
+    return {
+        "prior_session_ids": desktop_prior_session_ids(
+            session_id, desktop_dir, desktop_index
+        ),
+        "transcript_message_ids": transcript_assistant_uuids(transcript_path),
+    }
+
+
+def live_sessions_snapshot(
+    config_dir=None, desktop_dir=None, own_session_id=None, desktop_index=None
+):
     """
     Every live session the per-process registry describes, as a list of
     {session_id, name, name_source, name_since, messaging_socket, cwd,
@@ -467,14 +604,25 @@ def live_sessions_snapshot(config_dir=None, desktop_dir=None, own_session_id=Non
             "desktop_title": None,
         })
 
-    desktop = desktop_sessions_index(desktop_dir)
+    desktop = (
+        desktop_index
+        if desktop_index is not None
+        else desktop_sessions_index(desktop_dir)
+    )
     for entry in snapshot:
         record = desktop.get(entry["session_id"])
         if record:
             entry["desktop_session_id"] = record["desktop_session_id"]
             entry["desktop_title"] = record["desktop_title"]
-    if own_session_id and own_session_id in desktop and not any(
-        entry["session_id"] == own_session_id for entry in snapshot
+    # Only worth appending when the record actually carries an address —
+    # that is the whole reason for this branch, and a record may now be
+    # indexed for its fork chain alone (see desktop_sessions_index)
+    if (
+        own_session_id
+        and (desktop.get(own_session_id) or {}).get("desktop_session_id")
+        and not any(
+            entry["session_id"] == own_session_id for entry in snapshot
+        )
     ):
         record = desktop[own_session_id]
         snapshot.append({

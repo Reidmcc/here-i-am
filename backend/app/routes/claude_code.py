@@ -82,6 +82,14 @@ class SessionStartRequest(BaseModel):
     # Snapshot of the live sessions the hook could see (this one and its
     # siblings), for the rooms registry
     sessions: List[SessionObservationIn] = []
+    # Lineage hints for fork adoption (issue #357): the desktop app forks a
+    # session under a new id on restart/continue/rewind, so these let the
+    # backend resolve this id to the conversation it continues rather than
+    # start an empty one. prior_session_ids = the desktop record's
+    # priorCliSessionIds; transcript_message_ids = end-of-turn assistant
+    # entry uuids from the transcript tail (which are Message row ids).
+    prior_session_ids: List[str] = []
+    transcript_message_ids: List[str] = []
 
 
 class BulkPart(BaseModel):
@@ -168,6 +176,9 @@ class RetrieveRequest(BaseModel):
     peer_messages: List[PeerMessage] = []
     # Live-session snapshot for the rooms registry (see SessionStartRequest)
     sessions: List[SessionObservationIn] = []
+    # Fork-adoption lineage hints (issue #357; see SessionStartRequest)
+    prior_session_ids: List[str] = []
+    transcript_message_ids: List[str] = []
 
 
 class RetrieveResponse(BaseModel):
@@ -210,6 +221,11 @@ class RetrieveResponse(BaseModel):
     # Rooms registry: renames observed this turn / a loud write failure
     rooms_notice: str = ""
     rooms_error: str = ""
+    # Set when this prompt's session turned out to be a fork and its parent
+    # conversation was adopted (issue #357). The hook prints it: a rewind
+    # usually fires no SessionStart, so /retrieve is where the entity hears
+    # that this session is a continuation and which id is recording it.
+    adoption_notice: str = ""
 
 
 class LogAssistantRequest(BaseModel):
@@ -222,6 +238,9 @@ class LogAssistantRequest(BaseModel):
     # (issue #321). Optional: an older hook, or an entry without one,
     # records NULL — never a guess.
     model: Optional[str] = None
+    # Fork-adoption lineage hints (issue #357; see SessionStartRequest)
+    prior_session_ids: List[str] = []
+    transcript_message_ids: List[str] = []
 
 
 class LogAssistantResponse(BaseModel):
@@ -283,18 +302,31 @@ async def session_start(
     already has a conversation (a resume) gets an empty block — its
     transcript already carries the injections, so re-sending them would
     duplicate context.
+
+    Fork adoption (issue #357): the desktop app forks a session under a new
+    id on restart/continue/rewind, copying the transcript. Lineage hints
+    resolve the new id to the conversation it continues and re-key it onto
+    that row, so the forked session records into the same conversation and
+    the id already in its copied context stays valid — instead of a new,
+    empty conversation whose post-compaction recovery finds nothing.
     """
     _require_enabled()
     entity = _resolve_entity_or_400(data.entity)
 
-    conversation = await cc.get_conversation_for_session(db, data.session_id)
-    if conversation is None and data.source == "compact":
-        # A compaction implies a session with recorded history; if its row
-        # is missing anyway (e.g. it ran while the backend was down), the
-        # session is clearly a speaking one — register it now
-        conversation, _ = await cc.ensure_conversation(
-            db, data.session_id, entity, cwd=data.cwd
-        )
+    # Resolve without creating: an existing row, or a fork's parent adopted
+    # onto this id. A truly new session stays unregistered (lazy) unless it
+    # is a compaction, which implies recorded history worth a row.
+    resolution = await cc.resolve_session(
+        db,
+        data.session_id,
+        entity,
+        cwd=data.cwd,
+        create=data.source == "compact",
+        prior_session_ids=data.prior_session_ids,
+        transcript_message_ids=data.transcript_message_ids,
+    )
+    conversation = resolution.conversation if resolution else None
+    adopted = bool(resolution and resolution.adopted_from)
 
     context = ""
     bulk_parts = []
@@ -314,6 +346,13 @@ async def session_start(
             context, bulk_parts = await cc.build_post_compact_context(
                 db, conversation, entity
             )
+        elif adopted:
+            # A resume that turned out to be a fork: the transcript already
+            # carries the injections (so no bulk), but say once that the
+            # session was picked up as a continuation — the recording is
+            # landing on the parent, under the conversation_id already in
+            # context, not a new empty conversation.
+            context = cc.adoption_notice(conversation_id)
 
     # Rooms registry: refresh this session's row (if it declared a room) and
     # any sibling rows the hook's snapshot covers — every SessionStart,
@@ -325,6 +364,7 @@ async def session_start(
         transcript_path=data.transcript_path,
         sessions=[s.model_dump() for s in data.sessions],
         session_start=True,
+        adopted_from=resolution.adopted_from if resolution else None,
     )
 
     # Catch note edits made while the backend wasn't watching (e.g. before
@@ -364,13 +404,25 @@ async def retrieve(
     _require_enabled()
     entity = _resolve_entity_or_400(data.entity)
 
-    conversation, _ = await cc.ensure_conversation(
-        db, data.session_id, entity, cwd=data.cwd
+    # A fork's first recorded event is almost always this prompt — the
+    # harness fires no SessionStart at a rewind boundary — so this is the
+    # endpoint that usually does the adopting (issue #357).
+    resolution = await cc.resolve_session(
+        db,
+        data.session_id,
+        entity,
+        cwd=data.cwd,
+        create=True,
+        prior_session_ids=data.prior_session_ids,
+        transcript_message_ids=data.transcript_message_ids,
     )
+    conversation = resolution.conversation
 
     # Rooms registry: a prompt in any room is a chance to catch a rename
     # anywhere (the snapshot covers every live session the hook could see),
-    # and a letter that arrived with it confirms its sender's address
+    # and a letter that arrived with it confirms its sender's address.
+    # adopted_from re-keys this room's row onto the forked session id, which
+    # matters most here: this is the path an ordinary rewind takes.
     rooms_notice, rooms_error = cc.observe_rooms_for_hook(
         entity,
         data.session_id,
@@ -383,6 +435,7 @@ async def retrieve(
             for peer in (data.peer_messages or [])
             if peer.sender_session
         ],
+        adopted_from=resolution.adopted_from,
     )
 
     prompt = data.prompt or ""
@@ -413,6 +466,11 @@ async def retrieve(
             retrieval_status=cc.RETRIEVAL_SKIPPED,
             rooms_notice=rooms_notice,
             rooms_error=rooms_error,
+            adoption_notice=(
+                cc.adoption_notice(str(conversation.id))
+                if resolution.adopted_from
+                else ""
+            ),
         )
 
     # Rows are persisted under the ids the hook chose (when valid), and a
@@ -500,6 +558,11 @@ async def retrieve(
         in_context_reflections_skipped=retrieval.in_context_reflections_skipped,
         rooms_notice=rooms_notice,
         rooms_error=rooms_error,
+        adoption_notice=(
+            cc.adoption_notice(str(conversation.id))
+            if resolution.adopted_from
+            else ""
+        ),
     )
 
 
@@ -563,11 +626,17 @@ async def recorded(
     wanted = [mid for mid in (_valid_uuid(m) for m in data.message_ids) if mid]
     if not wanted:
         return RecordedResponse(recorded=[], missing=list(data.message_ids))
-    conversation_id = cc.conversation_id_for_session(data.session_id)
+    # Resolve the session's conversation (alias-aware): after a fork the
+    # rows live under the adopted parent, not uuid5(this session id), so
+    # recomputing the deterministic id would report a landed row as missing
+    # (issue #357). No row means nothing was recorded — everything missing.
+    conversation = await cc.get_conversation_for_session(db, data.session_id)
+    if conversation is None:
+        return RecordedResponse(recorded=[], missing=list(data.message_ids))
     result = await db.execute(
         select(Message.id).where(
             Message.id.in_(wanted),
-            Message.conversation_id == conversation_id,
+            Message.conversation_id == str(conversation.id),
         )
     )
     found = {row[0] for row in result.all()}
@@ -591,9 +660,16 @@ async def log_assistant(
     _require_enabled()
     entity = _resolve_entity_or_400(data.entity)
 
-    conversation, _ = await cc.ensure_conversation(
-        db, data.session_id, entity, cwd=data.cwd
+    resolution = await cc.resolve_session(
+        db,
+        data.session_id,
+        entity,
+        cwd=data.cwd,
+        create=True,
+        prior_session_ids=data.prior_session_ids,
+        transcript_message_ids=data.transcript_message_ids,
     )
+    conversation = resolution.conversation
 
     content = data.content or ""
     if not content.strip():

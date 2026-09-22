@@ -192,6 +192,9 @@ def test_desktop_index_skips_unjoinable_and_unparsable_records(isolated_desktop_
         LIVE_ENTRY["sessionId"]: {
             "desktop_session_id": "local_ad0cb4d4-901e-4fb1-8a84-33af914a222a",
             "desktop_title": "Porch chat",
+            # The fork-adoption chain rides along on the same scan (#357);
+            # this record has none
+            "prior_session_ids": [],
         }
     }
 

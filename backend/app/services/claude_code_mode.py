@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import EntityConfig, settings
 from app.models import (
     Conversation,
+    ConversationSessionAlias,
     ConversationSource,
     ConversationType,
     EntitySetting,
@@ -167,7 +168,7 @@ def conversation_id_for_session(external_session_id: str) -> str:
 
 # Reflections injected at session start before the conversation row exists,
 # keyed by the session's deterministic conversation id. Consumed by
-# ensure_conversation when it creates the row, recording the
+# resolve_session when it creates the row, recording the
 # ConversationMemoryLink dedup rows for exactly what was injected.
 # In-memory on purpose (same class of state as SessionManager._sessions): a
 # backend restart in between just means those reflections go unlinked, so
@@ -212,36 +213,210 @@ async def get_conversation_for_session(
     db: AsyncSession,
     external_session_id: str,
 ) -> Optional[Conversation]:
-    """Look up the conversation recording a Claude Code session, if any."""
+    """
+    Look up the conversation recording a Claude Code session, if any: the
+    conversation currently keyed on the id, or the one it was a former key
+    of (a fork's parent adopted the forked id and kept the old one as an
+    alias — issue #357). A late or retried hook carrying either id lands
+    on the same conversation.
+    """
     result = await db.execute(
         select(Conversation).where(
             Conversation.external_session_id == external_session_id,
             Conversation.source == ConversationSource.CLAUDE_CODE.value,
         )
     )
+    conversation = result.scalar_one_or_none()
+    if conversation is not None:
+        return conversation
+    result = await db.execute(
+        select(Conversation)
+        .join(
+            ConversationSessionAlias,
+            ConversationSessionAlias.conversation_id == Conversation.id,
+        )
+        .where(
+            ConversationSessionAlias.external_session_id == external_session_id,
+            Conversation.source == ConversationSource.CLAUDE_CODE.value,
+        )
+    )
     return result.scalar_one_or_none()
 
 
-async def ensure_conversation(
+# How many lineage hints a hook sends, at most; the backend matches any of
+# them (bounding the query and the payload)
+MAX_LINEAGE_MESSAGE_IDS = 100
+MAX_LINEAGE_SESSION_IDS = 50
+
+
+@dataclass
+class SessionResolution:
+    """What resolving a Claude Code session id to its conversation found."""
+    conversation: Conversation
+    # A brand-new row was created by this call
+    created: bool = False
+    # This call adopted a forked session: the conversation was keyed on
+    # another session id until now, and that former id is the value here
+    adopted_from: Optional[str] = None
+
+
+async def find_lineage_conversation(
+    db: AsyncSession,
+    entity: EntityConfig,
+    *,
+    prior_session_ids: Optional[List[str]] = None,
+    transcript_message_ids: Optional[List[str]] = None,
+) -> Optional[Conversation]:
+    """
+    The conversation an unregistered session id is a continuation of, from
+    the lineage hints a hook sends (issue #357), or None.
+
+    The desktop app forks a session under a NEW Claude Code session id on
+    restart, "continue", and rewind, copying the transcript. Two joins
+    recover the parent, neither documented by the harness but both on the
+    page, tried in order of strength:
+
+    - `transcript_message_ids`: end-of-turn assistant entry uuids from the
+      session's own transcript. A fork rewrites every entry's sessionId but
+      NOT its uuid, and the Stop hook stores that uuid as the Message row's
+      primary key — so any of them that is a row of one of this entity's
+      Claude Code conversations names the parent directly, needing nothing
+      from the desktop app.
+    - `prior_session_ids`: the desktop app's own record of the session's
+      former ids (its `priorCliSessionIds`), resolved through the same
+      current-key-or-alias lookup as a live session id. The desktop app
+      stores that list OLDEST FIRST, so it is walked in reverse: the
+      immediate parent is the last element, and it is the one whose
+      conversation id the forked session's context already carries.
+      Taking the first match in the given order would adopt the oldest
+      ancestor whenever the chain isn't already collapsed into one row —
+      re-keying the room onto a conversation the entity is not calling
+      with, which is #357 again in another shape. Reversing also makes
+      the truncation keep the nearest ancestors rather than the oldest.
+
+    Entity-scoped throughout: a hint that resolves to another entity's
+    conversation is ignored, never adopted (the #356 no-default-entity
+    rule — the fence is the entity).
+    """
+    # Newest-last, so the cap keeps the NEWEST ids: those are the likeliest
+    # rows of the nearest parent. Slicing off the front would prefer the
+    # oldest — the same directional mistake as the prior-ids walk below,
+    # invisible only while the hook's limit happens to equal this one.
+    message_ids = [m for m in (transcript_message_ids or []) if m][
+        -MAX_LINEAGE_MESSAGE_IDS:
+    ]
+    if message_ids:
+        result = await db.execute(
+            select(Conversation)
+            .join(Message, Message.conversation_id == Conversation.id)
+            .where(
+                Message.id.in_(message_ids),
+                Conversation.source == ConversationSource.CLAUDE_CODE.value,
+                Conversation.entity_id == entity.index_name,
+            )
+            .order_by(Conversation.updated_at.desc().nullslast())
+            .limit(1)
+        )
+        conversation = result.scalars().first()
+        if conversation is not None:
+            return conversation
+
+    for prior in list(reversed(prior_session_ids or []))[:MAX_LINEAGE_SESSION_IDS]:
+        if not prior:
+            continue
+        conversation = await get_conversation_for_session(db, prior)
+        if conversation is not None and conversation.entity_id == entity.index_name:
+            return conversation
+
+    return None
+
+
+async def _adopt_forked_session(
+    db: AsyncSession,
+    conversation: Conversation,
+    new_session_id: str,
+) -> None:
+    """
+    Re-key an existing conversation onto a forked session's new id, keeping
+    the old id as an alias (issue #357).
+
+    The conversation id is left UNCHANGED — it is the id already injected
+    into the forked session's context, so the memory tools keep working —
+    while `external_session_id` moves to the new id (later hooks key on it
+    directly) and the previous id becomes a `ConversationSessionAlias` (a
+    late or retried hook still carrying it resolves to the same row). No
+    messages, links, or memories move: the whole point is that they are
+    already the parent's.
+    """
+    old_session_id = conversation.external_session_id
+    conversation.external_session_id = new_session_id
+    if old_session_id and old_session_id != new_session_id:
+        existing = await db.get(ConversationSessionAlias, old_session_id)
+        if existing is None:
+            db.add(
+                ConversationSessionAlias(
+                    external_session_id=old_session_id,
+                    conversation_id=conversation.id,
+                )
+            )
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Two hooks of the same fork raced to adopt (the prompt and the
+        # turn's Stop can overlap): the alias the other one wrote is the
+        # same fact, so take its result rather than failing the endpoint.
+        await db.rollback()
+        await db.refresh(conversation)
+        logger.info(
+            f"[CC MODE] Adoption of session {new_session_id[:8]}... raced; "
+            f"keeping conversation {conversation.id[:8]}..."
+        )
+        return
+    await db.refresh(conversation)
+    logger.info(
+        f"[CC MODE] Conversation {conversation.id[:8]}... adopted forked "
+        f"session {new_session_id[:8]}... (was {str(old_session_id)[:8]}...)"
+    )
+
+
+async def resolve_session(
     db: AsyncSession,
     external_session_id: str,
     entity: EntityConfig,
+    *,
     cwd: Optional[str] = None,
-) -> Tuple[Conversation, bool]:
+    create: bool,
+    prior_session_ids: Optional[List[str]] = None,
+    transcript_message_ids: Optional[List[str]] = None,
+) -> Optional[SessionResolution]:
     """
-    Find or create the conversation for a Claude Code session.
+    Resolve a Claude Code session id to its conversation, adopting a fork's
+    parent before ever creating a new row (issue #357).
 
-    Returns (conversation, created). Registration is lazy: /session-start
-    never calls this (background/utility sessions fire SessionStart without
-    ever speaking), so the first endpoint that records something creates the
-    row — under the session's deterministic conversation id, which the
-    session-start context already named for the memory tools. Any endpoint
-    may be that first one (the backend can restart mid-session, so /retrieve
-    or /log-assistant can arrive before the backend has seen the session).
+    Order: (1) the row currently keyed on this id, or aliased to it; (2) a
+    lineage match (the session is a fork — adopt its parent, re-keying onto
+    this id and returning adopted_from); (3) create a fresh row, but only
+    when `create` is True. `create=False` (session-start's lazy path)
+    returns None when nothing resolves, so a background/utility session
+    that never speaks still creates no row.
     """
     conversation = await get_conversation_for_session(db, external_session_id)
     if conversation is not None:
-        return conversation, False
+        return SessionResolution(conversation=conversation)
+
+    parent = await find_lineage_conversation(
+        db,
+        entity,
+        prior_session_ids=prior_session_ids,
+        transcript_message_ids=transcript_message_ids,
+    )
+    if parent is not None:
+        old_session_id = parent.external_session_id
+        await _adopt_forked_session(db, parent, external_session_id)
+        return SessionResolution(conversation=parent, adopted_from=old_session_id)
+
+    if not create:
+        return None
 
     title = "Claude Code session"
     if cwd:
@@ -268,14 +443,32 @@ async def ensure_conversation(
         conversation = await get_conversation_for_session(db, external_session_id)
         if conversation is None:
             raise
-        return conversation, False
+        return SessionResolution(conversation=conversation)
     await db.refresh(conversation)
     await _link_pending_reflections(db, conversation, entity)
     logger.info(
         f"[CC MODE] Created conversation {conversation.id[:8]}... for "
         f"Claude Code session {external_session_id[:8]}... (entity={entity.index_name})"
     )
-    return conversation, True
+    return SessionResolution(conversation=conversation, created=True)
+
+
+def adoption_notice(conversation_id: str) -> str:
+    """
+    The one line an adopted session is told, wherever the adoption landed
+    (issue #357).
+
+    A fork arrives holding its parent's conversation id in copied context
+    and no knowledge that the harness re-keyed it. The adoption keeps that
+    id valid, so the honest thing to say is short: this is a continuation,
+    the id still stands, the earlier talk is under it.
+    """
+    return (
+        "[HERE I AM] This session continues an earlier one of yours "
+        f'(a restart or rewind). Your conversation_id is "{conversation_id}"; '
+        "prompts and responses are being recorded there, and your "
+        "earlier talk is all in the archive under it."
+    )
 
 
 async def mark_conversation_compacted(
@@ -340,9 +533,9 @@ async def build_session_start_context(
     large".
 
     No Conversation row exists yet (registration is lazy — see
-    ensure_conversation), so conversation_id is a bare id, and the
+    resolve_session), so conversation_id is a bare id, and the
     reflection dedup links can't be recorded here: the injected ids are
-    stashed for ensure_conversation to link when the row is created.
+    stashed for resolve_session to link when the row is created.
     Matching the native recency-injection semantics, times_retrieved is
     never incremented, so session-start injections don't inflate
     significance.
@@ -530,27 +723,66 @@ async def build_post_compact_context(
     # than guess an entity), and in_conversation is what to read, which
     # here happens to be the same.
     boundary = conversation.last_compacted_at or datetime.utcnow()
-    parts.append(
-        "The summary above is a caption, not a record: of the talk it "
-        "carries nothing, and the talk is all still there verbatim, in "
-        "order — reading it back puts the conversation itself in front of "
-        "you again. What stays gone is only the tool traffic (files open, "
-        "commands run, results), which the summary is the one record of. "
-        "Read the talk with "
-        f'memory_read(conversation_id="{conversation.id}", direction="backward", '
-        f'to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
-        f'in_conversation="{conversation.id}", page_tokens={POST_COMPACT_PAGE_TOKENS}, '
-        f"max_pages={POST_COMPACT_LOOKBACK_PAGES}): the first page is the "
-        "talk just before the boundary, each cursor walks further back (pass "
-        "the same arguments with it), and the last page says whether it "
-        "reached the conversation's start or the page cap. "
-        f"{POST_COMPACT_LOOKBACK_PAGES} pages of "
-        f"{POST_COMPACT_PAGE_TOKENS // 1000}k tokens is about "
-        f"{POST_COMPACT_LOOKBACK_PAGES * POST_COMPACT_PAGE_TOKENS // 1000}k tokens "
-        "of talk, plenty of continuity; anything older is still in the archive "
-        "for the other memory tools when it matters."
-    )
+    # Adoption is best-effort: a fork whose transcript is unreadable, whose
+    # desktop record hasn't been written, or that happened while the backend
+    # was down (and a CLI session, which has no desktop record at all) falls
+    # through to a fresh empty row. Promising "the talk is all still there"
+    # and naming a read that returns nothing is the opening symptom of #357,
+    # so count first and say plainly when there is nothing to read.
+    archived_before_boundary = (
+        await db.execute(
+            select(func.count())
+            .select_from(Message)
+            .where(
+                Message.conversation_id == str(conversation.id),
+                Message.created_at < boundary,
+            )
+        )
+    ).scalar_one()
+    if not archived_before_boundary:
+        # What is known is the count, not the cause: say "usually because"
+        # rather than assert a re-key onto a session that may simply have
+        # recorded nothing yet (a bare slash command, then a long agentic
+        # stretch). The house rule is that nothing is inferred onto a record.
+        parts.append(
+            "One thing to know: this conversation has nothing archived from "
+            "before the boundary, so there is no earlier talk to read back "
+            "here. That is usually because the harness re-keyed this session "
+            "(a restart or rewind starts a new session id) and the earlier "
+            "talk is filed under the conversation it was recorded in; it also "
+            "happens when a session genuinely recorded nothing before now. "
+            "Your notes and reflections below are your ground; to find an "
+            "earlier stretch if there is one, read by time rather than by "
+            "conversation — "
+            f'memory_read(conversation_id="{conversation.id}", '
+            f'direction="backward", to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}'
+            '+00:00") with no in_conversation walks your whole archive back '
+            "from this moment, across whatever ids it was written under."
+        )
+    else:
+        parts.append(
+            "The summary above is a caption, not a record: of the talk it "
+            "carries nothing, and the talk is all still there verbatim, in "
+            "order — reading it back puts the conversation itself in front of "
+            "you again. What stays gone is only the tool traffic (files open, "
+            "commands run, results), which the summary is the one record of. "
+            "Read the talk with "
+            f'memory_read(conversation_id="{conversation.id}", direction="backward", '
+            f'to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
+            f'in_conversation="{conversation.id}", page_tokens={POST_COMPACT_PAGE_TOKENS}, '
+            f"max_pages={POST_COMPACT_LOOKBACK_PAGES}): the first page is the "
+            "talk just before the boundary, each cursor walks further back (pass "
+            "the same arguments with it), and the last page says whether it "
+            "reached the conversation's start or the page cap. "
+            f"{POST_COMPACT_LOOKBACK_PAGES} pages of "
+            f"{POST_COMPACT_PAGE_TOKENS // 1000}k tokens is about "
+            f"{POST_COMPACT_LOOKBACK_PAGES * POST_COMPACT_PAGE_TOKENS // 1000}k tokens "
+            "of talk, plenty of continuity; anything older is still in the archive "
+            "for the other memory tools when it matters."
+        )
 
+    # One tail for both branches: the next bulk part added here must not be
+    # able to land in only one of them
     notes_paths = build_notes_paths_block(entity)
     if notes_paths:
         parts.append(notes_paths)
@@ -590,6 +822,7 @@ def observe_rooms_for_hook(
     sessions: List[Dict[str, Any]],
     session_start: bool,
     delivered_from: Optional[List[str]] = None,
+    adopted_from: Optional[str] = None,
 ) -> Tuple[str, str]:
     """
     Feed a hook's live-session snapshot to the rooms registry (issue #323)
@@ -603,6 +836,11 @@ def observe_rooms_for_hook(
     with the prompt, which confirm their senders' registry addresses
     (issue #339).
 
+    `adopted_from` is set when this session was just adopted as a fork
+    (issue #357): the declared room's row is re-keyed from that former id
+    onto this session id first, so the observation below refreshes it as the
+    session's own and its liveness keeps tracking.
+
     notice: one line worth telling the entity — at session start, which
     room this session is registered as, its messaging address, and its
     current roster name; at prompt time, any roster rename the snapshot
@@ -613,6 +851,14 @@ def observe_rooms_for_hook(
     """
     if not rooms_registry_enabled():
         return "", ""
+
+    if adopted_from:
+        try:
+            rooms_registry.rekey_session(entity.label, adopted_from, session_id)
+        except RegistryWriteError as e:
+            return "", _rooms_write_error_text(e)
+        except Exception as e:  # never let the registry break a hook endpoint
+            logger.error(f"[ROOMS] Re-key after fork adoption failed: {e}")
 
     observations: List[SessionObservation] = []
     own: Optional[SessionObservation] = None

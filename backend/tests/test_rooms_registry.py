@@ -144,6 +144,39 @@ class TestRetire:
         assert rooms_registry.retire(ENTITY, "never-declared") is None
         assert not (notes_dir / "rooms.json").exists()
 
+    def test_rekey_moves_a_row_onto_a_forked_id(self, notes_dir):
+        rooms_registry.declare(
+            ENTITY, "sess-old-0000", "conv-A", "Porch",
+            desktop_session_id="local_addr", now=T0,
+        )
+        T1 = T0 + timedelta(hours=2)
+        row = rooms_registry.rekey_session(
+            ENTITY, "sess-old-0000", "sess-new-0000", now=T1,
+        )
+        assert row is not None
+        assert row["session_id"] == "sess-new-0000"
+        # Conversation id and messaging address are untouched by a re-key
+        assert row["conversation_id"] == "conv-A"
+        assert row["desktop_session_id"] == "local_addr"
+        assert row["last_seen"] == "2026-09-03T05:00:00+00:00"
+        data = rooms_registry.load(ENTITY)
+        assert rooms_registry.find_row(data, "sess-old-0000") is None
+        assert rooms_registry.find_row(data, "sess-new-0000") is not None
+
+    def test_rekey_is_a_noop_without_a_live_old_row(self, notes_dir):
+        assert rooms_registry.rekey_session(ENTITY, "nope", "sess-new") is None
+        rooms_registry.declare(ENTITY, "sess-A-0000", "conv-A", "Porch", now=T0)
+        rooms_registry.retire(ENTITY, "sess-A-0000", now=T0)
+        # A retired row is not re-keyed
+        assert rooms_registry.rekey_session(ENTITY, "sess-A-0000", "sess-B") is None
+
+    def test_rekey_skips_when_new_id_already_has_a_row(self, notes_dir):
+        rooms_registry.declare(ENTITY, "sess-old-0000", "conv-A", "Porch", now=T0)
+        rooms_registry.declare(ENTITY, "sess-new-0000", "conv-B", "Engagement room", now=T0)
+        assert rooms_registry.rekey_session(
+            ENTITY, "sess-old-0000", "sess-new-0000"
+        ) is None
+
 
 class TestObserve:
     def test_only_declared_rows_are_touched(self, notes_dir):

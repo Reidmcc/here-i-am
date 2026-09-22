@@ -122,6 +122,9 @@ def main() -> None:
     peer_messages = [
         {**peer, "message_id": str(uuid.uuid4())} for peer in peer_messages
     ]
+    # One scan of the desktop app's session records serves both the rooms
+    # snapshot and the lineage hints (the records are ~80 KB each)
+    desktop_index = hook_util.desktop_sessions_index()
     payload = {
         "session_id": session_id,
         "prompt": prompt,
@@ -131,7 +134,15 @@ def main() -> None:
         "cwd": data.get("cwd"),
         # Rooms registry: a prompt anywhere (a wakeup tick included) is a
         # chance to catch a roster rename in any live session
-        "sessions": hook_util.live_sessions_snapshot(own_session_id=session_id),
+        "sessions": hook_util.live_sessions_snapshot(
+            own_session_id=session_id, desktop_index=desktop_index
+        ),
+        # Fork adoption (issue #357): a rewind fires no SessionStart, so
+        # this prompt is usually the first the backend sees of the forked
+        # session id — the hints are what keep it on its own conversation
+        **hook_util.lineage_hints(
+            session_id, data.get("transcript_path"), desktop_index=desktop_index
+        ),
     }
     try:
         body = hook_util.post_backend("/api/claude-code/retrieve", payload, timeout=30)
@@ -168,8 +179,16 @@ def main() -> None:
     # firing. Skipped on wakeup ticks themselves — a sentinel that just
     # worked needs no advertisement.
     reminder = "" if wakeup else wakeup_sentinel_reminder()
+    # Fork adoption (issue #357): said first in the tail, because it changes
+    # what every other line in it refers to — which conversation this
+    # session is recording into
+    adopted = adoption_notice(body)
     # Rooms registry: a rename observed this turn, or a loud write failure
-    tail = [part for part in (mailbox, *hook_util.rooms_output_lines(body), reminder) if part]
+    tail = [
+        part
+        for part in (adopted, mailbox, *hook_util.rooms_output_lines(body), reminder)
+        if part
+    ]
 
     context = (body.get("context") or "").strip()
     if not context:
@@ -423,6 +442,19 @@ def wakeup_sentinel_reminder() -> str:
         f"loop tick, or reminder)? Start it with {hook_util.WAKEUP_SENTINEL} "
         "so the fired prompt is not archived as the human's words."
     )
+
+
+def adoption_notice(body: dict) -> str:
+    """
+    The backend's one-line notice that this session was adopted as a fork
+    of an earlier one (issue #357), or empty.
+
+    A rewind or restart fires no SessionStart, so for the ordinary fork
+    this prompt is the first the backend sees of the new session id — and
+    this line is the only place the entity learns that the harness re-keyed
+    it and which conversation is recording the turn.
+    """
+    return str((body or {}).get("adoption_notice") or "").strip()
 
 
 def sibling_reflections_notice(body: dict) -> str:
