@@ -30,6 +30,7 @@ from app.models import (
     Message,
     MessageRole,
 )
+from app.services import claude_code_mode as cc
 from app.services import memory_tools
 from app.services.memory_service import memory_service
 
@@ -3163,6 +3164,89 @@ class TestLateForkAdoption:
         assert error is None, error
         assert str(conversation.id) == other_conv
         assert via_alias is False
+
+
+    async def test_successive_late_adoptions_keep_one_conversation(
+        self, async_client, db_session
+    ):
+        """The porch's real shape: a room rewound more than once. The live log
+        shows c44d3765 re-keyed from one fork's id onto the next one's, so
+        each late adoption has to collapse onto the SAME conversation rather
+        than chain — and every id the room has been told along the way has to
+        keep resolving."""
+        first_uuid = str(uuid.uuid4())
+        origin_session, room = await self._record_parent_turn(
+            async_client, first_uuid
+        )
+
+        retired_ids = []
+        session_ids = [origin_session]
+        turn_uuids = [first_uuid]
+        for turn in range(2):
+            fork_session = str(uuid.uuid4())
+            session_ids.append(fork_session)
+            # The fork's first prompt: the harness has written nothing yet
+            retired = (
+                await async_client.post(
+                    "/api/claude-code/retrieve",
+                    json={
+                        "session_id": fork_session,
+                        "prompt": f"first prompt after rewind {turn}",
+                    },
+                )
+            ).json()["conversation_id"]
+            assert retired == cc_conv_id(fork_session)
+            retired_ids.append(retired)
+            # That turn's Stop: the files exist now
+            reply_uuid = str(uuid.uuid4())
+            stopped = await async_client.post(
+                "/api/claude-code/log-assistant",
+                json={
+                    "session_id": fork_session,
+                    "content": f"reply after rewind {turn}",
+                    "message_uuid": reply_uuid,
+                    "transcript_message_ids": turn_uuids,
+                },
+            )
+            assert stopped.json()["conversation_id"] == room
+            turn_uuids.append(reply_uuid)
+
+        # One room, not a chain
+        conversations = (
+            await db_session.execute(
+                select(Conversation).where(
+                    Conversation.source == ConversationSource.CLAUDE_CODE.value
+                )
+            )
+        ).scalars().all()
+        assert [str(c.id) for c in conversations] == [room]
+        assert conversations[0].external_session_id == session_ids[-1]
+
+        # Every message of every turn is under it
+        count = (
+            await db_session.execute(
+                select(func.count())
+                .select_from(Message)
+                .where(Message.conversation_id == room)
+            )
+        ).scalar_one()
+        assert count == 5  # the origin turn + two prompts + two replies
+
+        # Every session id the harness has used resolves
+        for session_id in session_ids:
+            found = await cc.get_conversation_for_session(db_session, session_id)
+            assert found is not None and str(found.id) == room, session_id
+        # And every conversation id the room has been told
+        for retired in retired_ids:
+            found = await cc.resolve_conversation_id(db_session, retired)
+            assert found is not None and str(found.id) == room, retired
+            conversation, error, via_alias = (
+                await memory_service.resolve_conversation_prefix(
+                    db_session, "test-entity", retired
+                )
+            )
+            assert error is None and str(conversation.id) == room
+            assert via_alias is True
 
     async def _adopted_conversation_with_both_aliases(self, async_client, db_session):
         """A parent adopted by a fork, with a row in each alias table: a

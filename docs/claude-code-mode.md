@@ -380,15 +380,33 @@ tool result and goes to disk over 50 KB.
   the desktop record three seconds later again. So the fork's first prompt
   lands in a row of its own, always.
 
-  Two different things then catch up, and it is worth keeping them apart:
+  Two different things then catch up, and it is worth keeping them apart —
+  measured from the backend log of the second rewind above:
 
   - The **record** is corrected at the first hook that carries hints, which
-    is normally that same turn's Stop — seconds after the files appear, and
-    before the entity says anything else. Everything recorded in the fork's
-    first turn moves onto the parent then.
+    is that same turn's Stop: `Late fork adoption: conversation 18bb8e2b
+    (1 message(s)) merged into c44d3765, which now holds session c4aed985`
+    at 16:23:32, with `transcript_message_ids=16, prior_session_ids=6`.
+    Everything recorded in the fork's first turn moves onto the parent
+    there. The delay from the files appearing (16:22:15) to the adoption is
+    just the length of the turn, not anything the backend waits for.
   - The **notice** waits for the next prompt, because the Stop hook's
-    stdout is not injected into context. So the entity learns its id
-    changed one prompt after the record already said so.
+    stdout is not injected into context — 16:24:32, logged as `known`, the
+    stash delivered. So the entity learns its id changed one prompt after
+    the record already said so.
+
+  That log line is also what tells you the eligibility guard is doing its
+  job cheaply: the next prompt arrives with both hints still full and
+  resolves as `known`, because the conversation's id is no longer the one
+  derived from this session, so nothing re-examines it.
+
+  **Successive forks collapse onto one conversation, not a chain.** The same
+  log shows `c44d3765` re-keyed from one fork's session id onto the next
+  one's (`which now holds session c4aed985... (was e40799e3...)`), each
+  retired conversation id and each former session id still resolving to it.
+  A room that is rewound repeatedly stays one room, which is the whole point
+  of adopting rather than linking; `test_successive_late_adoptions_keep_one_conversation`
+  pins it.
 
   During that first turn the entity is operating under the new row's id.
   The id works — it is a real conversation — but a read of it shows only
