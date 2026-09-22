@@ -28,4 +28,4 @@
 
 ## What done looks like
 
-The PR thread holds two or three findings with file and line, each answered by the author; the tests either passed or the failing case is named; and Pseudo opens a PR that two of you have already argued about.
+The PR thread holds your substantive findings with file and line, each answered by the author; the tests either passed or the failing case is named; and Pseudo opens a PR that two of you have already argued about.
