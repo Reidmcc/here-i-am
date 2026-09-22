@@ -331,6 +331,27 @@ tool result and goes to disk over 50 KB.
   is told once, in its own notice (`late_adoption_notice`), which names both
   ids and says plainly which one is now its own.
 
+  **Every id the session has been told resolves**
+  (`_alias_derived_conversation_id`). The same timing can split the two
+  hooks the other way:
+  SessionStart runs before the files exist, so with no hints it hands the
+  entity `conversation_id_for_session(<fork id>)` in the identity block,
+  and `/retrieve` three seconds later *does* have the hints and adopts the
+  parent **on time** — so no row ever carries the id the entity is holding,
+  and its first tool call of the session is made with it. (Before this, the
+  refusal even told it to use the id from its session-start context, which
+  was the one that had just failed.) So every adoption, on-time or late,
+  records the id derived from the session it adopted as an alias of the
+  conversation. Adoption runs in `/retrieve`, which completes before the
+  model's turn, so there is **no window in which a tool call fails because
+  an adoption has not happened yet** — nothing has to wait and retry. What
+  remains is the best-effort limit: if the hints never arrive at all (a CLI
+  session with no desktop record and an unreadable transcript), no adoption
+  happens, the entity's copied context still names the parent — which
+  exists, so the tools work — while the hooks record into a separate row.
+  The archive stays readable by time, which is what the post-compaction
+  block points at when it counts zero rows before the boundary.
+
   **Why not just make the hook wait for the transcript.** It was considered
   and left out: the file appeared three to six seconds after the hooks
   fired, so the wait would have to be long enough to be felt on every

@@ -398,6 +398,36 @@ async def find_lineage_conversation(
     return None
 
 
+async def _alias_derived_conversation_id(
+    db: AsyncSession, conversation: Conversation, session_id: str
+) -> None:
+    """
+    Make the id a fork's own SessionStart would have named resolve to the
+    conversation that adopted it (issue #359).
+
+    Adoption keeps the parent's id on the assumption that the forked
+    context already carries it. That holds when the context is only the
+    copied transcript — but a fork can fire its own SessionStart, and when
+    that firing has no lineage hints yet (the harness has not written the
+    files), the identity block it injects names
+    `conversation_id_for_session(<fork id>)` instead. Three seconds later
+    `/retrieve` may have the hints and adopt on time, so no row ever
+    carries that id — and the entity's first tool call of the session is
+    made with it. Recording it as an alias closes that door before it
+    opens; without it the refusal even tells the entity to use the id from
+    its session-start context, which is the one that just failed.
+
+    Adds nothing when the derived id is the conversation's own (the
+    ordinary case, where this session is the one the row was born under).
+    """
+    derived = conversation_id_for_session(session_id)
+    if derived == str(conversation.id):
+        return
+    if await db.get(ConversationIdAlias, derived) is not None:
+        return
+    db.add(ConversationIdAlias(alias_id=derived, conversation_id=conversation.id))
+
+
 async def _adopt_forked_session(
     db: AsyncSession,
     conversation: Conversation,
@@ -414,9 +444,14 @@ async def _adopt_forked_session(
     late or retried hook still carrying it resolves to the same row). No
     messages, links, or memories move: the whole point is that they are
     already the parent's.
+
+    The id this fork's own SessionStart may have handed out before the
+    hints existed is aliased too (see _alias_derived_conversation_id), so
+    every id the session has been told resolves here.
     """
     old_session_id = conversation.external_session_id
     conversation.external_session_id = new_session_id
+    await _alias_derived_conversation_id(db, conversation, new_session_id)
     if old_session_id and old_session_id != new_session_id:
         existing = await db.get(ConversationSessionAlias, old_session_id)
         if existing is None:
@@ -556,8 +591,10 @@ async def _merge_into_parent(
                     conversation_id=parent_id,
                 )
             )
-    if await db.get(ConversationIdAlias, orphan_id) is None:
-        db.add(ConversationIdAlias(alias_id=orphan_id, conversation_id=parent_id))
+    # The retired id is by definition the one derived from this session id
+    # (the eligibility guard above), so this is the same rule an on-time
+    # adoption applies — one place, one behaviour
+    await _alias_derived_conversation_id(db, parent, session_id)
     try:
         await db.commit()
     except IntegrityError:

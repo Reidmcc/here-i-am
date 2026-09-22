@@ -2938,6 +2938,88 @@ class TestLateForkAdoption:
         ).scalar_one()
         assert alias.conversation_id == parent_conv
 
+
+    async def test_the_id_session_start_handed_out_survives_an_on_time_adoption(
+        self, async_client, db_session, test_engine
+    ):
+        """The #359 timing can split the two hooks: SessionStart runs before
+        the harness has written the fork's files, so it names the derived id
+        in the identity block; /retrieve runs seconds later, after they
+        exist, and adopts the parent ON TIME. The entity is then holding an
+        id that was never a row — and its first tool call of the session is
+        made with it."""
+        from app.services import claude_code_mcp
+        from app.services import claude_code_mode as cc
+
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+
+        fork_session = str(uuid.uuid4())
+        told = (
+            await async_client.post(
+                "/api/claude-code/session-start",
+                json={"session_id": fork_session},
+            )
+        ).json()["conversation_id"]
+        assert told == cc.conversation_id_for_session(fork_session)
+
+        adopted = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "the first prompt after the rewind",
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+        assert adopted.json()["conversation_id"] == parent_conv
+
+        maker = async_sessionmaker(
+            test_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        with patch("app.services.claude_code_mcp.async_session_maker", maker):
+            ctx, error = await claude_code_mcp.build_tool_context(told)
+        assert error is None, error
+        assert ctx.conversation_id == parent_conv
+
+
+    async def test_the_room_tools_resolve_a_stale_id_too(
+        self, async_client, db_session, test_engine
+    ):
+        """declare_room goes through the other resolver, and a fork's first
+        act is often to re-declare its room — with the id its session-start
+        block named."""
+        from app.services import claude_code_mcp
+
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        told = (
+            await async_client.post(
+                "/api/claude-code/session-start",
+                json={"session_id": fork_session},
+            )
+        ).json()["conversation_id"]
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "the first prompt after the rewind",
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+
+        maker = async_sessionmaker(
+            test_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        with patch("app.services.claude_code_mcp.async_session_maker", maker):
+            conversation, error = (
+                await claude_code_mcp.resolve_claude_code_conversation(told)
+            )
+        assert error is None, error
+        assert str(conversation.id) == parent_conv
+        # And it is keyed on the session the registry row will be written for
+        assert conversation.external_session_id == fork_session
+
     async def test_the_retired_conversation_id_still_resolves(
         self, async_client, db_session, test_engine
     ):

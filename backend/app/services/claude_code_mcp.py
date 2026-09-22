@@ -264,7 +264,14 @@ async def build_tool_context(
         if conversation is None:
             return None, (
                 f"Error: No conversation found with ID '{conversation_id}'. "
-                "Use the conversation_id from your session-start context."
+                "The row is created by this session's first recorded "
+                "prompt, so an id from before that can resolve to "
+                "nothing; and a restart or rewind moves a session onto "
+                "the conversation it continues, in which case the "
+                "NEWEST hook block names the id that works, not the "
+                "session-start one. Reading the archive by time "
+                "(memory_read with no in_conversation) works under any "
+                "id."
             )
         if conversation.source != ConversationSource.CLAUDE_CODE.value:
             return None, (
@@ -327,8 +334,10 @@ async def resolve_claude_code_conversation(
     if conversation is None:
         return None, (
             f"Error: No conversation found with ID '{conversation_id}'. "
-            "Use the conversation_id from your session-start context (the row "
-            "is created by your first recorded prompt)."
+            "The row is created by this session's first recorded prompt, "
+            "and a restart or rewind moves a session onto the conversation "
+            "it continues — so use the id from the NEWEST hook block, not "
+            "the session-start one."
         )
     if conversation.source != ConversationSource.CLAUDE_CODE.value:
         return None, (
