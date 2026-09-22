@@ -3248,6 +3248,92 @@ class TestLateForkAdoption:
             assert error is None and str(conversation.id) == room
             assert via_alias is True
 
+
+    async def test_the_hooks_own_hints_adopt_on_a_forks_first_prompt(
+        self, async_client, db_session, tmp_path, monkeypatch
+    ):
+        """The wire, not the two ends (the #358 lesson): build the files a
+        fork's first prompt actually sees — a desktop record still naming the
+        parent, no transcript — collect the hints with the hook's own
+        collector, and post them as the first /retrieve for the fork's id."""
+        import json as _json
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        hooks_dir = _Path(__file__).resolve().parents[2] / "claude-code-mode" / "hooks"
+        if str(hooks_dir) not in _sys.path:
+            _sys.path.insert(0, str(hooks_dir))
+        import hook_util
+
+        parent_session = str(uuid.uuid4())
+        parent_conv = (
+            await async_client.post(
+                "/api/claude-code/log-assistant",
+                json={
+                    "session_id": parent_session,
+                    "content": "The talk before the rewind.",
+                    "message_uuid": str(uuid.uuid4()),
+                },
+            )
+        ).json()["conversation_id"]
+
+        fork_session = str(uuid.uuid4())
+        host_id = "local_" + str(uuid.uuid4())
+        desktop = tmp_path / "desktop" / "claude-code-sessions" / "org" / "acct"
+        desktop.mkdir(parents=True)
+        (desktop / f"{host_id}.json").write_text(
+            _json.dumps({
+                "sessionId": host_id,
+                # Not rewritten yet: still the parent
+                "cliSessionId": parent_session,
+                "priorCliSessionIds": [],
+                "title": "Porch chat",
+            }),
+            encoding="utf-8",
+        )
+        registry = tmp_path / "config" / "sessions"
+        registry.mkdir(parents=True)
+        (registry / "9001.json").write_text(
+            _json.dumps({
+                "pid": 9001,
+                "sessionId": fork_session,
+                "hostSessionId": host_id,
+                "cwd": "E:\\here-i-am-notes",
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("CLAUDE_CODE_HOST_SESSION_ID", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+        hints = hook_util.lineage_hints(
+            fork_session,
+            str(tmp_path / "not-written-yet.jsonl"),
+            desktop_dir=str(tmp_path / "desktop"),
+            config_dir=str(tmp_path / "config"),
+        )
+        assert hints["transcript_message_ids"] == []
+        assert hints["prior_session_ids"] == [parent_session]
+
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "the first prompt after the rewind",
+                **hints,
+            },
+        )
+        body = response.json()
+        # Adopted on the FIRST prompt: the turn runs under the room itself
+        assert body["conversation_id"] == parent_conv
+        assert "continues an earlier one" in body["adoption_notice"]
+        assert (
+            await db_session.execute(
+                select(Conversation).where(
+                    Conversation.id == cc_conv_id(fork_session)
+                )
+            )
+        ).scalar_one_or_none() is None
+
     async def _adopted_conversation_with_both_aliases(self, async_client, db_session):
         """A parent adopted by a fork, with a row in each alias table: a
         session alias (its own former id) and a conversation-id alias (the

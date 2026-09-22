@@ -565,3 +565,50 @@ def test_host_session_id_is_read_from_a_snapshot_when_given(
         sessions=snapshot,
     )
     assert priors[-1] == PARENT_SESSION_ID
+
+
+def test_host_session_id_comes_from_the_environment_first(
+    tmp_path, isolated_desktop_dir, monkeypatch
+):
+    """The desktop app sets CLAUDE_CODE_HOST_SESSION_ID on the Claude Code
+    process and hooks inherit it, so the parent is findable with no file at
+    all — no registry, no write-timing edge."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", FORK_SESSION_ID)
+    monkeypatch.setenv(
+        "CLAUDE_CODE_HOST_SESSION_ID", "local_7d7e55dd-4952-41b5-b47e-4182d676f06b"
+    )
+    write_desktop_records(isolated_desktop_dir, RECORD_BEFORE_THE_REWRITE)
+    priors = hook_util.desktop_prior_session_ids(
+        FORK_SESSION_ID, config_dir=str(tmp_path / "no-registry-here")
+    )
+    assert priors[-1] == PARENT_SESSION_ID
+
+
+def test_the_environment_is_ignored_when_it_describes_another_session(
+    tmp_path, isolated_desktop_dir, monkeypatch
+):
+    """The environment describes the process. A hook firing for some other
+    session's id must not inherit this process's desktop host — and with the
+    registry absent there is nothing else to fall back to, so the answer is
+    nothing rather than the wrong parent."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "some-other-session")
+    monkeypatch.setenv(
+        "CLAUDE_CODE_HOST_SESSION_ID", "local_7d7e55dd-4952-41b5-b47e-4182d676f06b"
+    )
+    write_desktop_records(isolated_desktop_dir, RECORD_BEFORE_THE_REWRITE)
+    assert hook_util.desktop_prior_session_ids(
+        FORK_SESSION_ID, config_dir=str(tmp_path / "no-registry-here")
+    ) == []
+
+
+def test_the_registry_still_answers_without_the_environment(
+    tmp_path, isolated_desktop_dir, monkeypatch
+):
+    monkeypatch.delenv("CLAUDE_CODE_HOST_SESSION_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    write_registry(tmp_path, FORK_REGISTRY_ENTRY)
+    write_desktop_records(isolated_desktop_dir, RECORD_BEFORE_THE_REWRITE)
+    priors = hook_util.desktop_prior_session_ids(
+        FORK_SESSION_ID, config_dir=str(tmp_path)
+    )
+    assert priors[-1] == PARENT_SESSION_ID

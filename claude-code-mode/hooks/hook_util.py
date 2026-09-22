@@ -479,13 +479,29 @@ def host_session_id_for(session_id, config_dir=None, sessions=None):
     per-process registry's `hostSessionId` — or None (a CLI session has no
     desktop host, and the registry may be unreadable).
 
-    The registry file is written when the process starts, so this is
-    available at a forked session's very first prompt, minutes before the
-    desktop app rewrites its own record. Pass `sessions` (a snapshot from
-    live_sessions_snapshot) to reuse a read the caller already did.
+    Three ways in, cheapest and earliest first:
+
+    - `CLAUDE_CODE_HOST_SESSION_ID` in the environment. The desktop app
+      sets it on the Claude Code process and hooks inherit it, so it needs
+      no file at all and has no write-timing edge. It is only trusted when
+      `CLAUDE_CODE_SESSION_ID` agrees with the session id the hook was
+      handed: the environment describes the process, and a hook firing for
+      some other session's id (or a stale environment) must not attribute
+      that process's desktop host to it.
+    - the caller's `sessions` snapshot, if it already read the registry.
+    - a scan of the registry itself.
+
+    The registry file is written when the process starts — six seconds
+    before the first prompt on a measured rewind — so the file paths are
+    early enough on their own; the environment just removes the last
+    dependence on a write having happened.
     """
     if not session_id:
         return None
+    env_host = _optional_str(os.environ.get("CLAUDE_CODE_HOST_SESSION_ID"))
+    env_session = _optional_str(os.environ.get("CLAUDE_CODE_SESSION_ID"))
+    if env_host and env_session == session_id:
+        return env_host
     for entry in sessions or []:
         if entry.get("session_id") == session_id:
             return entry.get("host_session_id")

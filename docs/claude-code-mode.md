@@ -405,6 +405,18 @@ tool result and goes to disk over 50 KB.
   with no `hostSessionId` (a CLI session) gets nothing rather than a guess
   at some other desktop session's record.
 
+  `hostSessionId` itself comes from the environment when it can: the
+  desktop app sets `CLAUDE_CODE_HOST_SESSION_ID` (and
+  `CLAUDE_CODE_SESSION_ID`) on the Claude Code process and children inherit
+  them, so no file needs to have been written yet. It is trusted only when
+  `CLAUDE_CODE_SESSION_ID` matches the session id the hook was handed — the
+  environment describes the *process*, and a firing for another session's
+  id must not borrow this process's desktop host. Observed in tool
+  subprocesses of the CLI rather than in a hook specifically; the registry
+  file is the fallback and is itself early enough (written six seconds
+  before the first prompt on a measured rewind), so a hook that inherited
+  nothing loses no ground.
+
   With that, adoption lands on the fork's **first prompt**, before the
   model's turn, so the whole first turn runs under the room's own
   conversation. Late adoption (below) remains the backstop for everything
@@ -442,79 +454,6 @@ tool result and goes to disk over 50 KB.
   next prompt), and a `created` line with both hint counts at zero is the
   signature of the miss this section fixes.
 
-  **Both alias tables are cascaded from `Conversation`.** After adoption
-  every room that has ever been restarted or rewound owns rows in them, so
-  an uncascaded foreign key would make exactly those conversations
-  undeletable wherever the constraint is enforced — Postgres always, SQLite
-  only with `PRAGMA foreign_keys=ON`, which is why it showed locally as
-  harmless dangling rows and would have been a 500 in production. The
-  sharper case is the conversation list's empty-row sweep, which deletes
-  rows without being asked: `/retrieve` creates the row before it decides
-  whether to record the prompt, so a session whose only input was a bare
-  slash command leaves an empty one, and a fork adopting it would break
-  every list call once the retention window passed.
-
-  **One turn of lag is inherent; it is not a defect to file.** Nothing on
-  the backend can win the fork's *first* prompt hook, because the harness
-  writes the files the hints come from two to eight seconds after it. Two
-  live rewinds, measured from the porch on this branch, both went: rewind
-  edge stamped, SessionStart about a minute later, the first prompt three
-  seconds after that, the fork's transcript two seconds after *that*, and
-  the desktop record three seconds later again. So the fork's first prompt
-  lands in a row of its own, always.
-
-  Two different things then catch up, and it is worth keeping them apart —
-  measured from the backend log of the second rewind above:
-
-  - The **record** is corrected at the first hook that carries hints, which
-    is that same turn's Stop: `Late fork adoption: conversation 18bb8e2b
-    (1 message(s)) merged into c44d3765, which now holds session c4aed985`
-    at 16:23:32, with `transcript_message_ids=16, prior_session_ids=6`.
-    Everything recorded in the fork's first turn moves onto the parent
-    there. The delay from the files appearing (16:22:15) to the adoption is
-    just the length of the turn, not anything the backend waits for.
-  - The **notice** waits for the next prompt, because the Stop hook's
-    stdout is not injected into context — 16:24:32, logged as `known`, the
-    stash delivered. So the entity learns its id changed one prompt after
-    the record already said so.
-
-  That log line is also what tells you the eligibility guard is doing its
-  job cheaply: the next prompt arrives with both hints still full and
-  resolves as `known`, because the conversation's id is no longer the one
-  derived from this session, so nothing re-examines it.
-
-  **Successive forks collapse onto one conversation, not a chain.** The same
-  log shows `c44d3765` re-keyed from one fork's session id onto the next
-  one's (`which now holds session c4aed985... (was e40799e3...)`), each
-  retired conversation id and each former session id still resolving to it.
-  A room that is rewound repeatedly stays one room, which is the whole point
-  of adopting rather than linking; `test_successive_late_adoptions_keep_one_conversation`
-  pins it.
-
-  During that first turn the entity is operating under the new row's id.
-  The id works — it is a real conversation — but a read of it shows only
-  that turn, so a post-compaction recovery attempted right then finds
-  little. That is the case the post-compaction block already handles by
-  counting rows before the boundary and pointing at a read by time.
-
-  **Why not make the hook wait for the transcript.** It was considered and
-  left out: the file appears seconds after the hooks fire, so the wait
-  would have to be long enough to be felt on every prompt — and a genuinely
-  new session's transcript is missing at its first prompt too, so the cost
-  would land on every new session to save a merge that costs nothing and
-  completes within one turn. (A narrower version — SessionStart alone
-  waiting, since it does not block a prompt — would close the lag entirely
-  by adopting before the first prompt is recorded. It is not built, because
-  it needs a measurement nobody has taken: how soon a *genuinely new*
-  session's transcript appears relative to its SessionStart. If that is
-  fast, the poll returns immediately for everyone and only a fork pays.)
-
-  **Diagnosing a miss.** Every resolution logs one line with the hint
-  counts and the decision — `known` / `created` / `adopted` /
-  `late-adopted` / `deferred` — because whether a fork gets adopted turns
-  entirely on evidence that leaves no trace afterwards. Issue #359 was
-  diagnosed by reconstructing file birth times against a log that only said
-  "Created conversation"; the counts make it a one-line read.
 - **Registration is lazy.** `session-start` builds the identity context but
   never creates the row — Claude Desktop fires SessionStart for
   background/utility sessions that never send a prompt, and eager
