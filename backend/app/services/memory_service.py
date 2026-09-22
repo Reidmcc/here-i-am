@@ -2104,6 +2104,47 @@ class MemoryService:
             logger.error(f"Error deleting memory: {e}")
             return False
 
+    async def repoint_memories(
+        self,
+        message_ids: List[str],
+        conversation_id: str,
+        entity_id: Optional[str] = None,
+    ) -> int:
+        """
+        Move memories to another conversation in the vector store's
+        metadata, for messages that changed conversation in SQL (issue
+        #359's late fork adoption).
+
+        `conversation_id` is not decoration there: same-conversation
+        exclusion is a Pinecone metadata filter, so a memory left under a
+        retired id would be recalled into the very room that just said it.
+        Best-effort and non-fatal, like every Pinecone write here — SQL is
+        the archive, and a rebuild restores the metadata from it.
+
+        Returns how many records were updated.
+        """
+        ids = [str(mid) for mid in message_ids if mid]
+        if not ids or not self.is_configured():
+            return 0
+        index = self.get_index(entity_id)
+        if index is None:
+            return 0
+        updated = 0
+        for message_id in ids:
+            try:
+                await run_pinecone(
+                    index.update,
+                    id=message_id,
+                    set_metadata={"conversation_id": conversation_id},
+                )
+                updated += 1
+            except Exception as e:
+                logger.warning(
+                    f"Could not repoint memory {message_id[:8]}... to "
+                    f"conversation {conversation_id[:8]}...: {e}"
+                )
+        return updated
+
     async def list_all_pinecone_ids(
         self,
         entity_id: Optional[str] = None,

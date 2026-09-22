@@ -33,13 +33,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import EntityConfig, settings
 from app.models import (
     Conversation,
+    ConversationIdAlias,
+    ConversationMemoryLink,
     ConversationSessionAlias,
     ConversationSource,
     ConversationType,
@@ -243,10 +245,55 @@ async def get_conversation_for_session(
     return result.scalar_one_or_none()
 
 
+async def resolve_conversation_id(
+    db: AsyncSession,
+    conversation_id: str,
+) -> Optional[Conversation]:
+    """
+    The conversation an id names: the row itself, or — when a late fork
+    adoption retired that id (issue #359) — the conversation it was merged
+    into.
+
+    Every MCP tool call carries a conversation id, and a session holds the
+    one its identity block named at start. Late adoption moves a running
+    session's recording onto the parent it turned out to continue, which
+    retires the id the session was given; the entity is told the new one,
+    but the old one has to keep working, both for calls already in flight
+    and for context that still quotes it.
+    """
+    if not conversation_id:
+        return None
+    result = await db.execute(
+        select(Conversation).where(Conversation.id == conversation_id)
+    )
+    conversation = result.scalar_one_or_none()
+    if conversation is not None:
+        return conversation
+    result = await db.execute(
+        select(Conversation)
+        .join(ConversationIdAlias, ConversationIdAlias.conversation_id == Conversation.id)
+        .where(ConversationIdAlias.alias_id == conversation_id)
+    )
+    return result.scalar_one_or_none()
+
+
 # How many lineage hints a hook sends, at most; the backend matches any of
 # them (bounding the query and the payload)
 MAX_LINEAGE_MESSAGE_IDS = 100
 MAX_LINEAGE_SESSION_IDS = 50
+
+# How many messages a row opened for this very session id may hold and
+# still be treated as a fork's misfiled first steps (issue #359).
+#
+# The desktop app can run a fork's first hooks BEFORE it has written the
+# fork's transcript and its own session record, so both lineage hints
+# arrive empty and the fork is indistinguishable from a new session: a row
+# gets opened for it. Seconds later the files exist and the hints are full,
+# so the evidence usually arrives with the very next hook — but only if
+# adoption is still willing to look. It stays willing while the row is this
+# small: a couple of turns' worth of rows, which is all the evidence needs,
+# and not enough to re-parent an established room on a stray hint.
+LATE_ADOPTION_MAX_MESSAGES = 20
 
 
 @dataclass
@@ -258,6 +305,11 @@ class SessionResolution:
     # This call adopted a forked session: the conversation was keyed on
     # another session id until now, and that former id is the value here
     adopted_from: Optional[str] = None
+    # This call adopted LATE (issue #359): a row had already been opened
+    # for this session id, and its content was merged into the parent. The
+    # value is that row's conversation id — now retired, aliased, and no
+    # longer the id the session records under
+    merged_from: Optional[str] = None
 
 
 async def find_lineage_conversation(
@@ -266,6 +318,7 @@ async def find_lineage_conversation(
     *,
     prior_session_ids: Optional[List[str]] = None,
     transcript_message_ids: Optional[List[str]] = None,
+    exclude_conversation_id: Optional[str] = None,
 ) -> Optional[Conversation]:
     """
     The conversation an unregistered session id is a continuation of, from
@@ -297,6 +350,12 @@ async def find_lineage_conversation(
     Entity-scoped throughout: a hint that resolves to another entity's
     conversation is ignored, never adopted (the #356 no-default-entity
     rule — the fence is the entity).
+
+    `exclude_conversation_id` is the caller's own row, for the late
+    adoption of issue #359: by then the session has recorded turns of its
+    own, so its transcript's newest uuids are ITS rows and would resolve to
+    itself — the most recently updated candidate of all. The row being
+    re-parented is never its own parent.
     """
     # Newest-last, so the cap keeps the NEWEST ids: those are the likeliest
     # rows of the nearest parent. Slicing off the front would prefer the
@@ -306,7 +365,7 @@ async def find_lineage_conversation(
         -MAX_LINEAGE_MESSAGE_IDS:
     ]
     if message_ids:
-        result = await db.execute(
+        query = (
             select(Conversation)
             .join(Message, Message.conversation_id == Conversation.id)
             .where(
@@ -317,6 +376,9 @@ async def find_lineage_conversation(
             .order_by(Conversation.updated_at.desc().nullslast())
             .limit(1)
         )
+        if exclude_conversation_id:
+            query = query.where(Conversation.id != exclude_conversation_id)
+        result = await db.execute(query)
         conversation = result.scalars().first()
         if conversation is not None:
             return conversation
@@ -325,8 +387,13 @@ async def find_lineage_conversation(
         if not prior:
             continue
         conversation = await get_conversation_for_session(db, prior)
-        if conversation is not None and conversation.entity_id == entity.index_name:
-            return conversation
+        if conversation is None or conversation.entity_id != entity.index_name:
+            continue
+        if exclude_conversation_id and str(conversation.id) == str(
+            exclude_conversation_id
+        ):
+            continue
+        return conversation
 
     return None
 
@@ -379,6 +446,237 @@ async def _adopt_forked_session(
     )
 
 
+async def _move_memory_links(
+    db: AsyncSession, from_conversation_id: str, to_conversation_id: str
+) -> None:
+    """
+    Move a merged row's memory links onto the conversation it merged into,
+    dropping any the target already holds for the same memory and entity.
+
+    The link set is a dedup record — what this conversation has already
+    been shown — so a duplicate pair is not just untidy: the post-compaction
+    refresh walks these rows, and two of them for one memory make it count
+    twice.
+    """
+    result = await db.execute(
+        select(ConversationMemoryLink).where(
+            ConversationMemoryLink.conversation_id == to_conversation_id
+        )
+    )
+    held = {(link.message_id, link.entity_id) for link in result.scalars().all()}
+    result = await db.execute(
+        select(ConversationMemoryLink).where(
+            ConversationMemoryLink.conversation_id == from_conversation_id
+        )
+    )
+    for link in result.scalars().all():
+        if (link.message_id, link.entity_id) in held:
+            await db.delete(link)
+            continue
+        link.conversation_id = to_conversation_id
+        held.add((link.message_id, link.entity_id))
+
+
+async def _merge_into_parent(
+    db: AsyncSession,
+    orphan: Conversation,
+    parent: Conversation,
+    entity: EntityConfig,
+) -> Optional[str]:
+    """
+    Fold a row opened for a fork that could not be recognized as one into
+    the conversation it continues, and hand the parent the session (issue
+    #359). Returns the retired conversation id.
+
+    Everything the orphan holds is this session's own first turns, so it
+    all moves: messages (reflections among them), memory links, and a
+    compaction boundary if the fork compacted before the evidence arrived.
+    The parent then takes the live session id — its own former id becoming
+    a session alias, exactly as in an on-time adoption — and the retired
+    conversation id becomes a `ConversationIdAlias`, because the session's
+    identity block already named it and every MCP call carries one.
+
+    The vector store's `conversation_id` metadata is repointed too: it is
+    what same-conversation exclusion filters on, so memories left behind
+    under the retired id would come back to the room that just said them.
+    Best-effort, like every other Pinecone write here — the archive is SQL.
+
+    Returns None when a concurrent hook of the same session won the merge
+    (a prompt and the turn's Stop can overlap), leaving the caller to take
+    whatever that one left behind.
+    """
+    orphan_id = str(orphan.id)
+    session_id = orphan.external_session_id
+    parent_id = str(parent.id)
+    former_parent_session_id = parent.external_session_id
+
+    result = await db.execute(
+        select(Message.id).where(Message.conversation_id == orphan_id)
+    )
+    moved_message_ids = [row[0] for row in result.all()]
+    if moved_message_ids:
+        await db.execute(
+            update(Message)
+            .where(Message.conversation_id == orphan_id)
+            .values(conversation_id=parent_id)
+        )
+    await _move_memory_links(db, orphan_id, parent_id)
+
+    if orphan.last_compacted_at is not None and (
+        parent.last_compacted_at is None
+        or orphan.last_compacted_at > parent.last_compacted_at
+    ):
+        parent.last_compacted_at = orphan.last_compacted_at
+
+    # Anything still pointing at the retired row follows it
+    await db.execute(
+        update(ConversationSessionAlias)
+        .where(ConversationSessionAlias.conversation_id == orphan_id)
+        .values(conversation_id=parent_id)
+    )
+    await db.execute(
+        update(ConversationIdAlias)
+        .where(ConversationIdAlias.conversation_id == orphan_id)
+        .values(conversation_id=parent_id)
+    )
+
+    # Free the session id before the parent takes it (the column is
+    # unique), and take the row out of the identity map first so the ORM
+    # never cascades a delete onto the messages that just moved off it
+    db.expunge(orphan)
+    await db.execute(delete(Conversation).where(Conversation.id == orphan_id))
+    await db.flush()
+
+    parent.external_session_id = session_id
+    if former_parent_session_id and former_parent_session_id != session_id:
+        if await db.get(ConversationSessionAlias, former_parent_session_id) is None:
+            db.add(
+                ConversationSessionAlias(
+                    external_session_id=former_parent_session_id,
+                    conversation_id=parent_id,
+                )
+            )
+    if await db.get(ConversationIdAlias, orphan_id) is None:
+        db.add(ConversationIdAlias(alias_id=orphan_id, conversation_id=parent_id))
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        logger.info(
+            f"[CC MODE] Late adoption of session {str(session_id)[:8]}... raced; "
+            "taking the other hook's result"
+        )
+        return None
+    await db.refresh(parent)
+
+    await memory_service.repoint_memories(
+        moved_message_ids, parent_id, entity_id=entity.index_name
+    )
+    logger.info(
+        f"[CC MODE] Late fork adoption: conversation {orphan_id[:8]}... "
+        f"({len(moved_message_ids)} message(s)) merged into {parent_id[:8]}..., "
+        f"which now holds session {str(session_id)[:8]}... "
+        f"(was {str(former_parent_session_id)[:8]}...)"
+    )
+    return orphan_id
+
+
+async def _try_late_adoption(
+    db: AsyncSession,
+    conversation: Conversation,
+    external_session_id: str,
+    entity: EntityConfig,
+    *,
+    prior_session_ids: Optional[List[str]] = None,
+    transcript_message_ids: Optional[List[str]] = None,
+) -> Optional[SessionResolution]:
+    """
+    Re-examine a row that was opened for this session id, in case the
+    session is a fork whose lineage evidence had not been written yet
+    (issue #359). Returns a resolution when it adopted, None otherwise.
+
+    Adoption used to be one-shot on "unknown session id", which assumed the
+    hints are available the first time a fork's hooks fire. Measured, they
+    are not: the desktop app wrote the fork's transcript six seconds after
+    its SessionStart and its own session record nine seconds after, while
+    the prompt hook in between created the row. The evidence exists, just
+    later — so the question is asked again while the row is young enough to
+    be nothing but the fork's opening turns.
+
+    Two conditions fence it. The row's id must be the one derived from THIS
+    session id, which is true only of a row created for this session and
+    never true of a conversation that has already adopted something (its id
+    is derived from the session it was born under). And it must hold at
+    most LATE_ADOPTION_MAX_MESSAGES rows. Both are read off the record —
+    nothing is inferred and nothing is remembered between calls.
+    """
+    if not (prior_session_ids or transcript_message_ids):
+        return None
+    if str(conversation.id) != conversation_id_for_session(external_session_id):
+        return None
+    message_count = await db.scalar(
+        select(func.count())
+        .select_from(Message)
+        .where(Message.conversation_id == conversation.id)
+    )
+    if (message_count or 0) > LATE_ADOPTION_MAX_MESSAGES:
+        return None
+
+    parent = await find_lineage_conversation(
+        db,
+        entity,
+        prior_session_ids=prior_session_ids,
+        transcript_message_ids=transcript_message_ids,
+        exclude_conversation_id=str(conversation.id),
+    )
+    if parent is None:
+        return None
+
+    former_parent_session_id = parent.external_session_id
+    merged_from = await _merge_into_parent(db, conversation, parent, entity)
+    if merged_from is None:
+        # The other hook of this session got there first; whatever it left
+        # keyed on this id is the answer, adoption already announced by it
+        winner = await get_conversation_for_session(db, external_session_id)
+        return SessionResolution(conversation=winner) if winner else None
+    return SessionResolution(
+        conversation=parent,
+        adopted_from=former_parent_session_id,
+        merged_from=merged_from,
+    )
+
+
+def _log_resolution(
+    external_session_id: str,
+    entity: EntityConfig,
+    decision: str,
+    conversation: Optional[Conversation],
+    *,
+    prior_session_ids: Optional[List[str]] = None,
+    transcript_message_ids: Optional[List[str]] = None,
+) -> None:
+    """
+    One line per session resolution: what the hook sent, and what was done
+    with it (issue #359).
+
+    Whether a fork gets adopted turns entirely on lineage hints that leave
+    no trace afterwards, so a miss used to be diagnosable only by
+    reconstructing file birth times against the log. The counts and the
+    decision together make it a one-line read.
+    """
+    target = (
+        f" conversation={str(conversation.id)[:8]}..."
+        if conversation is not None
+        else ""
+    )
+    logger.info(
+        f"[CC MODE] Session {external_session_id[:8]}... {decision}{target} "
+        f"(entity={entity.index_name}, hints: "
+        f"transcript_message_ids={len(transcript_message_ids or [])}, "
+        f"prior_session_ids={len(prior_session_ids or [])})"
+    )
+
+
 async def resolve_session(
     db: AsyncSession,
     external_session_id: str,
@@ -400,8 +698,30 @@ async def resolve_session(
     returns None when nothing resolves, so a background/utility session
     that never speaks still creates no row.
     """
+    def log(decision: str, conversation: Optional[Conversation]) -> None:
+        _log_resolution(
+            external_session_id,
+            entity,
+            decision,
+            conversation,
+            prior_session_ids=prior_session_ids,
+            transcript_message_ids=transcript_message_ids,
+        )
+
     conversation = await get_conversation_for_session(db, external_session_id)
     if conversation is not None:
+        late = await _try_late_adoption(
+            db,
+            conversation,
+            external_session_id,
+            entity,
+            prior_session_ids=prior_session_ids,
+            transcript_message_ids=transcript_message_ids,
+        )
+        if late is not None:
+            log("late-adopted", late.conversation)
+            return late
+        log("known", conversation)
         return SessionResolution(conversation=conversation)
 
     parent = await find_lineage_conversation(
@@ -413,9 +733,11 @@ async def resolve_session(
     if parent is not None:
         old_session_id = parent.external_session_id
         await _adopt_forked_session(db, parent, external_session_id)
+        log("adopted", parent)
         return SessionResolution(conversation=parent, adopted_from=old_session_id)
 
     if not create:
+        log("deferred", None)
         return None
 
     title = "Claude Code session"
@@ -443,13 +765,11 @@ async def resolve_session(
         conversation = await get_conversation_for_session(db, external_session_id)
         if conversation is None:
             raise
+        log("known", conversation)
         return SessionResolution(conversation=conversation)
     await db.refresh(conversation)
     await _link_pending_reflections(db, conversation, entity)
-    logger.info(
-        f"[CC MODE] Created conversation {conversation.id[:8]}... for "
-        f"Claude Code session {external_session_id[:8]}... (entity={entity.index_name})"
-    )
+    log("created", conversation)
     return SessionResolution(conversation=conversation, created=True)
 
 
@@ -469,6 +789,67 @@ def adoption_notice(conversation_id: str) -> str:
         "prompts and responses are being recorded there, and your "
         "earlier talk is all in the archive under it."
     )
+
+
+def late_adoption_notice(conversation_id: str, retired_id: str) -> str:
+    """
+    The line a session is told when the adoption landed late (issue #359):
+    its conversation id has CHANGED under it.
+
+    The on-time notice can say the id still stands, because adoption keeps
+    the parent's id and that is the one the forked context already carries.
+    A late adoption can't: a row was opened for this session before the
+    harness had written the evidence, the identity block named that row,
+    and its content has now moved onto the conversation it continues. The
+    retired id keeps resolving — nothing in flight breaks — but the entity
+    is told plainly which id is now its own.
+    """
+    return (
+        "[HERE I AM] This session turned out to continue an earlier one of "
+        "yours (a restart or rewind); the harness had not yet written the "
+        "files that show it when this session started. What was recorded "
+        f'under "{retired_id}" has been moved onto that conversation, and '
+        f'your conversation_id is now "{conversation_id}". The old id still '
+        "resolves to the same conversation, so nothing you have already "
+        "called with breaks — use the new one from here."
+    )
+
+
+# Adoptions that landed on an endpoint with no channel back to the entity:
+# the Stop hook's stdout is not injected into context, so a late adoption
+# there has no way to say so. Keyed by session id, consumed by the next
+# /retrieve, which does have a line. In-memory on purpose (the same class
+# of state as _pending_reflection_links): a backend restart in between
+# costs the notice, never the adoption — the retired id keeps resolving
+# either way, so the failure mode is silence, not a broken id.
+_pending_adoption_notices: Dict[str, str] = {}
+_PENDING_ADOPTION_NOTICES_MAX = 200
+
+
+def stash_adoption_notice(external_session_id: str, notice: str) -> None:
+    if not external_session_id or not notice:
+        return
+    _pending_adoption_notices.pop(external_session_id, None)
+    _pending_adoption_notices[external_session_id] = notice
+    while len(_pending_adoption_notices) > _PENDING_ADOPTION_NOTICES_MAX:
+        _pending_adoption_notices.pop(next(iter(_pending_adoption_notices)))
+
+
+def take_adoption_notice(external_session_id: str) -> str:
+    """The stashed notice for this session, if any, consumed."""
+    if not external_session_id:
+        return ""
+    return _pending_adoption_notices.pop(external_session_id, "")
+
+
+def resolution_notice(resolution: Optional[SessionResolution]) -> str:
+    """The line an adoption is worth telling the entity, or ''."""
+    if resolution is None or not resolution.adopted_from:
+        return ""
+    conversation_id = str(resolution.conversation.id)
+    if resolution.merged_from:
+        return late_adoption_notice(conversation_id, resolution.merged_from)
+    return adoption_notice(conversation_id)
 
 
 async def mark_conversation_compacted(
@@ -813,6 +1194,46 @@ def rooms_registry_enabled() -> bool:
     return bool(settings.notes_enabled and settings.claude_code_rooms_registry_enabled)
 
 
+def apply_adoption_to_rooms(
+    entity: EntityConfig,
+    session_id: str,
+    resolution: Optional["SessionResolution"],
+) -> str:
+    """
+    Keep the rooms registry true after a fork adoption. Returns an error
+    text for the hook to print, or ''.
+
+    Two corrections, both read off the resolution: the declared room's row
+    moves off the parent's former session id onto the one the harness now
+    reports (issue #357), and — when the adoption landed late (issue #359)
+    — a row declared under the conversation that was just retired is
+    repointed at the surviving one. No row is ever created here; that stays
+    the entity's own declaration (the #307 rule: hooks carry ids, the self
+    supplies meaning).
+    """
+    if resolution is None or not rooms_registry_enabled():
+        return ""
+    if not (resolution.adopted_from or resolution.merged_from):
+        return ""
+    try:
+        if resolution.adopted_from:
+            rooms_registry.rekey_session(
+                entity.label, resolution.adopted_from, session_id
+            )
+        if resolution.merged_from:
+            rooms_registry.repoint_conversation(
+                entity.label,
+                session_id,
+                str(resolution.conversation.id),
+                from_conversation_id=resolution.merged_from,
+            )
+    except RegistryWriteError as e:
+        return _rooms_write_error_text(e)
+    except Exception as e:  # never let the registry break a hook endpoint
+        logger.error(f"[ROOMS] Registry update after fork adoption failed: {e}")
+    return ""
+
+
 def observe_rooms_for_hook(
     entity: EntityConfig,
     session_id: str,
@@ -822,7 +1243,7 @@ def observe_rooms_for_hook(
     sessions: List[Dict[str, Any]],
     session_start: bool,
     delivered_from: Optional[List[str]] = None,
-    adopted_from: Optional[str] = None,
+    resolution: Optional["SessionResolution"] = None,
 ) -> Tuple[str, str]:
     """
     Feed a hook's live-session snapshot to the rooms registry (issue #323)
@@ -836,9 +1257,10 @@ def observe_rooms_for_hook(
     with the prompt, which confirm their senders' registry addresses
     (issue #339).
 
-    `adopted_from` is set when this session was just adopted as a fork
-    (issue #357): the declared room's row is re-keyed from that former id
-    onto this session id first, so the observation below refreshes it as the
+    `resolution` is this call's session resolution: when it adopted a fork
+    (issue #357), the declared room's row is re-keyed onto this session id
+    first — and repointed at the surviving conversation when the adoption
+    was late (issue #359) — so the observation below refreshes it as the
     session's own and its liveness keeps tracking.
 
     notice: one line worth telling the entity — at session start, which
@@ -852,13 +1274,9 @@ def observe_rooms_for_hook(
     if not rooms_registry_enabled():
         return "", ""
 
-    if adopted_from:
-        try:
-            rooms_registry.rekey_session(entity.label, adopted_from, session_id)
-        except RegistryWriteError as e:
-            return "", _rooms_write_error_text(e)
-        except Exception as e:  # never let the registry break a hook endpoint
-            logger.error(f"[ROOMS] Re-key after fork adoption failed: {e}")
+    adoption_error = apply_adoption_to_rooms(entity, session_id, resolution)
+    if adoption_error:
+        return "", adoption_error
 
     observations: List[SessionObservation] = []
     own: Optional[SessionObservation] = None

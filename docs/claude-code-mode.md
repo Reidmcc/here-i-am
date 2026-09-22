@@ -278,10 +278,72 @@ tool result and goes to disk over 50 KB.
   `/compact` follows immediately. Both therefore re-key the rooms row and
   tell the entity: `session-start` returns the one-line notice as its
   context, `/retrieve` returns it as `adoption_notice`, which the hook
-  prints ahead of the mailbox and rooms lines. (`/log-assistant` adopts too,
-  for correctness of the row it is about to write, but does not touch the
-  registry: a turn always has a prompt before it, so the prompt hook has
-  already re-keyed — and if it hadn't, the next prompt does.)
+  prints ahead of the mailbox and rooms lines. `/log-assistant` adopts too
+  — since issue #359 it is a real adopter, often the first call after the
+  harness has written a fork's files — but its own stdout never reaches the
+  entity, so it corrects the registry and leaves its notice for the next
+  prompt to print.
+
+  **The hints can arrive late, so adoption is retryable (issue #359).**
+  The desktop app can run a fork's first hooks *before* it has written the
+  fork's transcript and its own session record. Measured on the first live
+  rewind after the fix above: the rewind edge was stamped at 14:40:31, the
+  fork's SessionStart ran at 14:41:50, `/retrieve` created a row at
+  14:41:53, and only then were the files written — the transcript at
+  14:41:56, the desktop record at 14:41:59. Both hints arrived empty, the
+  fork was indistinguishable from a new session, and a row was opened for
+  it; run against the same files afterwards the collectors returned both
+  hints full. Adoption used to be one-shot on "unknown session id", so
+  every later hook — by then carrying the evidence — found a row already
+  keyed on the id and had nothing to adopt.
+
+  So a row opened for a session id is re-examined on every later call while
+  two conditions hold (`_try_late_adoption`), both read off the record with
+  nothing remembered between calls:
+  - its conversation id is the one derived from *this* session id, which is
+    true only of a row created for this session and never of a conversation
+    that has already adopted something (that row's id comes from the
+    session it was born under); and
+  - it holds at most `LATE_ADOPTION_MAX_MESSAGES` (20) rows — a couple of
+    turns, which is all the evidence needs, and not enough to re-parent an
+    established room on a stray hint.
+
+  The lineage lookup then excludes the row itself: by this point the
+  session's own transcript uuids are *its* rows, and its conversation is
+  the most recently updated candidate of all, so without the exclusion it
+  would adopt itself. When a parent is found, the row is **merged** into it
+  (`_merge_into_parent`): messages (reflections among them) and memory
+  links move — duplicate links are dropped, since the link set is a dedup
+  record — a compaction boundary carries over if the fork compacted before
+  the evidence arrived, the parent takes the live session id with its own
+  former id becoming a session alias as usual, and the retired row is
+  deleted. Pinecone's `conversation_id` metadata is repointed for the moved
+  memories (`memory_service.repoint_memories`): same-conversation exclusion
+  is a metadata filter, so a memory left under the retired id would be
+  recalled into the room that just said it. Best-effort, like every Pinecone
+  write here — SQL is the archive, and a rebuild restores the metadata.
+
+  A late adoption **changes the conversation id under a running session**,
+  which an on-time one never does. The session's identity block already
+  named the row that was merged away, so the retired id becomes a
+  `ConversationIdAlias` and keeps resolving (`resolve_conversation_id`, used
+  by both MCP entry points) — nothing already in flight breaks. The entity
+  is told once, in its own notice (`late_adoption_notice`), which names both
+  ids and says plainly which one is now its own.
+
+  **Why not just make the hook wait for the transcript.** It was considered
+  and left out: the file appeared three to six seconds after the hooks
+  fired, so the wait would have to be long enough to be felt on every
+  prompt — and a genuinely new session's transcript is missing at its first
+  prompt too, so the cost would land on every new session to save a merge
+  that costs nothing and completes within one turn.
+
+  **Diagnosing a miss.** Every resolution logs one line with the hint
+  counts and the decision — `known` / `created` / `adopted` /
+  `late-adopted` / `deferred` — because whether a fork gets adopted turns
+  entirely on evidence that leaves no trace afterwards. Issue #359 was
+  diagnosed by reconstructing file birth times against a log that only said
+  "Created conversation"; the counts make it a one-line read.
 - **Registration is lazy.** `session-start` builds the identity context but
   never creates the row — Claude Desktop fires SessionStart for
   background/utility sessions that never send a prompt, and eager
@@ -943,7 +1005,9 @@ conversation on first contact; `/session-start` and `/session-end` never do
   resume. `prior_session_ids` / `transcript_message_ids` are the
   fork-adoption lineage hints (see "Conversations"): when they resolve this
   id to a parent conversation, it is adopted (id unchanged,
-  `external_session_id` re-keyed, old id aliased) and `created` is False —
+  `external_session_id` re-keyed, old id aliased) and `created` is False
+  — or, when a row was already opened for this session before the hints
+  existed, merged into the parent (issue #359) —
   so a fork's post-compaction recovery reads the parent, which has the
   talk, not an empty new row. `context` is the small always-inline block;
   `bulk_context`
@@ -986,6 +1050,9 @@ conversation on first contact; `/session-start` and `/session-end` never do
   `adoption_notice`, the one line telling the entity this session is a
   continuation and which conversation id is recording it (the hook prints
   it ahead of the mailbox and rooms lines; empty when nothing was adopted).
+  It also carries a notice left by an adoption that landed on a hook
+  with no line back to the entity — a late adoption on the Stop hook
+  (issue #359) — delivered once.
 - `POST /recorded` `{session_id, message_ids}` → `{recorded, missing}` —
   which of the ids exist as rows of the session's conversation, resolved
   alias-aware (an adopted fork's rows live under the parent). The hook's
@@ -997,7 +1064,10 @@ conversation on first contact; `/session-start` and `/session-end` never do
   idempotent on `message_uuid` (the transcript entry's UUID becomes the
   Message row's primary key). `model` is the transcript entry's own
   `message.model`, recorded verbatim onto the row; absent means NULL. The
-  lineage hints adopt a fork whose first event is this turn's Stop.
+  lineage hints adopt a fork whose first event is this turn's Stop, and
+  since issue #359 they also adopt one whose row was opened before the
+  harness had written the files they come from; the notice for that is
+  stashed for the next `/retrieve` to print.
 
 ### Model attribution
 
