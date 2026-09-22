@@ -455,17 +455,102 @@ def desktop_sessions_index(desktop_dir=None):
 LINEAGE_MESSAGE_ID_LIMIT = 100
 
 
-def desktop_prior_session_ids(session_id, desktop_dir=None, desktop_index=None):
+def desktop_record_for_host(desktop_index, host_session_id):
+    """
+    (cli_session_id, record) for the desktop session `host_session_id`, from
+    an index built by desktop_sessions_index — or (None, None).
+
+    A linear pass over an already-built dict rather than a second scan of
+    those ~80 KB files. The desktop session id is stable across Claude Code
+    forks, so this finds the record even when its `cliSessionId` still names
+    the session this one forked from.
+    """
+    if not host_session_id:
+        return None, None
+    for cli_session_id, record in (desktop_index or {}).items():
+        if record.get("desktop_session_id") == host_session_id:
+            return cli_session_id, record
+    return None, None
+
+
+def host_session_id_for(session_id, config_dir=None, sessions=None):
+    """
+    The desktop app's own session id for a Claude Code session, from the
+    per-process registry's `hostSessionId` — or None (a CLI session has no
+    desktop host, and the registry may be unreadable).
+
+    Three ways in, cheapest and earliest first:
+
+    - `CLAUDE_CODE_HOST_SESSION_ID` in the environment. The desktop app
+      sets it on the Claude Code process and hooks inherit it, so it needs
+      no file at all and has no write-timing edge. It is only trusted when
+      `CLAUDE_CODE_SESSION_ID` agrees with the session id the hook was
+      handed: the environment describes the process, and a hook firing for
+      some other session's id (or a stale environment) must not attribute
+      that process's desktop host to it.
+    - the caller's `sessions` snapshot, if it already read the registry.
+    - a scan of the registry itself.
+
+    The registry file is written when the process starts — six seconds
+    before the first prompt on a measured rewind — so the file paths are
+    early enough on their own; the environment just removes the last
+    dependence on a write having happened.
+    """
+    if not session_id:
+        return None
+    env_host = _optional_str(os.environ.get("CLAUDE_CODE_HOST_SESSION_ID"))
+    env_session = _optional_str(os.environ.get("CLAUDE_CODE_SESSION_ID"))
+    if env_host and env_session == session_id:
+        return env_host
+    for entry in sessions or []:
+        if entry.get("session_id") == session_id:
+            return entry.get("host_session_id")
+    directory = os.path.join(config_dir or claude_config_dir(), "sessions")
+    try:
+        paths = sorted(glob.glob(os.path.join(directory, "*.json")))
+    except Exception:
+        return None
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if isinstance(data, dict) and data.get("sessionId") == session_id:
+            return _optional_str(data.get("hostSessionId"))
+    return None
+
+
+def desktop_prior_session_ids(
+    session_id, desktop_dir=None, desktop_index=None, config_dir=None, sessions=None
+):
     """
     A session's former Claude Code session ids, OLDEST FIRST, from the
     desktop app's own record (its `priorCliSessionIds`), for fork adoption
     (issue #357).
 
-    The desktop app forks a session under a new id on restart/continue/
-    rewind and keeps the chain in this list. Empty when no record joins to
-    `session_id` or the directory is unreadable — a hook never fails over
-    it (the transcript-uuid join is the stronger signal anyway). Pass
-    `desktop_index` to reuse a scan the caller already did.
+    Two ways in, because the obvious one is blind at exactly the moment
+    that matters (issue #359):
+
+    - `cliSessionId == session_id`: the record has caught up with this
+      session, so its `priorCliSessionIds` is the chain.
+    - otherwise, via `hostSessionId`: the DESKTOP session id, which the
+      per-process registry carries from process start and which does not
+      change when Claude Code forks. The record it names is rewritten only
+      *after* the fork's first prompt — measured on a live rewind, the
+      prompt hook fired at 16:22:14 and the record was rewritten at
+      16:22:19 — so at that prompt it still names the PARENT as its
+      `cliSessionId`. That is the evidence, sitting on disk under a key
+      nobody was looking up: the chain is then its priors plus that
+      cliSessionId, which is the immediate parent and therefore goes LAST
+      (the backend walks this list newest-first by reversing it).
+
+    This is why the first hook used to send nothing: the index is keyed on
+    `cliSessionId`, and a fork's own id matches no record for the first few
+    seconds of its life.
+
+    Empty when neither way resolves — a hook never fails over it. Pass
+    `desktop_index` / `sessions` to reuse scans the caller already did.
     """
     if not session_id:
         return []
@@ -474,8 +559,20 @@ def desktop_prior_session_ids(session_id, desktop_dir=None, desktop_index=None):
         if desktop_index is not None
         else desktop_sessions_index(desktop_dir)
     )
-    record = index.get(session_id) or {}
-    return list(record.get("prior_session_ids") or [])
+    record = index.get(session_id)
+    if record:
+        return list(record.get("prior_session_ids") or [])
+
+    host_session_id = host_session_id_for(
+        session_id, config_dir=config_dir, sessions=sessions
+    )
+    parent_id, by_host = desktop_record_for_host(index, host_session_id)
+    if not by_host or not parent_id or parent_id == session_id:
+        return []
+    chain = [pid for pid in (by_host.get("prior_session_ids") or []) if pid != session_id]
+    if parent_id not in chain:
+        chain.append(parent_id)
+    return chain
 
 
 def _entry_has_text(entry):
@@ -541,18 +638,34 @@ def transcript_assistant_uuids(transcript_path, limit=LINEAGE_MESSAGE_ID_LIMIT):
     return list(uuids)
 
 
-def lineage_hints(session_id, transcript_path, desktop_dir=None, desktop_index=None):
+def lineage_hints(
+    session_id,
+    transcript_path,
+    desktop_dir=None,
+    desktop_index=None,
+    config_dir=None,
+    sessions=None,
+):
     """
     Both fork-adoption hints for a hook payload (issue #357):
     {"prior_session_ids", "transcript_message_ids"}. Never raises.
 
-    `desktop_index` lets a hook that already scanned the desktop records
-    for its rooms snapshot reuse that scan instead of walking those files
-    (~80 KB each) a second time in the same firing.
+    At a fork's FIRST prompt the transcript hint is empty — the harness
+    copies that file a second or two after the hook fires — so the prior-ids
+    hint is the one that has to carry there, which is what its
+    `hostSessionId` path is for (see desktop_prior_session_ids).
+
+    `desktop_index` and `sessions` let a hook that already scanned the
+    desktop records (~80 KB each) and the per-process registry for its rooms
+    snapshot reuse those reads instead of repeating them in the same firing.
     """
     return {
         "prior_session_ids": desktop_prior_session_ids(
-            session_id, desktop_dir, desktop_index
+            session_id,
+            desktop_dir,
+            desktop_index,
+            config_dir=config_dir,
+            sessions=sessions,
         ),
         "transcript_message_ids": transcript_assistant_uuids(transcript_path),
     }
@@ -600,7 +713,14 @@ def live_sessions_snapshot(
             "messaging_socket": _optional_str(data.get("messagingSocketPath")),
             "cwd": _optional_str(data.get("cwd")),
             "started_at": _ms_to_iso(data.get("startedAt")),
-            "desktop_session_id": None,
+            # The desktop app's own session id, straight from the registry.
+            # It is the messaging address AND the stable identity of the
+            # desktop session across Claude Code forks, so it is both a
+            # better source than the cliSessionId join below (which a
+            # freshly forked session misses) and what names the record
+            # holding that fork's lineage.
+            "host_session_id": _optional_str(data.get("hostSessionId")),
+            "desktop_session_id": _optional_str(data.get("hostSessionId")),
             "desktop_title": None,
         })
 
@@ -612,8 +732,17 @@ def live_sessions_snapshot(
     for entry in snapshot:
         record = desktop.get(entry["session_id"])
         if record:
-            entry["desktop_session_id"] = record["desktop_session_id"]
+            entry["desktop_session_id"] = (
+                entry["desktop_session_id"] or record["desktop_session_id"]
+            )
             entry["desktop_title"] = record["desktop_title"]
+        elif entry["host_session_id"]:
+            # A session the records haven't caught up with (a fork's first
+            # minutes): the registry already knows its address, and the
+            # title can be read off the record the host id names
+            _, by_host = desktop_record_for_host(desktop, entry["host_session_id"])
+            if by_host:
+                entry["desktop_title"] = by_host["desktop_title"]
     # Only worth appending when the record actually carries an address —
     # that is the whole reason for this branch, and a record may now be
     # indexed for its fork chain alone (see desktop_sessions_index)

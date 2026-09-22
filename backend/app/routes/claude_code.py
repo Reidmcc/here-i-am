@@ -326,7 +326,12 @@ async def session_start(
         transcript_message_ids=data.transcript_message_ids,
     )
     conversation = resolution.conversation if resolution else None
-    adopted = bool(resolution and resolution.adopted_from)
+    # An adoption that happened on this call speaks for itself; one that
+    # landed on an earlier hook with no channel back (the Stop hook's
+    # stdout is not injected) left its line for whoever speaks next
+    adoption_text = cc.resolution_notice(resolution) or cc.take_adoption_notice(
+        data.session_id
+    )
 
     context = ""
     bulk_parts = []
@@ -346,13 +351,14 @@ async def session_start(
             context, bulk_parts = await cc.build_post_compact_context(
                 db, conversation, entity
             )
-        elif adopted:
+            if adoption_text:
+                context = f"{adoption_text}\n\n{context}"
+        elif adoption_text:
             # A resume that turned out to be a fork: the transcript already
             # carries the injections (so no bulk), but say once that the
             # session was picked up as a continuation — the recording is
-            # landing on the parent, under the conversation_id already in
-            # context, not a new empty conversation.
-            context = cc.adoption_notice(conversation_id)
+            # landing on the parent, and under which conversation_id.
+            context = adoption_text
 
     # Rooms registry: refresh this session's row (if it declared a room) and
     # any sibling rows the hook's snapshot covers — every SessionStart,
@@ -364,7 +370,7 @@ async def session_start(
         transcript_path=data.transcript_path,
         sessions=[s.model_dump() for s in data.sessions],
         session_start=True,
-        adopted_from=resolution.adopted_from if resolution else None,
+        resolution=resolution,
     )
 
     # Catch note edits made while the backend wasn't watching (e.g. before
@@ -435,7 +441,13 @@ async def retrieve(
             for peer in (data.peer_messages or [])
             if peer.sender_session
         ],
-        adopted_from=resolution.adopted_from,
+        resolution=resolution,
+    )
+
+    # As in session-start: this call's own adoption, or one stashed by an
+    # endpoint that had no line back to the entity (issue #359)
+    adoption_text = cc.resolution_notice(resolution) or cc.take_adoption_notice(
+        data.session_id
     )
 
     prompt = data.prompt or ""
@@ -466,11 +478,7 @@ async def retrieve(
             retrieval_status=cc.RETRIEVAL_SKIPPED,
             rooms_notice=rooms_notice,
             rooms_error=rooms_error,
-            adoption_notice=(
-                cc.adoption_notice(str(conversation.id))
-                if resolution.adopted_from
-                else ""
-            ),
+            adoption_notice=adoption_text,
         )
 
     # Rows are persisted under the ids the hook chose (when valid), and a
@@ -558,11 +566,7 @@ async def retrieve(
         in_context_reflections_skipped=retrieval.in_context_reflections_skipped,
         rooms_notice=rooms_notice,
         rooms_error=rooms_error,
-        adoption_notice=(
-            cc.adoption_notice(str(conversation.id))
-            if resolution.adopted_from
-            else ""
-        ),
+        adoption_notice=adoption_text,
     )
 
 
@@ -670,6 +674,15 @@ async def log_assistant(
         transcript_message_ids=data.transcript_message_ids,
     )
     conversation = resolution.conversation
+
+    # The Stop hook is often the first call after the harness has written
+    # a fork's files, so it is a real adopter (issue #359) — but its own
+    # stdout never reaches the entity, so the registry is corrected here
+    # and the line is left for the next prompt to print.
+    notice = cc.resolution_notice(resolution)
+    if notice:
+        cc.stash_adoption_notice(data.session_id, notice)
+        cc.apply_adoption_to_rooms(entity, data.session_id, resolution)
 
     content = data.content or ""
     if not content.strip():

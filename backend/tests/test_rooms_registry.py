@@ -177,6 +177,46 @@ class TestRetire:
             ENTITY, "sess-old-0000", "sess-new-0000"
         ) is None
 
+    def test_repoint_conversation_after_a_late_adoption(self, notes_dir):
+        rooms_registry.declare(ENTITY, "sess-fork-000", "conv-orphan", "Porch", now=T0)
+        T1 = T0 + timedelta(hours=1)
+        row = rooms_registry.repoint_conversation(
+            ENTITY, "sess-fork-000", "conv-parent",
+            from_conversation_id="conv-orphan", now=T1,
+        )
+        assert row is not None
+        assert row["conversation_id"] == "conv-parent"
+        # The session id is what stays put here — it is the conversation
+        # that moved
+        assert row["session_id"] == "sess-fork-000"
+        data = rooms_registry.load(ENTITY)
+        assert rooms_registry.find_row(data, "sess-fork-000")["conversation_id"] == (
+            "conv-parent"
+        )
+
+    def test_repoint_leaves_a_conversation_the_entity_chose(self, notes_dir):
+        """The row is the entity's declaration; a value it did not put there
+        is not an adoption's to overwrite."""
+        rooms_registry.declare(ENTITY, "sess-fork-000", "conv-other", "Porch", now=T0)
+        assert rooms_registry.repoint_conversation(
+            ENTITY, "sess-fork-000", "conv-parent",
+            from_conversation_id="conv-orphan",
+        ) is None
+        data = rooms_registry.load(ENTITY)
+        assert rooms_registry.find_row(data, "sess-fork-000")["conversation_id"] == (
+            "conv-other"
+        )
+
+    def test_repoint_is_a_noop_without_a_live_row(self, notes_dir):
+        assert rooms_registry.repoint_conversation(
+            ENTITY, "never-declared", "conv-parent"
+        ) is None
+        rooms_registry.declare(ENTITY, "sess-A-0000", "conv-A", "Porch", now=T0)
+        rooms_registry.retire(ENTITY, "sess-A-0000", now=T0)
+        assert rooms_registry.repoint_conversation(
+            ENTITY, "sess-A-0000", "conv-parent"
+        ) is None
+
 
 class TestObserve:
     def test_only_declared_rows_are_touched(self, notes_dir):

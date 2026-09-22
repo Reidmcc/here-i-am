@@ -32,12 +32,11 @@ tools cover them.
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import select
-
 from app.config import settings
 from app.database import async_session_maker
 from app.models import Conversation, ConversationSource
 from app.services import memory_tools
+from app.services.claude_code_mode import resolve_conversation_id
 from app.services.harness_limits import TOOL_RESULT_BUDGET_BYTES
 from app.services.memory_service import memory_service
 from app.services.memory_tools import MemoryToolContext
@@ -261,14 +260,18 @@ async def build_tool_context(
         )
 
     async with async_session_maker() as db:
-        result = await db.execute(
-            select(Conversation).where(Conversation.id == conversation_id)
-        )
-        conversation = result.scalar_one_or_none()
+        conversation = await resolve_conversation_id(db, conversation_id)
         if conversation is None:
             return None, (
                 f"Error: No conversation found with ID '{conversation_id}'. "
-                "Use the conversation_id from your session-start context."
+                "The row is created by this session's first recorded "
+                "prompt, so an id from before that can resolve to "
+                "nothing; and a restart or rewind moves a session onto "
+                "the conversation it continues, in which case the "
+                "NEWEST hook block names the id that works, not the "
+                "session-start one. Reading the archive by time "
+                "(memory_read with no in_conversation) works under any "
+                "id."
             )
         if conversation.source != ConversationSource.CLAUDE_CODE.value:
             return None, (
@@ -327,15 +330,14 @@ async def resolve_claude_code_conversation(
             "session-start context."
         )
     async with async_session_maker() as db:
-        result = await db.execute(
-            select(Conversation).where(Conversation.id == conversation_id)
-        )
-        conversation = result.scalar_one_or_none()
+        conversation = await resolve_conversation_id(db, conversation_id)
     if conversation is None:
         return None, (
             f"Error: No conversation found with ID '{conversation_id}'. "
-            "Use the conversation_id from your session-start context (the row "
-            "is created by your first recorded prompt)."
+            "The row is created by this session's first recorded prompt, "
+            "and a restart or rewind moves a session onto the conversation "
+            "it continues — so use the id from the NEWEST hook block, not "
+            "the session-start one."
         )
     if conversation.source != ConversationSource.CLAUDE_CODE.value:
         return None, (

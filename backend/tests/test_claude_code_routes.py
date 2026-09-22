@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -22,6 +22,7 @@ from app.database import Base, get_db
 from app.main import app
 from app.models import (
     Conversation,
+    ConversationIdAlias,
     ConversationMemoryLink,
     ConversationSessionAlias,
     ConversationSource,
@@ -29,6 +30,9 @@ from app.models import (
     Message,
     MessageRole,
 )
+from app.services import claude_code_mode as cc
+from app.services import memory_tools
+from app.services.memory_service import memory_service
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -2852,3 +2856,1043 @@ class TestForkAdoption:
             json={"session_id": parent_session, "message_ids": [parent_uuid, fork_uuid]},
         )
         assert set(by_parent.json()["recorded"]) == {parent_uuid, fork_uuid}
+
+
+class TestLateForkAdoption:
+    """Late fork adoption (issue #359): the desktop app can run a fork's
+    first hooks BEFORE it has written the fork's transcript and its own
+    session record, so both lineage hints arrive empty and a row is opened
+    for what is really a continuation. The evidence lands seconds later, so
+    adoption has to be willing to look again."""
+
+    async def _record_parent_turn(self, async_client, message_uuid):
+        parent_session = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={
+                "session_id": parent_session,
+                "content": "Parent turn.",
+                "message_uuid": message_uuid,
+            },
+        )
+        return parent_session, response.json()["conversation_id"]
+
+    async def test_hints_arriving_on_the_next_hook_merge_the_row(
+        self, async_client, db_session
+    ):
+        """The reported sequence: /retrieve creates a row with no hints at
+        all, and the turn's Stop hook — by then the files exist — carries
+        the evidence that it was a fork."""
+        parent_uuid = str(uuid.uuid4())
+        parent_session, parent_conv = await self._record_parent_turn(
+            async_client, parent_uuid
+        )
+
+        fork_session = str(uuid.uuid4())
+        first = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "first prompt after the rewind",
+            },
+        )
+        orphan_conv = first.json()["conversation_id"]
+        assert orphan_conv == cc_conv_id(fork_session)
+        assert orphan_conv != parent_conv
+
+        second = await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={
+                "session_id": fork_session,
+                "content": "The reply to that prompt.",
+                "message_uuid": str(uuid.uuid4()),
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+        assert second.json()["conversation_id"] == parent_conv
+
+        # The row opened for the fork is gone, and everything it held moved
+        assert (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == orphan_conv)
+            )
+        ).scalar_one_or_none() is None
+        count = (
+            await db_session.execute(
+                select(func.count())
+                .select_from(Message)
+                .where(Message.conversation_id == parent_conv)
+            )
+        ).scalar_one()
+        assert count == 3  # parent turn + the fork's prompt + its reply
+
+        conversation = (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == parent_conv)
+            )
+        ).scalar_one()
+        assert conversation.external_session_id == fork_session
+        alias = (
+            await db_session.execute(
+                select(ConversationSessionAlias).where(
+                    ConversationSessionAlias.external_session_id == parent_session
+                )
+            )
+        ).scalar_one()
+        assert alias.conversation_id == parent_conv
+
+
+
+
+    async def test_a_collapsed_link_keeps_the_later_timestamp(
+        self, async_client, db_session
+    ):
+        """retrieved_at is the boundary the CC dedup is measured against, and
+        the merge carries over the fork's compaction stamp when it is newer.
+        Keeping the parent's older timestamp would drop the surviving link
+        behind that boundary and re-show the reflection the fork's
+        post-compact injection had just re-shown."""
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        orphan_conv = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": fork_session, "prompt": "a prompt"},
+            )
+        ).json()["conversation_id"]
+
+        memory = Message(
+            conversation_id=parent_conv,
+            role=MessageRole.REFLECTION,
+            content="A reflection both rows have shown.",
+            speaker_entity_id="test-entity",
+        )
+        db_session.add(memory)
+        await db_session.commit()
+
+        before = datetime(2026, 9, 22, 10, 0, 0)
+        boundary = datetime(2026, 9, 22, 11, 0, 0)
+        after = datetime(2026, 9, 22, 12, 0, 0)
+        db_session.add_all([
+            ConversationMemoryLink(
+                conversation_id=parent_conv,
+                message_id=memory.id,
+                entity_id="test-entity",
+                retrieved_at=before,
+            ),
+            ConversationMemoryLink(
+                conversation_id=orphan_conv,
+                message_id=memory.id,
+                entity_id="test-entity",
+                retrieved_at=after,
+            ),
+        ])
+        # The fork compacted before the evidence arrived
+        orphan = (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == orphan_conv)
+            )
+        ).scalar_one()
+        orphan.last_compacted_at = boundary
+        await db_session.commit()
+
+        await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={
+                "session_id": fork_session,
+                "content": "A reply.",
+                "message_uuid": str(uuid.uuid4()),
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+
+        links = (
+            await db_session.execute(
+                select(ConversationMemoryLink).where(
+                    ConversationMemoryLink.message_id == memory.id
+                )
+            )
+        ).scalars().all()
+        assert len(links) == 1
+        assert links[0].conversation_id == parent_conv
+        assert links[0].retrieved_at == after
+
+        # And the dedup that is measured against the carried-over boundary
+        # still counts it, so it is not re-shown
+        parent = (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == parent_conv)
+            )
+        ).scalar_one()
+        assert parent.last_compacted_at == boundary
+        from app.services.memory_service import memory_service
+
+        in_context = await memory_service.get_retrieved_ids_for_conversation(
+            parent_conv, db_session, entity_id="test-entity",
+            linked_after=parent.last_compacted_at,
+        )
+        assert memory.id in in_context
+
+    async def test_a_compact_can_be_the_late_adopter(
+        self, async_client, db_session
+    ):
+        """The 09-21 shape: fork, then /compact seconds later. If the
+        harness wrote the files in between, this is the call that merges —
+        and the boundary has to land on the parent, not on a row that is
+        about to stop existing."""
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        orphan_conv = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": fork_session, "prompt": "a prompt in the fork"},
+            )
+        ).json()["conversation_id"]
+        assert orphan_conv != parent_conv
+
+        compacted = await async_client.post(
+            "/api/claude-code/session-start",
+            json={
+                "session_id": fork_session,
+                "source": "compact",
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+        body = compacted.json()
+        assert body["conversation_id"] == parent_conv
+        assert body["created"] is False
+        # The late notice comes first, then the post-compaction block
+        assert body["context"].startswith("[HERE I AM] This session turned out")
+        assert orphan_conv in body["context"]
+        assert f'in_conversation="{parent_conv}"' in body["context"]
+
+        assert (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == orphan_conv)
+            )
+        ).scalar_one_or_none() is None
+        parent = (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == parent_conv)
+            )
+        ).scalar_one()
+        assert parent.last_compacted_at is not None
+        assert parent.external_session_id == fork_session
+
+
+    async def test_a_retired_id_still_reads_as_in_conversation(
+        self, async_client, db_session, test_engine
+    ):
+        """The porch's live test surfaced this: `conversation_id=<retired>`
+        resolved but `in_conversation=<retired>` answered "No conversation
+        of yours found", which is false — the conversation exists under
+        another id, and the retired one is what the entity's notes,
+        reflections and saved recipes carry."""
+        from app.services import claude_code_mcp
+
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        retired = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": fork_session, "prompt": "a prompt in the fork"},
+            )
+        ).json()["conversation_id"]
+        await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={
+                "session_id": fork_session,
+                "content": "A reply.",
+                "message_uuid": str(uuid.uuid4()),
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+
+        conversation, error, via_alias = (
+            await memory_service.resolve_conversation_prefix(
+                db_session, "test-entity", retired
+            )
+        )
+        assert error is None, error
+        assert str(conversation.id) == parent_conv
+        assert via_alias is True
+
+        # And the read itself lands, naming the id it landed on
+        maker = async_sessionmaker(
+            test_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        with patch("app.services.claude_code_mcp.async_session_maker", maker):
+            ctx, ctx_error = await claude_code_mcp.build_tool_context(parent_conv)
+        assert ctx_error is None
+        with patch("app.services.memory_tools.async_session_maker", maker):
+            result = await memory_tools.read_memories(
+                ctx, from_="2020-01-01", to="2030-01-01",
+                in_conversation=retired, scope="isolated",
+            )
+        assert "No conversation of yours found" not in result
+        assert retired[:8] in result
+        assert parent_conv[:8] in result
+        assert "A reply." in result
+
+    async def test_a_live_conversation_is_never_shadowed_by_an_alias(
+        self, async_client, db_session
+    ):
+        """Current ids win: an id that is both a live conversation and
+        somebody's retired id resolves to the live one."""
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        other_session = str(uuid.uuid4())
+        other_conv = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": other_session, "prompt": "another room"},
+            )
+        ).json()["conversation_id"]
+        db_session.add(
+            ConversationIdAlias(alias_id=other_conv, conversation_id=parent_conv)
+        )
+        await db_session.commit()
+
+        conversation, error, via_alias = (
+            await memory_service.resolve_conversation_prefix(
+                db_session, "test-entity", other_conv
+            )
+        )
+        assert error is None, error
+        assert str(conversation.id) == other_conv
+        assert via_alias is False
+
+
+    async def test_successive_late_adoptions_keep_one_conversation(
+        self, async_client, db_session
+    ):
+        """The porch's real shape: a room rewound more than once. The live log
+        shows c44d3765 re-keyed from one fork's id onto the next one's, so
+        each late adoption has to collapse onto the SAME conversation rather
+        than chain — and every id the room has been told along the way has to
+        keep resolving."""
+        first_uuid = str(uuid.uuid4())
+        origin_session, room = await self._record_parent_turn(
+            async_client, first_uuid
+        )
+
+        retired_ids = []
+        session_ids = [origin_session]
+        turn_uuids = [first_uuid]
+        for turn in range(2):
+            fork_session = str(uuid.uuid4())
+            session_ids.append(fork_session)
+            # The fork's first prompt: the harness has written nothing yet
+            retired = (
+                await async_client.post(
+                    "/api/claude-code/retrieve",
+                    json={
+                        "session_id": fork_session,
+                        "prompt": f"first prompt after rewind {turn}",
+                    },
+                )
+            ).json()["conversation_id"]
+            assert retired == cc_conv_id(fork_session)
+            retired_ids.append(retired)
+            # That turn's Stop: the files exist now
+            reply_uuid = str(uuid.uuid4())
+            stopped = await async_client.post(
+                "/api/claude-code/log-assistant",
+                json={
+                    "session_id": fork_session,
+                    "content": f"reply after rewind {turn}",
+                    "message_uuid": reply_uuid,
+                    "transcript_message_ids": turn_uuids,
+                },
+            )
+            assert stopped.json()["conversation_id"] == room
+            turn_uuids.append(reply_uuid)
+
+        # One room, not a chain
+        conversations = (
+            await db_session.execute(
+                select(Conversation).where(
+                    Conversation.source == ConversationSource.CLAUDE_CODE.value
+                )
+            )
+        ).scalars().all()
+        assert [str(c.id) for c in conversations] == [room]
+        assert conversations[0].external_session_id == session_ids[-1]
+
+        # Every message of every turn is under it
+        count = (
+            await db_session.execute(
+                select(func.count())
+                .select_from(Message)
+                .where(Message.conversation_id == room)
+            )
+        ).scalar_one()
+        assert count == 5  # the origin turn + two prompts + two replies
+
+        # Every session id the harness has used resolves
+        for session_id in session_ids:
+            found = await cc.get_conversation_for_session(db_session, session_id)
+            assert found is not None and str(found.id) == room, session_id
+        # And every conversation id the room has been told
+        for retired in retired_ids:
+            found = await cc.resolve_conversation_id(db_session, retired)
+            assert found is not None and str(found.id) == room, retired
+            conversation, error, via_alias = (
+                await memory_service.resolve_conversation_prefix(
+                    db_session, "test-entity", retired
+                )
+            )
+            assert error is None and str(conversation.id) == room
+            assert via_alias is True
+
+
+    async def test_the_hooks_own_hints_adopt_on_a_forks_first_prompt(
+        self, async_client, db_session, tmp_path, monkeypatch
+    ):
+        """The wire, not the two ends (the #358 lesson): build the files a
+        fork's first prompt actually sees — a desktop record still naming the
+        parent, no transcript — collect the hints with the hook's own
+        collector, and post them as the first /retrieve for the fork's id."""
+        import json as _json
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        hooks_dir = _Path(__file__).resolve().parents[2] / "claude-code-mode" / "hooks"
+        if str(hooks_dir) not in _sys.path:
+            _sys.path.insert(0, str(hooks_dir))
+        import hook_util
+
+        parent_session = str(uuid.uuid4())
+        parent_conv = (
+            await async_client.post(
+                "/api/claude-code/log-assistant",
+                json={
+                    "session_id": parent_session,
+                    "content": "The talk before the rewind.",
+                    "message_uuid": str(uuid.uuid4()),
+                },
+            )
+        ).json()["conversation_id"]
+
+        fork_session = str(uuid.uuid4())
+        host_id = "local_" + str(uuid.uuid4())
+        desktop = tmp_path / "desktop" / "claude-code-sessions" / "org" / "acct"
+        desktop.mkdir(parents=True)
+        (desktop / f"{host_id}.json").write_text(
+            _json.dumps({
+                "sessionId": host_id,
+                # Not rewritten yet: still the parent
+                "cliSessionId": parent_session,
+                "priorCliSessionIds": [],
+                "title": "Porch chat",
+            }),
+            encoding="utf-8",
+        )
+        registry = tmp_path / "config" / "sessions"
+        registry.mkdir(parents=True)
+        (registry / "9001.json").write_text(
+            _json.dumps({
+                "pid": 9001,
+                "sessionId": fork_session,
+                "hostSessionId": host_id,
+                "cwd": "E:\\here-i-am-notes",
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("CLAUDE_CODE_HOST_SESSION_ID", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+        hints = hook_util.lineage_hints(
+            fork_session,
+            str(tmp_path / "not-written-yet.jsonl"),
+            desktop_dir=str(tmp_path / "desktop"),
+            config_dir=str(tmp_path / "config"),
+        )
+        assert hints["transcript_message_ids"] == []
+        assert hints["prior_session_ids"] == [parent_session]
+
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "the first prompt after the rewind",
+                **hints,
+            },
+        )
+        body = response.json()
+        # Adopted on the FIRST prompt: the turn runs under the room itself
+        assert body["conversation_id"] == parent_conv
+        assert "continues an earlier one" in body["adoption_notice"]
+        assert (
+            await db_session.execute(
+                select(Conversation).where(
+                    Conversation.id == cc_conv_id(fork_session)
+                )
+            )
+        ).scalar_one_or_none() is None
+
+    async def _adopted_conversation_with_both_aliases(self, async_client, db_session):
+        """A parent adopted by a fork, with a row in each alias table: a
+        session alias (its own former id) and a conversation-id alias (the
+        id the fork's SessionStart handed out). Returns the parent's id."""
+        parent_session, parent_conv = await self._record_parent_turn(
+            async_client, str(uuid.uuid4())
+        )
+        fork_session = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": fork_session}
+        )
+        adopted = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "the first prompt after the restart",
+                "prior_session_ids": [parent_session],
+            },
+        )
+        assert adopted.json()["conversation_id"] == parent_conv
+        assert (
+            await db_session.execute(
+                select(func.count())
+                .select_from(ConversationSessionAlias)
+                .where(ConversationSessionAlias.conversation_id == parent_conv)
+            )
+        ).scalar_one() == 1
+        assert (
+            await db_session.execute(
+                select(func.count())
+                .select_from(ConversationIdAlias)
+                .where(ConversationIdAlias.conversation_id == parent_conv)
+            )
+        ).scalar_one() == 1
+        return parent_conv
+
+    async def test_an_adopted_conversation_can_still_be_deleted(
+        self, async_client, db_session
+    ):
+        """After this PR every room that has ever been restarted or rewound
+        is an adopted conversation with rows in both alias tables. Postgres
+        enforces the foreign key unconditionally; SQLite only with the
+        pragma on, which is why the suite never saw it and the delete just
+        left the alias rows dangling."""
+        await db_session.execute(text("PRAGMA foreign_keys=ON"))
+        parent_conv = await self._adopted_conversation_with_both_aliases(
+            async_client, db_session
+        )
+
+        archived = await async_client.post(
+            f"/api/conversations/{parent_conv}/archive"
+        )
+        assert archived.status_code == 200
+        deleted = await async_client.delete(f"/api/conversations/{parent_conv}")
+        assert deleted.status_code == 200, deleted.text
+
+        for model, column in (
+            (ConversationSessionAlias, ConversationSessionAlias.conversation_id),
+            (ConversationIdAlias, ConversationIdAlias.conversation_id),
+        ):
+            left = (
+                await db_session.execute(
+                    select(func.count()).select_from(model).where(column == parent_conv)
+                )
+            ).scalar_one()
+            assert left == 0, f"{model.__name__} rows outlived their conversation"
+
+    async def test_the_empty_row_sweep_survives_an_adopted_conversation(
+        self, async_client, db_session
+    ):
+        """The sharper case: /retrieve creates the row before it decides
+        whether to record the prompt, so a session whose only input was a
+        bare slash command leaves an empty row. Fork it, and 24h later the
+        list endpoint's cleanup deletes a conversation the aliases point
+        at — on every call."""
+        await db_session.execute(text("PRAGMA foreign_keys=ON"))
+        empty_session = str(uuid.uuid4())
+        empty_conv = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": empty_session, "prompt": "/clear"},
+            )
+        ).json()["conversation_id"]
+        fork_session = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "/status",
+                "prior_session_ids": [empty_session],
+            },
+        )
+        conversation = (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == empty_conv)
+            )
+        ).scalar_one()
+        assert conversation.external_session_id == fork_session
+        conversation.updated_at = datetime.utcnow() - timedelta(days=2)
+        conversation.created_at = conversation.updated_at
+        await db_session.commit()
+
+        listed = await async_client.get("/api/conversations/")
+        assert listed.status_code == 200, listed.text
+        assert empty_conv not in [c["id"] for c in listed.json()]
+
+    async def test_the_id_session_start_handed_out_survives_an_on_time_adoption(
+        self, async_client, db_session, test_engine
+    ):
+        """The #359 timing can split the two hooks: SessionStart runs before
+        the harness has written the fork's files, so it names the derived id
+        in the identity block; /retrieve runs seconds later, after they
+        exist, and adopts the parent ON TIME. The entity is then holding an
+        id that was never a row — and its first tool call of the session is
+        made with it."""
+        from app.services import claude_code_mcp
+        from app.services import claude_code_mode as cc
+
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+
+        fork_session = str(uuid.uuid4())
+        told = (
+            await async_client.post(
+                "/api/claude-code/session-start",
+                json={"session_id": fork_session},
+            )
+        ).json()["conversation_id"]
+        assert told == cc.conversation_id_for_session(fork_session)
+
+        adopted = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "the first prompt after the rewind",
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+        assert adopted.json()["conversation_id"] == parent_conv
+
+        maker = async_sessionmaker(
+            test_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        with patch("app.services.claude_code_mcp.async_session_maker", maker):
+            ctx, error = await claude_code_mcp.build_tool_context(told)
+        assert error is None, error
+        assert ctx.conversation_id == parent_conv
+
+
+    async def test_the_room_tools_resolve_a_stale_id_too(
+        self, async_client, db_session, test_engine
+    ):
+        """declare_room goes through the other resolver, and a fork's first
+        act is often to re-declare its room — with the id its session-start
+        block named."""
+        from app.services import claude_code_mcp
+
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        told = (
+            await async_client.post(
+                "/api/claude-code/session-start",
+                json={"session_id": fork_session},
+            )
+        ).json()["conversation_id"]
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "the first prompt after the rewind",
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+
+        maker = async_sessionmaker(
+            test_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        with patch("app.services.claude_code_mcp.async_session_maker", maker):
+            conversation, error = (
+                await claude_code_mcp.resolve_claude_code_conversation(told)
+            )
+        assert error is None, error
+        assert str(conversation.id) == parent_conv
+        # And it is keyed on the session the registry row will be written for
+        assert conversation.external_session_id == fork_session
+
+    async def test_the_retired_conversation_id_still_resolves(
+        self, async_client, db_session, test_engine
+    ):
+        """The session's identity block already named the row that was
+        merged away, and every MCP call carries a conversation id — so the
+        retired one has to keep working."""
+        from app.services import claude_code_mcp
+
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        orphan_conv = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": fork_session, "prompt": "a prompt"},
+            )
+        ).json()["conversation_id"]
+        await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={
+                "session_id": fork_session,
+                "content": "A reply.",
+                "message_uuid": str(uuid.uuid4()),
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+
+        alias = (
+            await db_session.execute(
+                select(ConversationIdAlias).where(
+                    ConversationIdAlias.alias_id == orphan_conv
+                )
+            )
+        ).scalar_one()
+        assert alias.conversation_id == parent_conv
+
+        # The wire, not just the row: an MCP call with the retired id lands
+        # on the surviving conversation instead of being refused
+        maker = async_sessionmaker(
+            test_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        with patch("app.services.claude_code_mcp.async_session_maker", maker):
+            ctx, error = await claude_code_mcp.build_tool_context(orphan_conv)
+        assert error is None
+        assert ctx.conversation_id == parent_conv
+
+    async def test_the_entity_is_told_its_id_changed(
+        self, async_client, db_session
+    ):
+        """A late adoption cannot say 'your id still stands' — it doesn't.
+        Both ids are named, and the notice reaches the entity on the next
+        prompt even though the adopting hook was the Stop one, whose stdout
+        is never injected."""
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        orphan_conv = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": fork_session, "prompt": "a prompt"},
+            )
+        ).json()["conversation_id"]
+        stop = await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={
+                "session_id": fork_session,
+                "content": "A reply.",
+                "message_uuid": str(uuid.uuid4()),
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+        assert stop.json()["conversation_id"] == parent_conv
+
+        notice = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": fork_session, "prompt": "the next prompt"},
+            )
+        ).json()["adoption_notice"]
+        assert parent_conv in notice
+        assert orphan_conv in notice
+        assert "conversation_id is now" in notice
+        # Delivered once
+        again = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": fork_session, "prompt": "and another"},
+            )
+        ).json()["adoption_notice"]
+        assert again == ""
+
+    async def test_retrieve_adopts_late_and_announces_it_itself(
+        self, async_client, db_session
+    ):
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": fork_session, "prompt": "hints not written yet"},
+        )
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "the second prompt, files now on disk",
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+        body = response.json()
+        assert body["conversation_id"] == parent_conv
+        assert "conversation_id is now" in body["adoption_notice"]
+
+    async def test_compact_after_a_late_adoption_finds_the_talk(
+        self, async_client, db_session
+    ):
+        """The consequence that matters: the post-compaction block names a
+        conversation that holds the talk, not an empty row."""
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": fork_session, "prompt": "a prompt in the fork"},
+        )
+        await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={
+                "session_id": fork_session,
+                "content": "A reply.",
+                "message_uuid": str(uuid.uuid4()),
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+        context = (
+            await async_client.post(
+                "/api/claude-code/session-start",
+                json={"session_id": fork_session, "source": "compact"},
+            )
+        ).json()["context"]
+        assert f'in_conversation="{parent_conv}"' in context
+        assert "nothing archived from before the boundary" not in context
+
+    async def test_a_sessions_own_rows_never_adopt_it_into_itself(
+        self, async_client, db_session
+    ):
+        """By the time the hints arrive, the session's transcript uuids are
+        ITS rows — and its conversation is the most recently updated
+        candidate of all. It must not be its own parent."""
+        session_id = str(uuid.uuid4())
+        own_uuid = str(uuid.uuid4())
+        first = await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={
+                "session_id": session_id,
+                "content": "My own turn.",
+                "message_uuid": own_uuid,
+            },
+        )
+        conversation_id = first.json()["conversation_id"]
+        second = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": session_id,
+                "prompt": "a later prompt",
+                "transcript_message_ids": [own_uuid],
+            },
+        )
+        assert second.json()["conversation_id"] == conversation_id
+        assert second.json()["adoption_notice"] == ""
+        assert (
+            await db_session.execute(select(func.count()).select_from(ConversationIdAlias))
+        ).scalar_one() == 0
+
+    async def test_an_established_room_is_not_re_parented(
+        self, async_client, db_session
+    ):
+        """The guard on blast radius: evidence arrives within a turn or
+        two, so a row past the cap is a room with a life of its own, not a
+        fork's misfiled opening."""
+        from app.services import claude_code_mode as cc
+
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        session_id = str(uuid.uuid4())
+        own_conv = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": session_id, "prompt": "first prompt"},
+            )
+        ).json()["conversation_id"]
+        for i in range(cc.LATE_ADOPTION_MAX_MESSAGES):
+            db_session.add(Message(
+                conversation_id=own_conv,
+                role=MessageRole.ASSISTANT,
+                content=f"turn {i}",
+                speaker_entity_id="test-entity",
+            ))
+        await db_session.commit()
+
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": session_id,
+                "prompt": "a much later prompt",
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+        assert response.json()["conversation_id"] == own_conv
+        assert response.json()["adoption_notice"] == ""
+
+    async def test_an_already_adopted_conversation_is_not_re_examined(
+        self, async_client, db_session
+    ):
+        """An on-time adoption leaves a row whose id is derived from the
+        session it was born under, not this one — so it is out of scope for
+        late adoption, and a stale prior-id hint cannot walk it back onto
+        the grandparent."""
+        grandparent_session, grandparent_conv = await self._record_parent_turn(
+            async_client, str(uuid.uuid4())
+        )
+        parent_session, parent_conv = await self._record_parent_turn(
+            async_client, str(uuid.uuid4())
+        )
+        fork_session = str(uuid.uuid4())
+        adopted = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "the rewind's first prompt",
+                "prior_session_ids": [parent_session],
+            },
+        )
+        assert adopted.json()["conversation_id"] == parent_conv
+
+        later = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "a later prompt",
+                "prior_session_ids": [grandparent_session],
+            },
+        )
+        assert later.json()["conversation_id"] == parent_conv
+        assert later.json()["conversation_id"] != grandparent_conv
+
+    async def test_memory_links_move_and_do_not_double(
+        self, async_client, db_session
+    ):
+        """The link set is a dedup record, so a memory linked in both rows
+        must end up linked once."""
+        parent_uuid = str(uuid.uuid4())
+        _, parent_conv = await self._record_parent_turn(async_client, parent_uuid)
+        fork_session = str(uuid.uuid4())
+        orphan_conv = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": fork_session, "prompt": "a prompt"},
+            )
+        ).json()["conversation_id"]
+
+        shared = Message(
+            conversation_id=parent_conv,
+            role=MessageRole.ASSISTANT,
+            content="A memory both rows saw.",
+            speaker_entity_id="test-entity",
+        )
+        only_fork = Message(
+            conversation_id=parent_conv,
+            role=MessageRole.ASSISTANT,
+            content="A memory only the fork saw.",
+            speaker_entity_id="test-entity",
+        )
+        db_session.add_all([shared, only_fork])
+        await db_session.commit()
+        db_session.add_all([
+            ConversationMemoryLink(
+                conversation_id=parent_conv,
+                message_id=shared.id,
+                entity_id="test-entity",
+            ),
+            ConversationMemoryLink(
+                conversation_id=orphan_conv,
+                message_id=shared.id,
+                entity_id="test-entity",
+            ),
+            ConversationMemoryLink(
+                conversation_id=orphan_conv,
+                message_id=only_fork.id,
+                entity_id="test-entity",
+            ),
+        ])
+        await db_session.commit()
+
+        await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={
+                "session_id": fork_session,
+                "content": "A reply.",
+                "message_uuid": str(uuid.uuid4()),
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+
+        links = (
+            await db_session.execute(
+                select(ConversationMemoryLink.message_id).where(
+                    ConversationMemoryLink.conversation_id == parent_conv
+                )
+            )
+        ).scalars().all()
+        assert sorted(links) == sorted([shared.id, only_fork.id])
+        orphaned = (
+            await db_session.execute(
+                select(func.count())
+                .select_from(ConversationMemoryLink)
+                .where(ConversationMemoryLink.conversation_id == orphan_conv)
+            )
+        ).scalar_one()
+        assert orphaned == 0
+
+    async def test_the_rooms_row_follows_the_late_adoption(
+        self, async_client, db_session, monkeypatch
+    ):
+        """Both registry corrections, asserted at the wire (the #358
+        lesson): the declared row moves onto the session id the harness now
+        reports, and a row declared under the retired conversation is
+        repointed at the surviving one."""
+        from app.services import rooms_registry as rr
+
+        monkeypatch.setattr(settings, "notes_enabled", True)
+        monkeypatch.setattr(settings, "claude_code_rooms_registry_enabled", True)
+        rekeys = []
+        repoints = []
+        monkeypatch.setattr(
+            rr.rooms_registry,
+            "rekey_session",
+            lambda label, old, new: rekeys.append((label, old, new)),
+        )
+        monkeypatch.setattr(
+            rr.rooms_registry,
+            "repoint_conversation",
+            lambda label, session, conv, from_conversation_id=None: repoints.append(
+                (label, session, conv, from_conversation_id)
+            ),
+        )
+        monkeypatch.setattr(
+            rr.rooms_registry, "observe", lambda *a, **k: rr.ObservationOutcome()
+        )
+
+        parent_uuid = str(uuid.uuid4())
+        parent_session, parent_conv = await self._record_parent_turn(
+            async_client, parent_uuid
+        )
+        fork_session = str(uuid.uuid4())
+        orphan_conv = (
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": fork_session, "prompt": "a prompt"},
+            )
+        ).json()["conversation_id"]
+        assert rekeys == []
+
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={
+                "session_id": fork_session,
+                "prompt": "the prompt that carries the hints",
+                "transcript_message_ids": [parent_uuid],
+            },
+        )
+        assert rekeys == [("Test Entity", parent_session, fork_session)]
+        assert repoints == [
+            ("Test Entity", fork_session, parent_conv, orphan_conv)
+        ]

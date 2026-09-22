@@ -562,6 +562,42 @@ class RoomsRegistry:
         self.save(entity_label, data, row=row)
         return row
 
+    def repoint_conversation(
+        self,
+        entity_label: str,
+        session_id: str,
+        conversation_id: str,
+        *,
+        from_conversation_id: Optional[str] = None,
+        now: Optional[datetime] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Point a declared room's row at the conversation it now records
+        into, after a late fork adoption merged away the one it was
+        declared with (issue #359). The session id is unchanged there — it
+        is the conversation that moved.
+
+        No-op (returns None) when the session has no live row, when the row
+        already names this conversation, or when `from_conversation_id` is
+        given and the row names something else: the entity declared the
+        row, so a value it did not put there is not this adoption's to
+        overwrite. Raises RegistryWriteError on a failed write.
+        """
+        if not session_id or not conversation_id:
+            return None
+        data = self.load(entity_label)
+        row = self.find_row(data, session_id)
+        if row is None or row.get("retired_at"):
+            return None
+        if row.get("conversation_id") == conversation_id:
+            return None
+        if from_conversation_id and row.get("conversation_id") != from_conversation_id:
+            return None
+        row["conversation_id"] = conversation_id
+        row["last_seen"] = _now_iso(now)
+        self.save(entity_label, data, row=row)
+        return row
+
     def retire(
         self,
         entity_label: str,

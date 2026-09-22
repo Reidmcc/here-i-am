@@ -1483,7 +1483,7 @@ async def _resolve_conversation_filter(
     filter is scoped to)."""
     if in_conversation is None or not str(in_conversation).strip():
         return None, "", None
-    conversation, error = await memory_service.resolve_conversation_prefix(
+    conversation, error, via_alias = await memory_service.resolve_conversation_prefix(
         db, ctx.entity_id, in_conversation
     )
     if error:
@@ -1491,6 +1491,12 @@ async def _resolve_conversation_filter(
     conversation_id = str(conversation.id)
     title = (conversation.title or "").strip()
     suffix = f', in "{title}"' if title else f", in conversation {conversation_id[:8]}"
+    if via_alias:
+        # A retired id (issue #359): the conversation is the one it was
+        # merged into, so say which id the read landed on rather than
+        # redirect silently — the asked-for id may be all a note or an
+        # older reflection carries
+        suffix += f" (now {conversation_id[:8]}; {str(in_conversation).strip()[:8]} was retired when this session was adopted after a restart or rewind)"
     return conversation_id, suffix, None
 
 

@@ -278,10 +278,182 @@ tool result and goes to disk over 50 KB.
   `/compact` follows immediately. Both therefore re-key the rooms row and
   tell the entity: `session-start` returns the one-line notice as its
   context, `/retrieve` returns it as `adoption_notice`, which the hook
-  prints ahead of the mailbox and rooms lines. (`/log-assistant` adopts too,
-  for correctness of the row it is about to write, but does not touch the
-  registry: a turn always has a prompt before it, so the prompt hook has
-  already re-keyed — and if it hadn't, the next prompt does.)
+  prints ahead of the mailbox and rooms lines. `/log-assistant` adopts too
+  — since issue #359 it is a real adopter, often the first call after the
+  harness has written a fork's files — but its own stdout never reaches the
+  entity, so it corrects the registry and leaves its notice for the next
+  prompt to print.
+
+  **The hints can arrive late, so adoption is retryable (issue #359).**
+  The desktop app can run a fork's first hooks *before* it has written the
+  fork's transcript and its own session record. Measured on the first live
+  rewind after the fix above: the rewind edge was stamped at 14:40:31, the
+  fork's SessionStart ran at 14:41:50, `/retrieve` created a row at
+  14:41:53, and only then were the files written — the transcript at
+  14:41:56, the desktop record at 14:41:59. Both hints arrived empty, the
+  fork was indistinguishable from a new session, and a row was opened for
+  it; run against the same files afterwards the collectors returned both
+  hints full. Adoption used to be one-shot on "unknown session id", so
+  every later hook — by then carrying the evidence — found a row already
+  keyed on the id and had nothing to adopt.
+
+  So a row opened for a session id is re-examined on every later call while
+  two conditions hold (`_try_late_adoption`), both read off the record with
+  nothing remembered between calls:
+  - its conversation id is the one derived from *this* session id, which is
+    true only of a row created for this session and never of a conversation
+    that has already adopted something (that row's id comes from the
+    session it was born under); and
+  - it holds at most `LATE_ADOPTION_MAX_MESSAGES` (20) rows — a couple of
+    turns, which is all the evidence needs, and not enough to re-parent an
+    established room on a stray hint.
+
+  The lineage lookup then excludes the row itself: by this point the
+  session's own transcript uuids are *its* rows, and its conversation is
+  the most recently updated candidate of all, so without the exclusion it
+  would adopt itself. When a parent is found, the row is **merged** into it
+  (`_merge_into_parent`): messages (reflections among them) and memory
+  links move — duplicate links are dropped, since the link set is a dedup
+  record — a compaction boundary carries over if the fork compacted before
+  the evidence arrived, the parent takes the live session id with its own
+  former id becoming a session alias as usual, and the retired row is
+  deleted. Pinecone's `conversation_id` metadata is repointed for the moved
+  memories (`memory_service.repoint_memories`): same-conversation exclusion
+  is a metadata filter, so a memory left under the retired id would be
+  recalled into the room that just said it. Best-effort, like every Pinecone
+  write here — SQL is the archive, and a rebuild restores the metadata.
+
+  A late adoption **changes the conversation id under a running session**,
+  which an on-time one never does. The session's identity block already
+  named the row that was merged away, so the retired id becomes a
+  `ConversationIdAlias` and keeps resolving (`resolve_conversation_id`, used
+  by both MCP entry points) — nothing already in flight breaks. The entity
+  is told once, in its own notice (`late_adoption_notice`), which names both
+  ids and says plainly which one is now its own.
+
+  **Every id the session has been told resolves**
+  (`_alias_derived_conversation_id`), as the *conversation_id* a tool call
+  carries and as the *in_conversation* a read names —
+  `memory_service.resolve_conversation_prefix` falls through to the alias
+  table, and the tool's echo says which id the read landed on rather than
+  redirecting silently. Both matter: the first is the id the session is
+  operating under, the second is the id its own notes, reflections and
+  saved recipes carry. Current ids always win over retired ones, so a live
+  conversation is never shadowed. The same timing can split the two
+  hooks the other way:
+  SessionStart runs before the files exist, so with no hints it hands the
+  entity `conversation_id_for_session(<fork id>)` in the identity block,
+  and `/retrieve` three seconds later *does* have the hints and adopts the
+  parent **on time** — so no row ever carries the id the entity is holding,
+  and its first tool call of the session is made with it. (Before this, the
+  refusal even told it to use the id from its session-start context, which
+  was the one that had just failed.) So every adoption, on-time or late,
+  records the id derived from the session it adopted as an alias of the
+  conversation. Adoption runs in `/retrieve`, which completes before the
+  model's turn, so there is **no window in which a tool call fails because
+  an adoption has not happened yet** — nothing has to wait and retry. What
+  remains is the best-effort limit: if the hints never arrive at all (a CLI
+  session with no desktop record and an unreadable transcript), no adoption
+  happens, the entity's copied context still names the parent — which
+  exists, so the tools work — while the hooks record into a separate row.
+  The archive stays readable by time, which is what the post-compaction
+  block points at when it counts zero rows before the boundary.
+
+  **Both alias tables are cascaded from `Conversation`.** After adoption
+  every room that has ever been restarted or rewound owns rows in them, so
+  an uncascaded foreign key would make exactly those conversations
+  undeletable wherever the constraint is enforced — Postgres always, SQLite
+  only with `PRAGMA foreign_keys=ON`, which is why it showed locally as
+  harmless dangling rows and would have been a 500 in production. The
+  sharper case is the conversation list's empty-row sweep, which deletes
+  rows without being asked: `/retrieve` creates the row before it decides
+  whether to record the prompt, so a session whose only input was a bare
+  slash command leaves an empty one, and a fork adopting it would break
+  every list call once the retention window passed.
+
+  **The fork's first prompt adopts, through `hostSessionId`.** Getting
+  here took two wrong turns worth recording, because the fix is one join
+  and the reason it was missed is that the evidence was on disk under a key
+  nobody looked up.
+
+  What happens at a fork, measured on two live rewinds: the rewind edge is
+  stamped, a SessionStart may or may not fire, the first prompt hook fires,
+  and only *then* does the harness write the fork's transcript (about two
+  seconds later) and rewrite the desktop app's own session record (about
+  five). So at the fork's first prompt the transcript genuinely does not
+  exist. The first conclusion drawn from that — that nothing could win the
+  first hook, and one turn of lag was inherent — was wrong.
+
+  The prior-ids hint was looking itself up the wrong way. `desktop_sessions_index`
+  is keyed on `cliSessionId`, and a fork's own id matches no record for the
+  first seconds of its life, so the lookup returned nothing. But the record
+  that holds the chain is right there and readable: Claude Code's
+  per-process registry (`<CLAUDE_CONFIG_DIR|~/.claude>/sessions/<pid>.json`)
+  carries **`hostSessionId`** — the desktop app's own session id, written
+  when the process starts and **unchanged when Claude Code forks** — and the
+  desktop record is the file named for that id. Because that record is
+  rewritten only *after* the first prompt, at the first prompt it still
+  names the **parent** as its `cliSessionId`. So the chain, oldest first, is
+  its `priorCliSessionIds` plus that `cliSessionId`, the immediate parent
+  last (the backend reverses the list, so last is nearest).
+
+  `desktop_prior_session_ids` therefore has two ways in: the record that
+  already names this session, or, failing that, the record its
+  `hostSessionId` names. Nothing is inferred — the desktop app's record for
+  *this desktop session* says which Claude Code session it was last
+  running, and if that is not this one, this one continues it. A session
+  with no `hostSessionId` (a CLI session) gets nothing rather than a guess
+  at some other desktop session's record.
+
+  `hostSessionId` itself comes from the environment when it can: the
+  desktop app sets `CLAUDE_CODE_HOST_SESSION_ID` (and
+  `CLAUDE_CODE_SESSION_ID`) on the Claude Code process and children inherit
+  them, so no file needs to have been written yet. It is trusted only when
+  `CLAUDE_CODE_SESSION_ID` matches the session id the hook was handed — the
+  environment describes the *process*, and a firing for another session's
+  id must not borrow this process's desktop host. Observed in tool
+  subprocesses of the CLI rather than in a hook specifically; the registry
+  file is the fallback and is itself early enough (written six seconds
+  before the first prompt on a measured rewind), so a hook that inherited
+  nothing loses no ground.
+
+  With that, adoption lands on the fork's **first prompt**, before the
+  model's turn, so the whole first turn runs under the room's own
+  conversation. Late adoption (below) remains the backstop for everything
+  that path can't cover: a CLI session with no desktop record, an
+  unreadable registry, or a fork whose first contact with the backend is
+  something other than a prompt.
+
+  **Why waiting for the transcript was the wrong answer.** It was the first
+  plan and the measurement killed it: a *genuinely new* session's transcript
+  is written about **5.7 seconds after its own first prompt** too (checked
+  across 140 non-fork transcripts on this machine — the first `type=user`
+  entry predates the file's birth in every one of them). So "the transcript
+  file is missing" was never a fork signal, and any wait keyed on it would
+  have delayed the first prompt of every session to buy nothing.
+
+  **One prompt of notice lag remains, and only for the paths that fall
+  through to late adoption.** There, the *record* is corrected at the first
+  hook carrying hints — often that turn's Stop — while the *notice* waits
+  for the next prompt, because the Stop hook's stdout is not injected into
+  context.
+
+  **Successive forks collapse onto one conversation, not a chain.** A live
+  log shows `c44d3765` re-keyed from one fork's session id onto the next
+  one's (`which now holds session c4aed985... (was e40799e3...)`), each
+  retired conversation id and each former session id still resolving to it.
+  A room that is rewound repeatedly stays one room, which is the whole point
+  of adopting rather than linking; `test_successive_late_adoptions_keep_one_conversation`
+  pins it.
+
+  **Diagnosing a miss.** Every resolution logs one line with the hint counts
+  and the decision — `known` / `created` / `adopted` / `late-adopted` /
+  `deferred`. That is what settled where adoption was landing (`Late fork
+  adoption: conversation 18bb8e2b... merged into c44d3765...` at 16:23:32
+  with `transcript_message_ids=16, prior_session_ids=6`, then `known` on the
+  next prompt), and a `created` line with both hint counts at zero is the
+  signature of the miss this section fixes.
+
 - **Registration is lazy.** `session-start` builds the identity context but
   never creates the row — Claude Desktop fires SessionStart for
   background/utility sessions that never send a prompt, and eager
@@ -943,7 +1115,9 @@ conversation on first contact; `/session-start` and `/session-end` never do
   resume. `prior_session_ids` / `transcript_message_ids` are the
   fork-adoption lineage hints (see "Conversations"): when they resolve this
   id to a parent conversation, it is adopted (id unchanged,
-  `external_session_id` re-keyed, old id aliased) and `created` is False —
+  `external_session_id` re-keyed, old id aliased) and `created` is False
+  — or, when a row was already opened for this session before the hints
+  existed, merged into the parent (issue #359) —
   so a fork's post-compaction recovery reads the parent, which has the
   talk, not an empty new row. `context` is the small always-inline block;
   `bulk_context`
@@ -986,6 +1160,9 @@ conversation on first contact; `/session-start` and `/session-end` never do
   `adoption_notice`, the one line telling the entity this session is a
   continuation and which conversation id is recording it (the hook prints
   it ahead of the mailbox and rooms lines; empty when nothing was adopted).
+  It also carries a notice left by an adoption that landed on a hook
+  with no line back to the entity — a late adoption on the Stop hook
+  (issue #359) — delivered once.
 - `POST /recorded` `{session_id, message_ids}` → `{recorded, missing}` —
   which of the ids exist as rows of the session's conversation, resolved
   alias-aware (an adopted fork's rows live under the parent). The hook's
@@ -997,7 +1174,10 @@ conversation on first contact; `/session-start` and `/session-end` never do
   idempotent on `message_uuid` (the transcript entry's UUID becomes the
   Message row's primary key). `model` is the transcript entry's own
   `message.model`, recorded verbatim onto the row; absent means NULL. The
-  lineage hints adopt a fork whose first event is this turn's Stop.
+  lineage hints adopt a fork whose first event is this turn's Stop, and
+  since issue #359 they also adopt one whose row was opened before the
+  harness had written the files they come from; the notice for that is
+  stashed for the next `/retrieve` to print.
 
 ### Model attribution
 

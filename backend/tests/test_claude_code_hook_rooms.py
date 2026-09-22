@@ -46,6 +46,10 @@ LIVE_ENTRY = {
     "nameSource": "user",
     "nameSince": 1788404038531,
     "bridgeSessionId": "session_01Uhn2Qd9K6gGAXDLH3ZGp41",
+    # The desktop app's own session id, stable across Claude Code forks
+    # (observed 2026-09-22, Claude Code 2.1.275) — the key that lets a
+    # fork's first prompt find its parent (issue #359)
+    "hostSessionId": "local_ad0cb4d4-901e-4fb1-8a84-33af914a222a",
 }
 
 
@@ -104,7 +108,10 @@ def test_snapshot_maps_observed_fields(tmp_path):
             "messaging_socket": "\\\\.\\pipe\\LOCAL\\cc-msg-2db48788b5f07d5597aa094da48d4211",
             "cwd": "E:\\here-i-am-notes",
             "started_at": "2026-09-03T00:24:42+00:00",
-            "desktop_session_id": None,
+            "host_session_id": "local_ad0cb4d4-901e-4fb1-8a84-33af914a222a",
+            # Taken straight from the registry now, not only from the
+            # cliSessionId join, which a freshly forked session misses
+            "desktop_session_id": "local_ad0cb4d4-901e-4fb1-8a84-33af914a222a",
             "desktop_title": None,
         }
     ]
@@ -119,6 +126,7 @@ def test_snapshot_records_missing_fields_as_none(tmp_path):
     assert entry["name_since"] is None
     assert entry["messaging_socket"] is None
     assert entry["started_at"] is None
+    assert entry["host_session_id"] is None
     assert entry["desktop_session_id"] is None
     assert entry["desktop_title"] is None
 
@@ -420,3 +428,187 @@ def test_prompt_hook_prints_rooms_error_on_wakeup_tick(tmp_path):
     )
     assert payload["prompt"] == ""
     assert "[HERE I AM] could not be written at X" in out
+
+
+# --- fork adoption at the FIRST prompt (issue #359)
+#
+# The desktop app rewrites its own record a few seconds AFTER a fork's first
+# prompt hook fires (measured on a live rewind: prompt 16:22:14, record
+# 16:22:19), so at that prompt the record still names the PARENT as its
+# cliSessionId. The index is keyed on cliSessionId, so the fork's own id
+# matched nothing and the hint went out empty — which is why the first hook
+# lost every time. hostSessionId is the way in: it is in the per-process
+# registry from process start, and it does not change when Claude Code forks.
+
+FORK_SESSION_ID = "c4aed985-1111-2222-3333-444444444444"
+PARENT_SESSION_ID = "e40799e3-5555-6666-7777-888888888888"
+
+FORK_REGISTRY_ENTRY = {
+    "pid": 9001,
+    "sessionId": FORK_SESSION_ID,
+    "cwd": "E:\\here-i-am-notes",
+    "startedAt": 1788395082135,
+    "entrypoint": "claude-desktop",
+    "name": "Porch chat continuation",
+    "nameSource": "derived",
+    # Same desktop session as before the rewind
+    "hostSessionId": "local_7d7e55dd-4952-41b5-b47e-4182d676f06b",
+}
+
+# The record as it stands at the fork's first prompt: not yet rewritten, so
+# it still names the parent and lists the chain before it, oldest first
+RECORD_BEFORE_THE_REWRITE = {
+    "sessionId": "local_7d7e55dd-4952-41b5-b47e-4182d676f06b",
+    "cliSessionId": PARENT_SESSION_ID,
+    "priorCliSessionIds": ["ce122085", "7241556a", "c4c8625a", "4a17f344", "1a74d27b"],
+    "title": "Porch chat",
+}
+
+
+def test_prior_ids_find_the_parent_at_a_forks_first_prompt(
+    tmp_path, isolated_desktop_dir
+):
+    """The regression the live test exposed: with no transcript yet and the
+    record not rewritten, the hint still resolves — through hostSessionId —
+    and the immediate parent is LAST, since the backend walks the list by
+    reversing it."""
+    write_registry(tmp_path, FORK_REGISTRY_ENTRY)
+    write_desktop_records(isolated_desktop_dir, RECORD_BEFORE_THE_REWRITE)
+    priors = hook_util.desktop_prior_session_ids(
+        FORK_SESSION_ID, config_dir=str(tmp_path)
+    )
+    assert priors == [
+        "ce122085", "7241556a", "c4c8625a", "4a17f344", "1a74d27b", PARENT_SESSION_ID,
+    ]
+    assert priors[-1] == PARENT_SESSION_ID
+
+
+def test_lineage_hints_carry_the_parent_with_no_transcript(
+    tmp_path, isolated_desktop_dir
+):
+    """A fork's first prompt hook: the transcript path does not exist yet, so
+    the whole hint has to come from the desktop record."""
+    write_registry(tmp_path, FORK_REGISTRY_ENTRY)
+    write_desktop_records(isolated_desktop_dir, RECORD_BEFORE_THE_REWRITE)
+    hints = hook_util.lineage_hints(
+        FORK_SESSION_ID,
+        str(tmp_path / "does-not-exist-yet.jsonl"),
+        config_dir=str(tmp_path),
+    )
+    assert hints["transcript_message_ids"] == []
+    assert hints["prior_session_ids"][-1] == PARENT_SESSION_ID
+
+
+def test_prior_ids_prefer_the_record_that_names_this_session(
+    tmp_path, isolated_desktop_dir
+):
+    """Once the record catches up, its own priorCliSessionIds is the chain
+    and the session is not its own parent."""
+    caught_up = dict(
+        RECORD_BEFORE_THE_REWRITE,
+        cliSessionId=FORK_SESSION_ID,
+        priorCliSessionIds=RECORD_BEFORE_THE_REWRITE["priorCliSessionIds"]
+        + [PARENT_SESSION_ID],
+    )
+    write_registry(tmp_path, FORK_REGISTRY_ENTRY)
+    write_desktop_records(isolated_desktop_dir, caught_up)
+    priors = hook_util.desktop_prior_session_ids(
+        FORK_SESSION_ID, config_dir=str(tmp_path)
+    )
+    assert priors[-1] == PARENT_SESSION_ID
+    assert FORK_SESSION_ID not in priors
+
+
+def test_a_new_session_gets_no_lineage_from_the_host_join(
+    tmp_path, isolated_desktop_dir
+):
+    """The cost side: a genuinely new session's record names itself and has
+    no priors, so the host join yields nothing and nothing waits."""
+    entry = dict(FORK_REGISTRY_ENTRY, sessionId="fresh-session-0001")
+    record = {
+        "sessionId": "local_7d7e55dd-4952-41b5-b47e-4182d676f06b",
+        "cliSessionId": "fresh-session-0001",
+        "priorCliSessionIds": [],
+        "title": "A new room",
+    }
+    write_registry(tmp_path, entry)
+    write_desktop_records(isolated_desktop_dir, record)
+    assert hook_util.desktop_prior_session_ids(
+        "fresh-session-0001", config_dir=str(tmp_path)
+    ) == []
+
+
+def test_no_host_session_id_means_no_guessing(tmp_path, isolated_desktop_dir):
+    """A CLI session has no desktop host. The record for some other desktop
+    session must never be read as this one's parent."""
+    entry = {k: v for k, v in FORK_REGISTRY_ENTRY.items() if k != "hostSessionId"}
+    write_registry(tmp_path, entry)
+    write_desktop_records(isolated_desktop_dir, RECORD_BEFORE_THE_REWRITE)
+    assert hook_util.desktop_prior_session_ids(
+        FORK_SESSION_ID, config_dir=str(tmp_path)
+    ) == []
+
+
+def test_host_session_id_is_read_from_a_snapshot_when_given(
+    tmp_path, isolated_desktop_dir
+):
+    """The hooks pass the snapshot they already built rather than re-reading
+    the registry in the same firing."""
+    write_desktop_records(isolated_desktop_dir, RECORD_BEFORE_THE_REWRITE)
+    snapshot = [{
+        "session_id": FORK_SESSION_ID,
+        "host_session_id": "local_7d7e55dd-4952-41b5-b47e-4182d676f06b",
+    }]
+    priors = hook_util.desktop_prior_session_ids(
+        FORK_SESSION_ID,
+        config_dir=str(tmp_path / "no-registry-here"),
+        sessions=snapshot,
+    )
+    assert priors[-1] == PARENT_SESSION_ID
+
+
+def test_host_session_id_comes_from_the_environment_first(
+    tmp_path, isolated_desktop_dir, monkeypatch
+):
+    """The desktop app sets CLAUDE_CODE_HOST_SESSION_ID on the Claude Code
+    process and hooks inherit it, so the parent is findable with no file at
+    all — no registry, no write-timing edge."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", FORK_SESSION_ID)
+    monkeypatch.setenv(
+        "CLAUDE_CODE_HOST_SESSION_ID", "local_7d7e55dd-4952-41b5-b47e-4182d676f06b"
+    )
+    write_desktop_records(isolated_desktop_dir, RECORD_BEFORE_THE_REWRITE)
+    priors = hook_util.desktop_prior_session_ids(
+        FORK_SESSION_ID, config_dir=str(tmp_path / "no-registry-here")
+    )
+    assert priors[-1] == PARENT_SESSION_ID
+
+
+def test_the_environment_is_ignored_when_it_describes_another_session(
+    tmp_path, isolated_desktop_dir, monkeypatch
+):
+    """The environment describes the process. A hook firing for some other
+    session's id must not inherit this process's desktop host — and with the
+    registry absent there is nothing else to fall back to, so the answer is
+    nothing rather than the wrong parent."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "some-other-session")
+    monkeypatch.setenv(
+        "CLAUDE_CODE_HOST_SESSION_ID", "local_7d7e55dd-4952-41b5-b47e-4182d676f06b"
+    )
+    write_desktop_records(isolated_desktop_dir, RECORD_BEFORE_THE_REWRITE)
+    assert hook_util.desktop_prior_session_ids(
+        FORK_SESSION_ID, config_dir=str(tmp_path / "no-registry-here")
+    ) == []
+
+
+def test_the_registry_still_answers_without_the_environment(
+    tmp_path, isolated_desktop_dir, monkeypatch
+):
+    monkeypatch.delenv("CLAUDE_CODE_HOST_SESSION_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    write_registry(tmp_path, FORK_REGISTRY_ENTRY)
+    write_desktop_records(isolated_desktop_dir, RECORD_BEFORE_THE_REWRITE)
+    priors = hook_util.desktop_prior_session_ids(
+        FORK_SESSION_ID, config_dir=str(tmp_path)
+    )
+    assert priors[-1] == PARENT_SESSION_ID
