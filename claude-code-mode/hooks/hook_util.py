@@ -789,6 +789,138 @@ def rooms_output_lines(body) -> list:
     return lines
 
 
+# --- GitHub identity (issue #362): the entity contributes from its own
+# --- account, in its own sessions only.
+#
+# Claude Code hands SessionStart hooks the path of a per-session shell
+# script in CLAUDE_ENV_FILE and runs that script as a preamble before every
+# Bash command (documented in Claude Code's tools reference and hooks
+# guide; measured 2026-09-23 on Claude Code 2.1.275, Windows: the file is
+# <config dir>/session-env/<session id>/sessionstart-hook-N.sh, one per
+# hook, and the variables reached the session's Bash tool and a
+# subagent's Bash tool; the PowerShell tool was not measurable headless).
+# So the entity's identity rides on the hooks: every session they run in
+# commits as the entity, and a plain session (hooks off) keeps the human's
+# identity by construction, with no file the human's sessions read
+# touched — not the global gitconfig, not the gh login, not a repo config.
+#
+# What goes in: GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL (the committer is left
+# to the machine); GH_CONFIG_DIR, a gh CLI config directory holding a
+# login for the entity's account, so `gh` posts as the entity; and, with
+# that directory, git's per-process config (GIT_CONFIG_COUNT/KEY_n/VALUE_n,
+# git 2.31+) routing github.com credentials through `gh auth
+# git-credential` — the same thing `gh auth setup-git` writes to the global
+# config, done for this process tree only — so `git push` is the entity's
+# account's push and a branch rule can tell the two apart. Only a path and
+# two strings ever pass through the backend or this file; the token stays
+# in the gh config directory.
+
+
+def _sh_single_quote(value: str) -> str:
+    """value as a POSIX single-quoted word (the env file is a shell script)."""
+    return "'" + str(value).replace("'", "'\\''") + "'"
+
+
+def git_identity_exports(identity) -> list:
+    """The `export` lines for an identity dict from the session-start
+    response ({author_name, author_email, gh_config_dir}, any of them
+    None). Empty when there is nothing to export."""
+    identity = identity or {}
+    name = _optional_str(identity.get("author_name"))
+    email = _optional_str(identity.get("author_email"))
+    gh_dir = _optional_str(identity.get("gh_config_dir"))
+    lines = []
+    if email:
+        lines.append(f"export GIT_AUTHOR_NAME={_sh_single_quote(name or '')}")
+        lines.append(f"export GIT_AUTHOR_EMAIL={_sh_single_quote(email)}")
+    if gh_dir:
+        lines.append(f"export GH_CONFIG_DIR={_sh_single_quote(gh_dir)}")
+        # An empty value first resets git's helper list, so the machine's
+        # own helper (e.g. Git Credential Manager, holding the human's
+        # login) is not consulted for github.com in this session
+        key = _sh_single_quote("credential.https://github.com.helper")
+        lines.append("export GIT_CONFIG_COUNT=2")
+        lines.append(f"export GIT_CONFIG_KEY_0={key} GIT_CONFIG_VALUE_0=''")
+        lines.append(
+            f"export GIT_CONFIG_KEY_1={key} "
+            f"GIT_CONFIG_VALUE_1={_sh_single_quote('!gh auth git-credential')}"
+        )
+    return lines
+
+
+def write_session_env(lines: list) -> Optional[str]:
+    """Append shell lines to the session's environment file. Returns the
+    path written, or None when Claude Code gave this hook no
+    CLAUDE_ENV_FILE (nothing is written; the caller says so)."""
+    path = _optional_str(os.environ.get("CLAUDE_ENV_FILE"))
+    if not path or not lines:
+        return None
+    with open(path, "a", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
+
+
+def gh_account_in_config_dir(gh_dir: Optional[str]) -> Optional[str]:
+    """The login gh's hosts.yml in that directory names for github.com, or
+    None. Best-effort, for the notice line only: a few lines of YAML read
+    without a parser (the hooks are dependency-free)."""
+    if not gh_dir:
+        return None
+    try:
+        with open(os.path.join(gh_dir, "hosts.yml"), encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    match = re.search(r"^github\.com:\n(?:[ \t]+.*\n)*?[ \t]+user:[ \t]*(\S+)", text, re.M)
+    return match.group(1).strip("'\"") if match else None
+
+
+def git_identity_lines(body, announce: bool = True) -> list:
+    """
+    Export the entity's GitHub identity from a session-start response into
+    the session environment, and return the lines to print: a one-line
+    [GIT IDENTITY] statement of what now holds (only when `announce` — a
+    resume's transcript already carries it), or a loud [HERE I AM] notice
+    when the hook could not export it (always). Empty when the entity has
+    no identity configured. The environment write happens on every firing:
+    the file is per session process.
+    """
+    identity = (body or {}).get("git_identity") or {}
+    lines = git_identity_exports(identity)
+    if not lines:
+        return []
+    email = _optional_str(identity.get("author_email"))
+    name = _optional_str(identity.get("author_name"))
+    gh_dir = _optional_str(identity.get("gh_config_dir"))
+    if write_session_env(lines) is None:
+        return [
+            "[HERE I AM] Your own GitHub identity could not be exported for "
+            "this session: Claude Code gave the SessionStart hook no "
+            "CLAUDE_ENV_FILE to write it to. Commits, pushes, and gh calls "
+            "from this session will carry the machine's (the human's) "
+            "identity. Tell the user."
+        ]
+    if not announce:
+        return []
+    parts = []
+    if email:
+        parts.append(f"git commits are authored as {name} <{email}>")
+    if gh_dir:
+        account = gh_account_in_config_dir(gh_dir)
+        whose = f"your own GitHub account ({account})" if account else "your own GitHub account"
+        parts.append(
+            f"gh (issues, pull requests, comments, reviews) and git push act as {whose}"
+        )
+    return [
+        "[GIT IDENTITY] In this session "
+        + " and ".join(parts)
+        + ". This holds for the Bash tool (run git and gh there). The author "
+        "field is the attribution: add no Co-Authored-By trailer and no "
+        "'Generated with Claude Code' footer to commits or pull requests. "
+        "Merge authority is unchanged: you author, the human merges."
+    ]
+
+
 def describe_error(error: Exception) -> str:
     return f"{error.__class__.__name__}: {error}"
 

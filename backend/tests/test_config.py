@@ -69,7 +69,32 @@ class TestEntityConfig:
             "llm_provider": "anthropic",
             "default_model": "claude-sonnet-4-5-20250929",
             "host": None,
+            "git_author_name": None,
+            "git_author_email": None,
+            "gh_config_dir": None,
         }
+
+    def test_github_identity_fields_are_optional_and_parsed(self):
+        """The entity's own GitHub identity (issue #362) is three optional
+        fields on the PINECONE_INDEXES entry; an entity without them has
+        none."""
+        bare = EntityConfig(index_name="i", label="L")
+        assert (bare.git_author_name, bare.git_author_email, bare.gh_config_dir) == (
+            None, None, None,
+        )
+        settings = Settings(
+            pinecone_indexes=(
+                '[{"index_name": "kira", "label": "Kira", '
+                '"git_author_email": "kira@example.com", '
+                '"gh_config_dir": "E:/priv/gh-kira"}, '
+                '{"index_name": "other", "label": "Other"}]'
+            )
+        )
+        kira, other = settings.get_entities()
+        assert kira.git_author_name is None
+        assert kira.git_author_email == "kira@example.com"
+        assert kira.gh_config_dir == "E:/priv/gh-kira"
+        assert (other.git_author_email, other.gh_config_dir) == (None, None)
 
 
 class TestSettings:

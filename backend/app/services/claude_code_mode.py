@@ -1089,6 +1089,39 @@ def join_bulk_parts(bulk_parts: List[Tuple[str, str]]) -> str:
     return "\n\n".join(text for _, text in bulk_parts)
 
 
+def git_identity_for(entity: EntityConfig) -> Optional[Dict[str, Optional[str]]]:
+    """
+    The entity's own GitHub identity for a Claude Code session (issue
+    #362), or None when the entity has none configured.
+
+    Commits from the entity's sessions should show the entity as author,
+    and its issues, pull requests, and comments should open under its own
+    GitHub account, while the human keeps merge authority. The SessionStart
+    hook exports this into the session's shell environment (Claude Code's
+    CLAUDE_ENV_FILE), so it holds only in sessions the hooks run in — a
+    plain Claude Code session on the same machine, hooks off, keeps the
+    human's identity by construction.
+
+    author_name/author_email become GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL (the
+    name defaults to the entity's label: git falls back to the machine's
+    user.name otherwise, so the log would read as the human at the
+    entity's address). gh_config_dir is a gh CLI config directory that
+    holds a login for the entity's account — a path, never a token; the
+    token lives in that directory, which is chosen to sit outside the
+    live server directory and the notes. The committer is left alone.
+    """
+    email = (entity.git_author_email or "").strip() or None
+    gh_dir = (entity.gh_config_dir or "").strip() or None
+    if not email and not gh_dir:
+        return None
+    name = (entity.git_author_name or "").strip() or entity.label
+    return {
+        "author_name": name if email else None,
+        "author_email": email,
+        "gh_config_dir": gh_dir,
+    }
+
+
 # The look-back the post-compaction block's memory_read call asks for:
 # this many pages of this size, about 300k tokens of talk. A long room read
 # to its first message would refill the context compaction just emptied;

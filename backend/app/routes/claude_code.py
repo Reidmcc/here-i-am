@@ -108,6 +108,15 @@ class ContextItem(BaseModel):
     summary: str
 
 
+class GitIdentity(BaseModel):
+    """The entity's own GitHub identity for this session (issue #362):
+    what the SessionStart hook exports into the session's shell
+    environment. A path and two strings — never a token."""
+    author_name: Optional[str] = None
+    author_email: Optional[str] = None
+    gh_config_dir: Optional[str] = None
+
+
 class SessionStartResponse(BaseModel):
     # The session's conversation id — deterministic, and handed out before
     # the row exists (lazy registration; see services/claude_code_mode.py)
@@ -136,6 +145,10 @@ class SessionStartResponse(BaseModel):
     # the entity can write by hand
     rooms_notice: str = ""
     rooms_error: str = ""
+    # The entity's GitHub identity, on every firing (startup, resume,
+    # compact): the environment file is per session process, so a resume
+    # needs it as much as a fresh start. None = entity has none configured.
+    git_identity: Optional[GitIdentity] = None
 
 
 class PeerMessage(BaseModel):
@@ -387,6 +400,7 @@ async def session_start(
         bulk_parts=[BulkPart(name=name, text=text) for name, text in bulk_parts],
         rooms_notice=rooms_notice,
         rooms_error=rooms_error,
+        git_identity=cc.git_identity_for(entity),
     )
 
 

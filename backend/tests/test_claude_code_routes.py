@@ -224,6 +224,61 @@ class TestSessionStart:
         assert body["context"] == ""
         assert body["bulk_context"] == ""
 
+    async def test_git_identity_absent_when_entity_has_none(self, async_client):
+        response = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        assert response.json()["git_identity"] is None
+
+    async def test_git_identity_on_every_firing(self, async_client, monkeypatch):
+        """The entity's GitHub identity (issue #362) rides every
+        session-start response — startup, resume, compact — because the
+        hook exports it into a per-process environment file. A path and
+        two strings; the name defaults to the label."""
+        monkeypatch.setattr(
+            settings,
+            "pinecone_indexes",
+            '[{"index_name": "test-entity", "label": "Test Entity", '
+            '"git_author_email": "entity@example.com", '
+            '"gh_config_dir": "E:/priv/gh-entity"}]',
+        )
+        expected = {
+            "author_name": "Test Entity",
+            "author_email": "entity@example.com",
+            "gh_config_dir": "E:/priv/gh-entity",
+        }
+        session_id = str(uuid.uuid4())
+        first = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": session_id}
+        )
+        assert first.json()["git_identity"] == expected
+        await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session_id, "prompt": "hello"},
+        )
+        for source in ("resume", "compact"):
+            again = await async_client.post(
+                "/api/claude-code/session-start",
+                json={"session_id": session_id, "source": source},
+            )
+            assert again.json()["git_identity"] == expected, source
+
+    async def test_git_identity_author_only_and_gh_only(self, monkeypatch):
+        from app.config import EntityConfig
+
+        author_only = EntityConfig(
+            index_name="a", label="A", git_author_name="Ada", git_author_email="a@x"
+        )
+        assert cc.git_identity_for(author_only) == {
+            "author_name": "Ada", "author_email": "a@x", "gh_config_dir": None,
+        }
+        gh_only = EntityConfig(index_name="g", label="G", gh_config_dir="/gh")
+        assert cc.git_identity_for(gh_only) == {
+            "author_name": None, "author_email": None, "gh_config_dir": "/gh",
+        }
+        blank = EntityConfig(index_name="b", label="B", git_author_email="  ")
+        assert cc.git_identity_for(blank) is None
+
     async def test_includes_entity_system_prompt(self, async_client, db_session):
         db_session.add(
             EntitySetting(entity_id="test-entity", system_prompt="You enjoy gardens.")

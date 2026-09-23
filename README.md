@@ -241,6 +241,7 @@ PINECONE_INDEXES='[
 - `llm_provider` — `"anthropic"`, `"openai"`, `"google"`, or `"minimax"` (default: `"anthropic"`)
 - `default_model` — Model ID to use (optional, uses provider default)
 - `host` — Pinecone index host URL (required for serverless indexes)
+- `git_author_email`, `git_author_name`, `gh_config_dir` — the entity's own GitHub identity for its Claude Code sessions: commits authored as the entity, `gh` acting as its account (optional; see [docs/claude-code-mode.md](docs/claude-code-mode.md#github-identity))
 
 ### Optional Local Voice Services
 
