@@ -8,6 +8,9 @@ before every Bash command. The lines carry a path and two strings, never
 a token; a missing CLAUDE_ENV_FILE is announced, never silent; an entity
 with nothing configured leaves no trace.
 """
+import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -52,6 +55,18 @@ class TestExports:
         assert lines[0] == "export GH_CONFIG_DIR='/home/x/gh-kira'"
         assert not any("GIT_AUTHOR" in line for line in lines)
         assert "export GIT_CONFIG_COUNT=2" in lines
+
+    def test_email_without_name_exports_no_author_pair(self):
+        """GIT_AUTHOR_NAME='' makes git refuse every commit ("empty ident
+        name ... not allowed"); an unset pair falls back to the machine's
+        identity. The backend defaults the name, but the hook re-validates
+        what it receives because the two deploy separately."""
+        lines = hook_util.git_identity_exports(
+            {"author_email": "kira@example.com", "gh_config_dir": "/gh"}
+        )
+        assert not any("GIT_AUTHOR" in line for line in lines)
+        assert lines[0] == "export GH_CONFIG_DIR='/gh'"
+        assert hook_util.git_identity_exports({"author_email": "kira@example.com"}) == []
 
     def test_nothing_configured_exports_nothing(self):
         assert hook_util.git_identity_exports(None) == []
@@ -141,6 +156,116 @@ class TestIdentityLines:
         lines = hook_util.git_identity_lines({"git_identity": identity})
         assert len(lines) == 1
         assert "act as your own GitHub account." in lines[0]
+
+
+SESSION = "git-identity-test"
+
+
+def run_session_start(body: dict, tmp_path, source: str, env_file) -> str:
+    """Run session_start.main() as a subprocess with the backend stubbed —
+    the wire from the response to stdout and to CLAUDE_ENV_FILE, which the
+    unit tests above can't see (the #358 rule: test the path, not the
+    parts)."""
+    env = {**os.environ, "TMPDIR": str(tmp_path), "TEMP": str(tmp_path), "TMP": str(tmp_path)}
+    env.pop("HIM_DISABLE", None)
+    env.pop("HIM_INLINE_BUDGET", None)
+    env.pop("CLAUDE_ENV_FILE", None)
+    if env_file is not None:
+        env["CLAUDE_ENV_FILE"] = str(env_file)
+    body_path = tmp_path / "stub-body.json"
+    body_path.write_text(json.dumps(body), encoding="utf-8")
+    stdin_payload = {"session_id": SESSION, "source": source, "cwd": str(tmp_path)}
+    code = (
+        "import io, json, sys\n"
+        "import hook_util\n"
+        f"body = json.load(open({str(body_path)!r}, encoding='utf-8'))\n"
+        "hook_util.post_backend = lambda path, payload, timeout=30: body\n"
+        f"sys.stdin = io.StringIO({json.dumps(json.dumps(stdin_payload))})\n"
+        "import session_start\n"
+        "session_start.main()\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        cwd=HOOKS_DIR,
+        env=env,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    return result.stdout.decode("utf-8").replace("\r\n", "\n")
+
+
+CONTEXT = "[HERE I AM] You are Kira, a Here I Am entity, operating in Claude Code mode."
+
+
+class TestThroughMain:
+    def test_startup_prints_statement_after_context_and_writes_env(self, tmp_path):
+        env_file = tmp_path / "sessionstart-hook-1.sh"
+        out = run_session_start(
+            {
+                "context": CONTEXT,
+                "bulk_context": "",
+                "git_identity": FULL,
+                "rooms_notice": "[ROOMS REGISTRY] noted",
+            },
+            tmp_path,
+            "startup",
+            env_file,
+        )
+        assert out.index(CONTEXT) < out.index("[GIT IDENTITY]") < out.index("[ROOMS REGISTRY]")
+        assert "authored as Kira <kira@example.com>" in out
+        assert "GIT_AUTHOR_EMAIL='kira@example.com'" in env_file.read_text(encoding="utf-8")
+
+    def test_startup_with_spilled_bulk_keeps_statement_inline(self, tmp_path):
+        env_file = tmp_path / "env.sh"
+        out = run_session_start(
+            {
+                "context": CONTEXT,
+                "bulk_context": "x" * 20000,
+                "bulk_parts": [{"name": "notes-index", "text": "x" * 20000}],
+                "inline_budget": 9600,
+                "git_identity": FULL,
+            },
+            tmp_path,
+            "startup",
+            env_file,
+        )
+        assert "too large to inject inline" in out
+        assert out.index(CONTEXT) < out.index("[GIT IDENTITY]")
+        assert "x" * 1000 not in out
+        assert env_file.exists()
+
+    def test_resume_writes_env_and_prints_nothing(self, tmp_path):
+        env_file = tmp_path / "env.sh"
+        out = run_session_start(
+            {"context": "", "bulk_context": "", "git_identity": FULL},
+            tmp_path,
+            "resume",
+            env_file,
+        )
+        assert out.strip() == ""
+        assert "export GH_CONFIG_DIR=" in env_file.read_text(encoding="utf-8")
+
+    def test_resume_without_env_file_is_loud(self, tmp_path):
+        out = run_session_start(
+            {"context": "", "bulk_context": "", "git_identity": FULL},
+            tmp_path,
+            "resume",
+            None,
+        )
+        assert out.startswith("[HERE I AM] Your own GitHub identity could not be exported")
+        assert "human" in out
+
+    def test_no_identity_leaves_no_trace(self, tmp_path):
+        env_file = tmp_path / "env.sh"
+        out = run_session_start(
+            {"context": CONTEXT, "bulk_context": "", "git_identity": None},
+            tmp_path,
+            "startup",
+            env_file,
+        )
+        assert out.strip() == CONTEXT
+        assert not env_file.exists()
 
 
 class TestGhAccount:

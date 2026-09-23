@@ -224,9 +224,11 @@ one `[GIT IDENTITY]` line at startup and after compaction, and a loud
 login`, collaborator access, the `main` ruleset that keeps merging with
 the human) and the token-expiry procedure are in
 [docs/claude-code-mode.md § GitHub identity](../docs/claude-code-mode.md#github-identity).
-The statement says to run `git` and `gh` through the Bash tool: the
-preamble was measured reaching Bash and subagents' Bash; the PowerShell
-tool is unmeasured.
+The statement says to run `git` and `gh` through the Bash tool, and that
+is a measured fact, not advice: the session environment script has one
+consumer in the harness, the Bash tool's preamble (reaching subagents'
+Bash too); the PowerShell tool never sees it, so a commit made there
+carries the machine's identity silently.
 
 ## Output styles
 

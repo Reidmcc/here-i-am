@@ -83,8 +83,10 @@ def main() -> None:
             "The Here I Am backend was unreachable at session start "
             f"({hook_util.describe_error(e)}). You are running WITHOUT your "
             "identity block, notes index, and recent reflections, and this "
-            "session may not be recorded to your long-term memory. Tell the "
-            "user."
+            "session may not be recorded to your long-term memory. If you "
+            "have your own GitHub identity it was not exported either: "
+            "commits, pushes, and gh calls from this session carry the "
+            "machine's (the human's) identity. Tell the user."
         )
         return
 

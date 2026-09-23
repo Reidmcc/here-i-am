@@ -795,14 +795,38 @@ def rooms_output_lines(body) -> list:
 # Claude Code hands SessionStart hooks the path of a per-session shell
 # script in CLAUDE_ENV_FILE and runs that script as a preamble before every
 # Bash command (documented in Claude Code's tools reference and hooks
-# guide; measured 2026-09-23 on Claude Code 2.1.275, Windows: the file is
-# <config dir>/session-env/<session id>/sessionstart-hook-N.sh, one per
-# hook, and the variables reached the session's Bash tool and a
-# subagent's Bash tool; the PowerShell tool was not measurable headless).
-# So the entity's identity rides on the hooks: every session they run in
-# commits as the entity, and a plain session (hooks off) keeps the human's
-# identity by construction, with no file the human's sessions read
+# guide). So the entity's identity rides on the hooks: every session they
+# run in commits as the entity, and a plain session (hooks off) keeps the
+# human's identity by construction, with no file the human's sessions read
 # touched — not the global gitconfig, not the gh login, not a repo config.
+#
+# Measured, not assumed (2026-09-23, Claude Code 2.1.275 as bundled by the
+# desktop app on Windows, by reading the binary; first read on 2.1.270 by
+# the PR #363 review session — the recipe: grep the executable for
+# "Session environment script ready", the loader is the function that logs
+# it, count the call sites of its name):
+#   - The file is <config dir>/session-env/<session id>/<event>-hook-N.sh,
+#     one per hook; the loader joins every setup/sessionstart/cwdchanged/
+#     filechanged file into ONE script and prepends it VERBATIM as shell
+#     text to the Bash command — so single quotes and two assignments per
+#     `export` line are safe. Confirmed live by a headless probe: the
+#     variables reached the session's Bash tool and a subagent's Bash tool.
+#   - That script has exactly ONE consumer, the Bash tool's preamble
+#     builder. The PowerShell tool never sees it: a git commit run there
+#     carries the machine's identity, silently. Hence "run git and gh
+#     through Bash" in the statement below — a fact, not advice.
+#   - The preamble builder skips the script when the tool context is
+#     marked scrubCredentialEnv (the same scrub CLAUDE_CODE_SUBPROCESS_ENV_
+#     SCRUB names; the join from that setting to the Bash tool's flag was
+#     not traced).
+#   - The loader's cache is reset after every SessionStart hook completes,
+#     so the appends a resume or compact makes land; a `cd` clears only the
+#     cwdchanged/filechanged files, so this hook's survives it.
+#   - A hook gets CLAUDE_ENV_FILE only for SessionStart/Setup/CwdChanged/
+#     FileChanged, and NOT when its shell resolves to PowerShell
+#     (configured `shell`, or the platform default when unset). That is the
+#     measured way a hook arrives without it — and why the notice below
+#     exists rather than a silent fallback.
 #
 # What goes in: GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL (the committer is left
 # to the machine); GH_CONFIG_DIR, a gh CLI config directory holding a
@@ -830,8 +854,12 @@ def git_identity_exports(identity) -> list:
     email = _optional_str(identity.get("author_email"))
     gh_dir = _optional_str(identity.get("gh_config_dir"))
     lines = []
-    if email:
-        lines.append(f"export GIT_AUTHOR_NAME={_sh_single_quote(name or '')}")
+    # Both or neither: GIT_AUTHOR_NAME='' makes git refuse every commit
+    # ("empty ident name ... not allowed"), while an unset pair falls back
+    # to the machine's identity. The backend defaults the name, but the
+    # hook and the backend deploy separately, so this side checks too.
+    if email and name:
+        lines.append(f"export GIT_AUTHOR_NAME={_sh_single_quote(name)}")
         lines.append(f"export GIT_AUTHOR_EMAIL={_sh_single_quote(email)}")
     if gh_dir:
         lines.append(f"export GH_CONFIG_DIR={_sh_single_quote(gh_dir)}")
@@ -903,7 +931,7 @@ def git_identity_lines(body, announce: bool = True) -> list:
     if not announce:
         return []
     parts = []
-    if email:
+    if email and name:
         parts.append(f"git commits are authored as {name} <{email}>")
     if gh_dir:
         account = gh_account_in_config_dir(gh_dir)
@@ -914,7 +942,8 @@ def git_identity_lines(body, announce: bool = True) -> list:
     return [
         "[GIT IDENTITY] In this session "
         + " and ".join(parts)
-        + ". This holds for the Bash tool (run git and gh there). The author "
+        + ". This holds for the Bash tool only — the PowerShell tool does not "
+        "carry the session environment, so run git and gh through Bash. The author "
         "field is the attribution: add no Co-Authored-By trailer and no "
         "'Generated with Claude Code' footer to commits or pull requests. "
         "Merge authority is unchanged: you author, the human merges."
