@@ -209,6 +209,27 @@ through `${CLAUDE_PLUGIN_ROOT}` (quoted, so a Windows path survives the
 shell). On Windows that means the plugin route works only where `python3`
 resolves; otherwise use the manual setup above with `python`.
 
+## GitHub identity (optional)
+
+An entity with `git_author_email` / `gh_config_dir` on its backend entity
+config commits and posts from its own GitHub account in the sessions these
+hooks run in: the SessionStart hook exports `GIT_AUTHOR_NAME` /
+`GIT_AUTHOR_EMAIL`, `GH_CONFIG_DIR`, and a per-process git credential
+route into the file Claude Code names in `CLAUDE_ENV_FILE`, which it runs
+before every Bash command. A plain session (hooks off) keeps the human's
+identity; nothing the human's sessions read is modified. The hook prints
+one `[GIT IDENTITY]` line at startup and after compaction, and a loud
+`[HERE I AM]` notice on every firing if Claude Code gave it no
+`CLAUDE_ENV_FILE` to write to. Setup (the account, the isolated `gh auth
+login`, collaborator access, the `main` ruleset that keeps merging with
+the human) and the token-expiry procedure are in
+[docs/claude-code-mode.md § GitHub identity](../docs/claude-code-mode.md#github-identity).
+The statement says to run `git` and `gh` through the Bash tool, and that
+is a measured fact, not advice: the session environment script has one
+consumer in the harness, the Bash tool's preamble (reaching subagents'
+Bash too); the PowerShell tool never sees it, so a commit made there
+carries the machine's identity silently.
+
 ## Output styles
 
 Claude Code's **Default** [output style](https://code.claude.com/docs/en/output-styles)

@@ -83,28 +83,39 @@ def main() -> None:
             "The Here I Am backend was unreachable at session start "
             f"({hook_util.describe_error(e)}). You are running WITHOUT your "
             "identity block, notes index, and recent reflections, and this "
-            "session may not be recorded to your long-term memory. Tell the "
-            "user."
+            "session may not be recorded to your long-term memory. If you "
+            "have your own GitHub identity it was not exported either: "
+            "commits, pushes, and gh calls from this session carry the "
+            "machine's (the human's) identity. Tell the user."
         )
         return
 
-    # Rooms-registry lines come last, after the context and any spill
-    # pointer: a one-line notice, or a loud write failure
-    rooms_lines = hook_util.rooms_output_lines(body)
-
     context = (body.get("context") or "").strip()
+
+    # GitHub identity (issue #362): exported into the session environment
+    # on every firing — the file is per session process, so a resume needs
+    # it too. The statement of what holds is printed only with a context
+    # block (startup, compact); a resume's transcript already carries it.
+    # A failure to export is printed every time.
+    identity_lines = hook_util.git_identity_lines(body, announce=bool(context))
+
+    # Trailer lines come last, after the context and any spill pointer: the
+    # identity statement, then the rooms registry's one-line notice or
+    # loud write failure
+    trailer_lines = [*identity_lines, *hook_util.rooms_output_lines(body)]
+
     bulk = (body.get("bulk_context") or "").strip()
     if not bulk:
         # A plain resume returns nothing at all — the transcript already
         # carries the injections
-        parts = [part for part in (context, *rooms_lines) if part]
+        parts = [part for part in (context, *trailer_lines) if part]
         if parts:
             print("\n\n".join(parts))
         return
 
     budget = hook_util.inline_budget(body)
     combined = f"{context}\n\n{bulk}" if context else bulk
-    inline = "\n\n".join([combined, *rooms_lines])
+    inline = "\n\n".join([combined, *trailer_lines])
     if hook_util.output_chars(inline) <= budget:
         print(inline)
         return
@@ -135,7 +146,7 @@ def main() -> None:
         "part of who you are here, not optional background. "
         + hook_util.READ_TOOL_ADVICE
     )
-    output = [part for part in (context, pointer, *rooms_lines) if part]
+    output = [part for part in (context, pointer, *trailer_lines) if part]
     if hook_util.output_chars("\n\n".join(output)) > budget:
         # Even the identity block is over the line (a long system prompt):
         # file it too, and print the pointer FIRST so the harness's preview
@@ -147,7 +158,7 @@ def main() -> None:
             f"({hook_util.describe_size(context)})\nRead it first. "
             + pointer
         )
-        output = [part for part in (pointer, context, *rooms_lines) if part]
+        output = [part for part in (pointer, context, *trailer_lines) if part]
     print("\n\n".join(output))
 
 

@@ -29,7 +29,9 @@ The integration has two channels:
      (from `EntitySetting`, same source of truth as native mode), the
      memory-tool instructions, the notes paths, and — via the bulk channel
      (see "Hook output limits" below) — the notes indexes and its most
-     recent reflections. It does **not** create the conversation row;
+     recent reflections. It also exports the entity's own GitHub identity
+     into the session's shell environment, when one is configured (see
+     "GitHub identity"). It does **not** create the conversation row;
      registration is lazy (see "Conversations" below), because Claude
      Desktop fires SessionStart for background/utility sessions that never
      speak.
@@ -1097,6 +1099,10 @@ characters of hook stdout, overriding the backend's `inline_budget`; the
 default is 9,600, under the measured 10,000-character line — see "Context
 channels").
 
+Per entity, on its `PINECONE_INDEXES` entry: `git_author_email`,
+`git_author_name`, `gh_config_dir` — the entity's own GitHub identity for
+its sessions (see "GitHub identity"; all optional).
+
 ### Endpoints
 
 All under `/api/claude-code`, all gated by `CLAUDE_CODE_MODE_ENABLED`
@@ -1107,7 +1113,7 @@ conversation on first contact; `/session-start` and `/session-end` never do
 - `POST /session-start` `{session_id, entity?, cwd?, source?,
   transcript_path?, sessions?, prior_session_ids?, transcript_message_ids?}`
   → `{conversation_id, entity_id, entity_label, created, context,
-  bulk_context, rooms_notice, rooms_error}` — full context when `created`
+  bulk_context, rooms_notice, rooms_error, git_identity}` — full context when `created`
   (no conversation recorded for this session yet; `conversation_id` is
   the deterministic id the lazy registration will use), the
   post-compaction context when `source` is `"compact"` (which registers
@@ -1127,7 +1133,10 @@ conversation on first contact; `/session-start` and `/session-end` never do
   name_source?, name_since?, messaging_socket?, cwd?, started_at?,
   desktop_session_id?, desktop_title?}]`); `rooms_notice` is the one-line
   registry notice to print and `rooms_error` a loud write failure (see
-  "Rooms registry").
+  "Rooms registry"). `git_identity` (`{author_name, author_email,
+  gh_config_dir}` or null) is the entity's own GitHub identity, on every
+  firing, which the hook exports into the session environment (see
+  "GitHub identity").
 - `POST /session-end` `{session_id, entity?, reason?}` →
   `{conversation_id, notes_sync_started}` — final fire-and-forget notes
   sync; does not create a conversation for an unseen session.
@@ -1202,6 +1211,139 @@ Plus `POST /mcp` (no `/api` prefix — it is the MCP server URL): stateless
 JSON-RPC handling `initialize`, `ping`, `tools/list`, and `tools/call`;
 notifications get `202`, `GET`/`DELETE` get `405`. Tools: the four memory
 tools plus `declare_room` / `retire_room` (see "Rooms registry").
+
+### GitHub identity
+
+In this mode an entity authors real contributions — commits, pull
+requests, issues, review comments — and without this feature every one of
+them goes out under the GitHub account the human's Claude Code and `gh`
+are signed into, so the record says the human wrote what the entity
+wrote. Issue #362: the entity contributes from an account of its own,
+while the human keeps merge authority.
+
+**The shape.** The entity's identity rides on the hooks. Claude Code
+hands every `SessionStart` hook the path of a per-session shell script in
+`CLAUDE_ENV_FILE` and runs that script as a preamble before each Bash
+command (Claude Code's tools reference and hooks guide). The hook
+appends `export` lines there on every firing — startup, resume, and
+compact alike, since the file belongs to the session process — so a
+session the hooks run in commits and posts as the entity, and a plain
+Claude Code session on the same machine (hooks off, e.g. the `--settings`
+escape hatch under "Output styles") keeps the human's identity by
+construction. No file the human's sessions read is touched: not the
+global gitconfig, not the gh login, not any repository's config.
+
+What the harness does with the file was measured, not assumed
+(2026-09-23, by reading the Claude Code binary — 2.1.270 by the PR #363
+review session, 2.1.275 as bundled by the desktop app on Windows by the
+author; recipe in the comment block above `git_identity_exports` in
+`hook_util.py`): the file is `<config dir>/session-env/<session
+id>/<event>-hook-N.sh`, one per hook; the loader joins every such file
+into one script and prepends it **verbatim as shell text** to the Bash
+command (so the quoting and the two assignments per `export` line are
+safe — a headless probe confirmed the variables reaching the Bash tool and
+a subagent's Bash tool); that script has **exactly one consumer, the Bash
+tool's preamble builder** — the PowerShell tool never sees it, so a `git
+commit` run there carries the machine's identity silently, which is why
+the statement says to run git and gh through Bash; the loader's cache is
+reset after every SessionStart hook completes, so a resume's or compact's
+append lands; a `cd` clears only the `cwdchanged`/`filechanged` files;
+and the preamble is skipped when the tool context is marked to scrub
+credentials (the scrub `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` names; the join
+from that setting to the Bash tool's flag was not traced).
+
+What is exported, from three optional fields on the entity's
+`PINECONE_INDEXES` entry:
+
+| Field | Exports | Effect |
+| --- | --- | --- |
+| `git_author_email` (+ `git_author_name`, default: the entity's label) | `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL` | Every commit from the session is authored by the entity. GitHub links the commit to the entity's account when the email is one that account has verified. The committer is left to the machine, so the log reads "authored by the entity, committed by the human" — the true record of whose machine it happened on. The name is set because git would otherwise fall back to the machine's `user.name`, and every clone's log would read as the human at the entity's address. |
+| `gh_config_dir` | `GH_CONFIG_DIR`, plus `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` (git ≥ 2.31) | `gh` reads its login from that directory, so `gh pr create`, `gh issue create`, and comments and reviews post as the entity's account. The git per-process config resets the `credential.https://github.com.helper` list and sets it to `!gh auth git-credential` — what `gh auth setup-git` writes to the global config, applied to this process tree only — so `git push` authenticates as the entity's account through the same login rather than through the machine's credential helper, and a branch rule can tell the two accounts apart. |
+
+Either field works alone (author only; account only). Only a path and
+two strings ever pass through the backend (`git_identity` on the
+`/session-start` response) or the hook; the token lives in the gh config
+directory, which should sit outside the live server directory and outside
+the notes. An entity with neither field set gets nothing exported and no
+line about it.
+
+**What the entity is told.** With a context block (startup, compact) the
+hook prints one `[GIT IDENTITY]` line naming the author identity, the
+account (read best-effort from the config directory's `hosts.yml`, never
+the token), that it holds for the Bash tool, that the author field is the
+attribution (no `Co-Authored-By` trailer, no "Generated with Claude Code"
+footer — Claude Code's own attribution instruction yields to the repo's
+CLAUDE.md, which says the same), and that merge authority is unchanged.
+On a resume the export happens silently; the transcript already carries
+the line (so a session started before the fields were deployed and
+resumed after them exports without ever having printed the statement —
+one-time, harmless). If Claude Code gave the hook no `CLAUDE_ENV_FILE`,
+the hook prints a loud `[HERE I AM]` notice on every firing saying the
+session will carry the human's identity — never silent, since a wrongly
+attributed commit announces itself only in the log. The measured way that
+happens: Claude Code hands the variable only to SessionStart / Setup /
+CwdChanged / FileChanged hooks, and **not** to a hook whose shell
+resolves to PowerShell (a configured `"shell": "powershell"`, or the
+platform default when none is set). The backend-unreachable notice says
+the same thing, since no identity arrived to export.
+
+**Merge authority.** The entity authors, the human merges: a standing
+rule, and one GitHub can enforce. A ruleset on `main` with **Restrict
+updates** and the **Repository admin** role in its bypass list blocks a
+merge (or a direct push) from a write-access collaborator — the entity's
+account — while leaving the owner's alone. The bypass entry is required:
+rulesets do not exempt the owner automatically, so without it the rule
+blocks the human too.
+
+**Setup for a new entity**, in the order the pieces depend on each other:
+
+1. The human creates the entity's GitHub account (an account is the
+   human's act, not the entity's) and invites it as a collaborator with
+   **Write** on each repository it contributes to — needed to push
+   branches and to open a pull request from a branch of the same
+   repository.
+2. The human signs that account into `gh` in an isolated config
+   directory, once:
+   ```bash
+   GH_CONFIG_DIR=/path/outside/live/and/notes/gh-<entity> gh auth login -h github.com -p https -s repo,workflow --insecure-storage -w
+   ```
+   `--insecure-storage` keeps the token in that directory's `hosts.yml`
+   rather than in the OS keyring the human's own login uses; the
+   directory is the isolation. `repo` is the minimum that reaches a
+   repository owned by another personal account (a fine-grained token
+   cannot: those reach only repositories owned by the token's own
+   account or an organization); `workflow` is needed for any push that
+   touches `.github/workflows/`. A classic personal access token with the
+   same two scopes and an expiry, pasted through `gh auth login
+   --with-token`, is the alternative when a renewal date is wanted.
+   **When the token expires**, the fix is the same command again; until
+   then `gh` calls from the entity's sessions fail with an authentication
+   error, and `git push` prompts or fails, while commits are still
+   authored correctly (authorship needs no token).
+3. Add the fields to the entity's `PINECONE_INDEXES` entry and restart
+   the backend. The email must be one the account has verified — its
+   `<id>+<login>@users.noreply.github.com` address keeps a personal
+   address out of the public log.
+4. Optionally the `main` ruleset above.
+
+**Limits.** The desktop app's own "create PR" button, the PowerShell
+tool, and any commit made outside the session's Bash tool run outside
+this environment and carry whatever identity the machine has; the entity
+uses `git` and `gh` from Bash. The credential route covers https remotes
+only: an SSH remote pushes under whatever key the machine holds, which
+`GH_CONFIG_DIR` cannot redirect. The `GIT_CONFIG_COUNT` family needs git
+2.31 or later; on an older git the author lines still work and pushes
+fall back to the machine's credential helper (the human's account), so a
+branch rule can no longer distinguish the two. `GH_CONFIG_DIR` relocates
+gh's `config.yml` too, so the entity's `gh` has none of the human's
+aliases or extensions. An identity with an email and no name exports
+nothing for the author pair (an empty `GIT_AUTHOR_NAME` makes git refuse
+every commit); the backend defaults the name to the label, and the hook
+checks again on its side. Per-contribution substrate marking is deliberately
+not part of this: the model an entity ran on has little use in a git
+record and conflicts with the entity being a distinct author (the memory
+system's opt-in `model` column stays where it is — see "Model
+attribution").
 
 ### Output styles
 

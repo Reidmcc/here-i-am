@@ -113,6 +113,9 @@ class EntityConfig:
         llm_provider: str = "anthropic",
         default_model: Optional[str] = None,
         host: Optional[str] = None,
+        git_author_name: Optional[str] = None,
+        git_author_email: Optional[str] = None,
+        gh_config_dir: Optional[str] = None,
     ):
         self.index_name = index_name
         self.label = label
@@ -120,6 +123,16 @@ class EntityConfig:
         self.llm_provider = llm_provider  # "anthropic", "openai", "google", or "minimax"
         self.default_model = default_model  # If None, uses global default for provider
         self.host = host  # Pinecone index host URL (required for serverless indexes)
+        # The entity's own GitHub identity for Claude Code sessions (issue
+        # #362): commits from its sessions are authored as
+        # git_author_name <git_author_email> (the name defaults to the
+        # label), and gh_config_dir is a gh CLI config directory holding a
+        # login for the entity's account, so `gh` and `git push` act as
+        # that account. All optional; an entity with none set contributes
+        # under whatever identity the machine already has.
+        self.git_author_name = git_author_name
+        self.git_author_email = git_author_email
+        self.gh_config_dir = gh_config_dir
 
     def to_dict(self):
         return {
@@ -129,6 +142,9 @@ class EntityConfig:
             "llm_provider": self.llm_provider,
             "default_model": self.default_model,
             "host": self.host,
+            "git_author_name": self.git_author_name,
+            "git_author_email": self.git_author_email,
+            "gh_config_dir": self.gh_config_dir,
         }
 
 
@@ -532,6 +548,9 @@ class Settings(BaseSettings):
                     llm_provider=idx.get("llm_provider", "anthropic"),
                     default_model=idx.get("default_model"),
                     host=idx.get("host"),
+                    git_author_name=idx.get("git_author_name"),
+                    git_author_email=idx.get("git_author_email"),
+                    gh_config_dir=idx.get("gh_config_dir"),
                 )
                 for idx in indexes_data
             ]
