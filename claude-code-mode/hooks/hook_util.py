@@ -681,11 +681,45 @@ def entry_text_blocks(entry):
     return blocks
 
 
+def queued_arrival(entry):
+    """
+    What a prompt queued while a turn ran delivered, if `entry` is one:
+    (human_spoke, letter_count), or None.
+
+    Such a prompt is a `queued_command` attachment, delivered mid-turn
+    (29 of 29 measured sat right after a tool result, the turn carrying on
+    after them), and UserPromptSubmit records it THEN — so its row lands
+    before the turn's one assistant row, which is written at Stop. The Stop
+    hook marks where it fell so the chunks said before it don't read as a
+    reply to it (issue #364 review). Split exactly as the prompt hook
+    splits what it records: task notifications and plumbing are nobody
+    speaking, a [WAKEUP] tick is not recorded, and each sibling letter is
+    recorded as a letter.
+    """
+    if not isinstance(entry, dict) or entry.get("type") != "attachment":
+        return None
+    if entry.get("isSidechain"):
+        return None
+    attachment = entry.get("attachment")
+    if not isinstance(attachment, dict) or attachment.get("type") != "queued_command":
+        return None
+    if attachment.get("commandMode") == "task-notification":
+        return None
+    words, letters = split_prompt_for_recording(
+        _user_entry_text(attachment.get("prompt"))
+    )
+    human_spoke = bool(words) and not is_wakeup_prompt(words)
+    if not human_spoke and not letters:
+        return None
+    return human_spoke, len(letters)
+
+
 def iter_turn_entries(transcript_path):
     """
-    The transcript's entries that matter for turns — boundaries and the
-    entity's speech — in file order. Raises OSError when the file can't be
-    read; callers decide what that means.
+    The transcript's entries that matter for turns — boundaries, the
+    entity's speech, and prompts queued mid-turn (queued_arrival) — in file
+    order. Raises OSError when the file can't be read; callers decide what
+    that means.
 
     Streamed, not readlines(): transcripts reach tens of megabytes (58 MB
     measured) and this runs on every hook. Only lines that can be a
@@ -696,7 +730,11 @@ def iter_turn_entries(transcript_path):
     """
     with open(transcript_path, "r", encoding="utf-8") as f:
         for line in f:
-            if '"assistant"' in line or '"stop_hook_summary"' in line:
+            if (
+                '"assistant"' in line
+                or '"stop_hook_summary"' in line
+                or '"queued_command"' in line
+            ):
                 pass
             elif '"user"' not in line or '"tool_result"' in line:
                 continue
@@ -707,7 +745,11 @@ def iter_turn_entries(transcript_path):
                 entry = json.loads(line)
             except Exception:
                 continue
-            if is_turn_boundary(entry) or is_entity_speech(entry):
+            if (
+                is_turn_boundary(entry)
+                or is_entity_speech(entry)
+                or queued_arrival(entry) is not None
+            ):
                 yield entry
 
 

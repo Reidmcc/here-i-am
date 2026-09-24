@@ -253,10 +253,24 @@ are never read — the extraction takes `text` blocks only.
   before it stay in the file, so the whole turn is still collected); and
   meta injections with no origin, which the harness delivers inside a
   running turn (a skill's body, an image placeholder, "Continue from where
-  you left off", the classifier's note that it stopped a response). A
-  prompt typed while a turn runs arrives as a `queued_command` attachment,
-  not a user entry, so it never splits a turn. The stop summary is not
-  the only boundary because it is not always written.
+  you left off", the classifier's note that it stopped a response). The
+  stop summary is not the only boundary because it is not always written.
+  **The cost of that:** a scheduled prompt *without* the `[WAKEUP]`
+  sentinel has the shape of a mid-turn injection, so when no stop summary
+  was written before it, its turn's row repeats the previous tick's text
+  (21 rows, all in one pre-#318 transcript, per the PR #372 review). The
+  sentinel is what prevents it; a real fix would need a stop-fired signal
+  the harness doesn't reliably write.
+- **A prompt queued mid-turn** (typed while the entity works, or a
+  sibling's letter delivered then) arrives as a `queued_command`
+  attachment, not a user entry, so it never splits a turn — but the prompt
+  hook records it *when it arrives*, so its row lands before the turn's
+  one assistant row, written at Stop. Where it fell, after the entity had
+  already spoken, the row carries `[… the human's message arrived here]`
+  or `[… a letter arrived here]` (`hook_util.queued_arrival`; wording
+  Pseudo's), so the chunks said before it don't read as a reply to it.
+  Queued task notifications and `[WAKEUP]` ticks are never recorded, so
+  they get no marker.
 - **Not the entity's words:** sidechain (subagent) entries, and
   `<synthetic>` assistant entries — the harness's own "No response
   requested.", API errors, and usage-limit notices, which the old
@@ -265,11 +279,17 @@ are never read — the extraction takes `text` blocks only.
   re-posted the previous turn's message, a no-op on its uuid.
 - **Forward only.** Rows recorded before the change keep their single
   message; nothing is backfilled from old transcripts.
-- A long turn is one long memory. It is embedded whole, as native tool-loop
-  turns are (`store_memory` has no length handling of its own). A turn
-  vector retrieves less sharply than its closing summary did; that is a
-  cost to watch, and if it degrades retrieval, embedding only the final
-  chunk while storing the whole turn is the follow-up.
+- A long turn is one long memory, sent to Pinecone whole, as native
+  tool-loop turns are (`store_memory` has no length handling of its own).
+  Replayed over 1,816 real turns (PR #372 review), whole-turn rows run
+  median 1.4 KB, p99 5.2 KB, max 7.5 KB — far under the 40 KB per-record
+  metadata limit and under `llama-text-embed-v2`'s ~2,048-token input. Past
+  that input, the embedding sees only the start (Pinecone's default
+  truncation is at the end — not measured here), which for a whole-turn
+  row would drop the closing message, the part carrying the most. A turn
+  vector also retrieves less sharply than its closing summary did. Either
+  is the trigger for the follow-up: embed only the final chunk while
+  storing the whole turn.
 
 ### Conversations
 

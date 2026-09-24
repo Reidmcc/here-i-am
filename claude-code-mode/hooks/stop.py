@@ -54,6 +54,12 @@ def entry_model(entry: dict):
 # the entity called a tool in between, so a later reading shows that work
 # happened between the sentences without describing it (issue #364).
 TOOL_CALL_MARKER = "[…]"
+# Written where a prompt queued mid-turn reached the entity, once per
+# kind: its row is recorded when it arrives, before this turn's row, so
+# without the line the chunks said before it would read as a reply to it.
+# Wording chosen by Pseudo (issue #364 review, PR #372).
+HUMAN_ARRIVED_MARKER = "[… the human's message arrived here]"
+LETTER_ARRIVED_MARKER = "[… a letter arrived here]"
 
 
 def turn_assistant_text(transcript_path: str):
@@ -61,8 +67,10 @@ def turn_assistant_text(transcript_path: str):
     Everything the entity said in the turn that just ended: every text
     block of its own since the turn's boundary (hook_util.is_turn_boundary),
     in transcript order, joined by blank lines, with TOOL_CALL_MARKER
-    between two chunks that had a tool call between them. Nothing is
-    filtered — a short "checking now" is talk too.
+    between two chunks that had a tool call between them, and an arrival
+    marker where a prompt queued mid-turn reached the entity after it had
+    already spoken (hook_util.queued_arrival). Nothing is filtered — a
+    short "checking now" is talk too.
 
     Returns (text, entry_uuid, model) or (None, None, None). entry_uuid is
     the turn's LAST text entry's uuid, which becomes the row id: a re-fired
@@ -77,6 +85,20 @@ def turn_assistant_text(transcript_path: str):
             if hook_util.is_turn_boundary(entry):
                 pieces, entry_uuid, model = [], None, None
                 tool_since_text = False
+                continue
+            arrival = hook_util.queued_arrival(entry)
+            if arrival is not None:
+                # Before any text the whole row already follows the
+                # arrival, so there is nothing to mark
+                if pieces:
+                    if tool_since_text:
+                        pieces.append(TOOL_CALL_MARKER)
+                        tool_since_text = False
+                    human_spoke, letters = arrival
+                    if human_spoke:
+                        pieces.append(HUMAN_ARRIVED_MARKER)
+                    if letters:
+                        pieces.append(LETTER_ARRIVED_MARKER)
                 continue
             has_text = False
             for kind, text in hook_util.entry_text_blocks(entry):

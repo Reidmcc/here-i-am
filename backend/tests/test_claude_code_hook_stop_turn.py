@@ -298,7 +298,106 @@ def test_tool_result_carriers_are_not_boundaries():
     assert not hook_util.is_turn_boundary({"type": "attachment", "attachment": {"type": "queued_command"}})
 
 
-def test_a_tool_result_mentioning_the_marker_words_is_still_a_carrier(tmp_path):
+def queued(prompt_text, uid, command_mode="prompt", kind="human"):
+    """A prompt typed (or a letter delivered) while a turn runs: an
+    attachment, delivered after a tool result, the turn carrying on."""
+    attachment = {
+        "type": "queued_command",
+        "prompt": prompt_text,
+        "commandMode": command_mode,
+    }
+    if kind:
+        attachment["origin"] = {"kind": kind}
+    return {"type": "attachment", "uuid": uid, "attachment": attachment}
+
+
+def test_a_queued_prompt_is_marked_where_it_arrived(tmp_path):
+    """Its HUMAN row is recorded when it arrives, before this turn's row;
+    the marker keeps the chunks said before it from reading as a reply."""
+    path = _write(tmp_path, [
+        prompt("go"),
+        said("Looking at the hook first.", "a1"),
+        tool_call("c1"), tool_result("r1"),
+        queued("actually, try the other approach", "q1"),
+        said("Good catch, switching.", "a2"),
+        tool_call("c2", "t2"), tool_result("r2", "t2"),
+        said("Done.", "a3"),
+    ])
+    text, entry_uuid, _ = stop.turn_assistant_text(path)
+    assert text == (
+        f"Looking at the hook first.\n\n{MARK}\n\n{stop.HUMAN_ARRIVED_MARKER}\n\n"
+        f"Good catch, switching.\n\n{MARK}\n\nDone."
+    )
+    assert entry_uuid == "a3"
+    # Not a boundary: the turn, its row id and the lineage hint are unchanged
+    assert hook_util.transcript_assistant_uuids(path) == ["a3"]
+
+
+def test_a_queued_letter_is_marked_as_a_letter(tmp_path):
+    letter = (
+        '<cross-session-message from="local_x" name="Porch">hello</cross-session-message>'
+    )
+    path = _write(tmp_path, [
+        prompt("go"),
+        said("Working.", "a1"),
+        tool_call("c1"), tool_result("r1"),
+        queued(letter, "q1", kind="peer"),
+        said("Read it.", "a2"),
+    ])
+    assert stop.turn_assistant_text(path)[0] == (
+        f"Working.\n\n{MARK}\n\n{stop.LETTER_ARRIVED_MARKER}\n\nRead it."
+    )
+
+
+def test_a_queued_prompt_before_any_text_needs_no_marker(tmp_path):
+    path = _write(tmp_path, [
+        prompt("go"),
+        tool_call("c1"), tool_result("r1"),
+        queued("one more thing", "q1"),
+        said("Both done.", "a1"),
+    ])
+    assert stop.turn_assistant_text(path)[0] == "Both done."
+
+
+def test_unrecorded_queued_prompts_are_not_marked(tmp_path):
+    """A queued task notification is plumbing and a queued [WAKEUP] tick is
+    not recorded, so neither has a row to be out of order with."""
+    path = _write(tmp_path, [
+        prompt("go"),
+        said("Working.", "a1"),
+        tool_call("c1"), tool_result("r1"),
+        queued("<task-notification>done</task-notification>", "q1",
+               command_mode="task-notification", kind=None),
+        queued("[WAKEUP] tick", "q2", kind=None),
+        said("Still working.", "a2"),
+    ])
+    assert stop.turn_assistant_text(path)[0] == f"Working.\n\n{MARK}\n\nStill working."
+
+
+def test_a_sentinel_less_tick_repeats_the_previous_turns_text(tmp_path):
+    """Known, stated edge (PR #372 review): a scheduled prompt without
+    [WAKEUP] has the shape of a mid-turn injection, so when the harness
+    wrote no stop summary before it, its turn's row repeats the previous
+    tick's text. The sentinel convention (issue #318) is what prevents it."""
+    path = _write(tmp_path, [
+        prompt("start the loop"),
+        said("Tick one done.", "a1"),
+        meta("Continue the standing loop.", "m1"),
+        said("Tick two done.", "a2"),
+    ])
+    assert stop.turn_assistant_text(path)[:2] == (
+        "Tick one done.\n\nTick two done.", "a2"
+    )
+    with_sentinel = _write(tmp_path, [
+        prompt("start the loop"),
+        said("Tick one done.", "a1"),
+        meta("[WAKEUP] Continue the standing loop.", "m1"),
+        said("Tick two done.", "a2"),
+    ], name="sentinel.jsonl")
+    assert stop.turn_assistant_text(with_sentinel)[:2] == ("Tick two done.", "a2")
+
+
+def test_a_prompt_quoting_transcript_json_is_still_a_boundary(tmp_path):
     """The fast path skips tool_result lines on a substring; a PROMPT that
     quotes transcript JSON carries it escaped, so it is still parsed."""
     quoted = prompt('look at this: {"type": "tool_result"} and "user"', "p2")
