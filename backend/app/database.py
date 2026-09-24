@@ -293,6 +293,13 @@ async def run_migrations(conn):
             ))
             print("  ✓ Added archive change columns for the entity's archive notice")
 
+        if 'researcher_notices' not in columns:
+            print("Migrating: Adding 'researcher_notices' column to conversations table...")
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN researcher_notices JSON"
+            ))
+            print("  ✓ Added researcher_notices column so native reloads replay the notice")
+
 
 async def init_db():
     async with engine.begin() as conn:

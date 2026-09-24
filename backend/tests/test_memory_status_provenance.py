@@ -712,11 +712,16 @@ class TestNativeFirstTurnNotice:
         # that gates the injection still reads this as the first turn
         assert session.has_conversational_messages() is False
 
-    async def test_nothing_injected_without_changes(self, db, entities_configured):
+    async def test_nothing_changed_is_said_natively_too(self, db, entities_configured):
+        """Silent-when-empty was the price of a notice that didn't survive a
+        reload; it is stored and replayed now (test_archive_notice), so the
+        native first turn says "nothing changed" like Claude Code does."""
         current = await make_conversation(db)
         session = self._session(current.id)
         await SessionManager()._inject_status_change_notice(session, db)
-        assert session.conversation_context == []
+        [notice] = session.conversation_context
+        assert notice["content"].startswith("[MEMORY STATUS NOTICE] Checked:")
+        assert "[MEMORY ARCHIVE NOTICE] Checked:" in notice["content"]
 
     async def test_failed_check_is_loud(self, db, entities_configured, monkeypatch):
         monkeypatch.setattr(

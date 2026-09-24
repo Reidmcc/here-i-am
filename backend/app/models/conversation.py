@@ -64,6 +64,14 @@ class Conversation(Base):
     # backfilled.
     archive_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     archive_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The researcher-change notice each entity was shown on its first turn
+    # of this (native) conversation, exactly as shown, and its slot on the
+    # memory-link clock: { entity_id or "": {"text": str, "at": iso} }.
+    # The notice is a context-only message, so without this a reload
+    # rebuilt the context without it and re-wrote the prompt cache from
+    # near the start; load_session_from_db replays it at "at", interleaved
+    # with memories and messages like a memory link. NULL = none shown.
+    researcher_notices: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # Imported conversations are hidden from the conversation list but their messages are stored as memories
     is_imported: Mapped[bool] = mapped_column(Boolean, default=False)
     # Per-entity system prompts (JSON: { entity_id: system_prompt, ... })

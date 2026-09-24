@@ -686,9 +686,11 @@ are never read — the extraction takes `text` blocks only.
   post-compaction block carries them again, over the room's own window
   (Compaction survival, below). The same notices are injected, as one
   context-only message, on the entity's first turn of a native
-  conversation — there only when something changed: that message isn't
-  rebuilt on reload, so putting one on every native first turn would
-  re-write the prompt cache on every reload.
+  conversation, nothing-changed lines included. That message is
+  context-only, so it is stored as shown (`Conversation.researcher_notices`,
+  per entity, with the next slot on the turn's memory-link clock) and a
+  reload replays it at the same position — the rebuilt context matches the
+  live one and the prompt cache holds.
 - On a plain resume (`session-start` for a session that already has a
   conversation) the identity block is *not* re-sent — the transcript
   already carries it. A resume of a session with no row (it never spoke, or

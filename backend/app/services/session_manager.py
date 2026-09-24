@@ -15,7 +15,7 @@ conversation_session.py. Helper functions are in session_helpers.py.
 import logging
 import re
 from datetime import datetime
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Set
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -392,6 +392,16 @@ class SessionManager:
         )
         memory_queue = list(sorted_memory_entries)  # List of (mem_id, {data, retrieved_at})
 
+        # The first-turn researcher-change notice this entity was shown here
+        # rides the same queue: it holds a slot on the memory-link clock, so
+        # it lands after that turn's memories and before its human message,
+        # exactly where the live context had it (_inject_status_change_notice)
+        stored_notice = self._stored_researcher_notice(conversation, entity_id)
+        if stored_notice:
+            notice_at, notice_text = stored_notice
+            memory_queue.append((None, {"retrieved_at": notice_at, "notice": notice_text}))
+            memory_queue.sort(key=lambda entry: entry[1]["retrieved_at"])
+
         if skipped_archived:
             logger.info(
                 f"[MEMORY] Skipped {skipped_archived} memories from archived source conversations during session load"
@@ -450,32 +460,38 @@ class SessionManager:
         # Per-(owner, filename) content reconstructed from the history walk,
         # for replaying notes_edit records into post-edit hashes
         note_known_content: Dict[Any, str] = {}
+        def insert_queued(mem_id: Optional[str], mem_info: Dict[str, Any]) -> None:
+            nonlocal memory_insert_count
+            if "notice" in mem_info:
+                # The stored first-turn researcher-change notice, verbatim
+                session.conversation_context.append({
+                    "role": "user",
+                    "content": mem_info["notice"],
+                    "is_context_notice": True,
+                })
+                return
+            memory = session.session_memories[mem_id]
+            memory_message = format_memory_as_context_message(
+                memory_id=memory.id,
+                content=memory.content,
+                created_at=memory.created_at,
+                role=memory.role,
+                origin=memory.origin,
+                sibling_session=memory.sibling_session,
+                annotation=memory.annotation,
+            )
+            insertion_point = len(session.conversation_context)
+            session.conversation_context.append(memory_message)
+
+            # Track in memory_tracker
+            session.memory_tracker.retrieved_ids.add(memory.id)
+            session.memory_tracker.memory_positions[memory.id] = insertion_point
+            memory_insert_count += 1
+
         for msg in messages:
             # Insert any memories that were retrieved BEFORE this message was created
-            while memory_queue:
-                mem_id, mem_info = memory_queue[0]
-                if mem_info["retrieved_at"] <= msg.created_at:
-                    # This memory was retrieved before this message - insert it
-                    memory = session.session_memories[mem_id]
-                    memory_message = format_memory_as_context_message(
-                        memory_id=memory.id,
-                        content=memory.content,
-                        created_at=memory.created_at,
-                        role=memory.role,
-                        origin=memory.origin,
-                        sibling_session=memory.sibling_session,
-                        annotation=memory.annotation,
-                    )
-                    insertion_point = len(session.conversation_context)
-                    session.conversation_context.append(memory_message)
-
-                    # Track in memory_tracker
-                    session.memory_tracker.retrieved_ids.add(memory.id)
-                    session.memory_tracker.memory_positions[memory.id] = insertion_point
-                    memory_insert_count += 1
-                    memory_queue.pop(0)
-                else:
-                    break
+            while memory_queue and memory_queue[0][1]["retrieved_at"] <= msg.created_at:
+                insert_queued(*memory_queue.pop(0))
 
             # Now add the message itself
             if msg.role == MessageRole.HUMAN:
@@ -562,24 +578,11 @@ class SessionManager:
             else:
                 logger.warning(f"[SESSION] Skipping message with unexpected role: {msg.role}")
 
-        # Insert any remaining memories (retrieved after the last message)
+        # Insert any remaining memories (retrieved after the last message).
+        # One helper for both loops: this one used to render without the
+        # link annotation the main loop passes, a live/reload divergence
         while memory_queue:
-            mem_id, mem_info = memory_queue.pop(0)
-            memory = session.session_memories[mem_id]
-            memory_message = format_memory_as_context_message(
-                memory_id=memory.id,
-                content=memory.content,
-                created_at=memory.created_at,
-                role=memory.role,
-                origin=memory.origin,
-                sibling_session=memory.sibling_session,
-            )
-            insertion_point = len(session.conversation_context)
-            session.conversation_context.append(memory_message)
-
-            session.memory_tracker.retrieved_ids.add(memory.id)
-            session.memory_tracker.memory_positions[memory.id] = insertion_point
-            memory_insert_count += 1
+            insert_queued(*memory_queue.pop(0))
 
         if memory_insert_count > 0:
             logger.info(
@@ -766,39 +769,74 @@ class SessionManager:
         return result.first() is None
 
     async def _inject_status_change_notice(
-        self, session: ConversationSession, db: AsyncSession
+        self,
+        session: ConversationSession,
+        db: AsyncSession,
+        next_link_time: Optional[Callable[[], Optional[datetime]]] = None,
     ) -> None:
         """
         On the responding entity's first turn, tell it about changes the
         researcher made to its memory since its last session — memory status
         overrides and archived/unarchived conversations
-        (memory_service.build_researcher_change_notices). Silent when there
-        are none.
+        (memory_service.build_researcher_change_notices). A check that finds
+        nothing says so, as in Claude Code: a missing notice can't tell
+        "nothing changed" from "never checked". A failed check is reported
+        in place of its notice rather than swallowed.
 
-        The notice is a context-only message like [CONTEXT NOTICE]: not
-        persisted, not vectorized, absent from the [MEMORY] markers. It is
-        therefore not rebuilt on a session reload — a one-time notice, at
-        the cost of one prompt-cache re-write when a conversation that
-        carried one is reloaded. Rare by design: overrides and archiving are
-        the researcher's emergency options. A failed check is reported in
-        place of its notice rather than swallowed, because silence here
-        means "nothing changed".
+        The notice is a context-only message (not a Message row, not
+        vectorized, absent from the [MEMORY] markers), so to keep the prompt
+        cache it is stored as shown on Conversation.researcher_notices, with
+        the next slot on this turn's memory-link clock (next_link_time): it
+        lands after the turn's memories and before its human message, and
+        load_session_from_db replays it at exactly that position
+        (_stored_researcher_notice). Once stored for an entity it is never
+        injected again in this conversation — an empty-response retry
+        re-runs the first turn on the warm session, and a second copy live
+        would diverge from the one a reload rebuilds.
         """
+        conversation = await db.get(Conversation, session.conversation_id)
+        key = session.entity_id or ""
+        stored = (conversation.researcher_notices or {}) if conversation else {}
+        if key in stored:
+            return
         try:
             notices = await memory_service.build_researcher_change_notices(
-                db, session.entity_id, exclude_conversation_id=session.conversation_id
+                db, session.entity_id, exclude_conversation_id=session.conversation_id,
+                report_nothing=True,
             )
         except Exception as e:
             logger.error(f"[MEMORY] Researcher-change notices failed: {e}")
             notices = [format_researcher_change_check_failure(e)]
         if not notices:
             return
+        text = "\n\n".join(notices)
         session.conversation_context.append({
             "role": "user",
-            "content": "\n\n".join(notices),
+            "content": text,
             "is_context_notice": True,
         })
+        at = (next_link_time() if next_link_time else None) or datetime.utcnow()
+        if conversation is not None:
+            # Reassigned, not mutated: a plain JSON column tracks assignment
+            conversation.researcher_notices = {
+                **stored, key: {"text": text, "at": at.isoformat()}
+            }
+            await db.commit()
         logger.info("[MEMORY] Status notice: injected researcher-change notice on first turn")
+
+    @staticmethod
+    def _stored_researcher_notice(
+        conversation: Conversation, entity_id: Optional[str]
+    ) -> Optional[Tuple[datetime, str]]:
+        """The first-turn notice this entity was shown in this conversation,
+        as (slot, text) for load_session_from_db to replay, or None."""
+        entry = (conversation.researcher_notices or {}).get(entity_id or "")
+        if not isinstance(entry, dict) or not entry.get("text") or not entry.get("at"):
+            return None
+        try:
+            return datetime.fromisoformat(entry["at"]), entry["text"]
+        except (TypeError, ValueError):
+            return None
 
     async def _inject_recent_reflections(
         self,
@@ -1220,7 +1258,7 @@ class SessionManager:
             # Also on the first turn: tell the entity about researcher-set
             # memory status changes since its last session
             if is_first_turn:
-                await self._inject_status_change_notice(session, db)
+                await self._inject_status_change_notice(session, db, next_link_time)
 
             # Log memory retrieval summary
             if new_memories:
@@ -1660,7 +1698,7 @@ class SessionManager:
             # Also on the first turn: tell the entity about researcher-set
             # memory status changes since its last session
             if is_first_turn:
-                await self._inject_status_change_notice(session, db)
+                await self._inject_status_change_notice(session, db, next_link_time)
 
             # Log memory retrieval summary
             if new_memories:

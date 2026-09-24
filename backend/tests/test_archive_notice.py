@@ -628,7 +628,10 @@ class TestNativeDelivery:
         assert len(session.conversation_context) == 1
         notice = session.conversation_context[0]
         assert notice["is_context_notice"] is True
-        assert notice["content"].startswith("[MEMORY ARCHIVE NOTICE]")
+        # Nothing changed is said natively too, since the notice now replays
+        # on reload instead of costing a cache re-write
+        assert notice["content"].startswith("[MEMORY STATUS NOTICE] Checked:")
+        assert "[MEMORY ARCHIVE NOTICE] Since your last session" in notice["content"]
         assert session.has_conversational_messages() is False
 
     async def test_status_and_archive_notices_share_one_message(self, async_client, db):
@@ -693,3 +696,116 @@ class TestNativeDelivery:
         [notice] = session.conversation_context
         assert "Could not check for changes the researcher made" in notice["content"]
         assert "promise broken" in notice["content"]
+
+
+# ============================================================
+# Native: the notice survives a reload byte for byte (prompt cache)
+# ============================================================
+
+class TestNativeNoticeReplaysOnReload:
+    """The native notice is a context-only message. Unstored, a reload
+    rebuilt the context without it and the prompt cache re-wrote from near
+    the start, which is why nothing-changed used to stay silent natively.
+    Stored with its slot on the memory-link clock, a reload puts the same
+    text in the same place."""
+
+    @pytest.mark.parametrize("path", ["process_message", "process_message_stream"])
+    async def test_reload_rebuilds_the_live_first_turn(
+        self, async_client, db, monkeypatch, path
+    ):
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setattr(settings, "notes_enabled", False)
+        monkeypatch.setattr(settings, "memory_role_balance_enabled", False)
+        monkeypatch.setattr(settings, "recent_reflections_enabled", False)
+        monkeypatch.setattr(memory_service, "get_index", lambda entity_id=None: None)
+
+        # Something to tell, and a memory the turn retrieves
+        withdrawn = await seed_withdrawable(db)
+        await change_archive(async_client, db, withdrawn.id, "archive", reason="why")
+        source = await make_conversation(db, created_at=ago(days=20))
+        memory = await make_message(
+            db, source, content="A thing I once said.", created_at=ago(days=20)
+        )
+        monkeypatch.setattr(memory_service, "search_memories", AsyncMock(return_value=[{
+            "id": memory.id, "score": 0.95, "conversation_id": source.id,
+            "created_at": memory.created_at.isoformat(), "role": "assistant",
+        }]))
+
+        live = await make_conversation(db)
+        sent_at = datetime.utcnow()
+        manager = SessionManager()
+        session = manager.create_session(live.id, model="claude-test", entity_id=ENTITY)
+        with patch("app.services.session_manager.llm_service") as llm:
+            llm.count_tokens = MagicMock(return_value=10)
+            llm.build_messages.return_value = [{"role": "user", "content": "x"}]
+            if path == "process_message_stream":
+                async def stream(*args, **kwargs):
+                    yield {"type": "token", "content": "ok"}
+                    yield {
+                        "type": "done", "content": "ok",
+                        "content_blocks": [{"type": "text", "text": "ok"}],
+                        "model": "claude-test", "usage": {}, "stop_reason": "end_turn",
+                    }
+                llm.send_message_stream = stream
+                async for _ in manager.process_message_stream(
+                    session, "hello", db, user_message_timestamp=sent_at
+                ):
+                    pass
+            else:
+                llm.send_message = AsyncMock(return_value={
+                    "content": "ok", "model": "claude-test",
+                    "usage": {"input_tokens": 1, "output_tokens": 1}, "stop_reason": "end_turn",
+                })
+                await manager.process_message(
+                    session, "hello", db, user_message_timestamp=sent_at
+                )
+
+        live_context = [(m["role"], m["content"]) for m in session.conversation_context]
+        notices = [c for _, c in live_context if "[MEMORY ARCHIVE NOTICE]" in str(c)]
+        assert len(notices) == 1 and 'Their note: "why"' in notices[0]
+        # Memory, then the notice, then the turn itself
+        kinds = [
+            "memory" if m.get("is_memory") else "notice" if m.get("is_context_notice")
+            else m["role"]
+            for m in session.conversation_context
+        ]
+        assert kinds == ["memory", "notice", "user", "assistant"]
+
+        # Persist the turn the way the routes do, then reload
+        db.add(Message(
+            conversation_id=live.id, role=MessageRole.HUMAN, content="hello", created_at=sent_at
+        ))
+        db.add(Message(
+            conversation_id=live.id, role=MessageRole.ASSISTANT, content="ok",
+            created_at=sent_at + timedelta(seconds=5),
+        ))
+        await db.commit()
+        db.expunge_all()
+
+        # A later archive change must not rewrite what this turn was shown
+        await change_archive(async_client, db, withdrawn.id, "unarchive")
+
+        reloaded = await SessionManager().load_session_from_db(live.id, db)
+        assert [(m["role"], m["content"]) for m in reloaded.conversation_context] == live_context
+
+    async def test_injected_once_per_entity_per_conversation(self, db, entities_configured):
+        """An empty-response retry re-runs the first turn on the warm session;
+        a second live copy would diverge from the one reload replays."""
+        current = await make_conversation(db)
+        session = TestNativeDelivery._session(None, current.id)
+        await SessionManager()._inject_status_change_notice(session, db)
+        await SessionManager()._inject_status_change_notice(session, db)
+        assert len(session.conversation_context) == 1
+
+        stored = (await reload(db, current.id)).researcher_notices
+        assert list(stored) == [ENTITY]
+        assert stored[ENTITY]["text"] == session.conversation_context[0]["content"]
+
+    async def test_replayed_only_for_the_entity_that_was_shown_it(self, db, entities_configured):
+        conversation = await make_conversation(
+            db, entity_id="multi-entity", participants=[ENTITY, OTHER_ENTITY],
+            researcher_notices={ENTITY: {"text": "told", "at": ago(hours=1).isoformat()}},
+        )
+        assert SessionManager._stored_researcher_notice(conversation, ENTITY)[1] == "told"
+        assert SessionManager._stored_researcher_notice(conversation, OTHER_ENTITY) is None

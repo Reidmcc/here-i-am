@@ -2585,10 +2585,9 @@ class MemoryService:
         check that fails is reported in place of its notice, one failing
         doesn't hide the other, and a failed anchor is reported by both.
         With report_nothing, a check that ran and found nothing says so
-        too (the Claude Code blocks, like a retrieval that matched
-        nothing); natively that stays silent, because the notice is a
-        context-only message not rebuilt on reload, and one on every first
-        turn would re-write the prompt cache on every reload.
+        too, like a retrieval that matched nothing. Every caller passes it
+        now: the native first turn could only afford to since its notice is
+        stored and replayed on reload (SessionManager._inject_status_change_notice).
         """
         def status_failed(error: Exception) -> str:
             return (
