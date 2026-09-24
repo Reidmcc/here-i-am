@@ -1942,6 +1942,21 @@ class TestMemoryProvenance:
         assert body["conversation_id"] in body["context"]
         assert "memory_query" in body["context"]
 
+    async def test_session_start_says_compaction_keeps_the_talk(self, async_client):
+        """The identity block describes compaction as it is since the
+        backward read (issue #351): the talk stays in the archive and is
+        read back, and reflections carry conclusions — not "the only
+        verbatim carriers of what mattered", which told the entity to
+        save what was never at risk (issue #365)."""
+        started = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        context = started.json()["context"]
+        assert "only verbatim carriers" not in context
+        assert "the talk isn't lost" in context
+        assert "memory_read call that reads them back" in context
+        assert "the hooks tell you when context is getting full" in context
+
 
 class TestRetrievalSummary:
     """render_retrieval_summary is the inline stand-in printed when the hook

@@ -922,15 +922,23 @@ block then omits its `[ROOMS REGISTRY]` paragraph.
 
 ### Compaction survival
 
-Compaction replaces the conversation with a paraphrased summary; reflections
-are the entity's verbatim carriers across that boundary.
+Compaction replaces the conversation in view with a paraphrased summary.
+The talk itself survives it: every recorded prompt and final message is in
+the archive verbatim, and the post-compaction block names the `memory_read`
+call that reads it back (below). Reflections carry what the archive can't
+hold by itself — what the entity concluded, in its own words — and the most
+recent are re-shown after the boundary. The session-start identity block
+says exactly this. Until issue #365 it said reflections were "the only
+verbatim carriers of what mattered", which stopped being true when the
+backward read arrived (issue #351).
 
 - **The nudge is standing guidance, not a pre-compact message.** Only
   `SessionStart` / `UserPromptSubmit` / `UserPromptExpansion` hook output
   reaches the model — `PreCompact` output does not — so nothing can be
   said to the entity at the moment before compaction. Instead the
-  session-start identity block instructs the entity to save reflections as
-  durable conclusions form and when it notices context running low. The
+  session-start identity block says what compaction takes and what it
+  leaves, that a reflection is saved when a conclusion forms, and that the
+  hooks will say when context is getting full (the gauge, below). The
   post-compaction block does not repeat the nudge: the summary is a
   caption, and the pre-compaction talk comes back verbatim on request
   (below), so there is nothing to save *from the summary*.

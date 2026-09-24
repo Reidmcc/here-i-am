@@ -77,8 +77,8 @@ Details: [`docs/claude-code-mode.md`](../docs/claude-code-mode.md#rooms-registry
 
 **The MCP server must be registered separately from the hooks** — hooks in
 `settings.json` do not carry it, and without it the entity has no
-`memory_save` (it cannot save reflections, the only verbatim carriers
-across compaction). For hooks registered in `~/.claude/settings.json`
+`memory_save` or `memory_read` (it can neither save reflections nor read
+its own pre-compaction talk back after a compaction). For hooks registered in `~/.claude/settings.json`
 (all projects), register the server user-wide to match:
 
 ```bash
