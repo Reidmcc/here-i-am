@@ -263,19 +263,24 @@ class TestMarkerLines:
         }, "human")
         assert lines == ["[cited by reflections a1b2c3d4, e5f6a7b8]"]
 
-    def test_ends_that_left_view_are_labeled_not_dropped(self):
+    def test_sources_that_left_view_are_labeled_not_dropped(self):
+        """A reflection's own sources line is part of it as written: a source
+        that has since been released or withdrawn says so. A reflection the
+        entity released is labeled on the memories it points at. (A
+        withdrawn reflection never reaches the renderer — the loader drops
+        it; see TestSurfaces.test_withdrawn_reflection_does_not_outlive_the_archive.)"""
         lines = format_memory_link_lines({
             "cites": [
                 end("3f2a9c1d22", "2026-08-03T10:00:00", "human", state="released"),
                 end("4e5f6a7b33", "2026-08-04T10:00:00", "human", state="withdrawn"),
             ],
             "revised_by": [end("a1b2c3d4ee", "2026-10-02T09:00:00", "reflection", state="released")],
-            "cited_by": [end("c0ffee1234", role="reflection", state="withdrawn")],
+            "cited_by": [end("c0ffee1234", role="reflection", state="released")],
         }, "assistant")
         assert lines == [
             "[sources: 3f2a9c1d (2026-08-03, human, source released), 4e5f6a7b (source withdrawn)]",
             "[later corrected or outdated → see reflection a1b2c3d4 (2026-10-02, released)]",
-            "[cited by reflection c0ffee12 (withdrawn)]",
+            "[cited by reflection c0ffee12 (released)]",
         ]
 
     def test_other_entity_named_by_label(self):
@@ -505,6 +510,41 @@ class TestSurfaces:
         c = corrected
         assert await load_memory_links(db, [c["page"].id], entity_id=OTHER_ENTITY) == {}
 
+    async def test_withdrawn_reflection_does_not_outlive_the_archive(self, db, corrected):
+        """The review's probe (PR #371, finding 1): a room where something
+        went wrong holds a reflection "correcting" something true; the
+        researcher archives the room. The correction must leave every
+        surface with it — archiving is the safety instrument (#344) — while
+        the forward direction, a live reflection's own sources line, keeps
+        labeling a source that was withdrawn."""
+        c = corrected
+        c["conv"].title = "Went wrong"
+        home = await make_conversation(db, title="Home")
+        true_thing = await make_message(db, home, content="A true thing I said.", created_at=at())
+        went_wrong = await make_conversation(db, title="Went wrong")
+        await save_memory(ctx(went_wrong.id), "That was false.", revises=[true_thing.id])
+        went_wrong.is_archived = True
+        await db.commit()
+
+        text = await read_memories(ctx(), from_="2026-09-09", in_conversation=home.id, scope="isolated")
+        assert "later corrected" not in text and "withdrawn" not in text
+        assert await load_memory_links(db, [true_thing.id], entity_id=ENTITY) == {}
+
+        # The researcher's browser still sees it, labeled
+        browser = await load_memory_links(db, [true_thing.id], include_withdrawn=True)
+        assert browser[true_thing.id]["revised_by"][0]["state"] == "withdrawn"
+
+        # Forward: a live reflection citing into an archived room keeps the
+        # label, as an id and nothing more
+        await save_memory(ctx(), "Based on home.", cites=[true_thing.id])
+        home.is_archived = True
+        await db.commit()
+        reflection = await newest_reflection(db)
+        lines = (await load_memory_link_annotations(
+            db, [(reflection.id, "reflection")], entity_id=ENTITY
+        ))[reflection.id]
+        assert lines == f"[sources: {true_thing.id[:8]} (source withdrawn)]"
+
     async def test_memory_read_marks_both_ends_and_keeps_verbatim_bytes(self, db, corrected):
         c = corrected
         text = await read_memories(
@@ -658,6 +698,93 @@ class TestNativeReloadStability:
         ))[said.id]
         assert fresh != annotation and fresh.count(", ") == 1
 
+    @pytest.mark.parametrize("path", ["process_message", "process_message_stream", "recent_reflection"])
+    async def test_live_insertion_writes_the_marker_reload_reads(self, db, tools_db, monkeypatch, path):
+        """The review's finding 4 (PR #371): drive a real turn through each
+        live insertion path, then reload, and the rebuilt [MEMORY] content
+        must equal the live one byte for byte — even after a second
+        correction lands between the turn and the reload. Everything below
+        the LLM and the vector search is real: the session manager's link
+        writes go to this database."""
+        from unittest.mock import MagicMock
+
+        from app.services.session_manager import SessionManager
+
+        monkeypatch.setattr(settings, "notes_enabled", False)
+        monkeypatch.setattr(settings, "memory_role_balance_enabled", False)
+        monkeypatch.setattr(settings, "recent_reflections_enabled", path == "recent_reflection")
+        monkeypatch.setattr(memory_service, "get_index", lambda entity_id=None: None)
+
+        source = await make_conversation(db, title="Earlier")
+        elsewhere = await make_conversation(db, title="Elsewhere")
+        if path == "recent_reflection":
+            # The injected memory is a reflection that revises something
+            said = await make_message(db, source, content="A claim.", created_at=at())
+            await save_memory(ctx(elsewhere.id), "The claim was wrong.", revises=[said.id])
+            memory = await newest_reflection(db)
+            candidates = []
+        else:
+            memory = await make_message(db, source, content="A claim.", created_at=at())
+            await save_memory(ctx(elsewhere.id), "First look.", revises=[memory.id])
+            candidates = [{
+                "id": memory.id, "score": 0.95, "conversation_id": source.id,
+                "created_at": memory.created_at.isoformat(), "role": "assistant",
+            }]
+        monkeypatch.setattr(memory_service, "search_memories", AsyncMock(return_value=candidates))
+
+        live = await make_conversation(db, title="Now")
+        manager = SessionManager()
+        session = manager.create_session(live.id, model="claude-test", entity_id=ENTITY)
+        with patch("app.services.session_manager.llm_service") as llm:
+            llm.count_tokens = MagicMock(return_value=10)
+            llm.build_messages.return_value = [{"role": "user", "content": "x"}]
+            if path == "process_message_stream":
+                async def stream(*args, **kwargs):
+                    yield {"type": "token", "content": "ok"}
+                    yield {
+                        "type": "done", "content": "ok",
+                        "content_blocks": [{"type": "text", "text": "ok"}],
+                        "model": "claude-test", "usage": {}, "stop_reason": "end_turn",
+                    }
+                llm.send_message_stream = stream
+                async for _ in manager.process_message_stream(
+                    session, "tell me", db, user_message_timestamp=at(days=1)
+                ):
+                    pass
+            else:
+                llm.send_message = AsyncMock(return_value={
+                    "content": "ok", "model": "claude-test",
+                    "usage": {"input_tokens": 1, "output_tokens": 1}, "stop_reason": "end_turn",
+                })
+                await manager.process_message(
+                    session, "tell me", db, user_message_timestamp=at(days=1)
+                )
+
+        live_markers = [
+            m["content"] for m in session.conversation_context
+            if m.get("is_memory") and m["memory_id"] == memory.id
+        ]
+        assert len(live_markers) == 1
+        assert "\n[later " in live_markers[0] or "\n[revises " in live_markers[0]
+
+        # Persist the turn the way the routes do, then a later correction
+        db.add(Message(
+            conversation_id=live.id, role=MessageRole.HUMAN, content="tell me", created_at=at(days=1)
+        ))
+        db.add(Message(
+            conversation_id=live.id, role=MessageRole.ASSISTANT, content="ok",
+            created_at=at(days=1, seconds=5),
+        ))
+        await db.commit()
+        await save_memory(ctx(elsewhere.id), "Second look.", revises=[memory.id])
+
+        reloaded = await SessionManager().load_session_from_db(live.id, db)
+        rebuilt = [
+            m["content"] for m in reloaded.conversation_context
+            if m.get("is_memory") and m["memory_id"] == memory.id
+        ]
+        assert rebuilt == live_markers
+
     async def test_link_rows_store_the_annotation(self, db, tools_db):
         conv = await make_conversation(db)
         said = await make_message(db, conv)
@@ -745,6 +872,27 @@ class TestStorage:
         assert await links_of(db, c["reflection"].id) == [
             (LINK_CITES, c["page"].id, 0), (LINK_REVISES, c["wrong"].id, 0),
         ]
+
+    async def test_import_refuses_links_the_tool_would_refuse(self, db, corrected, async_client):
+        """The review's probe (PR #371, finding 2): a reflection imported
+        for ANOTHER entity must not come back revising the first entity's
+        words — rendered as its own ("you") — or citing its human."""
+        c = corrected
+        exported = (await async_client.get(f"/api/conversations/{c['conv'].id}/export")).json()
+        row = next(m for m in exported["messages"] if m["id"] == c["reflection"].id)
+        await db.delete(await db.get(Message, c["reflection"].id))
+        await db.commit()
+
+        body = (await async_client.post("/api/conversations/import-seed", json={
+            "entity_id": OTHER_ENTITY, "title": "Moved", "messages": [row],
+        })).json()
+
+        assert body["links_restored"] == 0
+        assert {(d["kind"], d["target_id"]) for d in body["links_dropped"]} == {
+            (LINK_REVISES, c["wrong"].id), (LINK_CITES, c["page"].id),
+        }
+        assert all("not part of your experience" in d["reason"] for d in body["links_dropped"])
+        assert await count(db, MemoryLink) == 0
 
     async def test_memory_browser_shows_both_directions(self, db, corrected, async_client):
         c = corrected

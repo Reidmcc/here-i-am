@@ -158,7 +158,12 @@ tool result and goes to disk over 50 KB.
   mid-memory. Most turns land everything (the median block is 5 KB); a
   large pull lands its top memories verbatim with the rest named. An older
   backend without `context_items` gets the whole `context_summary` in
-  place of the block, as before.
+  place of the block, as before. A memory with `memory_save` links carries
+  its marker lines under the header here, in the session-start and
+  post-compaction reflections alike (current as of the call — a Claude
+  Code session is never rebuilt); a summary line carries only a revision
+  pointer, since it quotes the memory's first line. The vocabulary is in
+  `docs/tools.md` (`memory_save`).
 - **The list-shaped MCP tools** (`memory_query` in every mode,
   `memory_neighbors`) fit the same way to the tool-result line: whole
   memories while the result lands, headers only after that (a

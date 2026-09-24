@@ -56,6 +56,7 @@ from app.services.memory_service import (
     STATUS_SET_BY_ENTITY,
     STATUS_SET_BY_RESEARCHER,
     VALID_ROLE_FILTERS,
+    check_link_target,
     load_memory_links,
     memory_service,
     stage_memory_links,
@@ -999,60 +1000,20 @@ async def _resolve_link_targets(
 ) -> Tuple[List[Tuple[Message, Conversation]], Optional[str]]:
     """
     Resolve memory_save's revises / cites ids to memories the entity may
-    link, or the first refusal. The readers' visibility rules apply: the
-    memory must be in the entity's own experience (its conversations and
-    the multi-entity ones it takes part in), not in an archived
-    conversation, and released only when include_released says so.
-    `revises` also requires the memory to be the entity's OWN words — a
-    reflection it saved or something it said: the entity's account of its
-    own past is its to give, and the human's words are not its to mark
-    wrong. `cites` takes anything in the experience, the human's words
-    included; citing marks nothing.
+    link, or the first refusal: prefix resolution here, then the one link
+    rule every writing path shares (memory_service.check_link_target —
+    experience, archive, release, and for revises the entity's own words).
     """
     resolved: List[Tuple[Message, Conversation]] = []
     for id_or_prefix in ids:
         message, error = await _resolve_memory_id(id_or_prefix, db, ctx.entity_id)
         if error:
             return [], error
-        short_id = str(message.id)[:8]
-        if message.role not in MEMORY_ROLES:
-            return [], f"'{id_or_prefix}' is a {message.role.value} row, not a memory."
-        conversation = (await db.execute(
-            select(Conversation).where(
-                Conversation.id == message.conversation_id,
-                memory_service._entity_experience_clause(ctx.entity_id),
-            )
-        )).scalar_one_or_none()
-        if conversation is None:
-            return [], f"Memory {short_id} is not part of your experience."
-        if conversation.is_archived:
-            return [], (
-                f"Memory {short_id} is in an archived conversation, which is withdrawn "
-                "from every memory surface."
-            )
-        if message.memory_status == "released" and not include_released:
-            return [], (
-                f"Memory {short_id} is released. Pass include_released=true to link it "
-                "anyway, or restore it first with memory_release undo=true."
-            )
-        if kind == LINK_REVISES:
-            if message.role == MessageRole.HUMAN:
-                return [], (
-                    f"Memory {short_id} is the human's words; revises marks only your "
-                    "own memories (to point at what someone else said, use cites)."
-                )
-            speaker = message.speaker_entity_id
-            own = (
-                speaker == ctx.entity_id
-                if message.role == MessageRole.REFLECTION
-                or conversation.entity_id == "multi-entity"
-                else True
-            )
-            if not own:
-                return [], (
-                    f"Memory {short_id} is another entity's; revises marks only your "
-                    "own memories."
-                )
+        conversation, error = await check_link_target(
+            db, message, ctx.entity_id, kind, include_released
+        )
+        if error:
+            return [], error
         resolved.append((message, conversation))
     return resolved, None
 

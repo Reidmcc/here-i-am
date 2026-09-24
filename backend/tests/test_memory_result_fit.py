@@ -52,6 +52,10 @@ from tests.test_memory_read import (  # noqa: F401
     tools_db,
 )
 
+# The memory tools here run against mocked database sessions; the
+# memory-link loader is stubbed for them (conftest.no_memory_links)
+pytestmark = pytest.mark.usefixtures("no_memory_links")
+
 
 def _mock_session():
     session = AsyncMock()

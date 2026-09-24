@@ -290,3 +290,18 @@ def sample_api_messages():
     return [
         {"role": "user", "content": "What is Python?"},
     ]
+
+
+@pytest.fixture
+def no_memory_links(monkeypatch):
+    """
+    Stub the memory-link loader (issues #366, #368) for tests that hand the
+    memory tools a mocked database session. The loader is plain SQL and
+    deliberately unguarded — a failure raises into its caller rather than
+    leaving a Postgres transaction aborted — so a mock that can't answer a
+    query has to be kept away from it. Tests on a real database exercise
+    the loader itself (test_memory_links.py).
+    """
+    monkeypatch.setattr(
+        "app.services.memory_tools.load_memory_links", AsyncMock(return_value={})
+    )

@@ -141,10 +141,10 @@ def _link_target_entry(
 
 def _link_reflection_entry(end: Dict[str, Any], with_date: bool) -> str:
     """One reflection pointing at this memory: its id, its date when asked
-    for, and the state it has left view in, if any."""
+    for, and "released" if the entity has released it. (A reflection in an
+    archived conversation never gets here: the loader drops withdrawn
+    reverse ends, so a withdrawn verdict can't outlive the archive.)"""
     short_id = str(end["id"])[:8]
-    if end.get("state") == "withdrawn":
-        return f"{short_id} (withdrawn)"
     parts = [str(end.get("created_at") or "")[:10]] if with_date else []
     if end.get("state") == "released":
         parts.append("released")
@@ -168,15 +168,17 @@ def format_memory_link_lines(
         [later corrected or outdated → see reflection a1b2c3d4 (2026-10-02)]
         [cited by reflection a1b2c3d4]
 
-    `links` is memory_service.get_memory_links' entry for the memory
+    `links` is memory_service.load_memory_links' entry for the memory
     ("revises"/"cites" = what this reflection points at, "revised_by" /
     "cited_by" = the reflections pointing at it); `role` is the memory's own
     role, which picks the wording of a revision pointer: a reflection is
     "later revised", something said is "later corrected or outdated", and
     the reflection holds the reason. Every entry is a pointer — an id, a
     date, who spoke — never content and never a count: the entity follows
-    one with memory_neighbors. An end that has left view says so
-    ("released", "withdrawn") instead of disappearing.
+    one with memory_neighbors. A source that has left view says so
+    ("source released", "source withdrawn") instead of disappearing; a
+    reflection pointing at this memory is labeled "released" when the
+    entity released it, and is absent when its conversation was archived.
 
     Empty when the memory has no links, so an unlinked memory renders
     exactly as it always did.

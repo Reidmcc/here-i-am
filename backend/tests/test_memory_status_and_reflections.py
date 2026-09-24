@@ -25,6 +25,11 @@ from app.services.memory_tools import _memory_query, _resolve_memory_id, set_mem
 from app.services.notes_vector_service import chunk_note_content
 from app.services.session_helpers import calculate_significance as helper_significance
 
+# The memory tools here run against mocked database sessions; the
+# memory-link loader is stubbed for them (conftest.no_memory_links)
+pytestmark = pytest.mark.usefixtures("no_memory_links")
+
+
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 

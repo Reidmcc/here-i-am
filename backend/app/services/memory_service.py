@@ -111,11 +111,11 @@ async def load_memory_link_ids(
     return result
 
 
-
 async def load_memory_links(
     db: AsyncSession,
     memory_ids: List[str],
     entity_id: Optional[str] = None,
+    include_withdrawn: bool = False,
 ) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
     """
     Every memory link touching the given memories, both directions, for
@@ -128,32 +128,34 @@ async def load_memory_links(
     pointing at it, oldest first. Each end is {"id", "created_at",
     "role", "speaker_entity_id", "sibling_session", "state"}, where
     state is None, "released" (memory_status), or "withdrawn" (its
-    conversation is archived) — an end that left view is labeled, never
-    dropped.
+    conversation is archived).
+
+    The two directions treat an archived conversation differently, on
+    purpose. A reflection's OWN sources that left view are labeled, never
+    dropped: the reflection is still in view, and its sources line is
+    part of it as written. But a reflection that has itself been
+    withdrawn is dropped from the reverse direction: archiving takes a
+    conversation where something went wrong off every memory surface,
+    and a correction saved there — possibly "correcting" something true
+    — must not outlive the archive as a pointer on the memory it
+    revised, which the entity could not even open. include_withdrawn
+    keeps them (the researcher's memory browser, which sees archived
+    conversations anyway).
 
     entity_id scopes the reverse direction to the reflections that
     entity wrote: "what have I concluded from this" is about one's own
     conclusions, and another entity's reflections are not part of this
     one's experience. The forward direction is the reflection as
     written and is shown whole.
+
+    Not guarded: a failure raises into the caller like any other read on
+    its session. (A swallowed error here would leave the caller's
+    transaction aborted on Postgres, turning a lost marker into a lost
+    memory link on the next statement.)
     """
     ids = list(dict.fromkeys(str(mid) for mid in memory_ids if mid))
     if not ids:
         return {}
-    try:
-        return await _query_memory_links(db, ids, entity_id)
-    except Exception as e:
-        # Best-effort: the memories are still correct without their
-        # markers, and a reader or a retrieval must not fail for want of
-        # them. Logged, so a lost marker is never silent in the record.
-        logger.warning(f"[MEMORY] Could not read memory links for {len(ids)} memories: {e}")
-        return {}
-
-
-async def _query_memory_links(
-    db: AsyncSession, ids: List[str], entity_id: Optional[str]
-) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
-    """load_memory_links' queries, both directions, chunked."""
 
     def end_of(message: Message, archived: bool) -> Dict[str, Any]:
         if archived:
@@ -200,6 +202,8 @@ async def _query_memory_links(
         )
         if entity_id:
             incoming_query = incoming_query.where(Message.speaker_entity_id == entity_id)
+        if not include_withdrawn:
+            incoming_query = incoming_query.where(Conversation.is_archived == False)
         incoming = await db.execute(incoming_query)
         for link, reflection, archived in incoming.all():
             key = "revised_by" if link.kind == LINK_REVISES else "cited_by"
@@ -210,6 +214,7 @@ async def _query_memory_links(
                 ends.append(end_of(reflection, bool(archived)))
     return links
 
+
 async def load_memory_link_annotations(
     db: AsyncSession,
     memories: List[Tuple[str, str]],
@@ -218,9 +223,7 @@ async def load_memory_link_annotations(
     """
     The rendered marker lines for each (memory_id, role), newline-joined
     — the `annotation` a [MEMORY] context marker carries under its
-    header. Memories without links are absent. Best-effort: a failure
-    to read the links renders no markers rather than failing retrieval
-    (the memory itself is still correct without them).
+    header. Memories without links are absent.
     """
     if not memories:
         return {}
@@ -236,6 +239,71 @@ async def load_memory_link_annotations(
         if lines:
             annotations[str(memory_id)] = "\n".join(lines)
     return annotations
+
+
+async def check_link_target(
+    db: AsyncSession,
+    message: Message,
+    entity_id: Optional[str],
+    kind: str,
+    include_released: bool,
+) -> Tuple[Optional[Conversation], Optional[str]]:
+    """
+    Whether `message` may be the target of a `kind` link written for
+    entity_id: (its conversation, None) when it may, (None, the reason)
+    when it may not. The one rule for every path that writes memory links
+    — memory_save and the seed import alike — so no path can write a link
+    the tool would refuse.
+
+    The readers' visibility rules apply: the target must be a memory row,
+    in the entity's own experience (its conversations and the
+    multi-entity ones it takes part in), not in an archived conversation,
+    and not released unless include_released says so. `revises` also
+    requires the entity's OWN words — a reflection it saved or something
+    it said: the entity's account of its own past is its to give, and the
+    human's words (or another entity's) are not its to mark wrong.
+    `cites` takes anything in the experience; citing marks nothing.
+    """
+    short_id = str(message.id)[:8]
+    if message.role not in MEMORY_ROLES:
+        return None, f"Memory {short_id} is a {message.role.value} row, not a memory."
+    conversation = (await db.execute(
+        select(Conversation).where(
+            Conversation.id == message.conversation_id,
+            memory_service._entity_experience_clause(entity_id),
+        )
+    )).scalar_one_or_none()
+    if conversation is None:
+        return None, f"Memory {short_id} is not part of your experience."
+    if conversation.is_archived:
+        return None, (
+            f"Memory {short_id} is in an archived conversation, which is withdrawn "
+            "from every memory surface."
+        )
+    if message.memory_status == "released" and not include_released:
+        return None, (
+            f"Memory {short_id} is released. Pass include_released=true to link it "
+            "anyway, or restore it first with memory_release undo=true."
+        )
+    if kind == LINK_REVISES:
+        if message.role == MessageRole.HUMAN:
+            return None, (
+                f"Memory {short_id} is the human's words; revises marks only your "
+                "own memories (to point at what someone else said, use cites)."
+            )
+        # A reflection names its author; so does an assistant row in a
+        # multi-entity room. In a single-entity room the experience check
+        # above already says the words are this entity's.
+        if (
+            message.role == MessageRole.REFLECTION
+            or conversation.entity_id == "multi-entity"
+        ) and message.speaker_entity_id != entity_id:
+            return None, (
+                f"Memory {short_id} is another entity's; revises marks only your "
+                "own memories."
+            )
+    return conversation, None
+
 
 def stage_memory_links(
     db: AsyncSession,
@@ -911,35 +979,6 @@ class MemoryService:
             # Log details for debugging orphaned Pinecone records
             logger.warning(f"[MEMORY] Message ID '{message_id}' not found in SQL database (may be orphaned in Pinecone)")
         return None
-
-    # --- Memory links: what a reflection revises or cites (#366, #368) ---
-    # Plain SQL, so the loaders live at module level (load_memory_links,
-    # load_memory_link_annotations) where callers reach them even when the
-    # Pinecone-facing service is swapped out; these delegate.
-
-    async def get_memory_links(
-        self,
-        db: AsyncSession,
-        memory_ids: List[str],
-        entity_id: Optional[str] = None,
-    ) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
-        """See load_memory_links."""
-        return await load_memory_links(db, memory_ids, entity_id=entity_id)
-
-    async def get_memory_link_annotations(
-        self,
-        db: AsyncSession,
-        memories: List[Tuple[str, str]],
-        entity_id: Optional[str] = None,
-    ) -> Dict[str, str]:
-        """See load_memory_link_annotations."""
-        return await load_memory_link_annotations(db, memories, entity_id=entity_id)
-
-    async def get_memory_link_ids(
-        self, db: AsyncSession, reflection_ids: List[str]
-    ) -> Dict[str, Dict[str, List[str]]]:
-        """See load_memory_link_ids."""
-        return await load_memory_link_ids(db, reflection_ids)
 
     async def update_retrieval_count(
         self,
@@ -1867,7 +1906,7 @@ class MemoryService:
         cursor marks the page's older edge. Its items still come back
         oldest-first, so a page reads like the archive in either direction.
 
-        Each row carries its memory links ("links", get_memory_links'
+        Each row carries its memory links ("links", load_memory_links'
         entry, reverse direction scoped to entity_id) before it is weighed,
         so the page budget counts the marker lines the tools print.
 
@@ -1925,7 +1964,7 @@ class MemoryService:
             rows = (await db.execute(query.limit(batch_size))).all()
             if len(rows) < batch_size:
                 exhausted = True
-            batch_links = await self.get_memory_links(
+            batch_links = await load_memory_links(
                 db, [str(message.id) for message, _ in rows], entity_id=entity_id
             )
             for message, conversation in rows:
@@ -2204,7 +2243,7 @@ class MemoryService:
         target_index = len(items)
         items.append(row(message))
         items.extend(row(m) for m in later)
-        window_links = await self.get_memory_links(
+        window_links = await load_memory_links(
             db, [item["id"] for item in items], entity_id=entity_id
         )
         for item in items:

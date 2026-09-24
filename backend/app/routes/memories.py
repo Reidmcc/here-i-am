@@ -195,7 +195,9 @@ async def list_memories(
     # Paginate
     memories = memories[offset:offset + limit]
 
-    links = await load_memory_links(db, [m["id"] for m in memories])
+    # The researcher sees archived conversations anyway, so withdrawn
+    # reverse ends are kept here (the entity's surfaces drop them)
+    links = await load_memory_links(db, [m["id"] for m in memories], include_withdrawn=True)
     for m in memories:
         m["links"] = links.get(str(m["id"]))
 
@@ -791,7 +793,9 @@ async def get_memory(
         status_set_by=message.status_set_by,
         status_set_at=message.status_set_at,
         model=message.model,
-        links=(await load_memory_links(db, [str(message.id)])).get(str(message.id)),
+        links=(await load_memory_links(
+            db, [str(message.id)], include_withdrawn=True
+        )).get(str(message.id)),
     )
 
 

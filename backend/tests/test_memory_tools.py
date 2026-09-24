@@ -18,6 +18,10 @@ from app.services.memory_tools import (
 )
 from app.services.tool_service import ToolCategory, ToolService
 
+# The memory tools here run against mocked database sessions; the
+# memory-link loader is stubbed for them (conftest.no_memory_links)
+pytestmark = pytest.mark.usefixtures("no_memory_links")
+
 
 class TestMemoryToolContext:
     """Tests for memory tool context management."""

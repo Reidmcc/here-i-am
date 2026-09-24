@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -23,7 +23,7 @@ from app.models import (
     Message,
     MessageRole,
 )
-from app.services.memory_service import load_memory_link_ids
+from app.services.memory_service import check_link_target, load_memory_link_ids
 
 logger = logging.getLogger(__name__)
 
@@ -1044,28 +1044,45 @@ async def import_seed_conversation(
 
     # The imported reflections' links, where both ends exist now (a target
     # in a conversation that wasn't imported is left out, not guessed)
-    links_restored = await restore_exported_links(db, pending_links)
+    links_restored, links_dropped = await restore_exported_links(
+        db, pending_links, data.entity_id
+    )
 
     return {
         "status": "imported",
         "conversation_id": conversation_id,
         "message_count": imported_count,
         "links_restored": links_restored,
+        "links_dropped": links_dropped,
         "messages_skipped": skipped_count,
         "memories_stored": stored_count,
         "entity_id": data.entity_id,
     }
 
 
-async def restore_exported_links(db: AsyncSession, pending: List[tuple]) -> int:
+async def restore_exported_links(
+    db: AsyncSession, pending: List[tuple], entity_id: Optional[str]
+) -> Tuple[int, List[dict]]:
     """
     Recreate memory_save links from an export's reflection rows
-    ((reflection id, revises ids, cites ids)): only between messages that
-    exist, and never duplicating a link already present. Returns how many
-    were created.
+    ((reflection id, revises ids, cites ids)) for the importing entity.
+
+    A link is restored only when memory_save itself would write it now:
+    the reflection is the importing entity's, and the target passes the
+    one link rule every writing path shares
+    (memory_service.check_link_target — in this entity's experience, not
+    archived, and for revises this entity's own words). Otherwise an
+    import could hand one entity a reflection that "revises" another's
+    words, rendered as its own ("you"), which nothing downstream can
+    tell apart. Released targets are allowed: the original save may have
+    named them with include_released, and the link says so on render.
+    Existing links are never duplicated.
+
+    Returns (created, dropped) — each dropped link with its reason, so the
+    import reports what it left out instead of leaving it silently.
     """
     if not pending:
-        return 0
+        return 0, []
     wanted = [
         (str(reflection_id), str(target_id), kind, position)
         for reflection_id, revises, cites in pending
@@ -1073,17 +1090,18 @@ async def restore_exported_links(db: AsyncSession, pending: List[tuple]) -> int:
         for position, target_id in enumerate(t for t in targets if isinstance(t, str) and t)
     ]
     if not wanted:
-        return 0
-    ids = {r for r, _, _, _ in wanted} | {t for _, t, _, _ in wanted}
-    existing_ids = {
-        str(row[0]) for row in (await db.execute(select(Message.id).where(Message.id.in_(ids)))).all()
-    }
+        return 0, []
     reflection_rows = {
         str(m.id): m for m in (await db.execute(
             select(Message).where(
                 Message.id.in_({r for r, _, _, _ in wanted}),
                 Message.role == MessageRole.REFLECTION,
             )
+        )).scalars().all()
+    }
+    targets = {
+        str(m.id): m for m in (await db.execute(
+            select(Message).where(Message.id.in_({t for _, t, _, _ in wanted}))
         )).scalars().all()
     }
     present = {
@@ -1093,10 +1111,26 @@ async def restore_exported_links(db: AsyncSession, pending: List[tuple]) -> int:
         )).all()
     }
     created = 0
+    dropped: List[dict] = []
     for reflection_id, target_id, kind, position in wanted:
-        if reflection_id not in reflection_rows or target_id not in existing_ids:
-            continue
         if (reflection_id, target_id, kind) in present:
+            continue
+        reflection = reflection_rows.get(reflection_id)
+        target = targets.get(target_id)
+        reason = None
+        if reflection is None or reflection.speaker_entity_id != entity_id:
+            reason = "the reflection is not this entity's"
+        elif target is None:
+            reason = "the target is not in this database"
+        else:
+            _, reason = await check_link_target(
+                db, target, entity_id, kind, include_released=True
+            )
+        if reason:
+            dropped.append({
+                "reflection_id": reflection_id, "target_id": target_id,
+                "kind": kind, "reason": reason,
+            })
             continue
         present.add((reflection_id, target_id, kind))
         db.add(MemoryLink(
@@ -1104,12 +1138,12 @@ async def restore_exported_links(db: AsyncSession, pending: List[tuple]) -> int:
             target_id=target_id,
             kind=kind,
             position=position,
-            created_at=reflection_rows[reflection_id].created_at,
+            created_at=reflection.created_at,
         ))
         created += 1
     if created:
         await db.commit()
-    return created
+    return created, dropped
 
 
 class ExternalConversationImport(BaseModel):
