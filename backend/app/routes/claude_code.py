@@ -670,10 +670,11 @@ async def log_assistant(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Record the entity's final message of a turn (from the Stop hook).
+    Record what the entity said in a turn (from the Stop hook): every text
+    chunk of the turn, joined in order into one message (issue #364).
 
-    Idempotent on message_uuid: the transcript entry's UUID becomes the
-    Message row's primary key, so a re-fired hook is a no-op.
+    Idempotent on message_uuid: the turn's last text entry's UUID becomes
+    the Message row's primary key, so a re-fired hook is a no-op.
     """
     _require_enabled()
     entity = _resolve_entity_or_400(data.entity)

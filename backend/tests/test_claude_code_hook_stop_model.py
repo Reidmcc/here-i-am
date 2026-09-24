@@ -44,12 +44,12 @@ def test_entry_model_absent_or_blank_is_none():
     assert stop.entry_model({"type": "assistant"}) is None
 
 
-def test_last_assistant_text_carries_the_entry_model(tmp_path):
+def test_turn_assistant_text_carries_the_entry_model(tmp_path):
     path = _write_transcript(tmp_path, [
         {"type": "user", "message": {"role": "user", "content": "hello"}},
         _assistant_entry("Done.", "u-final", model="claude-fable-5-1"),
     ])
-    text, entry_uuid, model = stop.last_assistant_text(path)
+    text, entry_uuid, model = stop.turn_assistant_text(path)
     assert text == "Done."
     assert entry_uuid == "u-final"
     assert model == "claude-fable-5-1"
@@ -70,21 +70,24 @@ def test_model_comes_from_the_recorded_entry_not_the_last_line(tmp_path):
             },
         },
     ])
-    text, entry_uuid, model = stop.last_assistant_text(path)
+    text, entry_uuid, model = stop.turn_assistant_text(path)
     assert text == "The words."
     assert entry_uuid == "u-text"
     assert model == "claude-opus-5"
 
 
 def test_missing_model_is_none_not_inferred(tmp_path):
+    # Both chunks are one turn's text (issue #364), recorded under the last
+    # entry — whose missing model is not borrowed from the earlier one.
     path = _write_transcript(tmp_path, [
         _assistant_entry("Earlier, attributed.", "u1", model="claude-fable-5-1"),
         _assistant_entry("Later, unattributed.", "u2"),
     ])
-    text, _, model = stop.last_assistant_text(path)
-    assert text == "Later, unattributed."
+    text, entry_uuid, model = stop.turn_assistant_text(path)
+    assert text == "Earlier, attributed.\n\nLater, unattributed."
+    assert entry_uuid == "u2"
     assert model is None
 
 
 def test_unreadable_transcript_returns_triple():
-    assert stop.last_assistant_text("/nonexistent/transcript.jsonl") == (None, None, None)
+    assert stop.turn_assistant_text("/nonexistent/transcript.jsonl") == (None, None, None)

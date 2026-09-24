@@ -2,19 +2,23 @@
 """
 Here I Am — Stop hook.
 
-Fires when the assistant finishes a turn. Extracts the final assistant
-message of the turn from the session transcript (text blocks only — tool
-use stays Claude Code's business) and posts it to the local Here I Am
-backend, which records and vectorizes it as the entity's response.
+Fires when the assistant finishes a turn. Collects everything the entity
+said in the turn from the session transcript — every text chunk since the
+turn began, the text between tool calls as well as the closing message,
+joined in order into ONE message with "[…]" where tool calls fell (issue
+#364) — and posts it to the local Here I Am backend, which records and
+vectorizes it as the entity's response. The archive is the talk: tool use
+is deeds and stays Claude Code's business, and thinking blocks are never
+read.
 
-The transcript entry's UUID rides along so the backend can deduplicate a
-re-fired hook. Only the main conversation loop is logged — this script is
-wired to Stop, not SubagentStop, so subagent turns never write the
-entity's memory.
+The turn's last text entry's UUID rides along as the row id so the backend
+can deduplicate a re-fired hook. Only the main conversation loop is logged —
+this script is wired to Stop, not SubagentStop, and sidechain entries are
+skipped, so subagent turns never write the entity's memory.
 
-Fail-soft, loudly: when the backend can't be reached the final message of
-the turn — the sole memory-bearing artifact of everything that happened in
-it — is lost from the archive. A Stop hook's stdout never reaches context,
+Fail-soft, loudly: when the backend can't be reached the turn's text — the
+sole memory-bearing artifact of everything that happened in it — is lost
+from the archive. A Stop hook's stdout never reaches context,
 so the failure is escalated the one way the entity can see it: exit 2 with
 the notice on stderr, which continues the turn with the message shown. The
 entity can then preserve what mattered another way and tell the user. The
@@ -29,7 +33,7 @@ import os
 import sys
 import urllib.request
 
-import hook_util  # noqa: F401 — imported for its UTF-8 stdio reconfigure
+import hook_util  # also reconfigures stdio to UTF-8 on import
 
 
 def entry_model(entry: dict):
@@ -46,45 +50,74 @@ def entry_model(entry: dict):
     return None
 
 
-def last_assistant_text(transcript_path: str):
+# Written on its own line between two chunks of a turn's text wherever
+# the entity called a tool in between, so a later reading shows that work
+# happened between the sentences without describing it (issue #364).
+TOOL_CALL_MARKER = "[…]"
+# Written where a prompt queued mid-turn reached the entity, once per
+# kind: its row is recorded when it arrives, before this turn's row, so
+# without the line the chunks said before it would read as a reply to it.
+# Wording chosen by Pseudo (issue #364 review, PR #372).
+HUMAN_ARRIVED_MARKER = "[… the human's message arrived here]"
+LETTER_ARRIVED_MARKER = "[… a letter arrived here]"
+
+
+def turn_assistant_text(transcript_path: str):
     """
-    The final assistant message of the turn: the last transcript entry of
-    type "assistant" whose message carries at least one non-empty text
-    block. Returns (text, entry_uuid, model) or (None, None, None) — model
-    is the entry's own attribution (see entry_model), None when absent.
+    Everything the entity said in the turn that just ended: every text
+    block of its own since the turn's boundary (hook_util.is_turn_boundary),
+    in transcript order, joined by blank lines, with TOOL_CALL_MARKER
+    between two chunks that had a tool call between them, and an arrival
+    marker where a prompt queued mid-turn reached the entity after it had
+    already spoken (hook_util.queued_arrival). Nothing is filtered — a
+    short "checking now" is talk too.
+
+    Returns (text, entry_uuid, model) or (None, None, None). entry_uuid is
+    the turn's LAST text entry's uuid, which becomes the row id: a re-fired
+    hook dedups on it, and it is the id the fork-adoption hint sends for
+    this turn (hook_util.transcript_assistant_uuids). model is that
+    entry's own attribution (see entry_model), None when absent.
     """
+    pieces, entry_uuid, model = [], None, None
+    tool_since_text = False
     try:
-        with open(transcript_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+        for entry in hook_util.iter_turn_entries(transcript_path):
+            if hook_util.is_turn_boundary(entry):
+                pieces, entry_uuid, model = [], None, None
+                tool_since_text = False
+                continue
+            arrival = hook_util.queued_arrival(entry)
+            if arrival is not None:
+                # Before any text the whole row already follows the
+                # arrival, so there is nothing to mark
+                if pieces:
+                    if tool_since_text:
+                        pieces.append(TOOL_CALL_MARKER)
+                        tool_since_text = False
+                    human_spoke, letters = arrival
+                    if human_spoke:
+                        pieces.append(HUMAN_ARRIVED_MARKER)
+                    if letters:
+                        pieces.append(LETTER_ARRIVED_MARKER)
+                continue
+            has_text = False
+            for kind, text in hook_util.entry_text_blocks(entry):
+                if kind == "tool":
+                    tool_since_text = True
+                    continue
+                if pieces and tool_since_text:
+                    pieces.append(TOOL_CALL_MARKER)
+                pieces.append(text)
+                tool_since_text = False
+                has_text = True
+            if has_text:
+                entry_uuid = entry.get("uuid") or entry_uuid
+                model = entry_model(entry)
     except Exception:
         return None, None, None
-
-    for line in reversed(lines):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except Exception:
-            continue
-        if entry.get("type") != "assistant":
-            continue
-        message = entry.get("message") or {}
-        content = message.get("content")
-        if isinstance(content, str):
-            texts = [content]
-        elif isinstance(content, list):
-            texts = [
-                block.get("text", "")
-                for block in content
-                if isinstance(block, dict) and block.get("type") == "text"
-            ]
-        else:
-            continue
-        text = "\n\n".join(t for t in texts if t and t.strip()).strip()
-        if text:
-            return text, entry.get("uuid"), entry_model(entry)
-    return None, None, None
+    if not pieces:
+        return None, None, None
+    return "\n\n".join(pieces), entry_uuid, model
 
 
 def main() -> None:
@@ -99,7 +132,7 @@ def main() -> None:
     if not session_id or not transcript_path:
         return
 
-    text, entry_uuid, model = last_assistant_text(transcript_path)
+    text, entry_uuid, model = turn_assistant_text(transcript_path)
     if not text:
         return
 
@@ -129,8 +162,8 @@ def main() -> None:
             return
         print(
             "[HERE I AM] The Here I Am backend was unreachable at the end of "
-            f"this turn ({e.__class__.__name__}: {e}). Your final message was "
-            "NOT recorded to your long-term memory. Preserve anything "
+            f"this turn ({e.__class__.__name__}: {e}). What you said this turn "
+            "was NOT recorded to your long-term memory. Preserve anything "
             "important another way (memory_save via MCP if available, or your "
             "notes files), and tell the user the backend is down.",
             file=sys.stderr,
