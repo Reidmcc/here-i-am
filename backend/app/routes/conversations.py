@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +41,10 @@ IMPORT_BATCH_SIZE = 50
 # conversation id, so the retention only needs to cover the window where
 # its reflection links are still worth keeping.
 CLAUDE_CODE_EMPTY_RETENTION = timedelta(hours=24)
+
+# The researcher's note on an archive change is quoted whole in the entity's
+# session-start notice, which rides inline in the Claude Code identity block.
+ARCHIVE_NOTE_MAX_LENGTH = 500
 
 
 class ConversationCreate(BaseModel):
@@ -94,6 +98,11 @@ class ConversationResponse(BaseModel):
     # Claude Code conversations are read-only records here — the chat routes
     # refuse to continue them.
     source: str = "native"
+    # When the archive state last changed and the researcher's note on it
+    # (issue #367). Filled by the archived listing, where the researcher
+    # sees what the entity was told; null elsewhere.
+    archive_changed_at: Optional[datetime] = None
+    archive_note: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -501,6 +510,8 @@ async def list_archived_conversations(
             preview=preview,
             entities=entities_info,
             entity_system_prompts=conv.entity_system_prompts,
+            archive_changed_at=conv.archive_changed_at,
+            archive_note=conv.archive_note,
         ))
 
     return response
@@ -654,16 +665,37 @@ async def update_conversation(
     )
 
 
+class ArchiveChange(BaseModel):
+    """Optional body for archive/unarchive: the researcher's note to the
+    entity, quoted in the notice it gets at its next session (issue #367).
+    Leaving it out is a choice too — the notice then gives only the facts."""
+    reason: Optional[str] = Field(default=None, max_length=ARCHIVE_NOTE_MAX_LENGTH)
+
+
+def _stamp_archive_change(
+    conversation: Conversation, archived: bool, change: Optional[ArchiveChange]
+) -> None:
+    now = datetime.utcnow()
+    conversation.is_archived = archived
+    conversation.archive_changed_at = now
+    conversation.archive_note = ((change.reason if change else None) or "").strip() or None
+    conversation.updated_at = now
+
+
 @router.post("/{conversation_id}/archive")
 async def archive_conversation(
     conversation_id: str,
+    change: Optional[ArchiveChange] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """
     Archive a conversation.
 
     Archived conversations are hidden from the main list and their messages
-    are excluded from memory retrieval. All data is preserved.
+    are excluded from every memory surface. All data is preserved. The
+    change is stamped (archive_changed_at, plus the optional note) and the
+    entity is told at its next session — the span, size and source, never
+    the title or content.
     """
     result = await db.execute(
         select(Conversation).where(Conversation.id == conversation_id)
@@ -676,8 +708,7 @@ async def archive_conversation(
     if conversation.is_archived:
         raise HTTPException(status_code=400, detail="Conversation is already archived")
 
-    conversation.is_archived = True
-    conversation.updated_at = datetime.utcnow()
+    _stamp_archive_change(conversation, True, change)
     await db.commit()
 
     return {"status": "archived", "id": conversation_id}
@@ -686,13 +717,14 @@ async def archive_conversation(
 @router.post("/{conversation_id}/unarchive")
 async def unarchive_conversation(
     conversation_id: str,
+    change: Optional[ArchiveChange] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """
     Unarchive a conversation.
 
     Restores the conversation to the main list and re-enables memory retrieval
-    for its messages.
+    for its messages. Stamped and reported to the entity like archiving.
     """
     result = await db.execute(
         select(Conversation).where(Conversation.id == conversation_id)
@@ -705,8 +737,7 @@ async def unarchive_conversation(
     if not conversation.is_archived:
         raise HTTPException(status_code=400, detail="Conversation is not archived")
 
-    conversation.is_archived = False
-    conversation.updated_at = datetime.utcnow()
+    _stamp_archive_change(conversation, False, change)
     await db.commit()
 
     return {"status": "unarchived", "id": conversation_id}

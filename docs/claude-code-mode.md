@@ -647,13 +647,50 @@ are never read — the extraction takes `text` blocks only.
   pinned/released status on any of the entity's memories since its last
   session (`memory_service.build_status_change_notice`): one line per
   change with the short id, the status the memory now has, when, and a
-  snippet. "Last session" is anchored on the entity's first response in its
-  most recent other conversation, native or Claude Code, so each change is
-  reported once and never silently dropped; a session that never spoke is
-  not an anchor. Inline, never bulk, and a failed check is reported in
-  place of the notice — silence is reserved for "nothing changed". Not
-  re-sent on a plain resume or after a compaction. The same notice is
-  injected on the entity's first turn of a native conversation.
+  snippet. "Last session" is the latest moment, across the entity's other
+  conversations where it has spoken (native or Claude Code), at which a
+  session's check ran: per conversation, the start of the turn that
+  carried the notice — the last human prompt or delivered letter before
+  its first response. So each change is reported once; a session that
+  never spoke is not an anchor. Two earlier shapes failed (PR #369's
+  review): the first response of whichever conversation spoke *last* is,
+  since fork adoption, usually a standing room's birth weeks ago, so every
+  new session re-heard every change; and the first response itself came
+  after a whole agentic first turn, so a change made during that turn was
+  told to nobody. The residual window is the seconds between this block's
+  SessionStart check and the first prompt hook (measured ~3 s in the
+  desktop app for #359; longer for a CLI session opened well before its
+  first prompt). After it, against the same anchor, a `[MEMORY ARCHIVE
+  NOTICE]` lists the conversations of the entity's experience the
+  researcher archived or unarchived since then
+  (`memory_service.build_archive_change_notice`, issue #367): per
+  conversation its span of dates, how many messages, `via Here I Am` /
+  `via Claude Code`, "withdrawn from" or "restored to your memory", when,
+  and the researcher's note if they left one — never the title and never
+  any content. Archiving withdraws a whole conversation from every memory
+  surface, and from inside a withdrawn conversation is indistinguishable
+  from one that never happened; the notice says the gap exists, not what
+  was in it. Conversations are listed up to ten lines or 3,000 characters
+  of listing (`ARCHIVE_NOTICE_LIST_CHARS`; a researcher's note can run to
+  500) and the rest are counted in one line, with how many carried a note.
+  That keeps the notice small; it doesn't guarantee the whole identity
+  block fits the hook-stdout budget, and when it doesn't the hook spills
+  it behind its usual pointer. Both notices come from
+  `build_researcher_change_notices`, which computes the anchor once and
+  never raises: inline, never
+  bulk, and a failed check is reported in place of its own notice without
+  hiding the other. **Nothing changed is said, not left silent** — one
+  `Checked: … none` line per notice, like a retrieval that matched nothing,
+  because a missing notice can't tell "nothing changed" from "never
+  checked". Not re-sent on a plain resume. After a compaction the
+  post-compaction block carries them again, over the room's own window
+  (Compaction survival, below). The same notices are injected, as one
+  context-only message, on the entity's first turn of a native
+  conversation, nothing-changed lines included. That message is
+  context-only, so it is stored as shown (`Conversation.researcher_notices`,
+  per entity, with the next slot on the turn's memory-link clock) and a
+  reload replays it at the same position — the rebuilt context matches the
+  live one and the prompt cache holds.
 - On a plain resume (`session-start` for a session that already has a
   conversation) the identity block is *not* re-sent — the transcript
   already carries it. A resume of a session with no row (it never spoke, or
@@ -1028,6 +1065,21 @@ are the entity's verbatim carriers across that boundary.
   compaction are exactly the ones that must come back. Links are recorded
   only for reflections not already linked (no duplicate rows), and
   `times_retrieved` stays untouched as with all recency injections.
+- **Researcher changes, re-told over the room's own window.** The block
+  also carries the status and archive notices (issue #367 follow-up) —
+  otherwise a standing room, which never starts fresh, would never hear
+  of an archive. The window is *since this session was last told*: the
+  compaction stamp that stood before this one (the route reads it before
+  `mark_conversation_compacted` overwrites it), or the conversation's own
+  first-turn start if it has never compacted
+  (`get_last_session_anchor(only_conversation_id=…)`). Not the house's
+  "since your last session", which moves whenever any other session starts
+  and so would never catch the porch up on a change a workshop heard. A
+  compact that registered its row (nothing recorded yet) falls back to the
+  house anchor. Nothing changed is said; a failure is reported in place.
+  A fork's restart that got a fresh identity block leaves no stamp, so a
+  change it heard is heard again at the next compaction — the duplicate
+  side, never the silent one.
 - **The pre-compaction talk is readable verbatim, on request.** The
   reorientation header also names the `memory_read` call that returns
   this session's own pre-compaction stretch, read **backward from the

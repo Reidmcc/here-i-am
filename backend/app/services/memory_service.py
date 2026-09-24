@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple
 from pinecone import Pinecone
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.config import settings
 from app.models import (
@@ -20,7 +21,14 @@ from app.models import (
     Message,
     MessageRole,
 )
-from app.services.memory_context import format_memory_link_lines, format_status_change_notice
+from app.services.memory_context import (
+    SINCE_LAST_SESSION,
+    format_archive_change_notice,
+    format_archive_nothing_changed,
+    format_memory_link_lines,
+    format_status_change_notice,
+    format_status_nothing_changed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +39,10 @@ logger = logging.getLogger(__name__)
 # the entity's choice is attributed and reportable.
 STATUS_SET_BY_ENTITY = "entity"
 STATUS_SET_BY_RESEARCHER = "researcher"
+
+# "Not passed" for the notice builders' optional precomputed anchor, whose
+# None already means "the entity has never spoken".
+_ANCHOR_UNSET = object()
 VALID_STATUS_SETTERS = (STATUS_SET_BY_ENTITY, STATUS_SET_BY_RESEARCHER)
 
 # Only these roles are vectorized, so only they can be memories with a status
@@ -2300,56 +2312,92 @@ class MemoryService:
         db: AsyncSession,
         entity_id: str,
         exclude_conversation_id: Optional[str] = None,
+        only_conversation_id: Optional[str] = None,
     ) -> Optional[datetime]:
         """
-        The moment the entity's previous session began speaking: the
-        created_at of its first assistant message in the most recent other
-        conversation where it spoke. None when it has never spoken.
+        The "since your last session" boundary for the researcher-change
+        notices: the latest moment, across the entity's other conversations
+        where it has spoken, at which a session's notice check ran. None
+        when it has never spoken.
 
-        This is the "since your last session" boundary for the
-        researcher-change notice. A session's notice is injected just before
-        its first response, so anchoring on that response's time means a
-        change made before it was reported by that session and a change made
-        during it is reported by the next — each change once, and never
-        silently. Conversations without a response (an unspoken native tab,
-        a Claude Code session that only fired SessionStart) never had a
-        first turn to notify, so they cannot be the anchor.
+        Per conversation that moment is the start of the turn that carried
+        the notice — the last turn-starting row (a human message, or a
+        delivered inter-session letter) before the entity's first response
+        there, or the first response itself when nothing precedes it. A
+        session checks as that turn begins (natively just after the send
+        timestamp the human row carries; in Claude Code at SessionStart,
+        just before the first prompt is recorded), so each change lands
+        either before the anchor and was told by that session, or after it
+        and is told by the next. Anchoring on the response itself lost every
+        change made during a first turn, which in Claude Code lasts as long
+        as the agentic turn does.
+
+        The latest such moment, not the first response of the latest
+        speaker (issue #367's review): since fork adoption a standing room
+        keeps one conversation for weeks and speaks on nearly every tick,
+        so the latest speaker's first response is usually a room's birth,
+        and every new session would hear every change since then again.
+
+        Conversations without a response (an unspoken native tab, a Claude
+        Code session that only fired SessionStart) never had a first turn
+        to notify, so they cannot anchor. The residual window where a change
+        goes untold is the gap between the check and the recorded turn
+        start: none natively (the send timestamp comes first), and in Claude
+        Code the seconds between SessionStart and the first prompt hook —
+        longer in a CLI session opened well before its first prompt, or one
+        whose first turn was an unrecorded wakeup (then the first response
+        anchors).
+
+        only_conversation_id narrows it to one conversation's own first-turn
+        start — when that conversation was told, for a long-running Claude
+        Code session re-told after a compaction (see
+        build_researcher_change_notices' callers). None if it never spoke.
         """
         # An inter-session letter is recorded as an assistant row too
         # (sibling_session set) but is a delivery, not a turn this
         # conversation's session took — it never carried a first-turn notice
         spoke = and_(
+            Message.role == MessageRole.ASSISTANT,
             Message.sibling_session.is_(None),
             or_(
                 Message.speaker_entity_id.is_(None),
                 Message.speaker_entity_id == entity_id,
             ),
         )
-        conditions = [
-            Message.role == MessageRole.ASSISTANT,
-            spoke,
-            self._entity_experience_clause(entity_id),
-        ]
+        conditions = [spoke, self._entity_experience_clause(entity_id)]
         if exclude_conversation_id:
             conditions.append(Message.conversation_id != str(exclude_conversation_id))
+        if only_conversation_id:
+            conditions.append(Message.conversation_id == str(only_conversation_id))
 
-        latest = (
-            select(Message.conversation_id)
+        first_responses = (
+            select(
+                Message.conversation_id.label("conversation_id"),
+                func.min(Message.created_at).label("responded_at"),
+            )
             .join(Conversation, Conversation.id == Message.conversation_id)
             .where(*conditions)
-            .order_by(Message.created_at.desc())
-            .limit(1)
+            .group_by(Message.conversation_id)
+            .subquery()
         )
-        row = (await db.execute(latest)).first()
-        if row is None:
-            return None
-
-        first_response = select(func.min(Message.created_at)).where(
-            Message.conversation_id == row[0],
-            Message.role == MessageRole.ASSISTANT,
-            spoke,
+        starter = aliased(Message)
+        turn_start = (
+            select(func.max(starter.created_at))
+            .where(
+                starter.conversation_id == first_responses.c.conversation_id,
+                starter.created_at < first_responses.c.responded_at,
+                or_(
+                    starter.role == MessageRole.HUMAN,
+                    starter.sibling_session.isnot(None),
+                ),
+            )
+            .correlate(first_responses)
+            .scalar_subquery()
         )
-        return (await db.execute(first_response)).scalar_one_or_none()
+        anchors = select(
+            func.max(func.coalesce(turn_start, first_responses.c.responded_at))
+        )
+        return (await db.execute(anchors)).scalar_one_or_none()
 
     async def get_researcher_status_changes(
         self,
@@ -2396,6 +2444,8 @@ class MemoryService:
         db: AsyncSession,
         entity_id: str,
         exclude_conversation_id: Optional[str] = None,
+        anchor: Any = _ANCHOR_UNSET,
+        since: str = SINCE_LAST_SESSION,
     ) -> Optional[str]:
         """
         The session-start notice of researcher-set status changes since the
@@ -2405,9 +2455,10 @@ class MemoryService:
         made or reversed on its behalf, so it must never be swallowed —
         callers treat a failure here as loud, not as "no changes".
         """
-        anchor = await self.get_last_session_anchor(
-            db, entity_id, exclude_conversation_id=exclude_conversation_id
-        )
+        if anchor is _ANCHOR_UNSET:
+            anchor = await self.get_last_session_anchor(
+                db, entity_id, exclude_conversation_id=exclude_conversation_id
+            )
         changes = await self.get_researcher_status_changes(db, entity_id, since=anchor)
         if not changes:
             return None
@@ -2415,7 +2466,172 @@ class MemoryService:
             f"[MEMORY] Status notice: {len(changes)} researcher-set change(s) for "
             f"entity={entity_id} since {anchor.isoformat() if anchor else 'ever'}"
         )
-        return format_status_change_notice(changes)
+        return format_status_change_notice(changes, since=since)
+
+    async def get_researcher_archive_changes(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        since: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Conversations of this entity's experience whose archive state
+        changed, optionally only after `since`, oldest change first (issue
+        #367). Each dict carries the current state, when and with what note
+        it changed, the conversation's source, and its span and size in
+        memory messages — deliberately no title and no content.
+
+        Every archive change is the researcher's (only the archive routes
+        write is_archived), so unlike status changes there is no setter to
+        filter on. Multi-entity conversations reach every participant
+        through _entity_experience_clause.
+        """
+        conditions = [
+            Conversation.archive_changed_at.isnot(None),
+            self._entity_experience_clause(entity_id),
+        ]
+        if since is not None:
+            conditions.append(Conversation.archive_changed_at > since)
+        conversations = (await db.execute(
+            select(Conversation)
+            .where(*conditions)
+            .order_by(Conversation.archive_changed_at.asc(), Conversation.id.asc())
+        )).scalars().all()
+        if not conversations:
+            return []
+
+        spans = {
+            row[0]: row[1:]
+            for row in (await db.execute(
+                select(
+                    Message.conversation_id,
+                    func.min(Message.created_at),
+                    func.max(Message.created_at),
+                    func.count(Message.id),
+                )
+                .where(
+                    Message.conversation_id.in_([c.id for c in conversations]),
+                    Message.role.in_(MEMORY_ROLES),
+                )
+                .group_by(Message.conversation_id)
+            )).all()
+        }
+        changes = []
+        for conversation in conversations:
+            first_at, last_at, message_count = spans.get(conversation.id, (None, None, 0))
+            changes.append({
+                "id": conversation.id,
+                "is_archived": bool(conversation.is_archived),
+                "archive_changed_at": conversation.archive_changed_at,
+                "archive_note": conversation.archive_note,
+                "source": conversation.source or "native",
+                "created_at": conversation.created_at,
+                "first_message_at": first_at,
+                "last_message_at": last_at,
+                "message_count": message_count,
+            })
+        return changes
+
+    async def build_archive_change_notice(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        exclude_conversation_id: Optional[str] = None,
+        anchor: Any = _ANCHOR_UNSET,
+        since: str = SINCE_LAST_SESSION,
+    ) -> Optional[str]:
+        """
+        The session-start notice of conversations archived or unarchived
+        since the entity's last session, or None when there are none — the
+        same anchor, and the same once-only and never-swallowed rules, as
+        build_status_change_notice. `anchor` (both builders) takes one
+        computed by the caller, so notices built together agree on it;
+        `since` names that window in the header.
+        """
+        if anchor is _ANCHOR_UNSET:
+            anchor = await self.get_last_session_anchor(
+                db, entity_id, exclude_conversation_id=exclude_conversation_id
+            )
+        changes = await self.get_researcher_archive_changes(db, entity_id, since=anchor)
+        if not changes:
+            return None
+        logger.info(
+            f"[MEMORY] Archive notice: {len(changes)} archive change(s) for "
+            f"entity={entity_id} since {anchor.isoformat() if anchor else 'ever'}"
+        )
+        return format_archive_change_notice(changes, since=since)
+
+    async def build_researcher_change_notices(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        exclude_conversation_id: Optional[str] = None,
+        anchor: Any = _ANCHOR_UNSET,
+        since: str = SINCE_LAST_SESSION,
+        report_nothing: bool = False,
+    ) -> List[str]:
+        """
+        Every session-start notice of a change the researcher made to the
+        entity's memory — memory status overrides, then archived/unarchived
+        conversations — for the native first turn and the Claude Code
+        blocks (identity, post-compaction) to deliver the same way.
+
+        The window is "since your last session" (get_last_session_anchor,
+        computed once so the two notices agree) unless the caller passes
+        its own `anchor` and names it in `since` — a compacted Claude Code
+        session is told what changed since *it* was last told.
+
+        Never raises. Silence would have to mean "nothing changed", so each
+        check that fails is reported in place of its notice, one failing
+        doesn't hide the other, and a failed anchor is reported by both.
+        With report_nothing, a check that ran and found nothing says so
+        too, like a retrieval that matched nothing. Every caller passes it
+        now: the native first turn could only afford to since its notice is
+        stored and replayed on reload (SessionManager._inject_status_change_notice).
+        """
+        def status_failed(error: Exception) -> str:
+            return (
+                "[MEMORY STATUS NOTICE] Could not check for researcher-set "
+                f"memory status changes {since} ({error}). If it matters, ask "
+                'the researcher, or review with memory_query mode="released".'
+            )
+
+        def archive_failed(error: Exception) -> str:
+            return (
+                "[MEMORY ARCHIVE NOTICE] Could not check whether the researcher "
+                f"withdrew or restored any of your conversations {since} "
+                f"({error}). If it matters, ask the researcher."
+            )
+
+        if anchor is _ANCHOR_UNSET:
+            try:
+                anchor = await self.get_last_session_anchor(
+                    db, entity_id, exclude_conversation_id=exclude_conversation_id
+                )
+            except Exception as e:
+                logger.error(f"[MEMORY] Last-session anchor failed: {e}")
+                return [status_failed(e), archive_failed(e)]
+
+        notices: List[str] = []
+        for build, failed, nothing, label in (
+            (self.build_status_change_notice, status_failed,
+             format_status_nothing_changed, "Status"),
+            (self.build_archive_change_notice, archive_failed,
+             format_archive_nothing_changed, "Archive"),
+        ):
+            try:
+                notice = await build(
+                    db, entity_id, exclude_conversation_id=exclude_conversation_id,
+                    anchor=anchor, since=since,
+                )
+                if not notice and report_nothing:
+                    notice = nothing(since)
+            except Exception as e:
+                logger.error(f"[MEMORY] {label}-change notice failed: {e}")
+                notice = failed(e)
+            if notice:
+                notices.append(notice)
+        return notices
 
     async def delete_memory(self, message_id: str, entity_id: Optional[str] = None) -> bool:
         """

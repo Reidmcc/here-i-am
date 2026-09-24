@@ -54,6 +54,15 @@ new status, when, snippet); silence means none. The notice is the entity's
 only record of an override, so a failure to check is reported in its place
 rather than swallowed.
 
+Archiving a conversation hides it from every tool above, so the same
+session start also carries a `[MEMORY ARCHIVE NOTICE]` for conversations
+the researcher archived or unarchived since the entity's last session
+(`Conversation.archive_changed_at`, plus the optional note from the archive
+request's `reason`; issue #367). It gives each conversation's dates, size,
+and provenance label, whether it was withdrawn or restored, when, and the
+note — never its title or content. Same anchor, same once-only rule, same
+loud failure.
+
 Every retrieved memory — in `[MEMORY]` context markers and in `memory_query`
 results — is labeled with the experience it was formed in: `via Here I Am`
 (a native conversation) or `via Claude Code` (a Claude Code mode session).

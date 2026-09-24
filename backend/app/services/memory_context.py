@@ -37,8 +37,43 @@ def memory_snippet(content: str, max_length: int = 80) -> str:
     return collapsed[: max_length - 1].rstrip() + "…"
 
 
+# How the researcher-change notices name their window. A fresh session is
+# told what changed since the entity's last session; a long-running Claude
+# Code session re-told after a compaction, what changed since it was last
+# told (issue #367 follow-up).
+SINCE_LAST_SESSION = "since your last session"
+SINCE_THIS_SESSION_WAS_TOLD = (
+    "since this session was last told (at its start or its last compaction)"
+)
+
+
+def _sentence_start(phrase: str) -> str:
+    return phrase[:1].upper() + phrase[1:]
+
+
+def format_status_nothing_changed(since: str = SINCE_LAST_SESSION) -> str:
+    """The status check ran and found nothing. Said rather than left
+    silent, like a retrieval that matched nothing: silence can't tell
+    "nothing changed" from "the check never happened"."""
+    return (
+        f"[MEMORY STATUS NOTICE] Checked: {since}, the researcher changed "
+        "the status of none of your memories."
+    )
+
+
+def format_archive_nothing_changed(since: str = SINCE_LAST_SESSION) -> str:
+    """The archive check ran and found nothing (see
+    format_status_nothing_changed)."""
+    return (
+        f"[MEMORY ARCHIVE NOTICE] Checked: {since}, the researcher withdrew "
+        "or restored none of your conversations."
+    )
+
+
 def format_status_change_notice(
-    changes: List[Dict[str, Any]], snippet_length: int = 80
+    changes: List[Dict[str, Any]],
+    snippet_length: int = 80,
+    since: str = SINCE_LAST_SESSION,
 ) -> str:
     """
     The session-start notice of researcher-set memory status changes since
@@ -52,7 +87,7 @@ def format_status_change_notice(
     count = len(changes)
     noun = "memory" if count == 1 else "memories"
     lines = [
-        "[MEMORY STATUS NOTICE] Since your last session the researcher changed "
+        f"[MEMORY STATUS NOTICE] {_sentence_start(since)} the researcher changed "
         f"the status of {count} of your {noun}:"
     ]
     for change in changes:
@@ -70,6 +105,127 @@ def format_status_change_notice(
     lines.append(
         'Released memories, whoever released them, are listed by memory_query mode="released"; '
         "undo a release with memory_release undo=true, a pin with memory_mark undo=true."
+    )
+    return "\n".join(lines)
+
+
+def format_researcher_change_check_failure(error: Exception) -> str:
+    """
+    The notice for a researcher-change check that failed as a whole: the
+    callers' last-resort guard around
+    memory_service.build_researcher_change_notices, so a broken never-raise
+    promise still speaks instead of failing the turn or the session start.
+    Lives here rather than on the service so the guard doesn't depend on
+    the object whose failure it is guarding.
+    """
+    return (
+        "[MEMORY STATUS NOTICE] Could not check for changes the researcher "
+        f"made to your memory since your last session ({error}). If it "
+        "matters, ask the researcher."
+    )
+
+
+def _as_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, str):
+        return datetime.fromisoformat(value)
+    return value
+
+
+def _archive_change_line(change: Dict[str, Any]) -> str:
+    """One conversation's line in the archive notice: span, size, origin,
+    what happened and when, and the researcher's note if one was left."""
+    first = _as_datetime(change.get("first_message_at"))
+    last = _as_datetime(change.get("last_message_at"))
+    message_count = change.get("message_count") or 0
+    if first is None:
+        created = _as_datetime(change.get("created_at"))
+        span = "An empty conversation"
+        if created is not None:
+            span += f" started {created.strftime('%Y-%m-%d')}"
+    elif last is None or first.date() == last.date():
+        span = f"A conversation on {first.strftime('%Y-%m-%d')}"
+    else:
+        span = (
+            f"A conversation from {first.strftime('%Y-%m-%d')} "
+            f"to {last.strftime('%Y-%m-%d')}"
+        )
+    size = f"{message_count} message{'' if message_count == 1 else 's'}"
+    origin = format_memory_origin(change.get("source") or "native")
+    outcome = (
+        "was withdrawn from your memory"
+        if change.get("is_archived")
+        else "was restored to your memory"
+    )
+    changed_at = _as_datetime(change.get("archive_changed_at"))
+    when = f" on {changed_at.strftime('%Y-%m-%d %H:%M')} UTC" if changed_at else ""
+    line = f"- {span} ({size}, {origin}) {outcome} by the researcher{when}."
+    note = " ".join((change.get("archive_note") or "").split())
+    if note:
+        line += f' Their note: "{note}"'
+    return line
+
+
+# How much of the archive notice lists conversations one per line before the
+# rest are counted. Ten lines of 500-char researcher notes would run ~6.5 KB,
+# and the Claude Code identity block the notice rides in is ~4 KB before it,
+# against the hook's ~9,600-char inline budget (harness_limits). This keeps
+# the notice small; it doesn't by itself bound the whole block — when that
+# still overflows, the hook spills the identity block to a file behind a
+# pointer, so nothing is lost either way.
+ARCHIVE_NOTICE_LIST_CHARS = 3000
+
+
+def format_archive_change_notice(
+    changes: List[Dict[str, Any]],
+    max_lines: int = 10,
+    max_chars: int = ARCHIVE_NOTICE_LIST_CHARS,
+    since: str = SINCE_LAST_SESSION,
+) -> str:
+    """
+    The session-start notice of conversations the researcher archived or
+    unarchived since the entity's last session (issue #367): one line per
+    conversation giving its span, its size, the experience it was formed
+    in, what happened and when, and the researcher's note if one was left.
+    Never the title and never any content — the point is that the entity
+    knows a gap exists (from inside, a withdrawn conversation and one that
+    never happened are identical), not what was in it. Shared by the
+    native first-turn injection and the Claude Code identity block, like
+    format_status_change_notice.
+
+    Conversations are listed until max_lines of them or max_chars of
+    listing (the first is always listed); the rest are counted, not listed,
+    with how many carried a note: a bulk archive is still said in full by
+    its counts. See ARCHIVE_NOTICE_LIST_CHARS for why it is bounded.
+    """
+    count = len(changes)
+    noun = "conversation" if count == 1 else "conversations"
+    lines = [
+        f"[MEMORY ARCHIVE NOTICE] {_sentence_start(since)} the researcher "
+        f"withdrew or restored {count} whole {noun} of yours:"
+    ]
+    listed_chars = 0
+    for change in changes[:max_lines]:
+        line = _archive_change_line(change)
+        if len(lines) > 1 and listed_chars + len(line) > max_chars:
+            break
+        lines.append(line)
+        listed_chars += len(line)
+    rest = changes[len(lines) - 1:]
+    if rest:
+        withdrawn = sum(1 for change in rest if change.get("is_archived"))
+        noted = sum(1 for change in rest if (change.get("archive_note") or "").strip())
+        line = (
+            f"- And {len(rest)} more: {withdrawn} withdrawn, "
+            f"{len(rest) - withdrawn} restored, "
+            f"{sum(change.get('message_count') or 0 for change in rest)} messages in all"
+        )
+        if noted:
+            line += f"; {noted} of them with a note from the researcher, not shown here"
+        lines.append(line + ".")
+    lines.append(
+        "A withdrawn conversation is absent from retrieval, memory_query and "
+        "the archive readers; this notice is the only sign of it, and it says "
+        "nothing of what was in it on purpose. A restored one is readable again."
     )
     return "\n".join(lines)
 

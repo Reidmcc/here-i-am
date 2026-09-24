@@ -110,9 +110,12 @@ class ApiClient {
         });
     }
 
-    async archiveConversation(id) {
+    async archiveConversation(id, reason = null) {
+        // The optional reason is the researcher's note to the entity, quoted
+        // in the archive notice it gets at its next session
         return this.request(`/conversations/${id}/archive`, {
             method: 'POST',
+            ...(reason ? { body: { reason } } : {}),
         });
     }
 

@@ -360,9 +360,13 @@ async def session_start(
             # Stamp the eligibility boundary first: links recorded/refreshed
             # by the post-compact injection must land after it (see
             # mark_conversation_compacted)
+            # The stamp that stood before this compaction is when this session
+            # was last told of researcher changes; the block re-tells from there
+            previously_compacted_at = conversation.last_compacted_at
             await cc.mark_conversation_compacted(db, conversation)
             context, bulk_parts = await cc.build_post_compact_context(
-                db, conversation, entity
+                db, conversation, entity,
+                previously_compacted_at=previously_compacted_at,
             )
             if adoption_text:
                 context = f"{adoption_text}\n\n{context}"

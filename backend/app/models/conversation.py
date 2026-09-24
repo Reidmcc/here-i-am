@@ -55,6 +55,23 @@ class Conversation(Base):
     entity_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     # Archived conversations are hidden from the main list and excluded from memory retrieval
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    # When is_archived last changed, and the researcher's optional note on
+    # that change (issue #367). The entity is told about every change since
+    # its last session, because from inside a withdrawn conversation looks
+    # exactly like one that never happened. No "by" column: only the
+    # archive/unarchive routes write is_archived, so every change is the
+    # researcher's. NULL = unchanged since before this was recorded; never
+    # backfilled.
+    archive_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    archive_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The researcher-change notice each entity was shown on its first turn
+    # of this (native) conversation, exactly as shown, and its slot on the
+    # memory-link clock: { entity_id or "": {"text": str, "at": iso} }.
+    # The notice is a context-only message, so without this a reload
+    # rebuilt the context without it and re-wrote the prompt cache from
+    # near the start; load_session_from_db replays it at "at", interleaved
+    # with memories and messages like a memory link. NULL = none shown.
+    researcher_notices: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # Imported conversations are hidden from the conversation list but their messages are stored as memories
     is_imported: Mapped[bool] = mapped_column(Boolean, default=False)
     # Per-entity system prompts (JSON: { entity_id: system_prompt, ... })

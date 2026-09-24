@@ -2290,6 +2290,14 @@ body.resizing-input {
     color: var(--text-muted);
 }
 
+.archived-item-note {
+    margin-top: 4px;
+    font-size: 0.75rem;
+    font-style: italic;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
 .archived-item-actions {
     display: flex;
     gap: 8px;

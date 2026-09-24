@@ -285,15 +285,21 @@ class TestLastSessionAnchor:
         await make_message(db, conversation, role=MessageRole.HUMAN)
         assert await memory_service.get_last_session_anchor(db, ENTITY) is None
 
-    async def test_anchor_is_first_response_of_latest_spoken_conversation(
+    async def test_anchor_is_where_the_latest_spoken_first_turn_began(
         self, db, entities_configured
     ):
+        """The notice check runs as a session's first turn begins, so the
+        anchor is that turn's human message, not the response that ended it
+        (issue #367's review: a change made mid-turn was otherwise told to
+        nobody). Past first-turn times are covered in test_archive_notice."""
         older = await make_conversation(db, created_at=at(days=-3))
         await make_message(db, older, created_at=at(days=-3, minutes=1))
         await make_message(db, older, created_at=at(days=-3, minutes=5))
         latest = await make_conversation(db, created_at=at(days=-1))
-        await make_message(db, latest, role=MessageRole.HUMAN, created_at=at(days=-1))
-        first_response = await make_message(db, latest, created_at=at(days=-1, minutes=2))
+        first_prompt = await make_message(
+            db, latest, role=MessageRole.HUMAN, created_at=at(days=-1)
+        )
+        await make_message(db, latest, created_at=at(days=-1, minutes=2))
         await make_message(db, latest, created_at=at(days=-1, minutes=9))
         # A newer conversation the entity never answered in is not an anchor:
         # it never had a first turn to carry a notice
@@ -301,7 +307,7 @@ class TestLastSessionAnchor:
         await make_message(db, unspoken, role=MessageRole.HUMAN, created_at=at(hours=-1))
 
         anchor = await memory_service.get_last_session_anchor(db, ENTITY)
-        assert anchor == first_response.created_at
+        assert anchor == first_prompt.created_at
 
     async def test_excludes_the_current_conversation(self, db, entities_configured):
         older = await make_conversation(db, created_at=at(days=-3))
@@ -378,8 +384,8 @@ class TestResearcherStatusChanges:
         assert [c["id"] for c in everything] == [old_override.id, cleared.id, released.id]
 
     async def test_notice_reports_each_change_once(self, db, entities_configured):
-        """A change made before a session's first response is reported by
-        that session; a change made during it is reported by the next; a
+        """A change made before a session's first turn began is reported by
+        that session; a change made after it is reported by the next; a
         change is never reported twice or dropped."""
         previous = await make_conversation(db, created_at=at(days=-2))
         await make_message(db, previous, created_at=at(days=-2, minutes=1))
@@ -646,7 +652,9 @@ class TestClaudeCodeSessionStartNotice:
         assert "now released" in body["context"]
         assert "[MEMORY STATUS NOTICE]" not in body["bulk_context"]
 
-    async def test_silence_when_nothing_changed(self, async_client, db):
+    async def test_nothing_changed_is_said_not_left_silent(self, async_client, db):
+        """Like a retrieval that matched nothing (issue #367 follow-up): a
+        missing notice can't tell "nothing changed" from "never checked"."""
         previous = await make_conversation(db, created_at=at(days=-2))
         await make_message(db, previous, created_at=at(days=-2, minutes=1))
         memory = await make_message(db, previous)
@@ -656,7 +664,12 @@ class TestClaudeCodeSessionStartNotice:
         response = await async_client.post(
             "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
         )
-        assert "[MEMORY STATUS NOTICE]" not in response.json()["context"]
+        context = response.json()["context"]
+        assert (
+            "[MEMORY STATUS NOTICE] Checked: since your last session, the researcher "
+            "changed the status of none of your memories."
+        ) in context
+        assert "Since your last session the researcher changed the status" not in context
 
     async def test_failed_check_is_loud(self, async_client, db, monkeypatch):
         monkeypatch.setattr(
@@ -699,11 +712,16 @@ class TestNativeFirstTurnNotice:
         # that gates the injection still reads this as the first turn
         assert session.has_conversational_messages() is False
 
-    async def test_nothing_injected_without_changes(self, db, entities_configured):
+    async def test_nothing_changed_is_said_natively_too(self, db, entities_configured):
+        """Silent-when-empty was the price of a notice that didn't survive a
+        reload; it is stored and replayed now (test_archive_notice), so the
+        native first turn says "nothing changed" like Claude Code does."""
         current = await make_conversation(db)
         session = self._session(current.id)
         await SessionManager()._inject_status_change_notice(session, db)
-        assert session.conversation_context == []
+        [notice] = session.conversation_context
+        assert notice["content"].startswith("[MEMORY STATUS NOTICE] Checked:")
+        assert "[MEMORY ARCHIVE NOTICE] Checked:" in notice["content"]
 
     async def test_failed_check_is_loud(self, db, entities_configured, monkeypatch):
         monkeypatch.setattr(

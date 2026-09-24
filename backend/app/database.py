@@ -283,6 +283,23 @@ async def run_migrations(conn):
             ))
             print("  ✓ Added last_compacted_at column for Claude Code compaction boundary")
 
+        if 'archive_changed_at' not in columns:
+            print("Migrating: Adding 'archive_changed_at' / 'archive_note' columns to conversations table...")
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN archive_changed_at DATETIME"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN archive_note TEXT"
+            ))
+            print("  ✓ Added archive change columns for the entity's archive notice")
+
+        if 'researcher_notices' not in columns:
+            print("Migrating: Adding 'researcher_notices' column to conversations table...")
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN researcher_notices JSON"
+            ))
+            print("  ✓ Added researcher_notices column so native reloads replay the notice")
+
 
 async def init_db():
     async with engine.begin() as conn:

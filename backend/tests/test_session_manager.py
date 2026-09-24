@@ -524,6 +524,7 @@ class TestSessionManager:
             })
             mock_memory.update_retrieval_count = AsyncMock()
             mock_memory.record_memory_link = AsyncMock()
+            mock_memory.build_researcher_change_notices = AsyncMock(return_value=[])
 
             mock_llm.build_messages.return_value = [
                 {"role": "user", "content": "With memory context"}
