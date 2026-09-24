@@ -2,24 +2,28 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import async_session_maker, get_db
 from app.models import (
+    LINK_CITES,
+    LINK_REVISES,
     Conversation,
     ConversationEntity,
     ConversationSource,
     ConversationType,
+    MemoryLink,
     Message,
     MessageRole,
 )
+from app.services.memory_service import check_link_target, load_memory_link_ids
 
 logger = logging.getLogger(__name__)
 
@@ -195,8 +199,11 @@ class SeedConversationImport(BaseModel):
     llm_model_used: str = "claude-sonnet-4-5-20250929"
     notes: Optional[str] = None
     entity_id: Optional[str] = None  # Pinecone index name for the AI entity
-    # Messages format: {role: str, content: str, id?: str, times_retrieved?: int, created_at?: str (ISO format)}
+    # Messages format: {role: str, content: str, id?: str, times_retrieved?: int, created_at?: str (ISO format),
+    #                   model?: str, revises?: [id], cites?: [id]}
     # If 'id' is provided, it will be used for deduplication - messages with existing IDs will be skipped
+    # role "reflection" imports as a reflection of entity_id; its revises / cites
+    # links are restored where both ends exist once the import is done
     messages: List[dict]
 
 
@@ -750,6 +757,17 @@ async def delete_conversation(
             if success:
                 deleted_memories += 1
 
+    # memory_save links touching these messages, either end: a bulk
+    # delete bypasses the ORM cascade on Message, and SQLite doesn't
+    # enforce ON DELETE CASCADE unless the pragma is on
+    if message_ids:
+        await db.execute(
+            delete(MemoryLink).where(or_(
+                MemoryLink.reflection_id.in_(message_ids),
+                MemoryLink.target_id.in_(message_ids),
+            ))
+        )
+
     # Delete messages from SQL (cascade would handle this, but let's be explicit)
     await db.execute(
         delete(Message).where(Message.conversation_id == conversation_id)
@@ -794,6 +812,30 @@ async def export_conversation(
     )
     messages = msg_result.scalars().all()
 
+    # A reflection's revises / cites links (issues #366, #368), full ids;
+    # the targets may live in other conversations, so the seed import
+    # restores a link only when both ends exist
+    reflection_links = await load_memory_link_ids(
+        db, [str(msg.id) for msg in messages if msg.role == MessageRole.REFLECTION]
+    )
+
+    def export_row(msg: Message) -> dict:
+        row = {
+            "id": msg.id,
+            "role": msg.role.value,
+            "content": msg.content,
+            "created_at": msg.created_at.isoformat(),
+            "times_retrieved": msg.times_retrieved,
+            # Substrate provenance (None when never recorded); the seed
+            # import reads it back so a round trip keeps the column
+            "model": msg.model,
+        }
+        links = reflection_links.get(str(msg.id))
+        if links:
+            row["revises"] = links[LINK_REVISES]
+            row["cites"] = links[LINK_CITES]
+        return row
+
     return ConversationExport(
         id=conversation.id,
         created_at=conversation.created_at.isoformat(),
@@ -805,19 +847,7 @@ async def export_conversation(
         llm_model_used=conversation.llm_model_used,
         notes=conversation.notes,
         entity_id=conversation.entity_id,
-        messages=[
-            {
-                "id": msg.id,
-                "role": msg.role.value,
-                "content": msg.content,
-                "created_at": msg.created_at.isoformat(),
-                "times_retrieved": msg.times_retrieved,
-                # Substrate provenance (None when never recorded); the seed
-                # import reads it back so a round trip keeps the column
-                "model": msg.model,
-            }
-            for msg in messages
-        ],
+        messages=[export_row(msg) for msg in messages],
     )
 
 
@@ -889,6 +919,9 @@ async def import_seed_conversation(
     skipped_count = 0
     imported_count = 0
     batch_counter = 0  # Track messages for batch commits
+    # (reflection id, revises ids, cites ids) for imported reflections,
+    # restored once every message is in
+    pending_links: List[tuple] = []
 
     for idx, msg_data in enumerate(data.messages):
         msg_id = msg_data.get("id")
@@ -899,7 +932,15 @@ async def import_seed_conversation(
             logger.debug(f"  Message {idx+1}/{len(data.messages)}: Skipped (duplicate id={msg_id})")
             continue
 
-        role = MessageRole.HUMAN if msg_data["role"] == "human" else MessageRole.ASSISTANT
+        if msg_data["role"] == "human":
+            role = MessageRole.HUMAN
+        elif msg_data["role"] == "reflection":
+            # An exported reflection comes back as one, attributed to the
+            # importing entity like memory_save attributes it, so its
+            # links (below) and recency injection find it
+            role = MessageRole.REFLECTION
+        else:
+            role = MessageRole.ASSISTANT
         times_retrieved = msg_data.get("times_retrieved", 0)
 
         # Parse created_at if provided (ISO format string)
@@ -929,8 +970,14 @@ async def import_seed_conversation(
         # Only an explicit, recorded attribution is carried over: an export
         # without the field (or a human row) imports as NULL, never inferred
         exported_model = msg_data.get("model")
-        if role == MessageRole.ASSISTANT and isinstance(exported_model, str) and exported_model.strip():
+        if role in (MessageRole.ASSISTANT, MessageRole.REFLECTION) and isinstance(exported_model, str) and exported_model.strip():
             message_kwargs["model"] = exported_model.strip()[:100]
+        if role == MessageRole.REFLECTION:
+            message_kwargs["speaker_entity_id"] = data.entity_id
+            if msg_id:
+                pending_links.append((
+                    msg_id, msg_data.get("revises") or [], msg_data.get("cites") or []
+                ))
 
         message = Message(**message_kwargs)
         db.add(message)
@@ -948,6 +995,11 @@ async def import_seed_conversation(
 
         # Store in vector database for the specified entity
         if memory_service.is_configured():
+            exported_links = (
+                {"revises": msg_data.get("revises") or None, "cites": msg_data.get("cites") or None}
+                if role == MessageRole.REFLECTION
+                else {}
+            )
             success = await memory_service.store_memory(
                 message_id=message_id,
                 conversation_id=conversation_id,
@@ -955,6 +1007,7 @@ async def import_seed_conversation(
                 content=message_content,
                 created_at=message_created_at,
                 entity_id=data.entity_id,
+                **exported_links,
             )
             if success:
                 stored_count += 1
@@ -989,14 +1042,108 @@ async def import_seed_conversation(
 
     await db.commit()
 
+    # The imported reflections' links, where both ends exist now (a target
+    # in a conversation that wasn't imported is left out, not guessed)
+    links_restored, links_dropped = await restore_exported_links(
+        db, pending_links, data.entity_id
+    )
+
     return {
         "status": "imported",
         "conversation_id": conversation_id,
         "message_count": imported_count,
+        "links_restored": links_restored,
+        "links_dropped": links_dropped,
         "messages_skipped": skipped_count,
         "memories_stored": stored_count,
         "entity_id": data.entity_id,
     }
+
+
+async def restore_exported_links(
+    db: AsyncSession, pending: List[tuple], entity_id: Optional[str]
+) -> Tuple[int, List[dict]]:
+    """
+    Recreate memory_save links from an export's reflection rows
+    ((reflection id, revises ids, cites ids)) for the importing entity.
+
+    A link is restored only when memory_save itself would write it now:
+    the reflection is the importing entity's, and the target passes the
+    one link rule every writing path shares
+    (memory_service.check_link_target — in this entity's experience, not
+    archived, and for revises this entity's own words). Otherwise an
+    import could hand one entity a reflection that "revises" another's
+    words, rendered as its own ("you"), which nothing downstream can
+    tell apart. Released targets are allowed: the original save may have
+    named them with include_released, and the link says so on render.
+    Existing links are never duplicated.
+
+    Returns (created, dropped) — each dropped link with its reason, so the
+    import reports what it left out instead of leaving it silently.
+    """
+    if not pending:
+        return 0, []
+    wanted = [
+        (str(reflection_id), str(target_id), kind, position)
+        for reflection_id, revises, cites in pending
+        for kind, targets in ((LINK_REVISES, revises), (LINK_CITES, cites))
+        for position, target_id in enumerate(t for t in targets if isinstance(t, str) and t)
+    ]
+    if not wanted:
+        return 0, []
+    reflection_rows = {
+        str(m.id): m for m in (await db.execute(
+            select(Message).where(
+                Message.id.in_({r for r, _, _, _ in wanted}),
+                Message.role == MessageRole.REFLECTION,
+            )
+        )).scalars().all()
+    }
+    targets = {
+        str(m.id): m for m in (await db.execute(
+            select(Message).where(Message.id.in_({t for _, t, _, _ in wanted}))
+        )).scalars().all()
+    }
+    present = {
+        (str(r), str(t), k) for r, t, k in (await db.execute(
+            select(MemoryLink.reflection_id, MemoryLink.target_id, MemoryLink.kind)
+            .where(MemoryLink.reflection_id.in_(list(reflection_rows)))
+        )).all()
+    }
+    created = 0
+    dropped: List[dict] = []
+    for reflection_id, target_id, kind, position in wanted:
+        if (reflection_id, target_id, kind) in present:
+            continue
+        reflection = reflection_rows.get(reflection_id)
+        target = targets.get(target_id)
+        reason = None
+        if reflection is None or reflection.speaker_entity_id != entity_id:
+            reason = "the reflection is not this entity's"
+        elif target is None:
+            reason = "the target is not in this database"
+        else:
+            _, reason = await check_link_target(
+                db, target, entity_id, kind, include_released=True
+            )
+        if reason:
+            dropped.append({
+                "reflection_id": reflection_id, "target_id": target_id,
+                "kind": kind, "reason": reason,
+            })
+            continue
+        present.add((reflection_id, target_id, kind))
+        db.add(MemoryLink(
+            reflection_id=reflection_id,
+            target_id=target_id,
+            kind=kind,
+            position=position,
+            created_at=reflection.created_at,
+        ))
+        created += 1
+    if created:
+        await db.commit()
+    return created, dropped
 
 
 class ExternalConversationImport(BaseModel):

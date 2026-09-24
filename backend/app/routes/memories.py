@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -12,7 +12,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import Conversation, Message, MessageRole
 from app.services import memory_service, vector_rebuild_service
-from app.services.memory_service import STATUS_SET_BY_RESEARCHER
+from app.services.memory_service import STATUS_SET_BY_RESEARCHER, load_memory_links
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,12 @@ class MemoryResponse(BaseModel):
     # The researcher's lookup — the memory browser shows it, the entity's
     # inline markers never do.
     model: Optional[str] = None
+    # memory_save's links (issues #366, #368), both directions, for the
+    # researcher: {"revises", "cites"} = what this reflection points at,
+    # {"revised_by", "cited_by"} = the reflections pointing at it; each end
+    # {"id", "created_at", "role", "speaker_entity_id", "sibling_session",
+    # "state"}. None when the memory has no links.
+    links: Optional[Dict[str, List[Dict[str, Any]]]] = None
 
     class Config:
         from_attributes = True
@@ -188,6 +194,12 @@ async def list_memories(
 
     # Paginate
     memories = memories[offset:offset + limit]
+
+    # The researcher sees archived conversations anyway, so withdrawn
+    # reverse ends are kept here (the entity's surfaces drop them)
+    links = await load_memory_links(db, [m["id"] for m in memories], include_withdrawn=True)
+    for m in memories:
+        m["links"] = links.get(str(m["id"]))
 
     return [MemoryResponse(**m) for m in memories]
 
@@ -580,6 +592,8 @@ class RestoreFromVectorsResponse(BaseModel):
     messages_created: int
     messages_existing: int
     messages_preview_only: int
+    # Reflection revises / cites links recovered from record metadata
+    links_created: int = 0
     errors: List[str]
 
 
@@ -779,6 +793,9 @@ async def get_memory(
         status_set_by=message.status_set_by,
         status_set_at=message.status_set_at,
         model=message.model,
+        links=(await load_memory_links(
+            db, [str(message.id)], include_withdrawn=True
+        )).get(str(message.id)),
     )
 
 

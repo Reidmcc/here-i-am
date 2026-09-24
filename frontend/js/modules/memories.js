@@ -217,6 +217,39 @@ function modelStat(mem) {
 }
 
 /**
+ * One end of a memory link as the browser lists it: short id, then the
+ * state it has left view in (released, or withdrawn with its archived
+ * conversation), if any.
+ * @param {Object} end - {id, state}
+ * @returns {string}
+ */
+function linkEnd(end) {
+    const state = end.state ? ` (${end.state})` : '';
+    return `${String(end.id).slice(0, 8)}${state}`;
+}
+
+/**
+ * Researcher-facing memory links (issues #366, #368), both directions: what
+ * a reflection revises and cites, and which reflections later revised or
+ * cited this memory. Short ids only, the same pointers the entity sees —
+ * never a count.
+ * @param {Object} mem - Memory object from the API (links may be null)
+ * @returns {string} HTML fragment (empty when the memory has no links)
+ */
+export function memoryLinksLine(mem) {
+    const links = mem.links;
+    if (!links) return '';
+    const parts = [];
+    const list = (ends) => ends.map(linkEnd).join(', ');
+    if (links.revises?.length) parts.push(`revises ${list(links.revises)}`);
+    if (links.cites?.length) parts.push(`sources: ${list(links.cites)}`);
+    if (links.revised_by?.length) parts.push(`later revised by ${list(links.revised_by)}`);
+    if (links.cited_by?.length) parts.push(`cited by ${list(links.cited_by)}`);
+    if (!parts.length) return '';
+    return `<div class="memory-list-item-links">${escapeHtml(parts.join(' · '))}</div>`;
+}
+
+/**
  * Compute the preview text for a memory and whether there is more to show
  * @param {Object} mem - Memory object from the API
  * @returns {{preview: string, canExpand: boolean}}
@@ -350,6 +383,7 @@ export async function loadMemoryList() {
                         Retrieved ${mem.times_retrieved}× &middot; Significance: ${mem.significance.toFixed(2)}${modelStat(mem)}
                     </span>
                 </div>
+                ${memoryLinksLine(mem)}
                 <div class="memory-list-item-content">${escapeHtml(preview)}</div>
             </div>
         `;
@@ -456,6 +490,7 @@ export async function loadReflections() {
                         Significance: ${mem.significance.toFixed(2)}${modelStat(mem)}
                     </span>
                 </div>
+                ${memoryLinksLine(mem)}
                 <div class="memory-list-item-content">${escapeHtml(preview)}</div>
             </div>
         `;

@@ -4,6 +4,7 @@ from app.models.conversation_id_alias import ConversationIdAlias
 from app.models.conversation_memory_link import ConversationMemoryLink
 from app.models.conversation_session_alias import ConversationSessionAlias
 from app.models.entity_setting import EntitySetting
+from app.models.memory_link import LINK_CITES, LINK_REVISES, VALID_LINK_KINDS, MemoryLink
 from app.models.message import Message, MessageRole
 
 __all__ = [
@@ -17,4 +18,8 @@ __all__ = [
     "ConversationSessionAlias",
     "ConversationEntity",
     "EntitySetting",
+    "MemoryLink",
+    "LINK_CITES",
+    "LINK_REVISES",
+    "VALID_LINK_KINDS",
 ]

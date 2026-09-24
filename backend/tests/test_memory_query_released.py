@@ -22,6 +22,10 @@ from app.services.memory_tools import (
     set_memory_tool_context,
 )
 
+# The memory tools here run against mocked database sessions; the
+# memory-link loader is stubbed for them (conftest.no_memory_links)
+pytestmark = pytest.mark.usefixtures("no_memory_links")
+
 
 @pytest.fixture
 def mock_db_session():
