@@ -229,6 +229,13 @@ async def run_migrations(conn):
             ))
             print("  ✓ Added entity_id column for multi-entity memory isolation")
 
+        if 'annotation' not in columns:
+            print("Migrating: Adding 'annotation' column to conversation_memory_links table...")
+            await conn.execute(text(
+                "ALTER TABLE conversation_memory_links ADD COLUMN annotation TEXT"
+            ))
+            print("  ✓ Added annotation column (memory-link markers fixed at insertion)")
+
     # Check if entity_system_prompts column exists in conversations table
     result = await conn.execute(text(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"

@@ -27,13 +27,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import (
+    LINK_CITES,
+    LINK_REVISES,
     Conversation,
     ConversationEntity,
     ConversationType,
+    MemoryLink,
     Message,
     MessageRole,
 )
-from app.services.memory_service import run_pinecone
+from app.services.memory_service import load_memory_link_ids, run_pinecone
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +199,12 @@ class VectorRebuildService:
             )
         ).scalars().all()
 
+        # A reflection's revises / cites links ride on its record, as
+        # store_memory writes them, so restore can recover them
+        reflection_links = await load_memory_link_ids(
+            db, [str(m.id) for m in messages if m.role == MessageRole.REFLECTION]
+        )
+
         for msg in messages:
             conv_id = str(msg.conversation_id)
             participants = conv_participants.get(conv_id)
@@ -257,7 +266,10 @@ class VectorRebuildService:
                 if target is None or target not in configured_indexes:
                     result["skipped"]["unattributed_assistant"] += 1
                     continue
-                self._plan_record(plans, target, msg, "reflection", msg.content)
+                self._plan_record(
+                    plans, target, msg, "reflection", msg.content,
+                    links=reflection_links.get(str(msg.id)),
+                )
 
         # Execute (or just report) per entity
         for entity in entities:
@@ -335,6 +347,7 @@ class VectorRebuildService:
         msg: Message,
         role: str,
         content: str,
+        links: Optional[Dict[str, List[str]]] = None,
     ) -> None:
         """Add one Pinecone record (store_memory's exact shape) to a plan."""
         if index_name not in plans:
@@ -353,6 +366,9 @@ class VectorRebuildService:
             record["sibling_session"] = msg.sibling_session
         if msg.model:
             record["model"] = msg.model
+        for kind in (LINK_REVISES, LINK_CITES):
+            if links and links.get(kind):
+                record[kind] = list(links[kind])
         plans[index_name].append(record)
 
     # ------------------------------------------------------------------
@@ -401,6 +417,7 @@ class VectorRebuildService:
             "messages_created": 0,
             "messages_existing": 0,
             "messages_preview_only": 0,
+            "links_created": 0,
             "errors": [],
         }
 
@@ -545,6 +562,37 @@ class VectorRebuildService:
                 )
             )
 
+        # Recover memory links (issues #366, #368) from reflection records:
+        # only between messages that exist once this restore is done, and
+        # never duplicating a link already in the table
+        if not dry_run:
+            await db.flush()
+        known_ids = existing_message_ids | set(recovered.keys())
+        existing_links = {
+            (str(r), str(t), k)
+            for r, t, k in (await db.execute(
+                select(MemoryLink.reflection_id, MemoryLink.target_id, MemoryLink.kind)
+            )).all()
+        }
+        for message_id, record in recovered.items():
+            if record["role"] != MessageRole.REFLECTION:
+                continue
+            for kind in (LINK_REVISES, LINK_CITES):
+                for position, target_id in enumerate(record.get(kind) or []):
+                    key = (message_id, target_id, kind)
+                    if target_id not in known_ids or key in existing_links:
+                        continue
+                    existing_links.add(key)
+                    result["links_created"] += 1
+                    if not dry_run:
+                        db.add(MemoryLink(
+                            reflection_id=message_id,
+                            target_id=target_id,
+                            kind=kind,
+                            position=position,
+                            created_at=record["created_at"],
+                        ))
+
         if not dry_run:
             await db.commit()
             logger.info(
@@ -626,6 +674,12 @@ class VectorRebuildService:
         # was never attributed, and restore keeps it NULL rather than guess.
         model = str(metadata.get("model") or "").strip() or None
 
+        # A reflection's links, mirrored by store_memory (full ids)
+        links = {
+            kind: [str(mid) for mid in (metadata.get(kind) or []) if mid]
+            for kind in (LINK_REVISES, LINK_CITES)
+        }
+
         existing = recovered.get(record_id)
         if existing is not None:
             # Track the highest retrieval count across copies; each index
@@ -649,6 +703,8 @@ class VectorRebuildService:
             "speaker_entity_id": speaker,
             "sibling_session": sibling_session,
             "model": model,
+            LINK_REVISES: links[LINK_REVISES],
+            LINK_CITES: links[LINK_CITES],
             "preview_only": preview_only,
             "authoritative": authoritative,
         }

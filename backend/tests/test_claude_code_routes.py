@@ -1954,7 +1954,9 @@ class TestMemoryProvenance:
         context = started.json()["context"]
         assert "only verbatim carriers" not in context
         assert "the talk isn't lost" in context
-        assert "memory_read call that reads them back" in context
+        assert "memory_read call that reads it back" in context
+        # The whole turn is recorded since #364, not just the closing message
+        assert "everything recorded from each turn" in context
         assert "the hooks tell you when context is getting full" in context
 
 
@@ -3403,6 +3405,100 @@ class TestLateForkAdoption:
                 )
             )
         ).scalar_one_or_none() is None
+
+    async def test_a_fork_of_multi_chunk_turns_adopts_on_time(
+        self, async_client, db_session, tmp_path, monkeypatch
+    ):
+        """Issue #364: a turn is one row under its LAST text entry's uuid, so
+        a turn's earlier text entries are no longer rows. Drive the real
+        Stop extraction turn by turn as the transcript grows, fork the
+        transcript, and collect the hint with the hooks' own collector: the
+        fork must still adopt on its first prompt, and every id the hint
+        sends must be a row."""
+        import json as _json
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        hooks_dir = _Path(__file__).resolve().parents[2] / "claude-code-mode" / "hooks"
+        if str(hooks_dir) not in _sys.path:
+            _sys.path.insert(0, str(hooks_dir))
+        import hook_util
+        import stop
+
+        monkeypatch.delenv("CLAUDE_CODE_HOST_SESSION_ID", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+        def said(text, uid):
+            return {"type": "assistant", "uuid": uid, "message": {
+                "role": "assistant", "content": [{"type": "text", "text": text}]}}
+
+        def tool_round(n):
+            return [
+                {"type": "assistant", "uuid": str(uuid.uuid4()), "message": {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": f"t{n}", "name": "Bash", "input": {}}]}},
+                {"type": "user", "uuid": str(uuid.uuid4()), "message": {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": f"t{n}", "content": "ok"}]}},
+            ]
+
+        parent_session = str(uuid.uuid4())
+        transcript = tmp_path / "parent.jsonl"
+        entries, recorded, parent_conv = [], [], None
+        for turn in range(3):
+            prompt_text = f"prompt {turn}"
+            entries.append({"type": "user", "uuid": str(uuid.uuid4()),
+                            "origin": {"kind": "human"},
+                            "message": {"role": "user", "content": prompt_text}})
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": parent_session, "prompt": prompt_text},
+            )
+            entries.append(said(f"turn {turn}: looking", str(uuid.uuid4())))
+            entries += tool_round(turn)
+            entries.append(said(f"turn {turn}: halfway", str(uuid.uuid4())))
+            entries += tool_round(turn + 10)
+            entries.append(said(f"turn {turn}: done", str(uuid.uuid4())))
+            transcript.write_text(
+                "\n".join(_json.dumps(e) for e in entries) + "\n", encoding="utf-8"
+            )
+            text, entry_uuid, model = stop.turn_assistant_text(str(transcript))
+            assert entry_uuid == entries[-1]["uuid"]
+            response = await async_client.post(
+                "/api/claude-code/log-assistant",
+                json={"session_id": parent_session, "content": text,
+                      "message_uuid": entry_uuid, "model": model},
+            )
+            parent_conv = response.json()["conversation_id"]
+            recorded.append(entry_uuid)
+
+        row = await db_session.get(Message, recorded[-1])
+        marker = stop.TOOL_CALL_MARKER
+        assert row.content == (
+            f"turn 2: looking\n\n{marker}\n\nturn 2: halfway\n\n{marker}\n\nturn 2: done"
+        )
+
+        # The fork: the transcript copied with every uuid unchanged, and no
+        # desktop record or registry to lean on — the transcript hint alone
+        fork_session = str(uuid.uuid4())
+        fork_transcript = tmp_path / "fork.jsonl"
+        fork_transcript.write_text(transcript.read_text(encoding="utf-8"), encoding="utf-8")
+        hints = hook_util.lineage_hints(
+            fork_session,
+            str(fork_transcript),
+            desktop_dir=str(tmp_path / "no-desktop"),
+            config_dir=str(tmp_path / "no-config"),
+        )
+        assert hints["prior_session_ids"] == []
+        assert hints["transcript_message_ids"] == recorded
+
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": fork_session, "prompt": "after the rewind", **hints},
+        )
+        body = response.json()
+        assert body["conversation_id"] == parent_conv
+        assert "continues an earlier one" in body["adoption_notice"]
 
     async def _adopted_conversation_with_both_aliases(self, async_client, db_session):
         """A parent adopted by a fork, with a row in each alias table: a

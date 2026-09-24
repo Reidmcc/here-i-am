@@ -454,9 +454,9 @@ def desktop_sessions_index(desktop_dir=None):
 # agentic session one turn can be dozens of tool-use-only assistant
 # entries — measured on real transcripts, the last 60 assistant entries
 # held 14 end-of-turn ones in a porch fork but as few as 1 in a workshop.
-# So the collector keeps only text-bearing entries (the Stop hook records
-# the last assistant entry that has a non-empty text block) and the cap is
-# the backend's, which makes the strong hint the one that actually carries.
+# So the collector keeps one uuid per turn (the one the Stop hook records
+# the turn under) and the cap is the backend's, which makes the strong
+# hint the one that actually carries.
 LINEAGE_MESSAGE_ID_LIMIT = 100
 
 
@@ -580,66 +580,217 @@ def desktop_prior_session_ids(
     return chain
 
 
-def _entry_has_text(entry):
-    """Whether an assistant transcript entry carries a non-empty text block
-    — the same test the Stop hook uses to pick the message it records, so
-    these are the entries whose uuids became archive row ids."""
-    message = entry.get("message")
-    if not isinstance(message, dict):
-        return False
-    content = message.get("content")
+# Where a turn begins, for the Stop hook's one-row-per-turn record (issue
+# #364) and for the lineage hint that has to name those rows. Read off
+# 200 real transcripts (2026-09-24), a user entry comes in four shapes:
+#
+# - a tool_result carrier: the middle of a turn, never a boundary;
+# - a compaction summary: auto-compaction fires MID-turn, and the entries
+#   before it stay in the file, so walking past it keeps the whole turn;
+# - a new prompt: non-meta (a typed prompt, a slash command, a CI notice),
+#   or meta with an `origin` (sibling letters are `{"kind": "peer"}`), or
+#   a [WAKEUP] tick (meta, no origin), or Stop-hook feedback (a Stop hook
+#   exited 2, so a Stop fired and recorded just before it);
+# - a meta injection with no origin: a skill's body, an image placeholder,
+#   "Continue from where you left off", the classifier's note that it
+#   stopped a response — all delivered inside a running turn, so none is
+#   a boundary.
+#
+# A prompt typed while a turn runs arrives as a `queued_command`
+# ATTACHMENT, not a user entry, so it never splits a turn. The harness's
+# own `stop_hook_summary` (written after each Stop firing; 1,570 of 1,570
+# were followed by a new prompt, never by a tool result) is a boundary
+# too: whatever came before it was already recorded. It is not the only
+# boundary because it is not always written — measured turns ended with
+# no summary before the next prompt.
+STOP_HOOK_FEEDBACK_PREFIX = "Stop hook feedback:"
+
+
+def _user_entry_text(content):
     if isinstance(content, str):
-        return bool(content.strip())
-    if not isinstance(content, list):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(block.get("text") or "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
+def is_turn_boundary(entry) -> bool:
+    """Whether a transcript entry starts a new turn (see the note above)."""
+    if not isinstance(entry, dict) or entry.get("isSidechain"):
         return False
+    kind = entry.get("type")
+    if kind == "system":
+        return entry.get("subtype") == "stop_hook_summary"
+    if kind != "user" or entry.get("isCompactSummary"):
+        return False
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == "tool_result"
+        for block in content
+    ):
+        return False
+    if not entry.get("isMeta"):
+        return True
+    origin = entry.get("origin")
+    if isinstance(origin, dict) and origin.get("kind"):
+        return True
+    text = _user_entry_text(content).lstrip()
+    if text.startswith(STOP_HOOK_FEEDBACK_PREFIX):
+        return True
+    return is_wakeup_prompt(split_prompt_for_recording(text)[0])
+
+
+def is_entity_speech(entry) -> bool:
+    """Whether a transcript entry is the entity talking in the main thread:
+    an assistant entry, not a subagent's (sidechain), and not one the
+    harness wrote itself — `<synthetic>` entries are "No response
+    requested.", API errors and usage-limit notices, never the entity's
+    words."""
+    if not isinstance(entry, dict) or entry.get("type") != "assistant":
+        return False
+    if entry.get("isSidechain"):
+        return False
+    message = entry.get("message")
+    return isinstance(message, dict) and message.get("model") != "<synthetic>"
+
+
+def entry_text_blocks(entry):
+    """
+    An assistant entry's content in order, as ("text", str) for each
+    non-empty text block and ("tool", None) for each tool call. Text blocks
+    only: thinking and redacted_thinking blocks are the model's reasoning,
+    not talk, and are never read.
+    """
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return [("text", content.strip())] if content.strip() else []
+    if not isinstance(content, list):
+        return []
+    blocks = []
     for block in content:
-        if (
-            isinstance(block, dict)
-            and block.get("type") == "text"
-            and str(block.get("text") or "").strip()
-        ):
-            return True
-    return False
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "text":
+            text = str(block.get("text") or "").strip()
+            if text:
+                blocks.append(("text", text))
+        elif kind in ("tool_use", "server_tool_use", "mcp_tool_use"):
+            blocks.append(("tool", None))
+    return blocks
+
+
+def queued_arrival(entry):
+    """
+    What a prompt queued while a turn ran delivered, if `entry` is one:
+    (human_spoke, letter_count), or None.
+
+    Such a prompt is a `queued_command` attachment, delivered mid-turn
+    (29 of 29 measured sat right after a tool result, the turn carrying on
+    after them), and UserPromptSubmit records it THEN — so its row lands
+    before the turn's one assistant row, which is written at Stop. The Stop
+    hook marks where it fell so the chunks said before it don't read as a
+    reply to it (issue #364 review). Split exactly as the prompt hook
+    splits what it records: task notifications and plumbing are nobody
+    speaking, a [WAKEUP] tick is not recorded, and each sibling letter is
+    recorded as a letter.
+    """
+    if not isinstance(entry, dict) or entry.get("type") != "attachment":
+        return None
+    if entry.get("isSidechain"):
+        return None
+    attachment = entry.get("attachment")
+    if not isinstance(attachment, dict) or attachment.get("type") != "queued_command":
+        return None
+    if attachment.get("commandMode") == "task-notification":
+        return None
+    words, letters = split_prompt_for_recording(
+        _user_entry_text(attachment.get("prompt"))
+    )
+    human_spoke = bool(words) and not is_wakeup_prompt(words)
+    if not human_spoke and not letters:
+        return None
+    return human_spoke, len(letters)
+
+
+def iter_turn_entries(transcript_path):
+    """
+    The transcript's entries that matter for turns — boundaries, the
+    entity's speech, and prompts queued mid-turn (queued_arrival) — in file
+    order. Raises OSError when the file can't be read; callers decide what
+    that means.
+
+    Streamed, not readlines(): transcripts reach tens of megabytes (58 MB
+    measured) and this runs on every hook. Only lines that can be a
+    boundary or speech are parsed; a tool_result carrier — most of a
+    workshop transcript by bytes — is skipped on a substring, which is
+    exact, since a quote inside any string value is escaped in the JSON.
+    Parsing the rest of a 58 MB transcript takes about a third of a second.
+    """
+    with open(transcript_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if (
+                '"assistant"' in line
+                or '"stop_hook_summary"' in line
+                or '"queued_command"' in line
+            ):
+                pass
+            elif '"user"' not in line or '"tool_result"' in line:
+                continue
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+            if (
+                is_turn_boundary(entry)
+                or is_entity_speech(entry)
+                or queued_arrival(entry) is not None
+            ):
+                yield entry
 
 
 def transcript_assistant_uuids(transcript_path, limit=LINEAGE_MESSAGE_ID_LIMIT):
     """
-    The last `limit` text-bearing assistant entry uuids in a session's
-    transcript, newest last, for fork adoption (issue #357).
+    The row id of each of the transcript's last `limit` turns, newest last,
+    for fork adoption (issue #357): each turn's last text-bearing entry of
+    the entity's, which is the uuid the Stop hook records the whole turn
+    under (issue #364). Turns are split exactly as the Stop hook splits
+    them (is_turn_boundary).
 
     A fork copies the transcript and rewrites every entry's `sessionId` but
-    NOT its `uuid`, and the Stop hook stores each end-of-turn assistant
-    entry's uuid as the archive row's primary key — so any of these that is
-    a recorded row names the conversation this session forked from. Only
-    text-bearing entries are kept: tool-use-only entries were never
-    recorded, and in an agentic session they outnumber the real ones badly
-    enough to crowd every usable id out of the window.
+    NOT its `uuid`, so any of these that is a recorded row names the
+    conversation this session forked from. A turn's earlier text entries
+    and its tool-use entries were never rows, and in an agentic session one
+    turn can be dozens of them — enough to crowd every usable id out of the
+    window if they were counted.
 
-    Read through a bounded deque rather than readlines(): these transcripts
-    reach tens of megabytes (38 MB measured here) and this runs on every
-    SessionStart, prompt and Stop. Empty when the transcript is unreadable;
-    a hook never fails over it.
+    Empty when the transcript is unreadable; a hook never fails over it.
     """
     if not transcript_path:
         return []
     uuids = collections.deque(maxlen=max(1, int(limit)))
+    turn_uuid = None
     try:
-        with open(transcript_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or '"assistant"' not in line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except Exception:
-                    continue
-                if entry.get("type") != "assistant" or not _entry_has_text(entry):
-                    continue
-                uid = _optional_str(entry.get("uuid"))
-                if uid:
-                    uuids.append(uid)
+        for entry in iter_turn_entries(transcript_path):
+            if is_turn_boundary(entry):
+                if turn_uuid:
+                    uuids.append(turn_uuid)
+                turn_uuid = None
+            elif any(kind == "text" for kind, _ in entry_text_blocks(entry)):
+                turn_uuid = _optional_str(entry.get("uuid")) or turn_uuid
     except Exception:
         return []
+    if turn_uuid:
+        uuids.append(turn_uuid)
     return list(uuids)
 
 

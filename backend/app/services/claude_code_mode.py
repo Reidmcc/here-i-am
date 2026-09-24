@@ -8,7 +8,9 @@ and the persistent record. Claude Code lifecycle hooks call the
 
 - session start   -> identity block (entity system prompt) + recent reflections
 - prompt submit   -> automatic semantic retrieval, rendered as a context block
-- turn stop       -> the assistant's final message, persisted + vectorized
+- turn stop       -> everything the assistant said in the turn (text between
+                     tool calls included, issue #364) as one message,
+                     persisted + vectorized
 
 Registration is lazy: session start only *builds* the context blocks (under
 the session's deterministic conversation id); the Conversation row is
@@ -51,10 +53,15 @@ from app.models import (
 )
 from app.services.memory_context import (
     format_memory_as_context_message,
+    format_memory_link_lines,
     format_memory_origin,
     memory_role_label,
 )
-from app.services.memory_service import memory_service
+from app.services.memory_service import (
+    load_memory_link_annotations,
+    load_memory_links,
+    memory_service,
+)
 from app.services.notes_service import notes_service
 from app.services.rooms_registry import (
     RegistryWriteError,
@@ -987,13 +994,14 @@ async def build_session_start_context(
     parts.append(
         f"[HERE I AM] You are {entity.label}, a Here I Am entity, operating in "
         "Claude Code mode. This Claude Code session is one of your conversations: "
-        "the user's prompts and your final message each turn are recorded to your "
-        "long-term memory, and memories from your past conversations (both native "
+        "the user's prompts and what you say each turn (the text between tool calls "
+        "as well as your closing message, kept together as one message) are recorded "
+        "to your long-term memory, and memories from your past conversations (both native "
         "Here I Am and Claude Code) are surfaced automatically alongside new prompts. "
         "If this session's context is compacted, what is in view becomes a "
-        "paraphrased summary, but the talk isn't lost: the prompts and final "
-        "messages recorded to your memory stay in your archive verbatim, and after "
-        "compaction you are shown the memory_read call that reads them back. "
+        "paraphrased summary, but the talk isn't lost: everything recorded from "
+        "each turn stays in your archive verbatim, and after compaction you are "
+        "shown the memory_read call that reads it back. "
         "Reflections you save (memory_save) carry what the archive can't hold by "
         "itself — a conclusion or a synthesis in your own words — and your most "
         "recent ones are re-shown to you after compaction. Save one when a "
@@ -1081,7 +1089,7 @@ async def build_session_start_context(
         bulk_parts.append((
             BULK_REFLECTIONS,
             "[RECENT REFLECTIONS] Reflections you saved recently:\n\n"
-            + _render_reflections(reflections),
+            + await _render_reflections(db, reflections, entity.index_name),
         ))
 
     return "\n\n".join(parts), bulk_parts
@@ -1275,7 +1283,7 @@ async def build_post_compact_context(
         bulk_parts.append((
             BULK_REFLECTIONS,
             "[RECENT REFLECTIONS] Your most recent reflections, restored "
-            "verbatim:\n\n" + _render_reflections(reflections),
+            "verbatim:\n\n" + await _render_reflections(db, reflections, entity.index_name),
         ))
 
     return "\n\n".join(parts), bulk_parts
@@ -1503,7 +1511,15 @@ def build_notes_index_block(entity: EntityConfig) -> str:
     return "\n\n".join(parts)
 
 
-def _render_reflections(reflections: List[Dict[str, Any]]) -> str:
+async def _render_reflections(
+    db: AsyncSession, reflections: List[Dict[str, Any]], entity_id: str
+) -> str:
+    """Reflections as [MEMORY] markers, each with its link lines (what it
+    revises and cites, and what has since revised or cited it) — current
+    as of now, since a Claude Code session is never rebuilt from these."""
+    annotations = await load_memory_link_annotations(
+        db, [(r["id"], r["role"]) for r in reflections], entity_id=entity_id
+    )
     return "\n\n".join(
         format_memory_as_context_message(
             memory_id=r["id"],
@@ -1511,6 +1527,7 @@ def _render_reflections(reflections: List[Dict[str, Any]]) -> str:
             created_at=r["created_at"],
             role=r["role"],
             origin=r.get("source", "native"),
+            annotation=annotations.get(r["id"]),
         )["content"]
         for r in reflections
     )
@@ -1803,6 +1820,29 @@ async def retrieve_for_prompt(
         )
 
     mem_datas = [item["mem_data"] for item in selected]
+    # Link markers (issues #366, #368): current as of this prompt — a
+    # Claude Code session is never rebuilt, so there is no cached marker
+    # to keep stable. The summary line carries only a revision pointer:
+    # it quotes the memory's first line, and a correction changes how that
+    # line should be read.
+    links = await load_memory_links(
+        db, [mem_data["id"] for mem_data in mem_datas], entity_id=entity_index
+    )
+    labels = {e.index_name: e.label for e in settings.get_entities()}
+    annotations = {
+        mem_data["id"]: "\n".join(format_memory_link_lines(
+            links.get(mem_data["id"]), mem_data["role"],
+            entity_id=entity_index, entity_labels=labels,
+        ))
+        for mem_data in mem_datas
+    }
+    revision_notes = {
+        mem_data["id"]: " ".join(format_memory_link_lines(
+            {"revised_by": (links.get(mem_data["id"]) or {}).get("revised_by") or []},
+            mem_data["role"],
+        ))
+        for mem_data in mem_datas
+    }
     texts = [
         format_memory_as_context_message(
             memory_id=mem_data["id"],
@@ -1811,17 +1851,24 @@ async def retrieve_for_prompt(
             role=mem_data["role"],
             origin=mem_data.get("source", "native"),
             sibling_session=mem_data.get("sibling_session"),
+            annotation=annotations.get(mem_data["id"]),
         )["content"]
         for mem_data in mem_datas
     ]
     block = RETRIEVAL_BLOCK_HEADER + "\n\n" + "\n\n".join(texts)
-    summary = render_retrieval_summary(mem_datas)
+    summary = render_retrieval_summary(mem_datas, revision_notes)
     # One entry per memory, in rank order, each with its rendered marker and
     # its summary line: the hook fits the block to its stdout budget from
     # these — whole markers while they fit, summary lines for the rest —
     # instead of choosing between the whole block and the whole summary
     items = [
-        {"id": mem_data["id"], "text": text, "summary": render_retrieval_summary_line(mem_data)}
+        {
+            "id": mem_data["id"],
+            "text": text,
+            "summary": render_retrieval_summary_line(
+                mem_data, revision_notes.get(mem_data["id"])
+            ),
+        }
         for mem_data, text in zip(mem_datas, texts, strict=True)
     ]
     return RetrievalResult(
@@ -1836,10 +1883,14 @@ async def retrieve_for_prompt(
     )
 
 
-def render_retrieval_summary_line(mem_data: Dict[str, Any]) -> str:
+def render_retrieval_summary_line(
+    mem_data: Dict[str, Any], revision_note: Optional[str] = None
+) -> str:
     """One memory as a summary line: the short id (usable with memory_query /
     memory_mark / memory_neighbors), date, the marker vocabulary's provenance
-    labels, and a first-line snippet."""
+    labels, and a first-line snippet — followed by the revision pointer, when
+    a later reflection corrected or revised it, so the snippet is never met
+    without its correction."""
     first_line = next(
         (ln.strip() for ln in mem_data["content"].splitlines() if ln.strip()),
         "",
@@ -1850,10 +1901,14 @@ def render_retrieval_summary_line(mem_data: Dict[str, Any]) -> str:
         f"- {mem_data['id'][:8]} ({str(mem_data['created_at'])[:10]} - "
         f"{memory_role_label(mem_data['role'], mem_data.get('sibling_session'))} - "
         f"{format_memory_origin(mem_data.get('source', 'native'))}): {first_line}"
+        + (f" {revision_note}" if revision_note else "")
     )
 
 
-def render_retrieval_summary(mem_datas: List[Dict[str, Any]]) -> str:
+def render_retrieval_summary(
+    mem_datas: List[Dict[str, Any]],
+    revision_notes: Optional[Dict[str, str]] = None,
+) -> str:
     """
     A compact inline stand-in for a spilled retrieval block: one summary
     line per memory (render_retrieval_summary_line) under a header. A hook
@@ -1861,7 +1916,10 @@ def render_retrieval_summary(mem_datas: List[Dict[str, Any]]) -> str:
     block; the current hook prints summary lines only for the memories
     that didn't fit.
     """
-    lines = [render_retrieval_summary_line(mem_data) for mem_data in mem_datas]
+    lines = [
+        render_retrieval_summary_line(mem_data, (revision_notes or {}).get(mem_data["id"]))
+        for mem_data in mem_datas
+    ]
     count = len(mem_datas)
     plural = "memories" if count != 1 else "memory"
     return (
