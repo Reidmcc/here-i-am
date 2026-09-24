@@ -39,6 +39,29 @@ re-measurement is a constant edit that test_harness_limits checks.
   1-360 of 718, 42310 tokens, cap 25000"); a 56 KB file landed whole. So
   a spill file is read back with the Read tool, never a shell cat — a cat
   result is a tool result and goes to disk over 50 KB.
+
+One more line bounds the context itself rather than a channel into it:
+
+- AUTO-COMPACTION (issue #365): fires at the auto-compact WINDOW minus
+  min(max output tokens, 20,000) minus a 13,000-token buffer — read from
+  the Claude Code 2.1.280 binary (2026-09-24): the window is
+  CLAUDE_CODE_AUTO_COMPACT_WINDOW, else the `autoCompactWindow` setting,
+  else the model default, and never above the model's own context size;
+  the effective window subtracts the output reserve, and the compact
+  level starts 13,000 under that. Every current model's max output is
+  over 20,000, so the line is the window less 33,000. Confirmed against
+  the record: every auto compaction in the transcripts on this machine
+  (`compactMetadata.preTokens`) fired between 964,200 and 972,158 tokens
+  with the 1M default and between 466,252 and 473,829 in the rooms whose
+  settings set 500,000 — within a few thousand either side of the line,
+  since the harness compares its own estimate of the next prompt (one
+  outlier at 997,467: the check runs between requests, so a large tool
+  result can carry a turn past the line).
+  Re-measure: grep the executable for "autoCompactWindow" and follow the
+  functions that read it (the threshold subtracts a literal 13e3 from the
+  effective window); then scan <config dir>/projects/*/*.jsonl for
+  "compactMetadata" with "trigger":"auto" and compare preTokens with the
+  line computed for that session's window.
 """
 from typing import List, Sequence, Tuple
 
@@ -73,6 +96,22 @@ READ_TOOL_CAP_TOKENS = 25_000
 # a part over it (a notes index that has grown past ~60 KB) costs a second
 # Read page rather than anything lost.
 READ_TOOL_ONE_CALL_BYTES = int(READ_TOOL_CAP_TOKENS * HARNESS_CHARS_PER_TOKEN * 0.85)
+
+# --- Auto-compaction ------------------------------------------------------
+
+# The window when neither the environment nor the settings name one: the
+# current models' 1M context (the 09-09 measurement, ~967k → ~10k)
+AUTO_COMPACT_DEFAULT_WINDOW_TOKENS = 1_000_000
+# What the harness holds back under the window before it compacts: the
+# output reserve (min(max output, 20,000)) plus the compact buffer
+AUTO_COMPACT_OUTPUT_RESERVE_TOKENS = 20_000
+AUTO_COMPACT_BUFFER_TOKENS = 13_000
+AUTO_COMPACT_RESERVE_TOKENS = AUTO_COMPACT_OUTPUT_RESERVE_TOKENS + AUTO_COMPACT_BUFFER_TOKENS
+
+
+def auto_compact_line(window: int) -> int:
+    """The prompt size at which auto-compaction fires for a given window."""
+    return window - AUTO_COMPACT_RESERVE_TOKENS
 
 
 def fit_prefix(full_sizes: Sequence[int], pointer_sizes: Sequence[int], budget: int) -> int:

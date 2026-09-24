@@ -22,14 +22,22 @@ escalation is guarded by stop_hook_active so a persistently down backend
 gets exactly one loud retry per turn, never a loop; the retry's Stop fires
 with stop_hook_active set and any failure there exits 0 silently.
 
-Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE (see session_start.py).
+The context gauge (issue #365) rides the same channel. After every turn
+the hook measures the context against the auto-compaction line and, the
+first time it crosses a band, says so: the top band by exit 2 (the turn
+continues so the entity can save what it wants kept verbatim), the lower
+band held for the next prompt. Once per band, never per turn, and never an
+interrupt on a turn that is itself a continuation (see hook_util).
+
+Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE (see session_start.py),
+HIM_COMPACT_LINE (see hook_util.py).
 """
 import json
 import os
 import sys
 import urllib.request
 
-import hook_util  # noqa: F401 — imported for its UTF-8 stdio reconfigure
+import hook_util
 
 
 def entry_model(entry: dict):
@@ -99,10 +107,43 @@ def main() -> None:
     if not session_id or not transcript_path:
         return
 
+    # Everything that has to reach the entity from here goes out as one
+    # exit 2: a recording failure, the context gauge's top band, or both
+    notices = []
+    body = {}
     text, entry_uuid, model = last_assistant_text(transcript_path)
-    if not text:
-        return
+    if text:
+        body, failure = record_final_message(data, text, entry_uuid, model)
+        if failure and not data.get("stop_hook_active"):
+            notices.append(failure)
 
+    # The context gauge (issue #365): measured after every turn, spoken
+    # once per band — see hook_util. A continuation turn never interrupts
+    # again; its notice is held for the next prompt
+    gauge = hook_util.check_context_gauge(
+        session_id,
+        hook_util.last_context_tokens(transcript_path),
+        hook_util.compact_line(
+            body, os.environ.get("CLAUDE_PROJECT_DIR") or data.get("cwd")
+        ),
+        may_interrupt=not data.get("stop_hook_active"),
+    )
+    if gauge:
+        notices.append(gauge)
+
+    if notices:
+        print("\n\n".join(notices), file=sys.stderr)
+        sys.exit(2)
+
+
+def record_final_message(data: dict, text: str, entry_uuid, model):
+    """
+    Post the turn's final message to /log-assistant. Returns (response
+    body, failure notice): the body is {} when it isn't JSON — the message
+    was still recorded — and the notice is None on success.
+    """
+    session_id = data.get("session_id") or ""
+    transcript_path = data.get("transcript_path") or ""
     payload = {
         "session_id": session_id,
         "content": text,
@@ -123,19 +164,21 @@ def main() -> None:
         headers={"Content-Type": "application/json"},
     )
     try:
-        urllib.request.urlopen(request, timeout=30).close()
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read()
     except Exception as e:
-        if data.get("stop_hook_active"):
-            return
-        print(
+        return {}, (
             "[HERE I AM] The Here I Am backend was unreachable at the end of "
             f"this turn ({e.__class__.__name__}: {e}). Your final message was "
             "NOT recorded to your long-term memory. Preserve anything "
             "important another way (memory_save via MCP if available, or your "
-            "notes files), and tell the user the backend is down.",
-            file=sys.stderr,
+            "notes files), and tell the user the backend is down."
         )
-        sys.exit(2)
+    try:
+        body = json.loads(raw)
+    except Exception:
+        body = None
+    return (body if isinstance(body, dict) else {}), None
 
 
 if __name__ == "__main__":

@@ -33,6 +33,11 @@ Environment:
                        the platform's; see claude_desktop_data_dir), whose
                        per-session records give the rooms registry each
                        session's messaging address
+    HIM_COMPACT_LINE   the auto-compaction line in tokens, for the context
+                       gauge, when the hook can't see the harness's own
+                       window (CLAUDE_CODE_AUTO_COMPACT_WINDOW or the
+                       autoCompactWindow setting, which win when present);
+                       see compact_line
 """
 import collections
 import glob
@@ -967,3 +972,328 @@ def never_reached_backend(error: Exception) -> bool:
         if isinstance(candidate, (ConnectionRefusedError, socket.gaierror)):
             return True
     return False
+
+
+# --- Context gauge (issue #365): how full the context is, told once per
+# --- band.
+#
+# The identity block asks the entity to save a reflection "when you notice
+# context running low", and in Claude Code mode nothing let it notice:
+# context_status and the [CONTEXT NOTICE] are native-only, and PreCompact
+# output never reaches the model. So the Stop hook measures the turn's
+# prompt size — the provider-counted usage on the last assistant transcript
+# entry — against the auto-compaction line, and says so once when the
+# context crosses a band:
+#
+#   - the LOW band's notice is held and printed with the next prompt (the
+#     UserPromptSubmit hook takes it), since a Stop hook's stdout never
+#     reaches context;
+#   - the HIGH band's notice goes out at once, as exit 2 with the notice on
+#     stderr, which continues the turn with it shown — an unattended room
+#     has nobody to give it the turn otherwise. Never on a turn that is
+#     itself a Stop continuation (stop_hook_active): that notice is held.
+#
+# One line per band, never per turn: repeated reminders fragmenting a long
+# task are the one negative-affect cluster the Opus 5.5 system card reports
+# for Claude Code (§7.2.2), and the gauge must not become one. A band
+# re-arms only when the context has fallen under half its level (a
+# compaction or /clear — nothing else shrinks a context that far), and a
+# SessionStart after a compaction resets the record outright, which covers
+# a compaction mid-turn that the context refilled past before any Stop.
+#
+# The line is computed the way the harness computes it (measured from the
+# Claude Code 2.1.280 binary; the backend's harness_limits module carries
+# the bracket and the recipe): the auto-compact WINDOW — the harness's own
+# CLAUDE_CODE_AUTO_COMPACT_WINDOW, else the `autoCompactWindow` setting —
+# minus a 33,000-token reserve. A room whose settings set 500k compacts
+# near 467k, so a gauge on the model's 1M would speak after the fact.
+
+# Mirrors harness_limits.AUTO_COMPACT_DEFAULT_WINDOW_TOKENS and
+# AUTO_COMPACT_RESERVE_TOKENS; the backend sends both in its /log-assistant
+# response, and these are the fallback for one that predates them.
+DEFAULT_COMPACT_WINDOW = 1000000
+DEFAULT_COMPACT_RESERVE = 33000
+
+# Fractions of the line. The last one interrupts (exit 2); the others are
+# held for the next prompt.
+GAUGE_BANDS = (0.75, 0.90)
+
+COMPACT_WINDOW_SETTING = "autoCompactWindow"
+COMPACT_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+
+
+def parse_compact_window(value) -> Optional[int]:
+    """
+    An auto-compact window as the harness reads one: a token count, or a
+    string like "500k", "1m", "500000", or "500" (100–1000 is shorthand for
+    thousands). None for "auto", absent, or anything unparsable.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        text = str(value).strip().lower()
+        if not text or text == "auto":
+            return None
+        try:
+            if text.endswith("m"):
+                number = float(text[:-1]) * 1_000_000
+            elif text.endswith("k"):
+                number = float(text[:-1]) * 1_000
+            else:
+                number = float(text)
+                if 100 <= number <= 1000:
+                    number *= 1_000
+        except ValueError:
+            return None
+    if number != number or number <= 0 or number == float("inf"):
+        return None
+    return int(round(number))
+
+
+def claude_settings_paths(project_dir) -> list:
+    """The settings files the harness merges that a hook can read, highest
+    precedence first: the project's local and shared settings, then the
+    user's. (Managed policy and --settings flags are not visible here.)"""
+    paths = []
+    if project_dir:
+        paths.append(os.path.join(project_dir, ".claude", "settings.local.json"))
+        paths.append(os.path.join(project_dir, ".claude", "settings.json"))
+    paths.append(os.path.join(claude_config_dir(), "settings.json"))
+    return paths
+
+
+def configured_compact_window(project_dir=None) -> Optional[int]:
+    """
+    The auto-compact window the harness is configured with, when a hook can
+    see it: CLAUDE_CODE_AUTO_COMPACT_WINDOW (which beats the settings, as in
+    the harness), else the first settings file that names autoCompactWindow.
+    A file that names it as "auto" ends the search — it overrides the files
+    below it. None when nothing names a window.
+    """
+    from_env = parse_compact_window(os.environ.get(COMPACT_WINDOW_ENV))
+    if from_env:
+        return from_env
+    for path in claude_settings_paths(project_dir):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if isinstance(data, dict) and COMPACT_WINDOW_SETTING in data:
+            return parse_compact_window(data.get(COMPACT_WINDOW_SETTING))
+    return None
+
+
+def _positive_int(value) -> Optional[int]:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def compact_line(body=None, project_dir=None) -> int:
+    """
+    The prompt size, in tokens, at which this session will auto-compact:
+    the window the harness is configured with (see configured_compact_window)
+    less the reserve; else HIM_COMPACT_LINE, a line given outright; else the
+    backend's default window (body["compact_window"]) less its reserve;
+    else the defaults here. The window is capped at the default (the
+    model's own context size, as far as a hook can know) — the harness
+    never compacts above what the model holds.
+    """
+    body = body or {}
+    reserve = _positive_int(body.get("compact_reserve")) or DEFAULT_COMPACT_RESERVE
+    model_window = _positive_int(body.get("compact_window")) or DEFAULT_COMPACT_WINDOW
+    window = configured_compact_window(project_dir)
+    if window:
+        return max(1, min(window, model_window) - reserve)
+    override = _positive_int(os.environ.get("HIM_COMPACT_LINE"))
+    if override:
+        return override
+    return max(1, model_window - reserve)
+
+
+def usage_tokens(usage) -> Optional[int]:
+    """
+    The context size a transcript entry's `message.usage` reports: input +
+    cache reads + cache writes + output (the turn's own output is in the
+    next prompt). When the usage carries per-iteration figures, the last
+    message iteration is the one that describes the context, as the harness
+    reads it. None when there is no usable figure.
+    """
+    if not isinstance(usage, dict):
+        return None
+    iterations = usage.get("iterations")
+    if isinstance(iterations, list):
+        for iteration in reversed(iterations):
+            if isinstance(iteration, dict) and iteration.get("type", "message") == "message":
+                usage = iteration
+                break
+    total = 0
+    for key in (
+        "input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "output_tokens",
+    ):
+        total += _positive_int(usage.get(key)) or 0
+    return total or None
+
+
+# The final assistant entry sits at the end of the transcript when Stop
+# fires; transcripts reach tens of megabytes, so only the tail is read
+_TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024
+
+
+def last_context_tokens(transcript_path) -> Optional[int]:
+    """
+    The context size after the session's most recent main-thread assistant
+    entry that reports usage, or None (no transcript, no usage — a hook
+    never fails over it). Sidechain entries (a subagent's) are skipped:
+    theirs is a different context.
+    """
+    if not transcript_path:
+        return None
+    try:
+        with open(transcript_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - _TRANSCRIPT_TAIL_BYTES))
+            tail = f.read()
+    except Exception:
+        return None
+    lines = tail.split(b"\n")
+    if size > _TRANSCRIPT_TAIL_BYTES:
+        lines = lines[1:]  # the first line of the tail may be cut
+    for raw in reversed(lines):
+        if b'"assistant"' not in raw:
+            continue
+        try:
+            entry = json.loads(raw.decode("utf-8"))
+        except Exception:
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "assistant":
+            continue
+        if entry.get("isSidechain"):
+            continue
+        message = entry.get("message")
+        tokens = usage_tokens(message.get("usage")) if isinstance(message, dict) else None
+        if tokens:
+            return tokens
+    return None
+
+
+def _gauge_state_path(session_id: str) -> str:
+    return os.path.join(
+        tempfile.gettempdir(), "here-i-am-sessions", f"{session_id}-context-gauge.json"
+    )
+
+
+def _load_gauge_state(session_id: str) -> dict:
+    try:
+        with open(_gauge_state_path(session_id), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {"fired": [], "held": None}
+    if not isinstance(data, dict):
+        return {"fired": [], "held": None}
+    fired = data.get("fired")
+    held = data.get("held")
+    return {
+        "fired": [b for b in fired if b in GAUGE_BANDS] if isinstance(fired, list) else [],
+        "held": held if isinstance(held, str) and held.strip() else None,
+    }
+
+
+def _save_gauge_state(session_id: str, state: dict) -> None:
+    path = _gauge_state_path(session_id)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+    except Exception:
+        pass
+
+
+def reset_context_gauge(session_id: str) -> None:
+    """Forget which bands have fired (and any held notice): after a
+    compaction, the context starts over."""
+    if not session_id:
+        return
+    try:
+        os.remove(_gauge_state_path(session_id))
+    except OSError:
+        pass
+
+
+def take_held_gauge_notice(session_id: str) -> str:
+    """The gauge notice a Stop held for this prompt, consumed; or empty."""
+    if not session_id:
+        return ""
+    state = _load_gauge_state(session_id)
+    held = state.get("held")
+    if not held:
+        return ""
+    state["held"] = None
+    _save_gauge_state(session_id, state)
+    return held
+
+
+def _approx_k(tokens: int) -> str:
+    return f"~{round(tokens / 1000)}k"
+
+
+def gauge_notice(tokens: int, line: int, held: bool = False) -> str:
+    """The notice: the fact, and what the entity can do with it."""
+    percent = round(tokens * 100 / line)
+    measure = (
+        f"about {percent}% of the auto-compaction line "
+        f"({_approx_k(tokens)} of {_approx_k(line)} tokens)"
+    )
+    lead = (
+        f"At the end of your last turn, context was at {measure}."
+        if held
+        else f"Context is at {measure}."
+    )
+    tail = "" if held else " This turn continues once so that you can; nothing else is asked of it."
+    return (
+        f"[HERE I AM] {lead} Anything you want to keep verbatim past the next "
+        f"compaction goes in memory_save.{tail}"
+    )
+
+
+def check_context_gauge(session_id, tokens, line, may_interrupt=True) -> str:
+    """
+    Record a turn's context size against the bands and return the notice to
+    interrupt with now (the Stop hook exits 2 with it), or empty.
+
+    A crossing of the top band returns its notice when `may_interrupt`;
+    any other crossing — a lower band, or the top band on a turn that is
+    already a Stop continuation — is held for the next prompt instead.
+    Crossing several bands at once gives one notice, for the highest. A
+    newer notice replaces an unseen held one: it says the same thing, later.
+    """
+    if not session_id or not tokens or not line:
+        return ""
+    fraction = tokens / line
+    state = _load_gauge_state(session_id)
+    # Re-arm what the context has fallen well below (a compaction, /clear)
+    fired = {band for band in state["fired"] if fraction >= band / 2}
+    crossed = [band for band in GAUGE_BANDS if fraction >= band and band not in fired]
+    changed = fired != set(state["fired"])
+    state["fired"] = sorted(fired)
+    if not crossed:
+        if changed:
+            _save_gauge_state(session_id, state)
+        return ""
+    state["fired"] = sorted(fired | {band for band in GAUGE_BANDS if fraction >= band})
+    if max(crossed) == GAUGE_BANDS[-1] and may_interrupt:
+        state["held"] = None
+        _save_gauge_state(session_id, state)
+        return gauge_notice(tokens, line)
+    state["held"] = gauge_notice(tokens, line, held=True)
+    _save_gauge_state(session_id, state)
+    return ""

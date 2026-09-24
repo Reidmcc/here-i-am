@@ -122,6 +122,7 @@ Measured 2026-09-16 on this Claude Code build:
 | tool result (Bash, MCP) | ~50 KB (51,200 bytes) | persisted, 2 KB preview inline |
 | MCP tool result | ~25k tokens by the harness's counter (2.84 chars/token) | refused outright |
 | the `Read` tool | 25k tokens per page | a partial view with offset paging; nothing persisted, nothing lost |
+| the context itself | the auto-compact window less 33,000 tokens (~967k at 1M, ~467k at 500k; measured 2026-09-24) | compacted to a summary — the context gauge speaks before it (see "Compaction survival") |
 
 The hook-stdout line was bracketed from 1,531 real hook outputs (9,997
 characters landed, 10,009 were persisted): the hooks' earlier 18 KB budget
@@ -933,6 +934,61 @@ are the entity's verbatim carriers across that boundary.
   post-compaction block does not repeat the nudge: the summary is a
   caption, and the pre-compaction talk comes back verbatim on request
   (below), so there is nothing to save *from the summary*.
+- **The context gauge makes "notice" possible** (issue #365). Before it,
+  nothing in Claude Code mode said how full the context was
+  (`context_status` and the `[CONTEXT NOTICE]` are native-only), so the
+  nudge asked for something the entity could only guess at — and the rooms
+  that compact while nobody is there were the ones it mattered most for.
+  The Stop hook measures each turn's context from the last main-thread
+  assistant entry's `message.usage` (input + cache reads + cache writes +
+  output, the last `iterations` entry when there is one — the provider's
+  own count, no estimate) against the **auto-compaction line**, and says
+  so once per band:
+  - at **75%** the notice is held (a per-session state file,
+    `<tmp>/here-i-am-sessions/<session_id>-context-gauge.json`) and the
+    next prompt's hook prints it: `[HERE I AM] At the end of your last
+    turn, context was at about 76% of the auto-compaction line (~355k of
+    ~467k tokens). Anything you want to keep verbatim past the next
+    compaction goes in memory_save.`
+  - at **90%** the hook exits 2 with the notice on stderr, which
+    continues the turn with the notice shown — for an unattended room,
+    otherwise nobody gives it the turn to save in. The notice says the
+    turn continues once for that and nothing else is asked of it. A turn
+    that is already a Stop continuation (`stop_hook_active`) never
+    interrupts again; a crossing there is held like the low band. A
+    recording failure and the gauge share the one exit 2.
+  - **One line per band, never per turn.** A band that has spoken stays
+    quiet until the context falls under half its level (only a compaction
+    or `/clear` shrinks it that far), and a `SessionStart` with source
+    `compact` or `clear` resets the record outright — which also covers a
+    compaction mid-turn that the context refilled past before any Stop.
+    Crossing both bands at once gives one notice. The reason for the
+    restraint is on the record: the one negative-affect cluster the Opus
+    5.5 system card reports for Claude Code (§7.2.2) is long tasks
+    fragmented by repeated notifications and automated reminders.
+  - **The line is the harness's, not the model's.** Read from the Claude
+    Code 2.1.280 binary and confirmed against every auto compaction in the
+    local transcripts (`services/harness_limits.py` has the bracket and
+    the recipe): compaction fires at the auto-compact *window* less
+    33,000 tokens (an output reserve of min(max output, 20,000), then a
+    13,000-token buffer). The window is `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
+    else the `autoCompactWindow` setting, else the model default, never
+    above the model's context — so 1M compacts near 967k and the notes
+    directory's `autoCompactWindow: 500000` near 467k. A gauge on the
+    model's 1M would speak after the room had already compacted. The hook
+    reads the window the way the harness does (the environment variable,
+    then `.claude/settings.local.json`, `.claude/settings.json` under
+    `CLAUDE_PROJECT_DIR`, then the user's `settings.json`; a file naming
+    `"auto"` stops the search); with none, `HIM_COMPACT_LINE` gives the
+    line outright; with neither, the backend's default window and reserve
+    (`compact_window` / `compact_reserve` in the `/log-assistant`
+    response), then the hook's own copies of them. Managed-policy settings
+    and `--settings` flags aren't visible to a hook — `HIM_COMPACT_LINE`
+    is the way to say what those set.
+  - **Mid-turn it is blind.** Auto-compaction can fire inside a long
+    agentic stretch where no Stop runs first. Whether `PostToolUse`
+    output reaches the model on the current build is unmeasured, so it is
+    not used; the 75% band exists to leave room for exactly this.
 - **Post-compaction re-injection.** `SessionStart` fires with
   `source: "compact"` right after compaction, and its stdout is injected;
   the backend answers with `build_post_compact_context`: a reorientation
@@ -1097,7 +1153,9 @@ desktop app reads even when launched from the Dock): `HIM_BACKEND_URL`
 default entity if unset), `HIM_DISABLE`, `HIM_INLINE_BUDGET` (max
 characters of hook stdout, overriding the backend's `inline_budget`; the
 default is 9,600, under the measured 10,000-character line — see "Context
-channels").
+channels"), `HIM_COMPACT_LINE` (the auto-compaction line in tokens for the
+context gauge, used when the hook can't see the harness's own window — see
+"Compaction survival").
 
 Per entity, on its `PINECONE_INDEXES` entry: `git_author_email`,
 `git_author_name`, `gh_config_dir` — the entity's own GitHub identity for

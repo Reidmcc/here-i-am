@@ -50,6 +50,26 @@ class TestTheLimitsHoldTogether:
         assert RENDERED_CHARS_PER_TOKEN == hl.HARNESS_CHARS_PER_TOKEN
         assert POST_COMPACT_PAGE_TOKENS * RENDERED_CHARS_PER_TOKEN < hl.TOOL_RESULT_BUDGET_BYTES
 
+    def test_auto_compact_line_matches_the_record(self):
+        # Every auto compaction in the local transcripts fired between
+        # 964,200 and 972,158 tokens under the 1M default and between
+        # 466,252 and 473,829 under a 500,000 window. The harness compares
+        # its own between-requests estimate, so firings land a few thousand
+        # either side of the line, never far under it
+        assert hl.auto_compact_line(hl.AUTO_COMPACT_DEFAULT_WINDOW_TOKENS) == 967_000
+        assert hl.auto_compact_line(500_000) == 467_000
+        for window, earliest, latest in ((1_000_000, 964_200, 972_158), (500_000, 466_252, 473_829)):
+            line = hl.auto_compact_line(window)
+            assert line - 3_000 <= earliest <= line <= latest
+
+    def test_hooks_compact_fallbacks_match_the_backend(self):
+        source = (HOOKS_DIR / "hook_util.py").read_text(encoding="utf-8")
+        window = re.search(r"^DEFAULT_COMPACT_WINDOW = (\d+)$", source, re.MULTILINE)
+        reserve = re.search(r"^DEFAULT_COMPACT_RESERVE = (\d+)$", source, re.MULTILINE)
+        assert window and reserve, "hook_util's compaction fallbacks not found"
+        assert int(window.group(1)) == hl.AUTO_COMPACT_DEFAULT_WINDOW_TOKENS
+        assert int(reserve.group(1)) == hl.AUTO_COMPACT_RESERVE_TOKENS
+
     def test_read_tool_is_the_wider_channel(self):
         # A spill file over the tool-result persist line still lands whole
         # through the Read tool (in pages past its cap, never persisted), so
