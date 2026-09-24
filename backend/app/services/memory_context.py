@@ -217,6 +217,119 @@ def memory_role_label(role: str, sibling_session: Optional[str] = None) -> str:
     return f"originally from {role}"
 
 
+def _link_speaker(
+    end: Dict[str, Any],
+    entity_id: Optional[str],
+    entity_labels: Optional[Dict[str, str]],
+) -> str:
+    """Who a linked memory is from, in a sources/revises entry: the human,
+    you, you from another session, your reflection, or — in a multi-entity
+    conversation — the other entity by label."""
+    role = end.get("role")
+    speaker = end.get("speaker_entity_id")
+    other = bool(speaker and entity_id and speaker != entity_id)
+    label = (entity_labels or {}).get(speaker, speaker) if other else None
+    if role == "human":
+        return "human"
+    if role == "reflection":
+        return f"{label}'s reflection" if other else "reflection"
+    if end.get("sibling_session"):
+        return "you, inter-session"
+    if role == "assistant":
+        return label if other else "you"
+    return str(role)
+
+
+def _link_target_entry(
+    end: Dict[str, Any],
+    entity_id: Optional[str],
+    entity_labels: Optional[Dict[str, str]],
+    state_prefix: str,
+) -> str:
+    """One linked memory a reflection points AT: 'id (date, who)', or the
+    state it has since left view in — a withdrawn memory (archived
+    conversation) keeps only its id, since the conversation is withdrawn
+    from every memory surface."""
+    short_id = str(end["id"])[:8]
+    if end.get("state") == "withdrawn":
+        return f"{short_id} ({state_prefix}withdrawn)"
+    parts = [str(end.get("created_at") or "")[:10], _link_speaker(end, entity_id, entity_labels)]
+    if end.get("state") == "released":
+        parts.append(f"{state_prefix}released")
+    return f"{short_id} ({', '.join(p for p in parts if p)})"
+
+
+def _link_reflection_entry(end: Dict[str, Any], with_date: bool) -> str:
+    """One reflection pointing at this memory: its id, its date when asked
+    for, and "released" if the entity has released it. (A reflection in an
+    archived conversation never gets here: the loader drops withdrawn
+    reverse ends, so a withdrawn verdict can't outlive the archive.)"""
+    short_id = str(end["id"])[:8]
+    parts = [str(end.get("created_at") or "")[:10]] if with_date else []
+    if end.get("state") == "released":
+        parts.append("released")
+    return f"{short_id} ({', '.join(parts)})" if parts else short_id
+
+
+def format_memory_link_lines(
+    links: Optional[Dict[str, List[Dict[str, Any]]]],
+    role: str,
+    entity_id: Optional[str] = None,
+    entity_labels: Optional[Dict[str, str]] = None,
+) -> List[str]:
+    """
+    The marker lines for a memory's links (issues #366, #368), one line per
+    kind, rendered under its header wherever it surfaces — [MEMORY] context
+    markers, memory_query results, the archive readers:
+
+        [revises 9f8e7d6c (2026-07-14, you)]
+        [sources: 3f2a9c1d (2026-08-03, human), 91cd2e07 (2026-07-29, reflection)]
+        [later revised → a1b2c3d4 (2026-10-02)]
+        [later corrected or outdated → see reflection a1b2c3d4 (2026-10-02)]
+        [cited by reflection a1b2c3d4]
+
+    `links` is memory_service.load_memory_links' entry for the memory
+    ("revises"/"cites" = what this reflection points at, "revised_by" /
+    "cited_by" = the reflections pointing at it); `role` is the memory's own
+    role, which picks the wording of a revision pointer: a reflection is
+    "later revised", something said is "later corrected or outdated", and
+    the reflection holds the reason. Every entry is a pointer — an id, a
+    date, who spoke — never content and never a count: the entity follows
+    one with memory_neighbors. A source that has left view says so
+    ("source released", "source withdrawn") instead of disappearing; a
+    reflection pointing at this memory is labeled "released" when the
+    entity released it, and is absent when its conversation was archived.
+
+    Empty when the memory has no links, so an unlinked memory renders
+    exactly as it always did.
+    """
+    if not links:
+        return []
+    lines: List[str] = []
+    revises = links.get("revises") or []
+    if revises:
+        entries = [_link_target_entry(end, entity_id, entity_labels, "") for end in revises]
+        lines.append(f"[revises {', '.join(entries)}]")
+    cites = links.get("cites") or []
+    if cites:
+        entries = [_link_target_entry(end, entity_id, entity_labels, "source ") for end in cites]
+        lines.append(f"[sources: {', '.join(entries)}]")
+    revised_by = links.get("revised_by") or []
+    if revised_by:
+        entries = ", ".join(_link_reflection_entry(end, with_date=True) for end in revised_by)
+        if role == "reflection":
+            lines.append(f"[later revised → {entries}]")
+        else:
+            noun = "reflection" if len(revised_by) == 1 else "reflections"
+            lines.append(f"[later corrected or outdated → see {noun} {entries}]")
+    cited_by = links.get("cited_by") or []
+    if cited_by:
+        noun = "reflection" if len(cited_by) == 1 else "reflections"
+        entries = ", ".join(_link_reflection_entry(end, with_date=False) for end in cited_by)
+        lines.append(f"[cited by {noun} {entries}]")
+    return lines
+
+
 def format_memory_as_context_message(
     memory_id: str,
     content: str,
@@ -224,6 +337,7 @@ def format_memory_as_context_message(
     role: str,
     origin: str = "native",
     sibling_session: Optional[str] = None,
+    annotation: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Format a memory as a user message for insertion into conversation context.
@@ -246,6 +360,12 @@ def format_memory_as_context_message(
                 message, for rows recording an inter-session delivery (see
                 memory_role_label). From the message row, so it reload-renders
                 identically too.
+        annotation: The memory's link marker lines
+                (format_memory_link_lines, newline-joined), placed under the
+                header so a correction is met before the words it corrects.
+                Fixed at insertion: native callers store it on the memory's
+                ConversationMemoryLink and reload passes that stored text
+                back, so a link made later never re-renders a cached marker.
 
     Returns:
         Dict formatted as a conversation context message with memory metadata
@@ -255,9 +375,10 @@ def format_memory_as_context_message(
     role_label = memory_role_label(role, sibling_session)
     short_id = memory_id[:8]
     origin_label = format_memory_origin(origin)
+    annotation_lines = f"{annotation}\n" if annotation else ""
     formatted_content = (
         f"[MEMORY {short_id} from {created_at} - {role_label} - {origin_label}]\n"
-        f"{content}\n[/MEMORY]"
+        f"{annotation_lines}{content}\n[/MEMORY]"
     )
     
     return {

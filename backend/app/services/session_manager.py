@@ -39,7 +39,7 @@ from app.services.memory_context import (
     format_memory_as_context_message,
     format_researcher_change_check_failure,
 )
-from app.services.memory_service import memory_service
+from app.services.memory_service import load_memory_link_annotations, memory_service
 from app.services.memory_tools import (
     MEMORY_RESULT_STAMPING_TOOLS,
     consume_last_query_memory_ids,
@@ -376,6 +376,11 @@ class SessionManager:
                     times_retrieved=mem_data["times_retrieved"],
                     origin=mem_data.get("source", "native"),
                     sibling_session=mem_data.get("sibling_session"),
+                    # The link markers exactly as the live context rendered
+                    # them — never re-rendered from the current links, so a
+                    # correction made since this insertion can't change a
+                    # cached marker (it shows on the memory's next surfacing)
+                    annotation=mem_info.get("annotation"),
                 )
 
         session.retrieved_ids = retrieved_ids
@@ -459,6 +464,7 @@ class SessionManager:
                         role=memory.role,
                         origin=memory.origin,
                         sibling_session=memory.sibling_session,
+                        annotation=memory.annotation,
                     )
                     insertion_point = len(session.conversation_context)
                     session.conversation_context.append(memory_message)
@@ -864,6 +870,11 @@ class SessionManager:
                 break
             exclude_ids |= {r["id"] for r in fresh}
 
+            # Link markers, rendered now and fixed with the insertion
+            annotations = await load_memory_link_annotations(
+                db, [(r["id"], r["role"]) for r in fresh], entity_id=session.entity_id
+            )
+
             # get_recent_reflections returns newest first; inject oldest first
             # so the most recent reflection sits closest to the current message
             for mem_data in reversed(fresh):
@@ -903,6 +914,7 @@ class SessionManager:
                     source="recent_reflection",
                     origin=mem_data.get("source", "native"),
                     sibling_session=mem_data.get("sibling_session"),
+                    annotation=annotations.get(mem_data["id"]),
                 )
 
                 added, is_new_retrieval = session.insert_memory_into_context(memory)
@@ -929,6 +941,7 @@ class SessionManager:
                             db,
                             entity_id=session.entity_id,
                             retrieved_at=next_link_time() if next_link_time else None,
+                            annotation=memory.annotation,
                         )
                 else:
                     logger.info(
@@ -1128,6 +1141,13 @@ class SessionManager:
             # (before the message that triggered them) — prompt-cache stable.
             next_link_time = make_link_timestamper(user_message_timestamp)
             skipped_in_context = 0
+            # Link markers (issues #366, #368), rendered now and fixed with
+            # the insertion: the link row stores them for reload
+            annotations = await load_memory_link_annotations(
+                db,
+                [(item["mem_data"]["id"], item["mem_data"]["role"]) for item in top_candidates],
+                entity_id=session.entity_id,
+            )
             # Memories the entity can already see in memory_query tool results
             # are skipped like in-context [MEMORY] messages — no backfill.
             for item in top_candidates:
@@ -1158,6 +1178,7 @@ class SessionManager:
                     pool=item["pool"],
                     origin=mem_data.get("source", "native"),
                     sibling_session=mem_data.get("sibling_session"),
+                    annotation=annotations.get(mem_data["id"]),
                 )
 
                 added, is_new_retrieval = session.insert_memory_into_context(memory)
@@ -1174,6 +1195,7 @@ class SessionManager:
                             db,
                             entity_id=session.entity_id,
                             link_retrieved_at=next_link_time(),
+                            link_annotation=memory.annotation,
                         )
                 else:
                     skipped_in_context += 1
@@ -1559,6 +1581,13 @@ class SessionManager:
             # (before the message that triggered them) — prompt-cache stable.
             next_link_time = make_link_timestamper(user_message_timestamp)
             skipped_in_context = 0
+            # Link markers (issues #366, #368), rendered now and fixed with
+            # the insertion: the link row stores them for reload
+            annotations = await load_memory_link_annotations(
+                db,
+                [(item["mem_data"]["id"], item["mem_data"]["role"]) for item in top_candidates],
+                entity_id=session.entity_id,
+            )
             # Memories the entity can already see in memory_query tool results
             # are skipped like in-context [MEMORY] messages — no backfill.
             for item in top_candidates:
@@ -1589,6 +1618,7 @@ class SessionManager:
                     pool=item["pool"],
                     origin=mem_data.get("source", "native"),
                     sibling_session=mem_data.get("sibling_session"),
+                    annotation=annotations.get(mem_data["id"]),
                 )
 
                 added, is_new_retrieval = session.insert_memory_into_context(memory)
@@ -1605,6 +1635,7 @@ class SessionManager:
                             db,
                             entity_id=session.entity_id,
                             link_retrieved_at=next_link_time(),
+                            link_annotation=memory.annotation,
                         )
                 else:
                     skipped_in_context += 1

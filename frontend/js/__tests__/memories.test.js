@@ -16,6 +16,7 @@ import {
     checkForOrphans,
     cleanupOrphans,
     statusProvenance,
+    memoryLinksLine,
 } from '../modules/memories.js';
 
 describe('Memories Module', () => {
@@ -557,5 +558,34 @@ describe('statusProvenance', () => {
     it('omits the time when only the setter is known', () => {
         expect(statusProvenance({ memory_status: 'pinned', status_set_by: 'entity', status_set_at: null }))
             .toBe('pinned by the entity');
+    });
+});
+
+describe('memoryLinksLine', () => {
+    it('renders nothing for a memory without links', () => {
+        expect(memoryLinksLine({ links: null })).toBe('');
+        expect(memoryLinksLine({ links: { revises: [], cites: [], revised_by: [], cited_by: [] } })).toBe('');
+    });
+
+    it('lists both directions by short id, with states that left view', () => {
+        const html = memoryLinksLine({
+            links: {
+                revises: [{ id: '9f8e7d6c11112222', state: null }],
+                cites: [{ id: '3f2a9c1d33334444', state: 'released' }],
+                revised_by: [{ id: 'a1b2c3d455556666', state: null }],
+                cited_by: [{ id: 'e5f6a7b877778888', state: 'withdrawn' }],
+            },
+        });
+        expect(html).toContain('class="memory-list-item-links"');
+        expect(html).toContain(
+            'revises 9f8e7d6c · sources: 3f2a9c1d (released) · '
+            + 'later revised by a1b2c3d4 · cited by e5f6a7b8 (withdrawn)'
+        );
+    });
+
+    it('escapes what it prints', () => {
+        const html = memoryLinksLine({ links: { cites: [{ id: '<img src=x>', state: '"><b>' }] } });
+        expect(html).not.toContain('<img');
+        expect(html).not.toContain('<b>');
     });
 });

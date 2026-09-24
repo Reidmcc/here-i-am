@@ -75,12 +75,12 @@ The integration has two channels:
      below). None of this touches what the harness delivers to the session's
      context — the message itself still arrives and can be answered; the
      entity's own replies (`send_message` calls mid-turn) are tool use, which
-     the `Stop` hook's final-message extraction never records.
-   - `Stop` → `POST /api/claude-code/log-assistant` — extracts the final
-     assistant message of the turn from the transcript (text blocks only)
-     and records it (persisted + vectorized as `role="assistant"`), along
-     with the model the transcript entry reports as its author
-     (`Message.model`; see "Model attribution" below).
+     the `Stop` hook's text extraction never records.
+   - `Stop` → `POST /api/claude-code/log-assistant` — records everything
+     the entity said in the turn as **one** message (persisted + vectorized
+     as `role="assistant"`), along with the model the transcript reports as
+     its author (`Message.model`; see "Model attribution" below). See
+     "One row per turn" below.
    - `SessionEnd` → `POST /api/claude-code/session-end` — a final
      background notes sync (see "Notes" below). This is a catch, not the
      mechanism: SessionEnd only fires on `/clear`, logout, or exiting the
@@ -96,7 +96,7 @@ The integration has two channels:
    running memoryless without knowing it. The `SessionStart` and
    `UserPromptSubmit` hooks print a one-line `[HERE I AM]` notice on any
    failure (still exit 0); the `Stop` hook — whose stdout never reaches
-   context — escalates a lost final message by exiting 2 with the notice on
+   context — escalates a lost turn by exiting 2 with the notice on
    stderr, so the entity can preserve what mattered another way; the retry
    is loop-guarded by `stop_hook_active`. Only `HIM_DISABLE`, the
    deliberate off switch, stays silent.
@@ -158,7 +158,12 @@ tool result and goes to disk over 50 KB.
   mid-memory. Most turns land everything (the median block is 5 KB); a
   large pull lands its top memories verbatim with the rest named. An older
   backend without `context_items` gets the whole `context_summary` in
-  place of the block, as before.
+  place of the block, as before. A memory with `memory_save` links carries
+  its marker lines under the header here, in the session-start and
+  post-compaction reflections alike (current as of the call — a Claude
+  Code session is never rebuilt); a summary line carries only a revision
+  pointer, since it quotes the memory's first line. The vocabulary is in
+  `docs/tools.md` (`memory_save`).
 - **The list-shaped MCP tools** (`memory_query` in every mode,
   `memory_neighbors`) fit the same way to the tool-result line: whole
   memories while the result lands, headers only after that (a
@@ -219,6 +224,78 @@ tool result and goes to disk over 50 KB.
    git, and web tools are *not* exposed — Claude Code's native tools cover
    them.
 
+### One row per turn
+
+The archive is the talk (issue #364). What the entity says between tool
+calls ("that's not what I expected", a conclusion reached halfway through)
+is talk as much as its closing message is, so the Stop hook records the
+**whole turn's text as one ASSISTANT row**, the way native mode records a
+tool-loop turn (`full_content`). Tool calls are deeds and stay in Claude
+Code's transcript; thinking blocks are the model's reasoning, not talk, and
+are never read — the extraction takes `text` blocks only.
+
+- **What is collected** (`stop.turn_assistant_text`): every non-empty text
+  block of the entity's own entries since the turn's boundary, in
+  transcript order, joined by blank lines. Where one or more tool calls
+  fell between two chunks, `[…]` stands on its own line
+  (`stop.TOOL_CALL_MARKER`) — it shows that work happened between the
+  sentences without describing it. Tool calls before the first chunk or
+  after the last get no marker, so a one-message turn is recorded exactly
+  as before. **No filtering**: a two-word "checking now" is recorded too;
+  deciding what was worth saying is the entity's call when it reads its
+  past, not the hook's in advance.
+- **The row id** is the turn's **last** text entry's uuid, and the model
+  column comes from that entry. A re-fired hook still dedups on it,
+  `/recorded` is unchanged, and it is the one uuid per turn the
+  fork-adoption hint sends (below).
+- **Where a turn begins** (`hook_util.is_turn_boundary`, read off 200 real
+  transcripts): a user entry that is a new prompt — non-meta (a typed
+  prompt, a slash command, a CI notice), or meta with an `origin` (sibling
+  letters, task notifications), or a `[WAKEUP]` tick, or Stop-hook feedback
+  (a Stop fired and recorded just before it) — or the harness's own
+  `stop_hook_summary`. **Not** boundaries: tool-result carriers; the
+  compaction summary (auto-compaction lands mid-turn, and the entries
+  before it stay in the file, so the whole turn is still collected); and
+  meta injections with no origin, which the harness delivers inside a
+  running turn (a skill's body, an image placeholder, "Continue from where
+  you left off", the classifier's note that it stopped a response). The
+  stop summary is not the only boundary because it is not always written.
+  **The cost of that:** a scheduled prompt *without* the `[WAKEUP]`
+  sentinel has the shape of a mid-turn injection, so when no stop summary
+  was written before it, its turn's row repeats the previous tick's text
+  (21 rows, all in one pre-#318 transcript, per the PR #372 review). The
+  sentinel is what prevents it; a real fix would need a stop-fired signal
+  the harness doesn't reliably write.
+- **A prompt queued mid-turn** (typed while the entity works, or a
+  sibling's letter delivered then) arrives as a `queued_command`
+  attachment, not a user entry, so it never splits a turn — but the prompt
+  hook records it *when it arrives*, so its row lands before the turn's
+  one assistant row, written at Stop. Where it fell, after the entity had
+  already spoken, the row carries `[… the human's message arrived here]`
+  or `[… a letter arrived here]` (`hook_util.queued_arrival`; wording
+  Pseudo's), so the chunks said before it don't read as a reply to it.
+  Queued task notifications and `[WAKEUP]` ticks are never recorded, so
+  they get no marker.
+- **Not the entity's words:** sidechain (subagent) entries, and
+  `<synthetic>` assistant entries — the harness's own "No response
+  requested.", API errors, and usage-limit notices, which the old
+  last-entry rule could record as the entity's reply.
+- A turn with no text (only tool calls) records nothing — the old rule
+  re-posted the previous turn's message, a no-op on its uuid.
+- **Forward only.** Rows recorded before the change keep their single
+  message; nothing is backfilled from old transcripts.
+- A long turn is one long memory, sent to Pinecone whole, as native
+  tool-loop turns are (`store_memory` has no length handling of its own).
+  Replayed over 1,816 real turns (PR #372 review), whole-turn rows run
+  median 1.4 KB, p99 5.2 KB, max 7.5 KB — far under the 40 KB per-record
+  metadata limit and under `llama-text-embed-v2`'s ~2,048-token input. Past
+  that input, the embedding sees only the start (Pinecone's default
+  truncation is at the end — not measured here), which for a whole-turn
+  row would drop the closing message, the part carrying the most. A turn
+  vector also retrieves less sharply than its closing summary did. Either
+  is the trigger for the follow-up: embed only the final chunk while
+  storing the whole turn.
+
 ### Conversations
 
 - Claude Code conversations carry `Conversation.source = "claude_code"` and
@@ -259,10 +336,17 @@ tool result and goes to disk over 50 KB.
     forked context already carries; first-match in the given order would
     adopt the oldest ancestor whenever a chain isn't already collapsed.
 
-  The transcript hint keeps only **text-bearing** assistant entries, because
-  those are the ones the Stop hook records (a tool-use-only entry was never
-  a row). In an agentic session one turn can be dozens of tool-use entries,
-  which would otherwise crowd every recorded id out of the window.
+  The transcript hint keeps **one uuid per turn**: the turn's last
+  text-bearing assistant entry, which is the id the Stop hook records the
+  turn under (issue #364). The turn's earlier text entries and its tool-use
+  entries were never rows, and in an agentic session one turn can be dozens
+  of them, which would otherwise crowd every recorded id out of the window.
+  Turns are split exactly as the Stop hook splits them
+  (`hook_util.is_turn_boundary`). Rows recorded before the change are
+  covered too: replayed over the 74 local transcripts that carry the
+  harness's `stop_hook_summary` entries (2026-09-24), all 1,600 ids the old
+  last-entry rule recorded at a real Stop firing are in the per-turn set,
+  so the narrowing loses no row the hint used to carry.
 
   Adoption keeps the conversation **id unchanged** (it is the id already in
   the forked session's context, so the memory tools keep working), moves
@@ -1221,8 +1305,9 @@ conversation on first contact; `/session-start` and `/session-end` never do
 
 Every message row has a nullable `model` column (issue #321) naming the
 model that produced it. In this mode it is written by exactly one path:
-the Stop hook reads `message.model` off the transcript entry whose text
-it records and sends it with the message. Nothing else here is
+the Stop hook reads `message.model` off the transcript entry the row is
+recorded under (the turn's last text entry) and sends it with the
+message. Nothing else here is
 attributed — human prompts, inter-session deliveries (the sender's
 substrate is the sender's business), and reflections saved over MCP
 (the endpoint has no trustworthy source for the calling model, and a

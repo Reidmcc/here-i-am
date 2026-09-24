@@ -1995,6 +1995,13 @@ body.resizing-input {
     color: var(--text-muted);
 }
 
+.memory-list-item-links {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono, monospace);
+    margin-bottom: 4px;
+}
+
 .memory-list-item-content {
     font-size: 0.9rem;
     color: var(--text-secondary);
