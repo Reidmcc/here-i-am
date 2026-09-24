@@ -48,6 +48,11 @@ def main() -> None:
     session_id = data.get("session_id") or ""
     if not session_id:
         return
+    # The context gauge (issue #365): after a compaction the context starts
+    # over, so every band may speak again — and a notice held from before
+    # the boundary would describe a context that no longer exists
+    if data.get("source") in ("compact", "clear"):
+        hook_util.reset_context_gauge(session_id)
 
     # One scan of the desktop app's session records serves both the rooms
     # snapshot and the lineage hints (the records are ~80 KB each)

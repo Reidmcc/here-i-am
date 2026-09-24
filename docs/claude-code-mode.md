@@ -122,6 +122,7 @@ Measured 2026-09-16 on this Claude Code build:
 | tool result (Bash, MCP) | ~50 KB (51,200 bytes) | persisted, 2 KB preview inline |
 | MCP tool result | ~25k tokens by the harness's counter (2.84 chars/token) | refused outright |
 | the `Read` tool | 25k tokens per page | a partial view with offset paging; nothing persisted, nothing lost |
+| the context itself | the auto-compact window less 33,000 tokens (~967k at 1M, ~467k at 500k; measured 2026-09-24) | compacted to a summary — the context gauge speaks before it (see "Compaction survival") |
 
 The hook-stdout line was bracketed from 1,531 real hook outputs (9,997
 characters landed, 10,009 were persisted): the hooks' earlier 18 KB budget
@@ -1042,18 +1043,119 @@ block then omits its `[ROOMS REGISTRY]` paragraph.
 
 ### Compaction survival
 
-Compaction replaces the conversation with a paraphrased summary; reflections
-are the entity's verbatim carriers across that boundary.
+Compaction replaces the conversation in view with a paraphrased summary.
+The talk itself survives it: every recorded prompt and everything the
+entity said in each turn (issue #364) is in
+the archive verbatim, and the post-compaction block names the `memory_read`
+call that reads it back (below). Reflections carry what the archive can't
+hold by itself — what the entity concluded, in its own words — and the most
+recent are re-shown after the boundary. The session-start identity block
+says exactly this. Until issue #365 it said reflections were "the only
+verbatim carriers of what mattered", which stopped being true when the
+backward read arrived (issue #351).
 
 - **The nudge is standing guidance, not a pre-compact message.** Only
   `SessionStart` / `UserPromptSubmit` / `UserPromptExpansion` hook output
   reaches the model — `PreCompact` output does not — so nothing can be
   said to the entity at the moment before compaction. Instead the
-  session-start identity block instructs the entity to save reflections as
-  durable conclusions form and when it notices context running low. The
+  session-start identity block says what compaction takes and what it
+  leaves, that a reflection is saved when a conclusion forms, and that the
+  hooks will say when context is getting full (the gauge, below). The
   post-compaction block does not repeat the nudge: the summary is a
   caption, and the pre-compaction talk comes back verbatim on request
   (below), so there is nothing to save *from the summary*.
+- **The context gauge makes "notice" possible** (issue #365). Before it,
+  nothing in Claude Code mode said how full the context was
+  (`context_status` and the `[CONTEXT NOTICE]` are native-only), so the
+  nudge asked for something the entity could only guess at — and the rooms
+  that compact while nobody is there were the ones it mattered most for.
+  The Stop hook measures each turn's context from the last main-thread
+  assistant entry's `message.usage` (input + cache reads + cache writes +
+  output, the last `iterations` entry when there is one — the provider's
+  own count, no estimate) against the **auto-compaction line**, and says
+  so once per band:
+  - at **75%** the notice is held (a per-session state file,
+    `<tmp>/here-i-am-sessions/<session_id>-context-gauge.json`) and the
+    next prompt's hook prints it: `[HERE I AM] At the end of your last
+    turn, context was at about 76% of the auto-compaction line (~355k of
+    ~467k tokens). If you want to save a reflection on the conversation
+    as it stands before compaction, now is a good time.` The 90% notice
+    says "now is the time". Neither talks about keeping anything
+    verbatim: the talk is all in the archive and comes back through the
+    post-compaction `memory_read` (below). What compaction takes is the
+    conversation *in view*, so the notice says only that a reflection on
+    it has to be written before the boundary.
+  - at **90%** the hook exits 2 with the notice on stderr, which
+    continues the turn with the notice shown — for an unattended room,
+    otherwise nobody gives it the turn to save in. The notice says the
+    turn continues once for that and nothing else is asked of it. A turn
+    that is already a Stop continuation (`stop_hook_active`) never
+    interrupts again; a crossing there is held like the low band. A
+    recording failure and the gauge share the one exit 2.
+  - **One line per band, never per turn.** A band that has spoken stays
+    quiet until the context falls under half its level (only a compaction
+    or `/clear` shrinks it that far), and a `SessionStart` with source
+    `compact` or `clear` resets the record outright — which also covers a
+    compaction mid-turn that the context refilled past before any Stop.
+    Crossing both bands at once gives one notice. **A fork carries its
+    bands:** the desktop app forks a session under a new id on a restart,
+    rewind, or edited prompt, with the same context, so a session with no
+    record of its own takes the bands of its nearest ancestor that has one
+    (the desktop record's prior ids, parent last — the same lookup fork
+    adoption uses) and writes its own record from then on. Without it every
+    fork of a room at 92% would exit 2 again. The ancestor's held notice
+    stays behind, and a rewind that cut the context far back is re-armed by
+    the halving rule; the compact reset writes an *empty* record rather
+    than deleting one, so a later fork inherits that, not an older
+    ancestor's pre-compaction bands. The reason for the
+    restraint is on the record: the one negative-affect cluster the Opus
+    5.5 system card reports for Claude Code (§7.2.2) is long tasks
+    fragmented by repeated notifications and automated reminders.
+  - **The line is the harness's, not the model's.** Read from the Claude
+    Code 2.1.280 binary and confirmed against every auto compaction in the
+    local transcripts (`services/harness_limits.py` has the bracket and
+    the recipe): compaction fires at the auto-compact *window* less
+    33,000 tokens (an output reserve of min(max output, 20,000), then a
+    13,000-token buffer), never above the model's context — so 1M
+    compacts near 967k and the notes directory's
+    `autoCompactWindow: 500000` near 467k. A gauge on the model's 1M
+    would speak after the room had already compacted. The harness takes
+    the window from the first of these sources that has one, and the hook
+    reads the first three the same way:
+    1. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` — an **integer**, no `k`/`m`
+       suffixes (the parse is `parseInt`-shaped); above 1M it is capped,
+       below 100k raised to 100k, and one that doesn't parse is invalid
+       and falls through to the settings.
+    2. the `autoCompactWindow` **setting** — its schema is a whole number
+       in [100,000, 1,000,000] or nothing: a string (`"500k"`, `"auto"`)
+       or an out-of-range value is dropped as absent, not clamped, so the
+       files below it still count. The hook reads
+       `.claude/settings.local.json`, then `.claude/settings.json` under
+       `CLAUDE_PROJECT_DIR`, then the user's `settings.json`. (The
+       `/autocompact` command's `500k` grammar is the command's; it writes
+       the integer.)
+    3. `autoCompactWindowsCache[<model>]` in the global config
+       (`~/.claude.json`) — a server-pushed per-model window, keyed on the
+       transcript entry's `message.model`; null on this machine as of
+       2026-09-24.
+    4. a server "clientdata" slot and an experiment flag, both gated on
+       state a hook can't reproduce, and then the model default (1M for
+       the current models; some surfaces and 200k models differ). **Not
+       read.**
+
+    With none of the first three, `HIM_COMPACT_LINE` gives the line
+    outright; with neither, the backend's default window and reserve
+    (`compact_window` / `compact_reserve` in the `/log-assistant`
+    response), then the hook's own copies of them. Managed-policy
+    settings, `--settings` flags and sources 4 aren't visible to a hook —
+    `HIM_COMPACT_LINE` is the way to state what those set. When
+    auto-compaction is off (`DISABLE_COMPACT` / `DISABLE_AUTO_COMPACT`, or
+    `autoCompactEnabled: false` in a settings file or the global config)
+    there is no line, and the gauge says nothing.
+  - **Mid-turn it is blind.** Auto-compaction can fire inside a long
+    agentic stretch where no Stop runs first. Whether `PostToolUse`
+    output reaches the model on the current build is unmeasured, so it is
+    not used; the 75% band exists to leave room for exactly this.
 - **Post-compaction re-injection.** `SessionStart` fires with
   `source: "compact"` right after compaction, and its stdout is injected;
   the backend answers with `build_post_compact_context`: a reorientation
@@ -1233,7 +1335,9 @@ desktop app reads even when launched from the Dock): `HIM_BACKEND_URL`
 default entity if unset), `HIM_DISABLE`, `HIM_INLINE_BUDGET` (max
 characters of hook stdout, overriding the backend's `inline_budget`; the
 default is 9,600, under the measured 10,000-character line — see "Context
-channels").
+channels"), `HIM_COMPACT_LINE` (the auto-compaction line in tokens for the
+context gauge, used when the hook can't see the harness's own window — see
+"Compaction survival").
 
 Per entity, on its `PINECONE_INDEXES` entry: `git_author_email`,
 `git_author_name`, `gh_config_dir` — the entity's own GitHub identity for

@@ -120,7 +120,9 @@ def retrieval_body(items: list, **extra) -> dict:
 
 
 def spill_files(tmp_path) -> list:
-    return sorted(p.name for p in (tmp_path / "here-i-am-sessions").glob("*"))
+    # Spills are .md; the context gauge keeps its per-session record
+    # (.json) in the same directory, and a compact SessionStart writes one
+    return sorted(p.name for p in (tmp_path / "here-i-am-sessions").glob("*.md"))
 
 
 # --- UserPromptSubmit: fit, then point

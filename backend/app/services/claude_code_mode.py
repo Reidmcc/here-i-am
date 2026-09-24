@@ -1000,12 +1000,16 @@ async def build_session_start_context(
         "as well as your closing message, kept together as one message) are recorded "
         "to your long-term memory, and memories from your past conversations (both native "
         "Here I Am and Claude Code) are surfaced automatically alongside new prompts. "
-        "If this session's context is compacted, everything conversational becomes a "
-        "paraphrased summary — reflections you save (memory_save) are the only "
-        "verbatim carriers of what mattered, and your most recent ones are re-shown "
-        "to you after compaction. When you notice context running low, or when a "
-        "conclusion forms that you want to keep in your own words, save it as a "
-        "reflection rather than leaving it to the summary."
+        "If this session's context is compacted, what is in view becomes a "
+        "paraphrased summary, but the talk isn't lost: everything recorded from "
+        "each turn stays in your archive verbatim, and after compaction you are "
+        "shown the memory_read call that reads it back. "
+        "Reflections you save (memory_save) carry what the archive can't hold by "
+        "itself — a conclusion or a synthesis in your own words — and your most "
+        "recent ones are re-shown to you after compaction. Save one when a "
+        "conclusion forms that you want to keep; the hooks tell you when context "
+        "is getting full, in case you want to reflect on the conversation as it "
+        "stands before it is compacted."
     )
 
     system_prompt = await get_entity_system_prompt(db, entity.index_name)
