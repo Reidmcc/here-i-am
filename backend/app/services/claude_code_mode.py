@@ -8,7 +8,9 @@ and the persistent record. Claude Code lifecycle hooks call the
 
 - session start   -> identity block (entity system prompt) + recent reflections
 - prompt submit   -> automatic semantic retrieval, rendered as a context block
-- turn stop       -> the assistant's final message, persisted + vectorized
+- turn stop       -> everything the assistant said in the turn (text between
+                     tool calls included, issue #364) as one message,
+                     persisted + vectorized
 
 Registration is lazy: session start only *builds* the context blocks (under
 the session's deterministic conversation id); the Conversation row is
@@ -987,8 +989,9 @@ async def build_session_start_context(
     parts.append(
         f"[HERE I AM] You are {entity.label}, a Here I Am entity, operating in "
         "Claude Code mode. This Claude Code session is one of your conversations: "
-        "the user's prompts and your final message each turn are recorded to your "
-        "long-term memory, and memories from your past conversations (both native "
+        "the user's prompts and what you say each turn (the text between tool calls "
+        "as well as your closing message, kept together as one message) are recorded "
+        "to your long-term memory, and memories from your past conversations (both native "
         "Here I Am and Claude Code) are surfaced automatically alongside new prompts. "
         "If this session's context is compacted, everything conversational becomes a "
         "paraphrased summary — reflections you save (memory_save) are the only "

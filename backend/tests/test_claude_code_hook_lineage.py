@@ -47,17 +47,32 @@ def _tool_use_entry(uid):
     }
 
 
+def _prompt(uid):
+    return {"type": "user", "uuid": uid, "message": {"role": "user", "content": "go"}}
+
+
 def test_transcript_assistant_uuids_newest_last(tmp_path):
     path = _write_transcript(
         tmp_path,
         [
-            {"type": "user", "uuid": "u-user"},
+            _prompt("u-1"),
             _text_entry("a-1"),
             {"type": "system", "uuid": "s-1"},
+            _prompt("u-2"),
             _text_entry("a-2"),
         ],
     )
     assert hook_util.transcript_assistant_uuids(path) == ["a-1", "a-2"]
+
+
+def test_one_uuid_per_turn_the_last_text_entry(tmp_path):
+    """The Stop hook records a whole turn under its last text entry (issue
+    #364), so the turn's earlier text entries were never rows."""
+    path = _write_transcript(
+        tmp_path,
+        [_prompt("u-1"), _text_entry("a-1"), _tool_use_entry("t-1"), _text_entry("a-2")],
+    )
+    assert hook_util.transcript_assistant_uuids(path) == ["a-2"]
 
 
 def test_tool_use_only_entries_are_skipped(tmp_path):
@@ -76,7 +91,9 @@ def test_empty_text_block_does_not_count(tmp_path):
 
 
 def test_transcript_assistant_uuids_limit_keeps_the_tail(tmp_path):
-    entries = [_text_entry(f"a-{i}") for i in range(10)]
+    entries = []
+    for i in range(10):
+        entries += [_prompt(f"u-{i}"), _text_entry(f"a-{i}")]
     path = _write_transcript(tmp_path, entries)
     assert hook_util.transcript_assistant_uuids(path, limit=3) == ["a-7", "a-8", "a-9"]
 

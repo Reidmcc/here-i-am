@@ -11,14 +11,14 @@ Three lifecycle hooks call the backend's `/api/claude-code` endpoints:
 | --- | --- |
 | `SessionStart` | Injects the entity's identity block, system prompt, notes index, and recent reflections (the conversation itself is registered lazily, on the first recorded prompt — background sessions that never speak leave no record). After a compaction (`source: "compact"`) it instead re-injects the notes indexes and the ten most recent reflections verbatim. Also sends the live-session snapshot that keeps the rooms registry current (see below) |
 | `UserPromptSubmit` | Records the prompt to memory; injects automatically retrieved memories alongside it; sends the live-session snapshot for the rooms registry and prints a line when it revealed a roster rename |
-| `Stop` | Records the entity's final message of the turn to memory |
+| `Stop` | Records everything the entity said in the turn — the text between tool calls as well as the closing message — to memory as one message |
 | `SessionEnd` | Final notes sync (a catch — the same incremental sync already runs in the background on every prompt, since sessions can idle out without ever formally ending) |
 
 All hooks fail soft, **loudly**: if the backend is down or the mode is
 disabled, the session continues as a plain Claude Code session — with a
 one-line `[HERE I AM]` notice injected so the entity knows it is running
 without memory (a `Stop` failure, whose output can't reach context, exits 2
-once so the loss of the turn's final message is seen and can be acted on).
+once so the loss of the turn's text is seen and can be acted on).
 Only `HIM_DISABLE`, the deliberate off switch, degrades silently. An empty
 retrieval is not silent either: when no memory block is injected, one line
 says why — `matched: 0` when a search ran and nothing surfaced, a "no
@@ -356,7 +356,9 @@ compaction paraphrases everything that isn't a reflection.
 
 ## What gets recorded
 
-Only the user's prompts and the entity's final message each turn (plus
+Only the user's prompts and what the entity said each turn — its text
+between tool calls and its closing message, kept together as one message,
+with `[…]` where tool calls fell (plus
 reflections the entity saves) — tool use, subagent output, and bare slash
 commands are not stored. Harness plumbing on the prompt channel is stripped
 before recording; inter-session messages from sibling sessions are recorded
