@@ -652,7 +652,9 @@ class TestClaudeCodeSessionStartNotice:
         assert "now released" in body["context"]
         assert "[MEMORY STATUS NOTICE]" not in body["bulk_context"]
 
-    async def test_silence_when_nothing_changed(self, async_client, db):
+    async def test_nothing_changed_is_said_not_left_silent(self, async_client, db):
+        """Like a retrieval that matched nothing (issue #367 follow-up): a
+        missing notice can't tell "nothing changed" from "never checked"."""
         previous = await make_conversation(db, created_at=at(days=-2))
         await make_message(db, previous, created_at=at(days=-2, minutes=1))
         memory = await make_message(db, previous)
@@ -662,7 +664,12 @@ class TestClaudeCodeSessionStartNotice:
         response = await async_client.post(
             "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
         )
-        assert "[MEMORY STATUS NOTICE]" not in response.json()["context"]
+        context = response.json()["context"]
+        assert (
+            "[MEMORY STATUS NOTICE] Checked: since your last session, the researcher "
+            "changed the status of none of your memories."
+        ) in context
+        assert "Since your last session the researcher changed the status" not in context
 
     async def test_failed_check_is_loud(self, async_client, db, monkeypatch):
         monkeypatch.setattr(

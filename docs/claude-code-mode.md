@@ -679,10 +679,16 @@ are never read — the extraction takes `text` blocks only.
   `build_researcher_change_notices`, which computes the anchor once and
   never raises: inline, never
   bulk, and a failed check is reported in place of its own notice without
-  hiding the other — silence is reserved for "nothing changed". Not
-  re-sent on a plain resume or after a compaction. The same notices are
-  injected, as one context-only message, on the entity's first turn of a
-  native conversation.
+  hiding the other. **Nothing changed is said, not left silent** — one
+  `Checked: … none` line per notice, like a retrieval that matched nothing,
+  because a missing notice can't tell "nothing changed" from "never
+  checked". Not re-sent on a plain resume. After a compaction the
+  post-compaction block carries them again, over the room's own window
+  (Compaction survival, below). The same notices are injected, as one
+  context-only message, on the entity's first turn of a native
+  conversation — there only when something changed: that message isn't
+  rebuilt on reload, so putting one on every native first turn would
+  re-write the prompt cache on every reload.
 - On a plain resume (`session-start` for a session that already has a
   conversation) the identity block is *not* re-sent — the transcript
   already carries it. A resume of a session with no row (it never spoke, or
@@ -1057,6 +1063,21 @@ are the entity's verbatim carriers across that boundary.
   compaction are exactly the ones that must come back. Links are recorded
   only for reflections not already linked (no duplicate rows), and
   `times_retrieved` stays untouched as with all recency injections.
+- **Researcher changes, re-told over the room's own window.** The block
+  also carries the status and archive notices (issue #367 follow-up) —
+  otherwise a standing room, which never starts fresh, would never hear
+  of an archive. The window is *since this session was last told*: the
+  compaction stamp that stood before this one (the route reads it before
+  `mark_conversation_compacted` overwrites it), or the conversation's own
+  first-turn start if it has never compacted
+  (`get_last_session_anchor(only_conversation_id=…)`). Not the house's
+  "since your last session", which moves whenever any other session starts
+  and so would never catch the porch up on a change a workshop heard. A
+  compact that registered its row (nothing recorded yet) falls back to the
+  house anchor. Nothing changed is said; a failure is reported in place.
+  A fork's restart that got a fresh identity block leaves no stamp, so a
+  change it heard is heard again at the next compaction — the duplicate
+  side, never the silent one.
 - **The pre-compaction talk is readable verbatim, on request.** The
   reorientation header also names the `memory_read` call that returns
   this session's own pre-compaction stretch, read **backward from the

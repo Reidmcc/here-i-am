@@ -22,9 +22,12 @@ from app.models import (
     MessageRole,
 )
 from app.services.memory_context import (
+    SINCE_LAST_SESSION,
     format_archive_change_notice,
+    format_archive_nothing_changed,
     format_memory_link_lines,
     format_status_change_notice,
+    format_status_nothing_changed,
 )
 
 logger = logging.getLogger(__name__)
@@ -2309,6 +2312,7 @@ class MemoryService:
         db: AsyncSession,
         entity_id: str,
         exclude_conversation_id: Optional[str] = None,
+        only_conversation_id: Optional[str] = None,
     ) -> Optional[datetime]:
         """
         The "since your last session" boundary for the researcher-change
@@ -2343,6 +2347,11 @@ class MemoryService:
         longer in a CLI session opened well before its first prompt, or one
         whose first turn was an unrecorded wakeup (then the first response
         anchors).
+
+        only_conversation_id narrows it to one conversation's own first-turn
+        start — when that conversation was told, for a long-running Claude
+        Code session re-told after a compaction (see
+        build_researcher_change_notices' callers). None if it never spoke.
         """
         # An inter-session letter is recorded as an assistant row too
         # (sibling_session set) but is a delivery, not a turn this
@@ -2358,6 +2367,8 @@ class MemoryService:
         conditions = [spoke, self._entity_experience_clause(entity_id)]
         if exclude_conversation_id:
             conditions.append(Message.conversation_id != str(exclude_conversation_id))
+        if only_conversation_id:
+            conditions.append(Message.conversation_id == str(only_conversation_id))
 
         first_responses = (
             select(
@@ -2434,6 +2445,7 @@ class MemoryService:
         entity_id: str,
         exclude_conversation_id: Optional[str] = None,
         anchor: Any = _ANCHOR_UNSET,
+        since: str = SINCE_LAST_SESSION,
     ) -> Optional[str]:
         """
         The session-start notice of researcher-set status changes since the
@@ -2454,7 +2466,7 @@ class MemoryService:
             f"[MEMORY] Status notice: {len(changes)} researcher-set change(s) for "
             f"entity={entity_id} since {anchor.isoformat() if anchor else 'ever'}"
         )
-        return format_status_change_notice(changes)
+        return format_status_change_notice(changes, since=since)
 
     async def get_researcher_archive_changes(
         self,
@@ -2526,13 +2538,15 @@ class MemoryService:
         entity_id: str,
         exclude_conversation_id: Optional[str] = None,
         anchor: Any = _ANCHOR_UNSET,
+        since: str = SINCE_LAST_SESSION,
     ) -> Optional[str]:
         """
         The session-start notice of conversations archived or unarchived
         since the entity's last session, or None when there are none — the
         same anchor, and the same once-only and never-swallowed rules, as
         build_status_change_notice. `anchor` (both builders) takes one
-        computed by the caller, so notices built together agree on it.
+        computed by the caller, so notices built together agree on it;
+        `since` names that window in the header.
         """
         if anchor is _ANCHOR_UNSET:
             anchor = await self.get_last_session_anchor(
@@ -2545,58 +2559,74 @@ class MemoryService:
             f"[MEMORY] Archive notice: {len(changes)} archive change(s) for "
             f"entity={entity_id} since {anchor.isoformat() if anchor else 'ever'}"
         )
-        return format_archive_change_notice(changes)
+        return format_archive_change_notice(changes, since=since)
 
     async def build_researcher_change_notices(
         self,
         db: AsyncSession,
         entity_id: str,
         exclude_conversation_id: Optional[str] = None,
+        anchor: Any = _ANCHOR_UNSET,
+        since: str = SINCE_LAST_SESSION,
+        report_nothing: bool = False,
     ) -> List[str]:
         """
         Every session-start notice of a change the researcher made to the
-        entity's memory since its last session — memory status overrides,
-        then archived/unarchived conversations — for the native first turn
-        and the Claude Code identity block to deliver the same way.
+        entity's memory — memory status overrides, then archived/unarchived
+        conversations — for the native first turn and the Claude Code
+        blocks (identity, post-compaction) to deliver the same way.
 
-        Never raises. Silence means "nothing changed", so each check that
-        fails is reported in place of its notice, and one failing doesn't
-        hide the other. The anchor is computed once for both, so they agree
-        on what "since your last session" means; if it fails, both say so.
+        The window is "since your last session" (get_last_session_anchor,
+        computed once so the two notices agree) unless the caller passes
+        its own `anchor` and names it in `since` — a compacted Claude Code
+        session is told what changed since *it* was last told.
+
+        Never raises. Silence would have to mean "nothing changed", so each
+        check that fails is reported in place of its notice, one failing
+        doesn't hide the other, and a failed anchor is reported by both.
+        With report_nothing, a check that ran and found nothing says so
+        too (the Claude Code blocks, like a retrieval that matched
+        nothing); natively that stays silent, because the notice is a
+        context-only message not rebuilt on reload, and one on every first
+        turn would re-write the prompt cache on every reload.
         """
         def status_failed(error: Exception) -> str:
             return (
                 "[MEMORY STATUS NOTICE] Could not check for researcher-set "
-                f"memory status changes since your last session ({error}). If "
-                "it matters, ask the researcher, or review with memory_query "
-                'mode="released".'
+                f"memory status changes {since} ({error}). If it matters, ask "
+                'the researcher, or review with memory_query mode="released".'
             )
 
         def archive_failed(error: Exception) -> str:
             return (
                 "[MEMORY ARCHIVE NOTICE] Could not check whether the researcher "
-                "withdrew or restored any of your conversations since your last "
-                f"session ({error}). If it matters, ask the researcher."
+                f"withdrew or restored any of your conversations {since} "
+                f"({error}). If it matters, ask the researcher."
             )
 
-        try:
-            anchor = await self.get_last_session_anchor(
-                db, entity_id, exclude_conversation_id=exclude_conversation_id
-            )
-        except Exception as e:
-            logger.error(f"[MEMORY] Last-session anchor failed: {e}")
-            return [status_failed(e), archive_failed(e)]
+        if anchor is _ANCHOR_UNSET:
+            try:
+                anchor = await self.get_last_session_anchor(
+                    db, entity_id, exclude_conversation_id=exclude_conversation_id
+                )
+            except Exception as e:
+                logger.error(f"[MEMORY] Last-session anchor failed: {e}")
+                return [status_failed(e), archive_failed(e)]
 
         notices: List[str] = []
-        for build, failed, label in (
-            (self.build_status_change_notice, status_failed, "Status"),
-            (self.build_archive_change_notice, archive_failed, "Archive"),
+        for build, failed, nothing, label in (
+            (self.build_status_change_notice, status_failed,
+             format_status_nothing_changed, "Status"),
+            (self.build_archive_change_notice, archive_failed,
+             format_archive_nothing_changed, "Archive"),
         ):
             try:
                 notice = await build(
                     db, entity_id, exclude_conversation_id=exclude_conversation_id,
-                    anchor=anchor,
+                    anchor=anchor, since=since,
                 )
+                if not notice and report_nothing:
+                    notice = nothing(since)
             except Exception as e:
                 logger.error(f"[MEMORY] {label}-change notice failed: {e}")
                 notice = failed(e)

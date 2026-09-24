@@ -503,6 +503,109 @@ class TestClaudeCodeDelivery:
         assert "promise broken" in context
 
 
+    async def test_nothing_changed_is_said_for_both(self, async_client, db):
+        context = (await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )).json()["context"]
+        assert (
+            "[MEMORY STATUS NOTICE] Checked: since your last session, the researcher "
+            "changed the status of none of your memories."
+        ) in context
+        assert (
+            "[MEMORY ARCHIVE NOTICE] Checked: since your last session, the researcher "
+            "withdrew or restored none of your conversations."
+        ) in context
+
+
+class TestPostCompactionDelivery:
+    """A long-running room never starts fresh, so without the notice in the
+    post-compaction block it would never hear of an archive (issue #367
+    follow-up). Its window is its own: since it was last told."""
+
+    async def _porch(self, db) -> Conversation:
+        porch = await make_conversation(
+            db, created_at=ago(days=10), source=ConversationSource.CLAUDE_CODE.value,
+            external_session_id="porch-session",
+        )
+        await make_message(db, porch, role=MessageRole.HUMAN, created_at=ago(days=10))
+        await make_message(db, porch, created_at=ago(days=10, minutes=-1))
+        return porch
+
+    async def _compact(self, client, db) -> str:
+        response = await client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": "porch-session", "source": "compact"},
+        )
+        db.expunge_all()
+        assert response.status_code == 200
+        return response.json()["context"]
+
+    async def test_a_room_hears_what_it_missed_then_only_what_is_new(
+        self, async_client, db
+    ):
+        await self._porch(db)
+        withdrawn = await seed_withdrawable(db)
+        await change_archive(async_client, db, withdrawn.id, "archive")
+        # A workshop started after the archive and was told of it; the house
+        # anchor has moved past it, but the porch was never told
+        workshop = await make_conversation(db)
+        await make_message(db, workshop, role=MessageRole.HUMAN)
+        await make_message(db, workshop)
+
+        context = await self._compact(async_client, db)
+        assert (
+            "[MEMORY ARCHIVE NOTICE] Since this session was last told (at its start "
+            "or its last compaction) the researcher withdrew or restored 1 whole "
+            "conversation of yours:"
+        ) in context
+        assert "was withdrawn from your memory" in context
+        assert "[MEMORY STATUS NOTICE] Checked: since this session was last told" in context
+
+        # The next compaction is told nothing twice
+        context = await self._compact(async_client, db)
+        assert "was withdrawn from your memory" not in context
+        assert (
+            "[MEMORY ARCHIVE NOTICE] Checked: since this session was last told (at its "
+            "start or its last compaction), the researcher withdrew or restored none "
+            "of your conversations."
+        ) in context
+
+        # ...and a change after it reaches the one after
+        await change_archive(async_client, db, withdrawn.id, "unarchive")
+        context = await self._compact(async_client, db)
+        assert "was restored to your memory" in context
+
+    async def test_a_room_with_no_turn_yet_falls_back_to_the_house_anchor(
+        self, async_client, db
+    ):
+        """A compact that registers its own row has nothing recorded, so no
+        moment it was told: the window is the house's."""
+        spoken = await make_conversation(db, created_at=ago(days=1))
+        await make_message(db, spoken, role=MessageRole.HUMAN, created_at=ago(days=1))
+        await make_message(db, spoken, created_at=ago(days=1, minutes=-1))
+        await make_conversation(
+            db, is_archived=True, archive_changed_at=ago(days=2)  # before the anchor
+        )
+        await make_conversation(
+            db, is_archived=True, archive_changed_at=ago(hours=1)  # after it
+        )
+        context = (await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": "brand-new-session", "source": "compact"},
+        )).json()["context"]
+        assert "Since your last session the researcher withdrew or restored 1 whole" in context
+
+    async def test_failure_is_loud(self, async_client, db, monkeypatch):
+        await self._porch(db)
+        monkeypatch.setattr(
+            memory_service, "get_last_session_anchor",
+            AsyncMock(side_effect=RuntimeError("db went away")),
+        )
+        context = await self._compact(async_client, db)
+        assert "Could not check for changes the researcher made" in context
+        assert "db went away" in context
+
+
 class TestNativeDelivery:
     def _session(self, conversation_id: str) -> ConversationSession:
         return ConversationSession(

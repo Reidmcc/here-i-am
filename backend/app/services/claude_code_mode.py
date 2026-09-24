@@ -52,6 +52,7 @@ from app.models import (
     MessageRole,
 )
 from app.services.memory_context import (
+    SINCE_THIS_SESSION_WAS_TOLD,
     format_memory_as_context_message,
     format_memory_link_lines,
     format_memory_origin,
@@ -1037,9 +1038,12 @@ async def build_session_start_context(
         # (build_researcher_change_notices never raises; the guard is for a
         # broken promise) — a swallowed exception would read as "nothing
         # changed".
+        # Nothing changed is said too, like a retrieval that matched nothing:
+        # a missing line can't tell "nothing changed" from "never checked".
         try:
             parts.extend(await memory_service.build_researcher_change_notices(
-                db, entity.index_name, exclude_conversation_id=conversation_id
+                db, entity.index_name, exclude_conversation_id=conversation_id,
+                report_nothing=True,
             ))
         except Exception as e:
             logger.error(f"[CC] Researcher-change notices failed: {e}")
@@ -1144,10 +1148,53 @@ POST_COMPACT_LOOKBACK_PAGES = 25
 POST_COMPACT_PAGE_TOKENS = 12000
 
 
+async def _post_compact_change_notices(
+    db: AsyncSession,
+    conversation: Conversation,
+    entity: EntityConfig,
+    previously_compacted_at: Optional[datetime],
+) -> List[str]:
+    """
+    The researcher-change notices for a session that was just compacted
+    (issue #367 follow-up): without them a long-running room, which never
+    starts fresh, would never hear of an archive at all.
+
+    Its window is its own, not the house's "since your last session": what
+    changed since *this* session was last told — its previous compaction,
+    or its first turn if it has never compacted. The house anchor moves
+    whenever any other session starts, so a porch measured against it
+    would never catch up on a change a workshop heard. A room with neither
+    (a compact that registered its row, so nothing is recorded yet) falls
+    back to the house anchor. Nothing changed is said, as at session
+    start; a failure is reported in place of the notices.
+    """
+    try:
+        told_at = [previously_compacted_at] if previously_compacted_at else []
+        first_turn = await memory_service.get_last_session_anchor(
+            db, entity.index_name, only_conversation_id=str(conversation.id)
+        )
+        if first_turn:
+            told_at.append(first_turn)
+        if not told_at:
+            return await memory_service.build_researcher_change_notices(
+                db, entity.index_name, exclude_conversation_id=str(conversation.id),
+                report_nothing=True,
+            )
+        return await memory_service.build_researcher_change_notices(
+            db, entity.index_name, exclude_conversation_id=str(conversation.id),
+            anchor=max(told_at), since=SINCE_THIS_SESSION_WAS_TOLD,
+            report_nothing=True,
+        )
+    except Exception as e:
+        logger.error(f"[CC] Post-compact researcher-change notices failed: {e}")
+        return [format_researcher_change_check_failure(e)]
+
+
 async def build_post_compact_context(
     db: AsyncSession,
     conversation: Conversation,
     entity: EntityConfig,
+    previously_compacted_at: Optional[datetime] = None,
 ) -> Tuple[str, List[Tuple[str, str]]]:
     """
     Context re-injected right after this session's context is compacted
@@ -1167,7 +1214,9 @@ async def build_post_compact_context(
     The caller stamps conversation.last_compacted_at before calling this
     (mark_conversation_compacted), which resets the retrieval eligibility
     boundary: the links this injection records or refreshes are the first
-    to land after it.
+    to land after it. It passes the stamp that stood before as
+    previously_compacted_at: the researcher-change notices here cover what
+    changed since then (_post_compact_change_notices).
     """
     parts: List[str] = []
     bulk_parts: List[Tuple[str, str]] = []
@@ -1257,6 +1306,11 @@ async def build_post_compact_context(
 
     # One tail for both branches: the next bulk part added here must not be
     # able to land in only one of them
+    if memory_service.is_configured(entity_id=entity.index_name):
+        parts.extend(await _post_compact_change_notices(
+            db, conversation, entity, previously_compacted_at
+        ))
+
     notes_paths = build_notes_paths_block(entity)
     if notes_paths:
         parts.append(notes_paths)

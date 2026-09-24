@@ -37,8 +37,43 @@ def memory_snippet(content: str, max_length: int = 80) -> str:
     return collapsed[: max_length - 1].rstrip() + "…"
 
 
+# How the researcher-change notices name their window. A fresh session is
+# told what changed since the entity's last session; a long-running Claude
+# Code session re-told after a compaction, what changed since it was last
+# told (issue #367 follow-up).
+SINCE_LAST_SESSION = "since your last session"
+SINCE_THIS_SESSION_WAS_TOLD = (
+    "since this session was last told (at its start or its last compaction)"
+)
+
+
+def _sentence_start(phrase: str) -> str:
+    return phrase[:1].upper() + phrase[1:]
+
+
+def format_status_nothing_changed(since: str = SINCE_LAST_SESSION) -> str:
+    """The status check ran and found nothing. Said rather than left
+    silent, like a retrieval that matched nothing: silence can't tell
+    "nothing changed" from "the check never happened"."""
+    return (
+        f"[MEMORY STATUS NOTICE] Checked: {since}, the researcher changed "
+        "the status of none of your memories."
+    )
+
+
+def format_archive_nothing_changed(since: str = SINCE_LAST_SESSION) -> str:
+    """The archive check ran and found nothing (see
+    format_status_nothing_changed)."""
+    return (
+        f"[MEMORY ARCHIVE NOTICE] Checked: {since}, the researcher withdrew "
+        "or restored none of your conversations."
+    )
+
+
 def format_status_change_notice(
-    changes: List[Dict[str, Any]], snippet_length: int = 80
+    changes: List[Dict[str, Any]],
+    snippet_length: int = 80,
+    since: str = SINCE_LAST_SESSION,
 ) -> str:
     """
     The session-start notice of researcher-set memory status changes since
@@ -52,7 +87,7 @@ def format_status_change_notice(
     count = len(changes)
     noun = "memory" if count == 1 else "memories"
     lines = [
-        "[MEMORY STATUS NOTICE] Since your last session the researcher changed "
+        f"[MEMORY STATUS NOTICE] {_sentence_start(since)} the researcher changed "
         f"the status of {count} of your {noun}:"
     ]
     for change in changes:
@@ -144,6 +179,7 @@ def format_archive_change_notice(
     changes: List[Dict[str, Any]],
     max_lines: int = 10,
     max_chars: int = ARCHIVE_NOTICE_LIST_CHARS,
+    since: str = SINCE_LAST_SESSION,
 ) -> str:
     """
     The session-start notice of conversations the researcher archived or
@@ -164,7 +200,7 @@ def format_archive_change_notice(
     count = len(changes)
     noun = "conversation" if count == 1 else "conversations"
     lines = [
-        "[MEMORY ARCHIVE NOTICE] Since your last session the researcher "
+        f"[MEMORY ARCHIVE NOTICE] {_sentence_start(since)} the researcher "
         f"withdrew or restored {count} whole {noun} of yours:"
     ]
     listed_chars = 0
