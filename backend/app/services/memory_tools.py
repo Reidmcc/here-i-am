@@ -29,6 +29,7 @@ two callers:
 import logging
 import math
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -38,7 +39,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import async_session_maker
-from app.models import Conversation, Message, MessageRole
+from app.models import LINK_CITES, LINK_REVISES, Conversation, Message, MessageRole
 from app.services.harness_limits import (  # noqa: F401 — the limits are re-exported for the readers' tests
     HARNESS_CHARS_PER_TOKEN,
     HARNESS_PERSIST_BYTES,
@@ -49,13 +50,15 @@ from app.services.harness_limits import (  # noqa: F401 — the limits are re-ex
     fit_report,
     utf8_size,
 )
-from app.services.memory_context import format_memory_origin
+from app.services.memory_context import format_memory_link_lines, format_memory_origin
 from app.services.memory_service import (
     MEMORY_ROLES,
     STATUS_SET_BY_ENTITY,
     STATUS_SET_BY_RESEARCHER,
     VALID_ROLE_FILTERS,
+    load_memory_links,
     memory_service,
+    stage_memory_links,
 )
 from app.services.tool_service import ToolCategory, ToolService
 
@@ -375,6 +378,27 @@ def _model_display(mem: Dict[str, Any], include_model: bool) -> str:
     return f", model: {model}" if model else ", model: unrecorded"
 
 
+def _link_markers(
+    links: Optional[Dict[str, List[Dict[str, Any]]]],
+    role: str,
+    entity_id: Optional[str],
+    labels: Optional[Dict[str, str]] = None,
+) -> str:
+    """
+    A memory's link marker lines (issues #366, #368) as a suffix for its
+    header line in tool output — "" when it has none, so an unlinked
+    memory prints exactly as before. They ride with the header, not the
+    content: a memory listed by header only (RESULT_SIZE_POINTER, or an
+    in-context pointer in the readers) still shows that it was corrected,
+    and what it was based on.
+    """
+    lines = format_memory_link_lines(
+        links, role, entity_id=entity_id,
+        entity_labels=labels if labels is not None else _entity_labels(),
+    )
+    return "".join(f"\n{line}" for line in lines)
+
+
 # What a memory renders as when the whole result would not land in context
 # (Claude Code over MCP; the native app has no such line): its header line
 # stays (the id, attribution, and score are the useful part), the content
@@ -425,10 +449,13 @@ def _format_recent_reflections(
     since_suffix: str,
     include_model: bool = False,
     budget: Optional[int] = None,
+    links: Optional[Dict[str, Dict[str, List[Dict[str, Any]]]]] = None,
+    entity_id: Optional[str] = None,
 ) -> Tuple[str, List[str]]:
     """Render recent-mode results (no similarity scores — ordering is time),
     as (text, ids shown in full)."""
     now = datetime.utcnow()
+    links = links or {}
     entries: List[Tuple[str, str]] = []
     for mem in memories:
         created_at = mem["created_at"]
@@ -440,7 +467,8 @@ def _format_recent_reflections(
         origin_str = format_memory_origin(mem.get("source", "native"))
         model_str = _model_display(mem, include_model)
         entries.append((
-            f"--- Memory {mem['id'][:8]} (You reflected, {age_str}, {origin_str}{status_str}{model_str}) ---",
+            f"--- Memory {mem['id'][:8]} (You reflected, {age_str}, {origin_str}{status_str}{model_str}) ---"
+            + _link_markers(links.get(mem["id"]), "reflection", entity_id),
             mem["content"],
         ))
     intro = f"Your {len(memories)} most recent reflections{since_suffix}, newest first:"
@@ -477,9 +505,17 @@ async def _recent_reflections(
             since=since,
             exclude_conversation_after=ctx.exclude_conversation_after,
         )
+        links = (
+            await load_memory_links(
+                db, [mem["id"] for mem in memories], entity_id=ctx.entity_id
+            )
+            if memories
+            else {}
+        )
         text, shown_ids = (
             _format_recent_reflections(
-                memories, since_suffix, include_model, ctx.result_budget_bytes
+                memories, since_suffix, include_model, ctx.result_budget_bytes,
+                links=links, entity_id=ctx.entity_id,
             )
             if memories
             else ("", [])
@@ -543,10 +579,13 @@ def _format_released_memories(
     source_suffix: str,
     include_model: bool = False,
     budget: Optional[int] = None,
+    links: Optional[Dict[str, Dict[str, List[Dict[str, Any]]]]] = None,
+    entity_id: Optional[str] = None,
 ) -> Tuple[str, List[str]]:
     """Render released-mode results: newest release first, no similarity
     scores, as (text, ids shown in full)."""
     now = datetime.utcnow()
+    links = links or {}
     intro = (
         f"Your released memories{source_suffix}{since_suffix}: {len(memories)} shown "
         f"of {total} released in total, most recently released first."
@@ -563,7 +602,8 @@ def _format_released_memories(
         model_str = _model_display(mem, include_model)
         entries.append((
             f"--- Memory {mem['id'][:8]} ({_role_display(mem['role'])}, {age_str}, "
-            f"{origin_str}{model_str}; {_describe_release(mem, now)}) ---",
+            f"{origin_str}{model_str}; {_describe_release(mem, now)}) ---"
+            + _link_markers(links.get(mem["id"]), mem["role"], entity_id),
             mem["content"],
         ))
     body, in_full = _fit_memory_entries(entries, intro + outro, budget)
@@ -606,10 +646,17 @@ async def _released_memories(
         total = await memory_service.count_released_memories(
             db, entity_id=ctx.entity_id, role_filter=role_filter
         )
+        links = (
+            await load_memory_links(
+                db, [mem["id"] for mem in memories], entity_id=ctx.entity_id
+            )
+            if memories
+            else {}
+        )
         text, shown_ids = (
             _format_released_memories(
                 memories, total, since_suffix, source_suffix, include_model,
-                ctx.result_budget_bytes,
+                ctx.result_budget_bytes, links=links, entity_id=ctx.entity_id,
             )
             if memories
             else ("", [])
@@ -840,6 +887,10 @@ async def query_memories(
             # Format results: whole memories in rank order while the result
             # lands in context (over MCP; natively there is no line), headers
             # only after that (RESULT_SIZE_POINTER)
+            links = await load_memory_links(
+                db, [mem["id"] for mem in memories], entity_id=entity_id
+            )
+            labels = _entity_labels()
             entries: List[Tuple[str, str]] = []
             for mem in memories:
                 role_label = _role_display(mem["role"], mem.get("sibling_session"))
@@ -849,7 +900,8 @@ async def query_memories(
                 model_str = _model_display(mem, include_model)
                 entries.append((
                     f"--- Memory {mem['id'][:8]} ({role_label}, {age_str}, "
-                    f"similarity: {mem['score']:.3f}, {origin_str}{status_str}{model_str}) ---",
+                    f"similarity: {mem['score']:.3f}, {origin_str}{status_str}{model_str}) ---"
+                    + _link_markers(links.get(mem["id"]), mem["role"], entity_id, labels),
                     mem["content"],
                 ))
             intro = f"Found {len(memories)} memories matching: \"{query}\"{source_suffix}"
@@ -906,13 +958,160 @@ async def query_memories(
         return f"Error querying memories: {e}"
 
 
-async def save_memory(ctx: MemoryToolContext, content: str) -> str:
+# How many memories one reflection may revise, and cite — generous for a
+# reflection written from a day's pages, small enough that a runaway list
+# is refused rather than rendered under every memory it names
+MAX_LINK_TARGETS = 20
+
+
+def _link_id_list(value: Any, name: str) -> Tuple[Optional[List[str]], Optional[str]]:
+    """(ids, error) for a revises / cites argument: omitted or empty is no
+    links, one id may come as a bare string, a list is taken in order."""
+    if value is None:
+        return [], None
+    if isinstance(value, str):
+        value = [value] if value.strip() else []
+    if not isinstance(value, (list, tuple)):
+        return None, f"'{name}' must be a memory id or a list of memory ids."
+    ids = [str(item).strip() for item in value if str(item).strip()]
+    if len(ids) > MAX_LINK_TARGETS:
+        return None, (
+            f"'{name}' names {len(ids)} memories; one reflection can {name[:-1]} at most "
+            f"{MAX_LINK_TARGETS}."
+        )
+    return list(dict.fromkeys(ids)), None
+
+
+def _first_line(content: str, max_length: int = 120) -> str:
+    """The first non-blank line of a memory, cut at max_length."""
+    line = next((ln.strip() for ln in (content or "").splitlines() if ln.strip()), "")
+    if len(line) > max_length:
+        line = line[: max_length - 1].rstrip() + "…"
+    return line
+
+
+async def _resolve_link_targets(
+    ctx: MemoryToolContext,
+    db,
+    ids: List[str],
+    kind: str,
+    include_released: bool,
+) -> Tuple[List[Tuple[Message, Conversation]], Optional[str]]:
+    """
+    Resolve memory_save's revises / cites ids to memories the entity may
+    link, or the first refusal. The readers' visibility rules apply: the
+    memory must be in the entity's own experience (its conversations and
+    the multi-entity ones it takes part in), not in an archived
+    conversation, and released only when include_released says so.
+    `revises` also requires the memory to be the entity's OWN words — a
+    reflection it saved or something it said: the entity's account of its
+    own past is its to give, and the human's words are not its to mark
+    wrong. `cites` takes anything in the experience, the human's words
+    included; citing marks nothing.
+    """
+    resolved: List[Tuple[Message, Conversation]] = []
+    for id_or_prefix in ids:
+        message, error = await _resolve_memory_id(id_or_prefix, db, ctx.entity_id)
+        if error:
+            return [], error
+        short_id = str(message.id)[:8]
+        if message.role not in MEMORY_ROLES:
+            return [], f"'{id_or_prefix}' is a {message.role.value} row, not a memory."
+        conversation = (await db.execute(
+            select(Conversation).where(
+                Conversation.id == message.conversation_id,
+                memory_service._entity_experience_clause(ctx.entity_id),
+            )
+        )).scalar_one_or_none()
+        if conversation is None:
+            return [], f"Memory {short_id} is not part of your experience."
+        if conversation.is_archived:
+            return [], (
+                f"Memory {short_id} is in an archived conversation, which is withdrawn "
+                "from every memory surface."
+            )
+        if message.memory_status == "released" and not include_released:
+            return [], (
+                f"Memory {short_id} is released. Pass include_released=true to link it "
+                "anyway, or restore it first with memory_release undo=true."
+            )
+        if kind == LINK_REVISES:
+            if message.role == MessageRole.HUMAN:
+                return [], (
+                    f"Memory {short_id} is the human's words; revises marks only your "
+                    "own memories (to point at what someone else said, use cites)."
+                )
+            speaker = message.speaker_entity_id
+            own = (
+                speaker == ctx.entity_id
+                if message.role == MessageRole.REFLECTION
+                or conversation.entity_id == "multi-entity"
+                else True
+            )
+            if not own:
+                return [], (
+                    f"Memory {short_id} is another entity's; revises marks only your "
+                    "own memories."
+                )
+        resolved.append((message, conversation))
+    return resolved, None
+
+
+def _link_echo_line(
+    ctx: MemoryToolContext,
+    message: Message,
+    conversation: Conversation,
+    labels: Dict[str, str],
+) -> str:
+    """One linked memory as memory_save echoes it: its short id, the
+    readers' header vocabulary (who, when, which experience, where, and its
+    release if it is released), and its first line — what the entity
+    actually named, to check against what it meant."""
+    item = {
+        "role": message.role.value,
+        "sibling_session": message.sibling_session,
+        "speaker_entity_id": message.speaker_entity_id,
+        "conversation_id": str(conversation.id),
+        "conversation_title": conversation.title,
+        "memory_status": message.memory_status,
+        "status_set_by": message.status_set_by,
+        "status_set_at": message.status_set_at.isoformat() if message.status_set_at else None,
+    }
+    parts = [
+        _archive_attribution(item, ctx.entity_id, labels),
+        _format_stamp(message.created_at.isoformat(), None),
+        format_memory_origin(conversation.source or "native"),
+        _conversation_label(item),
+    ]
+    released = (
+        f"; {_describe_release(item, datetime.utcnow())}"
+        if message.memory_status == "released"
+        else ""
+    )
+    return f"- {str(message.id)[:8]} ({', '.join(parts)}{released}): {_first_line(message.content)}"
+
+
+async def save_memory(
+    ctx: MemoryToolContext,
+    content: str,
+    revises: Any = None,
+    cites: Any = None,
+    include_released: bool = False,
+) -> str:
     """
     Save a self-authored memory (reflection) into the entity's memory store.
 
     The reflection is stored alongside conversational memories and retrieved
     the same way (automatic relevance-based retrieval and memory_query),
     attributed as a reflection the entity saved.
+
+    `revises` and `cites` (issues #366, #368) link it to earlier memories:
+    what it corrects or updates, and what it is based on. Both may be given
+    in one save, so a correction can point at the page that shows the
+    error. Every id is checked before anything is written — any refusal
+    saves nothing, so a reflection never goes in with a broken link — and
+    the reply echoes each linked memory's header and first line. The links
+    are part of the reflection as written: fixed at save, never edited.
     """
     entity_id, conversation_id = ctx.entity_id, ctx.conversation_id
 
@@ -935,18 +1134,46 @@ async def save_memory(ctx: MemoryToolContext, content: str) -> str:
             "Consider splitting it into multiple memories or saving it as a note."
         )
 
+    revise_ids, error = _link_id_list(revises, "revises")
+    if error:
+        return f"Error: Nothing was saved. {error}"
+    cite_ids, error = _link_id_list(cites, "cites")
+    if error:
+        return f"Error: Nothing was saved. {error}"
+
     try:
         async with async_session_maker() as db:
+            revised, error = await _resolve_link_targets(
+                ctx, db, revise_ids, LINK_REVISES, bool(include_released)
+            )
+            if error:
+                return f"Error: Nothing was saved. revises: {error}"
+            cited, error = await _resolve_link_targets(
+                ctx, db, cite_ids, LINK_CITES, bool(include_released)
+            )
+            if error:
+                return f"Error: Nothing was saved. cites: {error}"
+            revised_ids = [str(message.id) for message, _ in revised]
+            cited_ids = [str(message.id) for message, _ in cited]
+
+            saved_at = datetime.utcnow()
             message = Message(
+                id=str(uuid.uuid4()),
                 conversation_id=conversation_id,
                 role=MessageRole.REFLECTION,
                 content=content,
+                created_at=saved_at,
                 speaker_entity_id=entity_id,
                 # The model composing this reflection, when the caller
                 # knows it (native tool loop); NULL over MCP (issue #321)
                 model=ctx.model,
             )
             db.add(message)
+            # The links go in with the reflection, in one commit: a
+            # reflection is never visible without the links it was saved with
+            stage_memory_links(
+                db, message.id, revises=revised_ids, cites=cited_ids, created_at=saved_at,
+            )
             await db.commit()
             await db.refresh(message)
 
@@ -958,20 +1185,36 @@ async def save_memory(ctx: MemoryToolContext, content: str) -> str:
                 created_at=message.created_at,
                 entity_id=entity_id,
                 model=ctx.model,
+                revises=revised_ids,
+                cites=cited_ids,
             )
 
             if not stored:
                 # Keep the SQL row out too, so we don't accumulate reflections
-                # that can never be retrieved
+                # that can never be retrieved (its links cascade with it)
                 await db.delete(message)
                 await db.commit()
                 return "Error: Failed to store the memory in the vector database"
 
-            return (
+            lines = [
                 f"Saved reflection as memory {str(message.id)[:8]}. "
                 "It will be retrievable in future conversations "
                 "(the current conversation is excluded from retrieval)."
-            )
+            ]
+            if revised or cited:
+                labels = _entity_labels()
+                if revised:
+                    lines.append("It revises:")
+                    lines.extend(_link_echo_line(ctx, m, c, labels) for m, c in revised)
+                if cited:
+                    lines.append("It cites:")
+                    lines.extend(_link_echo_line(ctx, m, c, labels) for m, c in cited)
+                lines.append(
+                    "Check that these are the memories you meant. The links are part of "
+                    "the reflection as written and cannot be changed; if one is wrong, a "
+                    "later reflection can revise this one."
+                )
+            return "\n".join(lines)
     except Exception as e:
         logger.error(f"Memory save error: {e}")
         return f"Error saving memory: {e}"
@@ -1271,6 +1514,7 @@ def _format_archive_item(
     header = (
         f"--- {marker}Memory {item['id'][:8]} ({', '.join(parts)}{flag_text}"
         f"{_model_display(item, include_model)}) ---"
+        + _link_markers(item.get("links"), item.get("role"), entity_id, entity_labels)
     )
     if item.get("in_context"):
         return [header, IN_CONTEXT_POINTER, ""]
@@ -1914,6 +2158,7 @@ async def neighbor_memories(
                 in_context_ids=in_context_ids,
                 live_conversation_id=live_conversation_id,
                 live_after=live_after,
+                entity_id=ctx.entity_id,
             )
             if window.get("archived"):
                 return (
@@ -2047,8 +2292,16 @@ async def _memory_query(
     )
 
 
-async def _memory_save(content: str) -> str:
-    return await save_memory(_context, content)
+async def _memory_save(
+    content: str,
+    revises: Any = None,
+    cites: Any = None,
+    include_released: bool = False,
+) -> str:
+    return await save_memory(
+        _context, content, revises=revises, cites=cites,
+        include_released=bool(include_released),
+    )
 
 
 async def _memory_mark(memory_id: str, undo: bool = False) -> str:
@@ -2221,7 +2474,19 @@ MEMORY_SAVE_DESCRIPTION = (
     "reflection you compose yourself—a conclusion, synthesis, or anything "
     "you want to remember. It is stored in your memory index and retrieved "
     "like any other memory, attributed as a reflection you saved. "
-    "It is not retrievable within the conversation where it was saved."
+    "It is not retrievable within the conversation where it was saved. "
+    "Optionally link it to earlier memories by id (6+ character prefixes, as "
+    "memory markers and the memory tools print them): 'revises' names your own "
+    "earlier memories it corrects or updates — a reflection you've changed your "
+    "mind about, or something you said that was wrong or is no longer true — and "
+    "'cites' names the memories it is based on, anyone's words included. Give "
+    "both in one save when a correction can point at the page that shows the "
+    "error. Nothing is edited: the earlier memory keeps its words and its place, "
+    "and from its next surfacing on it carries a pointer to this reflection; this "
+    "reflection carries its revises and sources lines wherever it surfaces. The "
+    "reply echoes each linked memory's header and first line so you can check "
+    "you named the one you meant; any id that doesn't resolve refuses the whole "
+    "save, so nothing goes in with a broken link. Links are fixed at save time."
 )
 
 MEMORY_SAVE_SCHEMA = {
@@ -2233,7 +2498,34 @@ MEMORY_SAVE_SCHEMA = {
                 "The memory to save, in your own words. "
                 f"Maximum {MAX_REFLECTION_LENGTH} characters."
             )
-        }
+        },
+        "revises": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Ids of your own earlier memories this reflection corrects, "
+                "supersedes, or marks outdated: your reflections, or things you said. "
+                "Not the human's words (cite those instead). "
+                f"At most {MAX_LINK_TARGETS}."
+            ),
+        },
+        "cites": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Ids of the memories this reflection is based on: anything in your "
+                "experience, the human's words included. Shown as a sources line "
+                "(ids, dates, who spoke) wherever the reflection surfaces. "
+                f"At most {MAX_LINK_TARGETS}."
+            ),
+        },
+        "include_released": {
+            "type": "boolean",
+            "description": (
+                "Allow revises / cites to name a released memory (refused by "
+                "default, as the readers skip them). Default false."
+            ),
+        },
     },
     "required": ["content"]
 }

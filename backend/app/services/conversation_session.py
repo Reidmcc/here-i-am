@@ -43,6 +43,7 @@ class MemoryEntry:
     pool: Optional[str] = None  # Candidate pool it was selected from: "human"/"ai" (role balance on), "all" (merged), None (not a semantic retrieval)
     origin: str = "native"  # Which experience formed this memory: "native" or "claude_code" (from the memory's conversation row; rendered in its marker)
     sibling_session: Optional[str] = None  # Sibling Claude Code session that authored this message, for inter-session deliveries (rendered in its marker)
+    annotation: Optional[str] = None  # Link marker lines (what it revises/cites, what revised/cited it), rendered at insertion and stored on its ConversationMemoryLink so reload reproduces them
 
 
 @dataclass
@@ -162,6 +163,7 @@ class ConversationSession:
             role=memory.role,
             origin=memory.origin,
             sibling_session=memory.sibling_session,
+            annotation=memory.annotation,
         )
         
         insertion_point = find_memory_insertion_point(self.conversation_context)

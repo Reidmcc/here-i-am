@@ -12,6 +12,7 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.models.conversation import Conversation
+    from app.models.memory_link import MemoryLink
 
 
 class MessageRole(str, enum.Enum):
@@ -88,6 +89,22 @@ class Message(Base):
     model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
+
+    # memory_save's pointers (issues #366, #368), in both directions: what
+    # this reflection revises or cites, and which reflections revise or
+    # cite this memory. Cascaded so a hard delete of either end takes the
+    # pointer with it (ON DELETE CASCADE covers databases that enforce it;
+    # these cover SQLite, which by default does not).
+    links_out: Mapped[List["MemoryLink"]] = relationship(
+        "MemoryLink",
+        foreign_keys="MemoryLink.reflection_id",
+        cascade="all, delete",
+    )
+    links_in: Mapped[List["MemoryLink"]] = relationship(
+        "MemoryLink",
+        foreign_keys="MemoryLink.target_id",
+        cascade="all, delete",
+    )
 
     @property
     def is_tool_exchange(self) -> bool:

@@ -482,7 +482,13 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
                 include_model=bool(arguments.get("include_model", False)),
             )
         if name == "memory_save":
-            return await memory_tools.save_memory(ctx, arguments.get("content", ""))
+            return await memory_tools.save_memory(
+                ctx,
+                arguments.get("content", ""),
+                revises=arguments.get("revises"),
+                cites=arguments.get("cites"),
+                include_released=bool(arguments.get("include_released", False)),
+            )
         if name == "memory_mark":
             return await memory_tools.mark_memory(
                 ctx, arguments.get("memory_id", ""), undo=bool(arguments.get("undo", False))
