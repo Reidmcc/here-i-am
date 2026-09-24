@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple
 from pinecone import Pinecone
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.config import settings
 from app.models import (
@@ -31,6 +32,10 @@ logger = logging.getLogger(__name__)
 # the entity's choice is attributed and reportable.
 STATUS_SET_BY_ENTITY = "entity"
 STATUS_SET_BY_RESEARCHER = "researcher"
+
+# "Not passed" for the notice builders' optional precomputed anchor, whose
+# None already means "the entity has never spoken".
+_ANCHOR_UNSET = object()
 VALID_STATUS_SETTERS = (STATUS_SET_BY_ENTITY, STATUS_SET_BY_RESEARCHER)
 
 # Only these roles are vectorized, so only they can be memories with a status
@@ -2012,54 +2017,82 @@ class MemoryService:
         exclude_conversation_id: Optional[str] = None,
     ) -> Optional[datetime]:
         """
-        The moment the entity's previous session began speaking: the
-        created_at of its first assistant message in the most recent other
-        conversation where it spoke. None when it has never spoken.
+        The "since your last session" boundary for the researcher-change
+        notices: the latest moment, across the entity's other conversations
+        where it has spoken, at which a session's notice check ran. None
+        when it has never spoken.
 
-        This is the "since your last session" boundary for the
-        researcher-change notice. A session's notice is injected just before
-        its first response, so anchoring on that response's time means a
-        change made before it was reported by that session and a change made
-        during it is reported by the next — each change once, and never
-        silently. Conversations without a response (an unspoken native tab,
-        a Claude Code session that only fired SessionStart) never had a
-        first turn to notify, so they cannot be the anchor.
+        Per conversation that moment is the start of the turn that carried
+        the notice — the last turn-starting row (a human message, or a
+        delivered inter-session letter) before the entity's first response
+        there, or the first response itself when nothing precedes it. A
+        session checks as that turn begins (natively just after the send
+        timestamp the human row carries; in Claude Code at SessionStart,
+        just before the first prompt is recorded), so each change lands
+        either before the anchor and was told by that session, or after it
+        and is told by the next. Anchoring on the response itself lost every
+        change made during a first turn, which in Claude Code lasts as long
+        as the agentic turn does.
+
+        The latest such moment, not the first response of the latest
+        speaker (issue #367's review): since fork adoption a standing room
+        keeps one conversation for weeks and speaks on nearly every tick,
+        so the latest speaker's first response is usually a room's birth,
+        and every new session would hear every change since then again.
+
+        Conversations without a response (an unspoken native tab, a Claude
+        Code session that only fired SessionStart) never had a first turn
+        to notify, so they cannot anchor. The residual window where a change
+        goes untold is the gap between the check and the recorded turn
+        start: none natively (the send timestamp comes first), and in Claude
+        Code the seconds between SessionStart and the first prompt hook —
+        longer in a CLI session opened well before its first prompt, or one
+        whose first turn was an unrecorded wakeup (then the first response
+        anchors).
         """
         # An inter-session letter is recorded as an assistant row too
         # (sibling_session set) but is a delivery, not a turn this
         # conversation's session took — it never carried a first-turn notice
         spoke = and_(
+            Message.role == MessageRole.ASSISTANT,
             Message.sibling_session.is_(None),
             or_(
                 Message.speaker_entity_id.is_(None),
                 Message.speaker_entity_id == entity_id,
             ),
         )
-        conditions = [
-            Message.role == MessageRole.ASSISTANT,
-            spoke,
-            self._entity_experience_clause(entity_id),
-        ]
+        conditions = [spoke, self._entity_experience_clause(entity_id)]
         if exclude_conversation_id:
             conditions.append(Message.conversation_id != str(exclude_conversation_id))
 
-        latest = (
-            select(Message.conversation_id)
+        first_responses = (
+            select(
+                Message.conversation_id.label("conversation_id"),
+                func.min(Message.created_at).label("responded_at"),
+            )
             .join(Conversation, Conversation.id == Message.conversation_id)
             .where(*conditions)
-            .order_by(Message.created_at.desc())
-            .limit(1)
+            .group_by(Message.conversation_id)
+            .subquery()
         )
-        row = (await db.execute(latest)).first()
-        if row is None:
-            return None
-
-        first_response = select(func.min(Message.created_at)).where(
-            Message.conversation_id == row[0],
-            Message.role == MessageRole.ASSISTANT,
-            spoke,
+        starter = aliased(Message)
+        turn_start = (
+            select(func.max(starter.created_at))
+            .where(
+                starter.conversation_id == first_responses.c.conversation_id,
+                starter.created_at < first_responses.c.responded_at,
+                or_(
+                    starter.role == MessageRole.HUMAN,
+                    starter.sibling_session.isnot(None),
+                ),
+            )
+            .correlate(first_responses)
+            .scalar_subquery()
         )
-        return (await db.execute(first_response)).scalar_one_or_none()
+        anchors = select(
+            func.max(func.coalesce(turn_start, first_responses.c.responded_at))
+        )
+        return (await db.execute(anchors)).scalar_one_or_none()
 
     async def get_researcher_status_changes(
         self,
@@ -2106,6 +2139,7 @@ class MemoryService:
         db: AsyncSession,
         entity_id: str,
         exclude_conversation_id: Optional[str] = None,
+        anchor: Any = _ANCHOR_UNSET,
     ) -> Optional[str]:
         """
         The session-start notice of researcher-set status changes since the
@@ -2115,9 +2149,10 @@ class MemoryService:
         made or reversed on its behalf, so it must never be swallowed —
         callers treat a failure here as loud, not as "no changes".
         """
-        anchor = await self.get_last_session_anchor(
-            db, entity_id, exclude_conversation_id=exclude_conversation_id
-        )
+        if anchor is _ANCHOR_UNSET:
+            anchor = await self.get_last_session_anchor(
+                db, entity_id, exclude_conversation_id=exclude_conversation_id
+            )
         changes = await self.get_researcher_status_changes(db, entity_id, since=anchor)
         if not changes:
             return None
@@ -2196,16 +2231,19 @@ class MemoryService:
         db: AsyncSession,
         entity_id: str,
         exclude_conversation_id: Optional[str] = None,
+        anchor: Any = _ANCHOR_UNSET,
     ) -> Optional[str]:
         """
         The session-start notice of conversations archived or unarchived
         since the entity's last session, or None when there are none — the
         same anchor, and the same once-only and never-swallowed rules, as
-        build_status_change_notice.
+        build_status_change_notice. `anchor` (both builders) takes one
+        computed by the caller, so notices built together agree on it.
         """
-        anchor = await self.get_last_session_anchor(
-            db, entity_id, exclude_conversation_id=exclude_conversation_id
-        )
+        if anchor is _ANCHOR_UNSET:
+            anchor = await self.get_last_session_anchor(
+                db, entity_id, exclude_conversation_id=exclude_conversation_id
+            )
         changes = await self.get_researcher_archive_changes(db, entity_id, since=anchor)
         if not changes:
             return None
@@ -2229,36 +2267,47 @@ class MemoryService:
 
         Never raises. Silence means "nothing changed", so each check that
         fails is reported in place of its notice, and one failing doesn't
-        hide the other.
+        hide the other. The anchor is computed once for both, so they agree
+        on what "since your last session" means; if it fails, both say so.
         """
-        notices: List[str] = []
-        try:
-            notice = await self.build_status_change_notice(
-                db, entity_id, exclude_conversation_id=exclude_conversation_id
-            )
-        except Exception as e:
-            logger.error(f"[MEMORY] Status-change notice failed: {e}")
-            notice = (
+        def status_failed(error: Exception) -> str:
+            return (
                 "[MEMORY STATUS NOTICE] Could not check for researcher-set "
-                f"memory status changes since your last session ({e}). If it "
-                "matters, ask the researcher, or review with memory_query "
+                f"memory status changes since your last session ({error}). If "
+                "it matters, ask the researcher, or review with memory_query "
                 'mode="released".'
             )
-        if notice:
-            notices.append(notice)
+
+        def archive_failed(error: Exception) -> str:
+            return (
+                "[MEMORY ARCHIVE NOTICE] Could not check whether the researcher "
+                "withdrew or restored any of your conversations since your last "
+                f"session ({error}). If it matters, ask the researcher."
+            )
+
         try:
-            notice = await self.build_archive_change_notice(
+            anchor = await self.get_last_session_anchor(
                 db, entity_id, exclude_conversation_id=exclude_conversation_id
             )
         except Exception as e:
-            logger.error(f"[MEMORY] Archive-change notice failed: {e}")
-            notice = (
-                "[MEMORY ARCHIVE NOTICE] Could not check whether the researcher "
-                "withdrew or restored any of your conversations since your last "
-                f"session ({e}). If it matters, ask the researcher."
-            )
-        if notice:
-            notices.append(notice)
+            logger.error(f"[MEMORY] Last-session anchor failed: {e}")
+            return [status_failed(e), archive_failed(e)]
+
+        notices: List[str] = []
+        for build, failed, label in (
+            (self.build_status_change_notice, status_failed, "Status"),
+            (self.build_archive_change_notice, archive_failed, "Archive"),
+        ):
+            try:
+                notice = await build(
+                    db, entity_id, exclude_conversation_id=exclude_conversation_id,
+                    anchor=anchor,
+                )
+            except Exception as e:
+                logger.error(f"[MEMORY] {label}-change notice failed: {e}")
+                notice = failed(e)
+            if notice:
+                notices.append(notice)
         return notices
 
     async def delete_memory(self, message_id: str, entity_id: Optional[str] = None) -> bool:

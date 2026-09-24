@@ -308,6 +308,57 @@ class TestArchiveChanges:
         assert "was restored to your memory" in notice
         assert "withdrawn from your memory" not in notice.split("\n")[1]
 
+    async def test_a_standing_room_that_keeps_talking_does_not_repeat_it(
+        self, db, entities_configured
+    ):
+        """The PR #369 review's probe. Since fork adoption a standing room
+        keeps one conversation for weeks and speaks on nearly every tick, so
+        it is usually the latest speaker; anchoring on *its* first response
+        anchored on its birth, and every new session heard every change
+        since. The anchor is the latest session start that spoke."""
+        porch = await make_conversation(db, created_at=ago(days=10))
+        await make_message(db, porch, role=MessageRole.HUMAN, created_at=ago(days=10))
+        await make_message(db, porch, created_at=ago(days=10, minutes=-1))
+        await make_conversation(
+            db, created_at=ago(days=6), is_archived=True, archive_changed_at=ago(days=5)
+        )
+        w1 = await make_conversation(db, created_at=ago(hours=2))
+        await make_message(db, w1, role=MessageRole.HUMAN, created_at=ago(hours=2))
+        await make_message(db, w1, created_at=ago(hours=2, minutes=-5))
+        # The porch is still talking, and so is the latest speaker
+        await make_message(db, porch, role=MessageRole.HUMAN, created_at=ago(minutes=2))
+        await make_message(db, porch, created_at=ago(minutes=1))
+
+        w2 = await make_conversation(db)
+        assert await memory_service.build_archive_change_notice(
+            db, ENTITY, exclude_conversation_id=w2.id
+        ) is None
+
+    async def test_a_change_during_a_first_turn_is_not_lost(self, db, entities_configured):
+        """The review's second probe: a session checks for changes when its
+        first turn begins (the native send, or Claude Code's SessionStart
+        just before the first prompt) but first *responds* at the end of
+        that turn — minutes later for an agentic one. A change landing in
+        between was after the check and before the anchor, so nobody was
+        told. The anchor is where the turn that carried the notice began."""
+        w1 = await make_conversation(db, created_at=ago(hours=1))
+        await make_message(db, w1, role=MessageRole.HUMAN, created_at=ago(hours=1))
+        # W1's check ran as that prompt arrived; then, mid-turn, an archive
+        await make_conversation(
+            db, created_at=ago(days=6), is_archived=True, archive_changed_at=ago(minutes=40)
+        )
+        # A reflection saved during the turn doesn't start a turn
+        await make_message(
+            db, w1, role=MessageRole.REFLECTION, created_at=ago(minutes=35)
+        )
+        await make_message(db, w1, created_at=ago(minutes=30))
+
+        w2 = await make_conversation(db)
+        notice = await memory_service.build_archive_change_notice(
+            db, ENTITY, exclude_conversation_id=w2.id
+        )
+        assert notice is not None and "was withdrawn from your memory" in notice
+
     async def test_archive_before_the_anchor_is_not_reported(self, db, entities_configured):
         await make_conversation(db, is_archived=True, archive_changed_at=ago(days=2))
         spoken = await make_conversation(db, created_at=ago(days=1))
@@ -376,6 +427,30 @@ class TestArchiveNoticeText:
         assert "13 whole conversations" in lines[0]
         assert len([line for line in lines if line.startswith("- A conversation")]) == 10
         assert "- And 3 more: 2 withdrawn, 1 restored, 9 messages in all." in lines
+
+    def test_long_notes_are_bounded_by_characters_not_just_lines(self):
+        """Ten lines of 500-char notes would run ~6.5 KB (PR #369 review):
+        the listing stops at the character budget and counts the rest,
+        saying how many notes went unshown. One line is always listed."""
+        noted = {
+            "is_archived": True, "source": "native", "message_count": 4,
+            "archive_changed_at": datetime(2026, 9, 24, 13, 5),
+            "first_message_at": datetime(2026, 8, 3), "last_message_at": datetime(2026, 8, 4),
+            "archive_note": "n" * 500,
+        }
+        notice = format_archive_change_notice([noted] * 10, max_chars=3000)
+        lines = notice.split("\n")
+        listed = [line for line in lines if line.startswith("- A conversation")]
+        assert 1 <= len(listed) < 10
+        assert sum(len(line) for line in listed) <= 3000
+        assert (
+            f"- And {10 - len(listed)} more: {10 - len(listed)} withdrawn, 0 restored, "
+            f"{4 * (10 - len(listed))} messages in all; {10 - len(listed)} of them "
+            "with a note from the researcher, not shown here."
+        ) in lines
+
+        only = format_archive_change_notice([noted], max_chars=10)
+        assert "n" * 500 in only and "more:" not in only
 
 
 # ============================================================
@@ -481,6 +556,26 @@ class TestNativeDelivery:
         [notice] = session.conversation_context
         assert "[MEMORY ARCHIVE NOTICE] Could not check" in notice["content"]
         assert "db went away" in notice["content"]
+
+    async def test_one_anchor_for_both_and_its_failure_is_said_twice(
+        self, db, entities_configured, monkeypatch
+    ):
+        anchor = AsyncMock(return_value=None)
+        monkeypatch.setattr(memory_service, "get_last_session_anchor", anchor)
+        current = await make_conversation(db)
+        assert await memory_service.build_researcher_change_notices(
+            db, ENTITY, exclude_conversation_id=current.id
+        ) == []
+        assert anchor.await_count == 1
+
+        anchor.side_effect = RuntimeError("no boundary")
+        notices = await memory_service.build_researcher_change_notices(
+            db, ENTITY, exclude_conversation_id=current.id
+        )
+        assert len(notices) == 2
+        assert notices[0].startswith("[MEMORY STATUS NOTICE] Could not check")
+        assert notices[1].startswith("[MEMORY ARCHIVE NOTICE] Could not check")
+        assert all("no boundary" in notice for notice in notices)
 
     async def test_a_broken_wrapper_still_speaks(self, db, entities_configured, monkeypatch):
         """The wrapper promises never to raise; if it breaks that promise

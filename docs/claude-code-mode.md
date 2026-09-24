@@ -563,10 +563,20 @@ tool result and goes to disk over 50 KB.
   pinned/released status on any of the entity's memories since its last
   session (`memory_service.build_status_change_notice`): one line per
   change with the short id, the status the memory now has, when, and a
-  snippet. "Last session" is anchored on the entity's first response in its
-  most recent other conversation, native or Claude Code, so each change is
-  reported once and never silently dropped; a session that never spoke is
-  not an anchor. After it, against the same anchor, a `[MEMORY ARCHIVE
+  snippet. "Last session" is the latest moment, across the entity's other
+  conversations where it has spoken (native or Claude Code), at which a
+  session's check ran: per conversation, the start of the turn that
+  carried the notice — the last human prompt or delivered letter before
+  its first response. So each change is reported once; a session that
+  never spoke is not an anchor. Two earlier shapes failed (PR #369's
+  review): the first response of whichever conversation spoke *last* is,
+  since fork adoption, usually a standing room's birth weeks ago, so every
+  new session re-heard every change; and the first response itself came
+  after a whole agentic first turn, so a change made during that turn was
+  told to nobody. The residual window is the seconds between this block's
+  SessionStart check and the first prompt hook (measured ~3 s in the
+  desktop app for #359; longer for a CLI session opened well before its
+  first prompt). After it, against the same anchor, a `[MEMORY ARCHIVE
   NOTICE]` lists the conversations of the entity's experience the
   researcher archived or unarchived since then
   (`memory_service.build_archive_change_notice`, issue #367): per
@@ -576,9 +586,14 @@ tool result and goes to disk over 50 KB.
   any content. Archiving withdraws a whole conversation from every memory
   surface, and from inside a withdrawn conversation is indistinguishable
   from one that never happened; the notice says the gap exists, not what
-  was in it. Past ten conversations the rest are counted in one line, so
-  the block stays inside the hook-stdout budget. Both notices come from
-  `build_researcher_change_notices`, which never raises: inline, never
+  was in it. Conversations are listed up to ten lines or 3,000 characters
+  of listing (`ARCHIVE_NOTICE_LIST_CHARS`; a researcher's note can run to
+  500) and the rest are counted in one line, with how many carried a note.
+  That keeps the notice small; it doesn't guarantee the whole identity
+  block fits the hook-stdout budget, and when it doesn't the hook spills
+  it behind its usual pointer. Both notices come from
+  `build_researcher_change_notices`, which computes the anchor once and
+  never raises: inline, never
   bulk, and a failed check is reported in place of its own notice without
   hiding the other — silence is reserved for "nothing changed". Not
   re-sent on a plain resume or after a compaction. The same notices are

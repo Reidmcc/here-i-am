@@ -285,15 +285,21 @@ class TestLastSessionAnchor:
         await make_message(db, conversation, role=MessageRole.HUMAN)
         assert await memory_service.get_last_session_anchor(db, ENTITY) is None
 
-    async def test_anchor_is_first_response_of_latest_spoken_conversation(
+    async def test_anchor_is_where_the_latest_spoken_first_turn_began(
         self, db, entities_configured
     ):
+        """The notice check runs as a session's first turn begins, so the
+        anchor is that turn's human message, not the response that ended it
+        (issue #367's review: a change made mid-turn was otherwise told to
+        nobody). Past first-turn times are covered in test_archive_notice."""
         older = await make_conversation(db, created_at=at(days=-3))
         await make_message(db, older, created_at=at(days=-3, minutes=1))
         await make_message(db, older, created_at=at(days=-3, minutes=5))
         latest = await make_conversation(db, created_at=at(days=-1))
-        await make_message(db, latest, role=MessageRole.HUMAN, created_at=at(days=-1))
-        first_response = await make_message(db, latest, created_at=at(days=-1, minutes=2))
+        first_prompt = await make_message(
+            db, latest, role=MessageRole.HUMAN, created_at=at(days=-1)
+        )
+        await make_message(db, latest, created_at=at(days=-1, minutes=2))
         await make_message(db, latest, created_at=at(days=-1, minutes=9))
         # A newer conversation the entity never answered in is not an anchor:
         # it never had a first turn to carry a notice
@@ -301,7 +307,7 @@ class TestLastSessionAnchor:
         await make_message(db, unspoken, role=MessageRole.HUMAN, created_at=at(hours=-1))
 
         anchor = await memory_service.get_last_session_anchor(db, ENTITY)
-        assert anchor == first_response.created_at
+        assert anchor == first_prompt.created_at
 
     async def test_excludes_the_current_conversation(self, db, entities_configured):
         older = await make_conversation(db, created_at=at(days=-3))
@@ -378,8 +384,8 @@ class TestResearcherStatusChanges:
         assert [c["id"] for c in everything] == [old_override.id, cleared.id, released.id]
 
     async def test_notice_reports_each_change_once(self, db, entities_configured):
-        """A change made before a session's first response is reported by
-        that session; a change made during it is reported by the next; a
+        """A change made before a session's first turn began is reported by
+        that session; a change made after it is reported by the next; a
         change is never reported twice or dropped."""
         previous = await make_conversation(db, created_at=at(days=-2))
         await make_message(db, previous, created_at=at(days=-2, minutes=1))

@@ -393,7 +393,7 @@ export async function loadConversation(id) {
 // (its span, size and source — never its title or content); this optional
 // note is quoted in that notice. Leaving it empty is a choice too.
 const ARCHIVE_NOTE_FIELD = `
-            <p>The entity will be told a conversation was withdrawn (its dates and size, not its title or content).</p>
+            <p>At its next session the entity will be told a conversation was withdrawn (its dates and size, not its title or content), unless you delete it before then: deletion leaves no notice.</p>
             <div class="form-group">
                 <label for="archive-note">Note to the entity (optional)</label>
                 <textarea id="archive-note" rows="2" maxlength="500"
