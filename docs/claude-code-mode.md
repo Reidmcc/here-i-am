@@ -566,10 +566,24 @@ tool result and goes to disk over 50 KB.
   snippet. "Last session" is anchored on the entity's first response in its
   most recent other conversation, native or Claude Code, so each change is
   reported once and never silently dropped; a session that never spoke is
-  not an anchor. Inline, never bulk, and a failed check is reported in
-  place of the notice — silence is reserved for "nothing changed". Not
-  re-sent on a plain resume or after a compaction. The same notice is
-  injected on the entity's first turn of a native conversation.
+  not an anchor. After it, against the same anchor, a `[MEMORY ARCHIVE
+  NOTICE]` lists the conversations of the entity's experience the
+  researcher archived or unarchived since then
+  (`memory_service.build_archive_change_notice`, issue #367): per
+  conversation its span of dates, how many messages, `via Here I Am` /
+  `via Claude Code`, "withdrawn from" or "restored to your memory", when,
+  and the researcher's note if they left one — never the title and never
+  any content. Archiving withdraws a whole conversation from every memory
+  surface, and from inside a withdrawn conversation is indistinguishable
+  from one that never happened; the notice says the gap exists, not what
+  was in it. Past ten conversations the rest are counted in one line, so
+  the block stays inside the hook-stdout budget. Both notices come from
+  `build_researcher_change_notices`, which never raises: inline, never
+  bulk, and a failed check is reported in place of its own notice without
+  hiding the other — silence is reserved for "nothing changed". Not
+  re-sent on a plain resume or after a compaction. The same notices are
+  injected, as one context-only message, on the entity's first turn of a
+  native conversation.
 - On a plain resume (`session-start` for a session that already has a
   conversation) the identity block is *not* re-sent — the transcript
   already carries it. A resume of a session with no row (it never spoke, or

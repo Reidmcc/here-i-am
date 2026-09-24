@@ -389,6 +389,18 @@ export async function loadConversation(id) {
 // Archive/Rename/Delete Functions
 // =========================================================================
 
+// The entity is told at its next session that a conversation was withdrawn
+// (its span, size and source — never its title or content); this optional
+// note is quoted in that notice. Leaving it empty is a choice too.
+const ARCHIVE_NOTE_FIELD = `
+            <p>The entity will be told a conversation was withdrawn (its dates and size, not its title or content).</p>
+            <div class="form-group">
+                <label for="archive-note">Note to the entity (optional)</label>
+                <textarea id="archive-note" rows="2" maxlength="500"
+                    placeholder="Leave empty to give only the facts"></textarea>
+            </div>
+`;
+
 /**
  * Show archive modal for a conversation
  * @param {string} conversationId - Conversation ID
@@ -403,6 +415,7 @@ export function showArchiveModalForConversation(conversationId, conversationTitl
             <p><strong>${escapeHtml(conversationTitle || 'Untitled')}</strong></p>
             <p>This conversation will be hidden from the main list and its memories will be excluded from retrieval.</p>
             <p>You can restore it later from the Archived section.</p>
+            ${ARCHIVE_NOTE_FIELD}
         `;
     }
 
@@ -417,8 +430,10 @@ export async function archiveConversation() {
     const conversationId = state.pendingArchiveId || state.currentConversationId;
     if (!conversationId) return;
 
+    const reason = document.getElementById('archive-note')?.value.trim() || null;
+
     try {
-        await api.archiveConversation(conversationId);
+        await api.archiveConversation(conversationId, reason);
 
         // Remove from list
         state.conversations = state.conversations.filter(c => c.id !== conversationId);
@@ -574,8 +589,9 @@ export async function loadArchivedConversations() {
                 <div class="archived-item-info">
                     <div class="archived-item-title">${escapeHtml(conv.title || 'Untitled')}</div>
                     <div class="archived-item-meta">
-                        ${conv.message_count} messages &middot; ${new Date(conv.created_at).toLocaleDateString()}
+                        ${conv.message_count} messages &middot; ${new Date(conv.created_at).toLocaleDateString()}${conv.archive_changed_at ? ` &middot; archived ${new Date(conv.archive_changed_at).toLocaleDateString()}` : ''}
                     </div>
+                    ${conv.archive_note ? `<div class="archived-item-note">Note to the entity: ${escapeHtml(conv.archive_note)}</div>` : ''}
                 </div>
                 <div class="archived-item-actions">
                     <button class="unarchive-btn" onclick="app.unarchiveConversation('${conv.id}')">Restore</button>

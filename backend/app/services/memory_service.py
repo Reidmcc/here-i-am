@@ -17,7 +17,10 @@ from app.models import (
     Message,
     MessageRole,
 )
-from app.services.memory_context import format_status_change_notice
+from app.services.memory_context import (
+    format_archive_change_notice,
+    format_status_change_notice,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2123,6 +2126,140 @@ class MemoryService:
             f"entity={entity_id} since {anchor.isoformat() if anchor else 'ever'}"
         )
         return format_status_change_notice(changes)
+
+    async def get_researcher_archive_changes(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        since: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Conversations of this entity's experience whose archive state
+        changed, optionally only after `since`, oldest change first (issue
+        #367). Each dict carries the current state, when and with what note
+        it changed, the conversation's source, and its span and size in
+        memory messages — deliberately no title and no content.
+
+        Every archive change is the researcher's (only the archive routes
+        write is_archived), so unlike status changes there is no setter to
+        filter on. Multi-entity conversations reach every participant
+        through _entity_experience_clause.
+        """
+        conditions = [
+            Conversation.archive_changed_at.isnot(None),
+            self._entity_experience_clause(entity_id),
+        ]
+        if since is not None:
+            conditions.append(Conversation.archive_changed_at > since)
+        conversations = (await db.execute(
+            select(Conversation)
+            .where(*conditions)
+            .order_by(Conversation.archive_changed_at.asc(), Conversation.id.asc())
+        )).scalars().all()
+        if not conversations:
+            return []
+
+        spans = {
+            row[0]: row[1:]
+            for row in (await db.execute(
+                select(
+                    Message.conversation_id,
+                    func.min(Message.created_at),
+                    func.max(Message.created_at),
+                    func.count(Message.id),
+                )
+                .where(
+                    Message.conversation_id.in_([c.id for c in conversations]),
+                    Message.role.in_(MEMORY_ROLES),
+                )
+                .group_by(Message.conversation_id)
+            )).all()
+        }
+        changes = []
+        for conversation in conversations:
+            first_at, last_at, message_count = spans.get(conversation.id, (None, None, 0))
+            changes.append({
+                "id": conversation.id,
+                "is_archived": bool(conversation.is_archived),
+                "archive_changed_at": conversation.archive_changed_at,
+                "archive_note": conversation.archive_note,
+                "source": conversation.source or "native",
+                "created_at": conversation.created_at,
+                "first_message_at": first_at,
+                "last_message_at": last_at,
+                "message_count": message_count,
+            })
+        return changes
+
+    async def build_archive_change_notice(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        exclude_conversation_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        The session-start notice of conversations archived or unarchived
+        since the entity's last session, or None when there are none — the
+        same anchor, and the same once-only and never-swallowed rules, as
+        build_status_change_notice.
+        """
+        anchor = await self.get_last_session_anchor(
+            db, entity_id, exclude_conversation_id=exclude_conversation_id
+        )
+        changes = await self.get_researcher_archive_changes(db, entity_id, since=anchor)
+        if not changes:
+            return None
+        logger.info(
+            f"[MEMORY] Archive notice: {len(changes)} archive change(s) for "
+            f"entity={entity_id} since {anchor.isoformat() if anchor else 'ever'}"
+        )
+        return format_archive_change_notice(changes)
+
+    async def build_researcher_change_notices(
+        self,
+        db: AsyncSession,
+        entity_id: str,
+        exclude_conversation_id: Optional[str] = None,
+    ) -> List[str]:
+        """
+        Every session-start notice of a change the researcher made to the
+        entity's memory since its last session — memory status overrides,
+        then archived/unarchived conversations — for the native first turn
+        and the Claude Code identity block to deliver the same way.
+
+        Never raises. Silence means "nothing changed", so each check that
+        fails is reported in place of its notice, and one failing doesn't
+        hide the other.
+        """
+        notices: List[str] = []
+        try:
+            notice = await self.build_status_change_notice(
+                db, entity_id, exclude_conversation_id=exclude_conversation_id
+            )
+        except Exception as e:
+            logger.error(f"[MEMORY] Status-change notice failed: {e}")
+            notice = (
+                "[MEMORY STATUS NOTICE] Could not check for researcher-set "
+                f"memory status changes since your last session ({e}). If it "
+                "matters, ask the researcher, or review with memory_query "
+                'mode="released".'
+            )
+        if notice:
+            notices.append(notice)
+        try:
+            notice = await self.build_archive_change_notice(
+                db, entity_id, exclude_conversation_id=exclude_conversation_id
+            )
+        except Exception as e:
+            logger.error(f"[MEMORY] Archive-change notice failed: {e}")
+            notice = (
+                "[MEMORY ARCHIVE NOTICE] Could not check whether the researcher "
+                "withdrew or restored any of your conversations since your last "
+                f"session ({e}). If it matters, ask the researcher."
+            )
+        if notice:
+            notices.append(notice)
+        return notices
 
     async def delete_memory(self, message_id: str, entity_id: Optional[str] = None) -> bool:
         """

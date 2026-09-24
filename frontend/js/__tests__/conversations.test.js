@@ -15,6 +15,7 @@ import {
     unarchiveConversation,
     deleteConversation,
     showArchiveModalForConversation,
+    loadArchivedConversations,
     renderConversationList,
 } from '../modules/conversations.js';
 
@@ -315,7 +316,7 @@ describe('Conversations Module', () => {
 
             await archiveConversation();
 
-            expect(window.api.archiveConversation).toHaveBeenCalledWith('conv-123');
+            expect(window.api.archiveConversation).toHaveBeenCalledWith('conv-123', null);
         });
 
         it('should remove conversation from state.conversations', async () => {
@@ -336,7 +337,19 @@ describe('Conversations Module', () => {
 
             await archiveConversation();
 
-            expect(window.api.archiveConversation).toHaveBeenCalledWith('conv-123');
+            expect(window.api.archiveConversation).toHaveBeenCalledWith('conv-123', null);
+        });
+
+        it('should pass the note to the entity, trimmed, when one is written', async () => {
+            showArchiveModalForConversation('conv-123', 'Test Title');
+            document.getElementById('archive-note').value = '  Something went wrong here.  ';
+            window.api.archiveConversation = vi.fn(() => Promise.resolve());
+
+            await archiveConversation();
+
+            expect(window.api.archiveConversation).toHaveBeenCalledWith(
+                'conv-123', 'Something went wrong here.'
+            );
         });
 
         it('should clear current conversation if archived', async () => {
@@ -407,6 +420,30 @@ describe('Conversations Module', () => {
 
             const modalBody = document.querySelector('#archive-modal .modal-body');
             expect(modalBody.innerHTML).toContain('Test Title');
+        });
+
+        it('should offer an empty note field and say what the entity will be told', () => {
+            showArchiveModalForConversation('conv-123', 'Test Title');
+
+            const modalBody = document.querySelector('#archive-modal .modal-body');
+            expect(modalBody.textContent).toContain('not its title or content');
+            expect(document.getElementById('archive-note').value).toBe('');
+        });
+    });
+
+    describe('loadArchivedConversations', () => {
+        it('should show the note left for the entity, escaped', async () => {
+            window.api.listArchivedConversations = vi.fn(() => Promise.resolve([{
+                id: 'conv-1', title: 'T', message_count: 3,
+                created_at: '2026-09-01T00:00:00', archive_changed_at: '2026-09-24T12:00:00',
+                archive_note: '<b>why</b>',
+            }]));
+
+            await loadArchivedConversations();
+
+            const note = mockElements.archivedList.querySelector('.archived-item-note');
+            expect(note.textContent).toBe('Note to the entity: <b>why</b>');
+            expect(mockElements.archivedList.innerHTML).toContain('archived ');
         });
     });
 

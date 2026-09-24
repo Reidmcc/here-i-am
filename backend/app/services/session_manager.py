@@ -35,7 +35,10 @@ from app.services.attachment_service import build_persistable_content
 from app.services.context_tools import set_context_tool_session
 from app.services.conversation_session import ConversationSession, MemoryEntry
 from app.services.llm_service import llm_service
-from app.services.memory_context import format_memory_as_context_message
+from app.services.memory_context import (
+    format_memory_as_context_message,
+    format_researcher_change_check_failure,
+)
 from app.services.memory_service import memory_service
 from app.services.memory_tools import (
     MEMORY_RESULT_STAMPING_TOOLS,
@@ -760,37 +763,33 @@ class SessionManager:
         self, session: ConversationSession, db: AsyncSession
     ) -> None:
         """
-        On the responding entity's first turn, tell it about memory status
-        changes the researcher made since its last session
-        (memory_service.build_status_change_notice). Silent when there are
-        none.
+        On the responding entity's first turn, tell it about changes the
+        researcher made to its memory since its last session — memory status
+        overrides and archived/unarchived conversations
+        (memory_service.build_researcher_change_notices). Silent when there
+        are none.
 
         The notice is a context-only message like [CONTEXT NOTICE]: not
         persisted, not vectorized, absent from the [MEMORY] markers. It is
         therefore not rebuilt on a session reload — a one-time notice, at
         the cost of one prompt-cache re-write when a conversation that
-        carried one is reloaded. Rare by design: overrides are the
-        researcher's emergency option. A failure is reported in place of the
-        notice rather than swallowed, because silence here means "nothing
-        changed".
+        carried one is reloaded. Rare by design: overrides and archiving are
+        the researcher's emergency options. A failed check is reported in
+        place of its notice rather than swallowed, because silence here
+        means "nothing changed".
         """
         try:
-            notice = await memory_service.build_status_change_notice(
+            notices = await memory_service.build_researcher_change_notices(
                 db, session.entity_id, exclude_conversation_id=session.conversation_id
             )
         except Exception as e:
-            logger.error(f"[MEMORY] Status-change notice failed: {e}")
-            notice = (
-                "[MEMORY STATUS NOTICE] Could not check for researcher-set "
-                f"memory status changes since your last session ({e}). If it "
-                "matters, ask the researcher, or review with memory_query "
-                'mode="released".'
-            )
-        if not notice:
+            logger.error(f"[MEMORY] Researcher-change notices failed: {e}")
+            notices = [format_researcher_change_check_failure(e)]
+        if not notices:
             return
         session.conversation_context.append({
             "role": "user",
-            "content": notice,
+            "content": "\n\n".join(notices),
             "is_context_notice": True,
         })
         logger.info("[MEMORY] Status notice: injected researcher-change notice on first turn")

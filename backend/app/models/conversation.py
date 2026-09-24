@@ -55,6 +55,15 @@ class Conversation(Base):
     entity_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     # Archived conversations are hidden from the main list and excluded from memory retrieval
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    # When is_archived last changed, and the researcher's optional note on
+    # that change (issue #367). The entity is told about every change since
+    # its last session, because from inside a withdrawn conversation looks
+    # exactly like one that never happened. No "by" column: only the
+    # archive/unarchive routes write is_archived, so every change is the
+    # researcher's. NULL = unchanged since before this was recorded; never
+    # backfilled.
+    archive_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    archive_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Imported conversations are hidden from the conversation list but their messages are stored as memories
     is_imported: Mapped[bool] = mapped_column(Boolean, default=False)
     # Per-entity system prompts (JSON: { entity_id: system_prompt, ... })

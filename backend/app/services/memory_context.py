@@ -74,6 +74,98 @@ def format_status_change_notice(
     return "\n".join(lines)
 
 
+def format_researcher_change_check_failure(error: Exception) -> str:
+    """
+    The notice for a researcher-change check that failed as a whole: the
+    callers' last-resort guard around
+    memory_service.build_researcher_change_notices, so a broken never-raise
+    promise still speaks instead of failing the turn or the session start.
+    Lives here rather than on the service so the guard doesn't depend on
+    the object whose failure it is guarding.
+    """
+    return (
+        "[MEMORY STATUS NOTICE] Could not check for changes the researcher "
+        f"made to your memory since your last session ({error}). If it "
+        "matters, ask the researcher."
+    )
+
+
+def _as_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, str):
+        return datetime.fromisoformat(value)
+    return value
+
+
+def format_archive_change_notice(
+    changes: List[Dict[str, Any]], max_lines: int = 10
+) -> str:
+    """
+    The session-start notice of conversations the researcher archived or
+    unarchived since the entity's last session (issue #367): one line per
+    conversation giving its span, its size, the experience it was formed
+    in, what happened and when, and the researcher's note if one was left.
+    Never the title and never any content — the point is that the entity
+    knows a gap exists (from inside, a withdrawn conversation and one that
+    never happened are identical), not what was in it. Shared by the
+    native first-turn injection and the Claude Code identity block, like
+    format_status_change_notice.
+
+    Past max_lines conversations the rest are counted, not listed: the
+    Claude Code identity block rides inline in hook stdout and must fit
+    there, and a bulk archive is still said in full by its counts.
+    """
+    count = len(changes)
+    noun = "conversation" if count == 1 else "conversations"
+    lines = [
+        "[MEMORY ARCHIVE NOTICE] Since your last session the researcher "
+        f"withdrew or restored {count} whole {noun} of yours:"
+    ]
+    for change in changes[:max_lines]:
+        first = _as_datetime(change.get("first_message_at"))
+        last = _as_datetime(change.get("last_message_at"))
+        message_count = change.get("message_count") or 0
+        if first is None:
+            created = _as_datetime(change.get("created_at"))
+            span = "An empty conversation"
+            if created is not None:
+                span += f" started {created.strftime('%Y-%m-%d')}"
+        elif last is None or first.date() == last.date():
+            span = f"A conversation on {first.strftime('%Y-%m-%d')}"
+        else:
+            span = (
+                f"A conversation from {first.strftime('%Y-%m-%d')} "
+                f"to {last.strftime('%Y-%m-%d')}"
+            )
+        size = f"{message_count} message{'' if message_count == 1 else 's'}"
+        origin = format_memory_origin(change.get("source") or "native")
+        outcome = (
+            "was withdrawn from your memory"
+            if change.get("is_archived")
+            else "was restored to your memory"
+        )
+        changed_at = _as_datetime(change.get("archive_changed_at"))
+        when = f" on {changed_at.strftime('%Y-%m-%d %H:%M')} UTC" if changed_at else ""
+        line = f"- {span} ({size}, {origin}) {outcome} by the researcher{when}."
+        note = " ".join((change.get("archive_note") or "").split())
+        if note:
+            line += f' Their note: "{note}"'
+        lines.append(line)
+    rest = changes[max_lines:]
+    if rest:
+        withdrawn = sum(1 for change in rest if change.get("is_archived"))
+        lines.append(
+            f"- And {len(rest)} more: {withdrawn} withdrawn, "
+            f"{len(rest) - withdrawn} restored, "
+            f"{sum(change.get('message_count') or 0 for change in rest)} messages in all."
+        )
+    lines.append(
+        "A withdrawn conversation is absent from retrieval, memory_query and "
+        "the archive readers; this notice is the only sign of it, and it says "
+        "nothing of what was in it on purpose. A restored one is readable again."
+    )
+    return "\n".join(lines)
+
+
 def memory_role_label(role: str, sibling_session: Optional[str] = None) -> str:
     """
     Provenance label for the original speaker of a memory, as rendered in

@@ -15,9 +15,9 @@ The listing below covers the REST endpoints by resource.
 - `DELETE /api/conversations/{id}` — delete conversation
 - `GET /api/conversations/{id}/export` — export to JSON
 - `POST /api/conversations/import-seed` — import seed conversation
-- `GET /api/conversations/archived` — list archived conversations
-- `POST /api/conversations/{id}/archive` — archive a conversation
-- `POST /api/conversations/{id}/unarchive` — restore archived conversation
+- `GET /api/conversations/archived` — list archived conversations, each with `archive_changed_at` and `archive_note`
+- `POST /api/conversations/{id}/archive` — archive a conversation. Optional body `{"reason": "..."}` (≤500 chars): the researcher's note to the entity, quoted in the `[MEMORY ARCHIVE NOTICE]` it gets at its next session start (which gives the conversation's dates, size and source, never its title or content)
+- `POST /api/conversations/{id}/unarchive` — restore archived conversation; same optional `reason`, and the entity is told likewise
 - `POST /api/conversations/import-external/preview` — preview external import
 - `POST /api/conversations/import-external` — import external conversation
 - `POST /api/conversations/import-external/stream` — stream-based import (SSE)

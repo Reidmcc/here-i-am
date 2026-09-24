@@ -385,6 +385,13 @@ describe('ApiClient', () => {
                 '/api/conversations/conv-1/archive',
                 expect.objectContaining({ method: 'POST' }),
             );
+            expect(global.fetch.mock.calls.at(-1)[1].body).toBeUndefined();
+        });
+
+        it('archiveConversation should send the note to the entity as reason', async () => {
+            await api.archiveConversation('conv-1', 'why');
+            const [, options] = global.fetch.mock.calls.at(-1);
+            expect(JSON.parse(options.body)).toEqual({ reason: 'why' });
         });
 
         it('searchMemories should POST with correct body', async () => {
