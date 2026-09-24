@@ -44,9 +44,14 @@ One more line bounds the context itself rather than a channel into it:
 
 - AUTO-COMPACTION (issue #365): fires at the auto-compact WINDOW minus
   min(max output tokens, 20,000) minus a 13,000-token buffer — read from
-  the Claude Code 2.1.280 binary (2026-09-24): the window is
-  CLAUDE_CODE_AUTO_COMPACT_WINDOW, else the `autoCompactWindow` setting,
-  else the model default, and never above the model's own context size;
+  the Claude Code 2.1.280 binary (2026-09-24): the window is, first found,
+  CLAUDE_CODE_AUTO_COMPACT_WINDOW (an integer, clamped to [100k, 1M]),
+  the `autoCompactWindow` setting (a whole number in [100k, 1M], else
+  absent), the server-pushed `autoCompactWindowsCache[<model>]` in the
+  global config, a server clientdata slot, an experiment flag, and the
+  model default — never above the model's own context size, and none at
+  all when auto-compaction is off (hook_util has the details a hook can
+  act on);
   the effective window subtracts the output reserve, and the compact
   level starts 13,000 under that. Every current model's max output is
   over 20,000, so the line is the window less 33,000. Confirmed against

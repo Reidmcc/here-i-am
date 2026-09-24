@@ -1020,36 +1020,66 @@ GAUGE_BANDS = (0.75, 0.90)
 
 COMPACT_WINDOW_SETTING = "autoCompactWindow"
 COMPACT_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+# The harness's bounds on a window, from any source (DVe / yot in 2.1.280)
+MIN_COMPACT_WINDOW = 100_000
+MAX_COMPACT_WINDOW = 1_000_000
+
+# Where the harness looks for the window, in its own order (the resolver
+# that reads them, `sE` in 2.1.280, measured 2026-09-24 in review of PR
+# #370). Two different parsers, so two functions here:
+#
+#   1. CLAUDE_CODE_AUTO_COMPACT_WINDOW — parsed as an integer (`kPe`, whose
+#      parse is `N(n) ?? parseInt(n, 10)`): no k/m suffixes; a value that
+#      doesn't parse, or is <= 0, is INVALID and falls through to the
+#      settings; one above 1M is capped to 1M; the result is raised to at
+#      least 100k. (What `N` accepts beyond digits was not traced — see
+#      env_compact_window.)
+#   2. the `autoCompactWindow` setting — schema `int().min(100000)
+#      .max(1000000).optional().catch(undefined)`: a whole number in range,
+#      or ABSENT. A string ("500k", "auto") is absent too; the /autocompact
+#      command's "500k" grammar writes the integer, it isn't the file's.
+#   3. `autoCompactWindowsCache[<model>]` in the global config
+#      (<config dir>/.claude.json) — a server-pushed per-model window, a
+#      number or {default, surfaces: {<entrypoint>: ...}}, in range.
+#   4. and 5. a server "clientdata" slot and an experiment flag — gated and
+#      keyed on state a hook can't reproduce, so not read; then the model
+#      default (1M for the current models; some surfaces and 200k models
+#      differ). HIM_COMPACT_LINE is the way to state any of these.
+#
+# The window is never above the model's own context, and auto-compaction
+# can be off altogether (auto_compact_enabled).
 
 
-def parse_compact_window(value) -> Optional[int]:
+def env_compact_window(value) -> Optional[int]:
     """
-    An auto-compact window as the harness reads one: a token count, or a
-    string like "500k", "1m", "500000", or "500" (100–1000 is shorthand for
-    thousands). None for "auto", absent, or anything unparsable.
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW as the harness reads it, or None when
+    the harness would find it invalid (and move on to the settings). The
+    number is the leading integer, as parseInt takes it — so "700k" reads
+    as 700 and is raised to the 100k floor, which is what the readable half
+    of the harness's parser does; its first branch (`N`) was not traced,
+    and `claude --debug` prints the effectiveWindow if that ever matters.
     """
-    if value is None or isinstance(value, bool):
+    text = str(value or "").strip()
+    match = re.match(r"[+-]?\d+", text)
+    if not match:
         return None
-    if isinstance(value, (int, float)):
-        number = float(value)
-    else:
-        text = str(value).strip().lower()
-        if not text or text == "auto":
-            return None
-        try:
-            if text.endswith("m"):
-                number = float(text[:-1]) * 1_000_000
-            elif text.endswith("k"):
-                number = float(text[:-1]) * 1_000
-            else:
-                number = float(text)
-                if 100 <= number <= 1000:
-                    number *= 1_000
-        except ValueError:
-            return None
-    if number != number or number <= 0 or number == float("inf"):
+    number = int(match.group(0))
+    if number <= 0:
         return None
-    return int(round(number))
+    return max(MIN_COMPACT_WINDOW, min(number, MAX_COMPACT_WINDOW))
+
+
+def setting_compact_window(value) -> Optional[int]:
+    """The autoCompactWindow setting as its schema admits it: a whole number
+    in [100k, 1M], else None (the harness drops the value as absent)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not value.is_integer():
+        return None
+    number = int(value)
+    if MIN_COMPACT_WINDOW <= number <= MAX_COMPACT_WINDOW:
+        return number
+    return None
 
 
 def claude_settings_paths(project_dir) -> list:
@@ -1064,26 +1094,79 @@ def claude_settings_paths(project_dir) -> list:
     return paths
 
 
-def configured_compact_window(project_dir=None) -> Optional[int]:
+def _read_json_dict(path) -> Optional[dict]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def claude_global_config_path() -> str:
+    """The harness's global config (~/.claude.json, or .claude.json inside
+    CLAUDE_CONFIG_DIR when that is set)."""
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    if configured:
+        return os.path.join(configured, ".claude.json")
+    return os.path.join(os.path.expanduser("~"), ".claude.json")
+
+
+def _cached_model_window(entry) -> Optional[int]:
+    """One autoCompactWindowsCache entry: a number, or {default, surfaces}
+    where the surface named by CLAUDE_CODE_ENTRYPOINT wins."""
+    if isinstance(entry, dict):
+        surfaces = entry.get("surfaces")
+        surface = os.environ.get("CLAUDE_CODE_ENTRYPOINT")
+        if isinstance(surfaces, dict) and surface and surface in surfaces:
+            found = _cached_model_window(surfaces[surface])
+            if found:
+                return found
+        entry = entry.get("default")
+    return setting_compact_window(entry)
+
+
+def configured_compact_window(project_dir=None, model=None) -> Optional[int]:
     """
-    The auto-compact window the harness is configured with, when a hook can
-    see it: CLAUDE_CODE_AUTO_COMPACT_WINDOW (which beats the settings, as in
-    the harness), else the first settings file that names autoCompactWindow.
-    A file that names it as "auto" ends the search — it overrides the files
-    below it. None when nothing names a window.
+    The auto-compact window the harness is configured with, where a hook
+    can see it, in the harness's order: the environment variable, then the
+    first settings file holding a valid autoCompactWindow (an invalid one is
+    absent, so the files below it still count, as when the harness merges
+    them), then the server-pushed per-model cache for `model`. None when
+    none of those names one.
     """
-    from_env = parse_compact_window(os.environ.get(COMPACT_WINDOW_ENV))
+    from_env = env_compact_window(os.environ.get(COMPACT_WINDOW_ENV))
     if from_env:
         return from_env
     for path in claude_settings_paths(project_dir):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            continue
-        if isinstance(data, dict) and COMPACT_WINDOW_SETTING in data:
-            return parse_compact_window(data.get(COMPACT_WINDOW_SETTING))
+        window = setting_compact_window((_read_json_dict(path) or {}).get(COMPACT_WINDOW_SETTING))
+        if window:
+            return window
+    if model:
+        cache = (_read_json_dict(claude_global_config_path()) or {}).get("autoCompactWindowsCache")
+        if isinstance(cache, dict) and model in cache:
+            return _cached_model_window(cache[model])
     return None
+
+
+def _truthy_env(name) -> bool:
+    return (os.environ.get(name) or "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def auto_compact_enabled(project_dir=None) -> bool:
+    """
+    Whether the harness auto-compacts at all: not when DISABLE_COMPACT or
+    DISABLE_AUTO_COMPACT is set, nor when autoCompactEnabled is false in the
+    first settings file that names it (or, below them, the global config).
+    With it off there is no line, and the gauge says nothing.
+    """
+    if _truthy_env("DISABLE_COMPACT") or _truthy_env("DISABLE_AUTO_COMPACT"):
+        return False
+    for path in [*claude_settings_paths(project_dir), claude_global_config_path()]:
+        value = (_read_json_dict(path) or {}).get("autoCompactEnabled")
+        if isinstance(value, bool):
+            return value
+    return True
 
 
 def _positive_int(value) -> Optional[int]:
@@ -1094,7 +1177,7 @@ def _positive_int(value) -> Optional[int]:
     return number if number > 0 else None
 
 
-def compact_line(body=None, project_dir=None) -> int:
+def compact_line(body=None, project_dir=None, model=None) -> int:
     """
     The prompt size, in tokens, at which this session will auto-compact:
     the window the harness is configured with (see configured_compact_window)
@@ -1107,7 +1190,7 @@ def compact_line(body=None, project_dir=None) -> int:
     body = body or {}
     reserve = _positive_int(body.get("compact_reserve")) or DEFAULT_COMPACT_RESERVE
     model_window = _positive_int(body.get("compact_window")) or DEFAULT_COMPACT_WINDOW
-    window = configured_compact_window(project_dir)
+    window = configured_compact_window(project_dir, model)
     if window:
         return max(1, min(window, model_window) - reserve)
     override = _positive_int(os.environ.get("HIM_COMPACT_LINE"))
@@ -1149,14 +1232,20 @@ _TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024
 
 
 def last_context_tokens(transcript_path) -> Optional[int]:
+    """The context size alone; see last_context_usage."""
+    return last_context_usage(transcript_path)[0]
+
+
+def last_context_usage(transcript_path) -> tuple:
     """
-    The context size after the session's most recent main-thread assistant
-    entry that reports usage, or None (no transcript, no usage — a hook
-    never fails over it). Sidechain entries (a subagent's) are skipped:
-    theirs is a different context.
+    (context size, model) from the session's most recent main-thread
+    assistant entry that reports usage, or (None, None) — no transcript,
+    no usage; a hook never fails over it. Sidechain entries (a subagent's)
+    are skipped: theirs is a different context. The model is the entry's
+    own `message.model`, which keys the harness's per-model window cache.
     """
     if not transcript_path:
-        return None
+        return None, None
     try:
         with open(transcript_path, "rb") as f:
             f.seek(0, os.SEEK_END)
@@ -1164,7 +1253,7 @@ def last_context_tokens(transcript_path) -> Optional[int]:
             f.seek(max(0, size - _TRANSCRIPT_TAIL_BYTES))
             tail = f.read()
     except Exception:
-        return None
+        return None, None
     lines = tail.split(b"\n")
     if size > _TRANSCRIPT_TAIL_BYTES:
         lines = lines[1:]  # the first line of the tail may be cut
@@ -1180,10 +1269,13 @@ def last_context_tokens(transcript_path) -> Optional[int]:
         if entry.get("isSidechain"):
             continue
         message = entry.get("message")
-        tokens = usage_tokens(message.get("usage")) if isinstance(message, dict) else None
+        if not isinstance(message, dict):
+            continue
+        tokens = usage_tokens(message.get("usage"))
         if tokens:
-            return tokens
-    return None
+            model = message.get("model")
+            return tokens, (model.strip() if isinstance(model, str) and model.strip() else None)
+    return None, None
 
 
 def _gauge_state_path(session_id: str) -> str:
@@ -1192,20 +1284,52 @@ def _gauge_state_path(session_id: str) -> str:
     )
 
 
-def _load_gauge_state(session_id: str) -> dict:
+def _read_gauge_state(session_id: str) -> Optional[dict]:
+    """A session's own record, or None when it has none (or it is corrupt)."""
     try:
         with open(_gauge_state_path(session_id), "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
-        return {"fired": [], "held": None}
+        return None
     if not isinstance(data, dict):
-        return {"fired": [], "held": None}
+        return None
     fired = data.get("fired")
     held = data.get("held")
     return {
         "fired": [b for b in fired if b in GAUGE_BANDS] if isinstance(fired, list) else [],
         "held": held if isinstance(held, str) and held.strip() else None,
     }
+
+
+def _load_gauge_state(session_id: str, parents=None) -> dict:
+    """
+    A session's record — or, when it has none, the one it forked from.
+
+    The desktop app forks a session under a new id on a restart, a rewind,
+    or an edited prompt, and the fork carries the same context (issue
+    #357). A fork starting from an empty record would count every band it
+    is above as uncrossed and speak again — an exit 2 in a room that had
+    one already, once per fork until it compacts. So a session with no
+    record of its own takes the bands its nearest ancestor with a record
+    has fired (`parents` is a callable returning the prior session ids,
+    oldest first, called only here so the desktop records are read only
+    when needed). The ancestor's held notice stays behind: it described
+    that session's turn. A rewind that cut the context far back is re-armed
+    by the halving rule at the first check, like any other shrink.
+    """
+    own = _read_gauge_state(session_id)
+    if own is not None:
+        return own
+    try:
+        chain = list(parents() if callable(parents) else parents or [])
+    except Exception:
+        chain = []
+    for parent in reversed(chain):
+        if parent and parent != session_id:
+            inherited = _read_gauge_state(parent)
+            if inherited is not None:
+                return {"fired": inherited["fired"], "held": None}
+    return {"fired": [], "held": None}
 
 
 def _save_gauge_state(session_id: str, state: dict) -> None:
@@ -1220,13 +1344,11 @@ def _save_gauge_state(session_id: str, state: dict) -> None:
 
 def reset_context_gauge(session_id: str) -> None:
     """Forget which bands have fired (and any held notice): after a
-    compaction, the context starts over."""
-    if not session_id:
-        return
-    try:
-        os.remove(_gauge_state_path(session_id))
-    except OSError:
-        pass
+    compaction, the context starts over. An empty record, not no record —
+    a later fork of this session must inherit the empty one, not walk past
+    it to an ancestor's pre-compaction bands."""
+    if session_id:
+        _save_gauge_state(session_id, {"fired": [], "held": None})
 
 
 def take_held_gauge_notice(session_id: str) -> str:
@@ -1272,7 +1394,7 @@ def gauge_notice(tokens: int, line: int, held: bool = False) -> str:
     )
 
 
-def check_context_gauge(session_id, tokens, line, may_interrupt=True) -> str:
+def check_context_gauge(session_id, tokens, line, may_interrupt=True, parents=None) -> str:
     """
     Record a turn's context size against the bands and return the notice to
     interrupt with now (the Stop hook exits 2 with it), or empty.
@@ -1282,15 +1404,19 @@ def check_context_gauge(session_id, tokens, line, may_interrupt=True) -> str:
     already a Stop continuation — is held for the next prompt instead.
     Crossing several bands at once gives one notice, for the highest. A
     newer notice replaces an unseen held one: it says the same thing, later.
+    `parents` lets a fork inherit its parent's bands (see _load_gauge_state).
     """
     if not session_id or not tokens or not line:
         return ""
     fraction = tokens / line
-    state = _load_gauge_state(session_id)
+    # A session with no record yet (a new one, or a fork inheriting) writes
+    # one this turn, so a fork's inheritance is its own from here on
+    had_record = _read_gauge_state(session_id) is not None
+    state = _load_gauge_state(session_id, parents)
     # Re-arm what the context has fallen well below (a compaction, /clear)
     fired = {band for band in state["fired"] if fraction >= band / 2}
     crossed = [band for band in GAUGE_BANDS if fraction >= band and band not in fired]
-    changed = fired != set(state["fired"])
+    changed = fired != set(state["fired"]) or not had_record
     state["fired"] = sorted(fired)
     if not crossed:
         if changed:

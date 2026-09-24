@@ -55,23 +55,41 @@ def _write_settings(directory: Path, data: dict, name="settings.json") -> None:
 @pytest.mark.parametrize(
     "value, expected",
     [
-        (500000, 500_000),
-        ("500k", 500_000),
-        ("1M", 1_000_000),
-        ("1.5m", 1_500_000),
-        ("500", 500_000),  # 100–1000 is shorthand for thousands
-        ("250000", 250_000),
-        ("auto", None),
+        ("500000", 500_000),
+        (" 250000 ", 250_000),
+        ("50000", 100_000),  # raised to the harness's 100k floor
+        ("2000000", 1_000_000),  # capped at 1M
+        ("700k", 100_000),  # parseInt reads 700: no suffixes on this path
+        ("abc", None),  # invalid: the harness moves on to the settings
+        ("0", None),
+        ("-5", None),
         ("", None),
         (None, None),
-        (True, None),
-        ("lots", None),
-        (0, None),
-        (-5, None),
     ],
 )
-def test_parse_compact_window(value, expected):
-    assert hook_util.parse_compact_window(value) == expected
+def test_env_window_is_an_integer_clamped_to_the_harness_bounds(value, expected):
+    assert hook_util.env_compact_window(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (500000, 500_000),
+        (100000, 100_000),
+        (1000000, 1_000_000),
+        (500000.0, 500_000),
+        (50000, None),  # out of range: dropped, not clamped
+        (2000000, None),
+        ("500k", None),  # the schema is an integer; strings are dropped
+        ("500000", None),
+        ("auto", None),
+        (500000.5, None),
+        (True, None),
+        (None, None),
+    ],
+)
+def test_setting_window_is_a_whole_number_in_range_or_absent(value, expected):
+    assert hook_util.setting_compact_window(value) == expected
 
 
 def test_line_defaults_to_the_1m_window_less_the_reserve():
@@ -88,24 +106,35 @@ def test_local_settings_beat_project_settings_beat_user_settings(tmp_path):
     project = tmp_path / "project"
     _write_settings(Path(os.environ["CLAUDE_CONFIG_DIR"]), {"autoCompactWindow": 300000})
     assert hook_util.configured_compact_window(str(project)) == 300_000
-    _write_settings(project / ".claude", {"autoCompactWindow": "400k"})
+    _write_settings(project / ".claude", {"autoCompactWindow": 400000})
     assert hook_util.configured_compact_window(str(project)) == 400_000
     _write_settings(project / ".claude", {"autoCompactWindow": 500000}, "settings.local.json")
     assert hook_util.configured_compact_window(str(project)) == 500_000
 
 
-def test_auto_in_a_higher_file_overrides_a_lower_one(tmp_path):
+def test_an_invalid_setting_is_absent_so_the_files_below_it_count(tmp_path):
+    # The harness drops an invalid value from its file; what the files
+    # below say still merges through
     project = tmp_path / "project"
     _write_settings(Path(os.environ["CLAUDE_CONFIG_DIR"]), {"autoCompactWindow": 300000})
     _write_settings(project / ".claude", {"autoCompactWindow": "auto"}, "settings.local.json")
-    assert hook_util.configured_compact_window(str(project)) is None
+    assert hook_util.configured_compact_window(str(project)) == 300_000
+    _write_settings(project / ".claude", {"autoCompactWindow": 2_000_000}, "settings.local.json")
+    assert hook_util.configured_compact_window(str(project)) == 300_000
 
 
 def test_the_harness_environment_variable_beats_the_settings(tmp_path, monkeypatch):
     project = tmp_path / "project"
     _write_settings(project / ".claude", {"autoCompactWindow": 500000}, "settings.local.json")
-    monkeypatch.setenv(hook_util.COMPACT_WINDOW_ENV, "700k")
+    monkeypatch.setenv(hook_util.COMPACT_WINDOW_ENV, "700000")
     assert hook_util.compact_line({}, str(project)) == 667_000
+
+
+def test_an_invalid_environment_variable_falls_through_to_the_settings(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    _write_settings(project / ".claude", {"autoCompactWindow": 500000}, "settings.local.json")
+    monkeypatch.setenv(hook_util.COMPACT_WINDOW_ENV, "auto")
+    assert hook_util.compact_line({}, str(project)) == LINE_500K
 
 
 def test_a_configured_window_beats_him_compact_line(tmp_path, monkeypatch):
@@ -123,11 +152,45 @@ def test_backend_numbers_are_used_when_nothing_is_configured():
     assert hook_util.compact_line(body, None) == 760_000
 
 
-def test_a_window_above_the_model_context_is_capped(tmp_path):
-    # The harness never compacts above what the model holds
+def _write_global_config(data: dict) -> None:
+    path = Path(os.environ["CLAUDE_CONFIG_DIR"]) / ".claude.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_the_server_pushed_window_for_the_model_is_read(tmp_path, monkeypatch):
+    # autoCompactWindowsCache: after env and settings, before the default
+    _write_global_config({"autoCompactWindowsCache": {
+        "claude-opus-5-5": 600000,
+        "claude-sonnet-5": {"default": 800000, "surfaces": {"local-agent": {"default": 500000}}},
+    }})
+    assert hook_util.compact_line({}, None, "claude-opus-5-5") == 567_000
+    assert hook_util.compact_line({}, None, "claude-sonnet-5") == 767_000
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "local-agent")
+    assert hook_util.compact_line({}, None, "claude-sonnet-5") == LINE_500K
+    # Another model, or none known: the default
+    assert hook_util.compact_line({}, None, "claude-fable-5-1") == 967_000
+    assert hook_util.compact_line({}, None, None) == 967_000
+    # The settings still win over the cache
     project = tmp_path / "project"
-    _write_settings(project / ".claude", {"autoCompactWindow": "2m"}, "settings.local.json")
-    assert hook_util.compact_line({}, str(project)) == 967_000
+    _write_settings(project / ".claude", {"autoCompactWindow": 500000}, "settings.local.json")
+    assert hook_util.compact_line({}, str(project), "claude-opus-5-5") == LINE_500K
+
+
+def test_a_null_cache_is_no_window():
+    _write_global_config({"autoCompactWindowsCache": None})
+    assert hook_util.configured_compact_window(None, "claude-opus-5-5") is None
+
+
+def test_auto_compaction_can_be_off(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    assert hook_util.auto_compact_enabled(str(project))
+    _write_global_config({"autoCompactEnabled": False})
+    assert not hook_util.auto_compact_enabled(str(project))
+    # A settings file that names it wins over the global config
+    _write_settings(project / ".claude", {"autoCompactEnabled": True}, "settings.local.json")
+    assert hook_util.auto_compact_enabled(str(project))
+    monkeypatch.setenv("DISABLE_AUTO_COMPACT", "1")
+    assert not hook_util.auto_compact_enabled(str(project))
 
 
 # --- The measurement
@@ -296,9 +359,53 @@ def test_reset_re_arms_everything():
     assert hook_util.check_context_gauge("s", _pct(0.92), LINE_500K)
 
 
-def test_sessions_are_separate():
+def test_a_fork_inherits_its_parents_bands():
+    # A restart, rewind or edited prompt forks the session under a new id
+    # with the same context: the band that spoke must not speak again
+    assert hook_util.check_context_gauge("parent", _pct(0.92), LINE_500K)
+    assert hook_util.check_context_gauge(
+        "fork", _pct(0.93), LINE_500K, parents=lambda: ["grandparent", "parent"]
+    ) == ""
+    assert hook_util.take_held_gauge_notice("fork") == ""
+    # From then on the fork has its own record
+    assert hook_util.check_context_gauge("fork", _pct(0.94), LINE_500K) == ""
+
+
+def test_a_fork_takes_the_nearest_ancestor_with_a_record():
+    # Priors are oldest first; the parent is last
+    assert hook_util.check_context_gauge("grandparent", _pct(0.92), LINE_500K)
+    hook_util.reset_context_gauge("parent")  # the parent compacted
+    notice = hook_util.check_context_gauge(
+        "fork", _pct(0.80), LINE_500K, parents=["grandparent", "parent"]
+    )
+    # The parent's empty post-compaction record wins, not the grandparent's
+    # bands: 75% speaks (held) in the refilled context
+    assert notice == ""
+    assert hook_util.take_held_gauge_notice("fork")
+
+
+def test_a_fork_leaves_the_parents_held_notice_behind():
+    hook_util.check_context_gauge("parent", _pct(0.80), LINE_500K)
+    hook_util.check_context_gauge("fork", _pct(0.81), LINE_500K, parents=["parent"])
+    assert hook_util.take_held_gauge_notice("fork") == ""
+
+
+def test_a_rewind_far_back_re_arms_the_inherited_bands():
+    assert hook_util.check_context_gauge("parent", _pct(0.92), LINE_500K)
+    assert hook_util.check_context_gauge("fork", _pct(0.30), LINE_500K, parents=["parent"]) == ""
+    assert hook_util.check_context_gauge("fork", _pct(0.91), LINE_500K)
+
+
+def test_a_failing_lineage_lookup_starts_fresh():
+    def broken():
+        raise OSError("desktop records unreadable")
+
+    assert hook_util.check_context_gauge("s", _pct(0.92), LINE_500K, parents=broken)
+
+
+def test_unrelated_sessions_are_separate():
     assert hook_util.check_context_gauge("a", _pct(0.92), LINE_500K)
-    assert hook_util.check_context_gauge("b", _pct(0.92), LINE_500K)
+    assert hook_util.check_context_gauge("b", _pct(0.92), LINE_500K, parents=["c"])
 
 
 def test_silent_without_a_measurement():
@@ -316,7 +423,7 @@ def test_a_corrupt_state_file_starts_over(tmp_path):
 # --- The hooks, end to end: Stop measures, the next prompt prints
 
 
-def _run(script, stdin_payload, tmp_path, body=None, backend_down=False, extra_env=None):
+def _run(script, stdin_payload, tmp_path, body=None, backend_down=False, extra_env=None, priors=None):
     """Run a hook script as a subprocess with the backend stubbed; returns
     (exit code, stdout, stderr)."""
     body = body if body is not None else {}
@@ -337,6 +444,7 @@ def _run(script, stdin_payload, tmp_path, body=None, backend_down=False, extra_e
         "hook_util.post_backend = post_backend\n"
         "hook_util.desktop_sessions_index = lambda *a, **k: {}\n"
         "hook_util.live_sessions_snapshot = lambda *a, **k: []\n"
+        f"hook_util.desktop_prior_session_ids = lambda *a, **k: {list(priors or [])!r}\n"
         f"sys.stdin = io.StringIO({json.dumps(json.dumps(stdin_payload))})\n"
         f"import {script}\n"
         f"{script}.main()\n"
@@ -362,12 +470,12 @@ def _run(script, stdin_payload, tmp_path, body=None, backend_down=False, extra_e
     )
 
 
-def _stop(tmp_path, tokens, stop_hook_active=False, **kwargs):
+def _stop(tmp_path, tokens, stop_hook_active=False, session_id="gauge-session", **kwargs):
     project = tmp_path / "project"
     _write_settings(project / ".claude", {"autoCompactWindow": 500000}, "settings.local.json")
     path = _transcript(tmp_path, [_assistant(_usage(tokens, 0))])
     payload = {
-        "session_id": "gauge-session",
+        "session_id": session_id,
         "transcript_path": path,
         "cwd": str(project),
         "stop_hook_active": stop_hook_active,
@@ -450,3 +558,14 @@ def test_compact_session_start_re_arms(tmp_path):
     payload = {"session_id": "gauge-session", "source": "compact"}
     _run("session_start", payload, tmp_path, body={"context": ""})
     assert _stop(tmp_path, _pct(0.92))[0] == 2
+
+
+def test_a_forked_room_does_not_interrupt_again(tmp_path):
+    assert _stop(tmp_path, _pct(0.92))[0] == 2
+    code, _, err = _stop(tmp_path, _pct(0.92), session_id="fork-session", priors=["gauge-session"])
+    assert (code, err) == (0, "")
+
+
+def test_stop_is_silent_when_auto_compaction_is_off(tmp_path):
+    _write_global_config({"autoCompactEnabled": False})
+    assert _stop(tmp_path, _pct(0.95)) == (0, "", "")

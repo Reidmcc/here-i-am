@@ -121,16 +121,19 @@ def main() -> None:
     # The context gauge (issue #365): measured after every turn, spoken
     # once per band — see hook_util. A continuation turn never interrupts
     # again; its notice is held for the next prompt
-    gauge = hook_util.check_context_gauge(
-        session_id,
-        hook_util.last_context_tokens(transcript_path),
-        hook_util.compact_line(
-            body, os.environ.get("CLAUDE_PROJECT_DIR") or data.get("cwd")
-        ),
-        may_interrupt=not data.get("stop_hook_active"),
-    )
-    if gauge:
-        notices.append(gauge)
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or data.get("cwd")
+    if hook_util.auto_compact_enabled(project_dir):
+        tokens, context_model = hook_util.last_context_usage(transcript_path)
+        gauge = hook_util.check_context_gauge(
+            session_id,
+            tokens,
+            hook_util.compact_line(body, project_dir, context_model),
+            may_interrupt=not data.get("stop_hook_active"),
+            # A fork carries its parent's context, so it carries its bands
+            parents=lambda: hook_util.desktop_prior_session_ids(session_id),
+        )
+        if gauge:
+            notices.append(gauge)
 
     if notices:
         print("\n\n".join(notices), file=sys.stderr)

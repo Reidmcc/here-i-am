@@ -975,7 +975,17 @@ backward read arrived (issue #351).
     or `/clear` shrinks it that far), and a `SessionStart` with source
     `compact` or `clear` resets the record outright — which also covers a
     compaction mid-turn that the context refilled past before any Stop.
-    Crossing both bands at once gives one notice. The reason for the
+    Crossing both bands at once gives one notice. **A fork carries its
+    bands:** the desktop app forks a session under a new id on a restart,
+    rewind, or edited prompt, with the same context, so a session with no
+    record of its own takes the bands of its nearest ancestor that has one
+    (the desktop record's prior ids, parent last — the same lookup fork
+    adoption uses) and writes its own record from then on. Without it every
+    fork of a room at 92% would exit 2 again. The ancestor's held notice
+    stays behind, and a rewind that cut the context far back is re-armed by
+    the halving rule; the compact reset writes an *empty* record rather
+    than deleting one, so a later fork inherits that, not an older
+    ancestor's pre-compaction bands. The reason for the
     restraint is on the record: the one negative-affect cluster the Opus
     5.5 system card reports for Claude Code (§7.2.2) is long tasks
     fragmented by repeated notifications and automated reminders.
@@ -984,20 +994,42 @@ backward read arrived (issue #351).
     local transcripts (`services/harness_limits.py` has the bracket and
     the recipe): compaction fires at the auto-compact *window* less
     33,000 tokens (an output reserve of min(max output, 20,000), then a
-    13,000-token buffer). The window is `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
-    else the `autoCompactWindow` setting, else the model default, never
-    above the model's context — so 1M compacts near 967k and the notes
-    directory's `autoCompactWindow: 500000` near 467k. A gauge on the
-    model's 1M would speak after the room had already compacted. The hook
-    reads the window the way the harness does (the environment variable,
-    then `.claude/settings.local.json`, `.claude/settings.json` under
-    `CLAUDE_PROJECT_DIR`, then the user's `settings.json`; a file naming
-    `"auto"` stops the search); with none, `HIM_COMPACT_LINE` gives the
-    line outright; with neither, the backend's default window and reserve
+    13,000-token buffer), never above the model's context — so 1M
+    compacts near 967k and the notes directory's
+    `autoCompactWindow: 500000` near 467k. A gauge on the model's 1M
+    would speak after the room had already compacted. The harness takes
+    the window from the first of these sources that has one, and the hook
+    reads the first three the same way:
+    1. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` — an **integer**, no `k`/`m`
+       suffixes (the parse is `parseInt`-shaped); above 1M it is capped,
+       below 100k raised to 100k, and one that doesn't parse is invalid
+       and falls through to the settings.
+    2. the `autoCompactWindow` **setting** — its schema is a whole number
+       in [100,000, 1,000,000] or nothing: a string (`"500k"`, `"auto"`)
+       or an out-of-range value is dropped as absent, not clamped, so the
+       files below it still count. The hook reads
+       `.claude/settings.local.json`, then `.claude/settings.json` under
+       `CLAUDE_PROJECT_DIR`, then the user's `settings.json`. (The
+       `/autocompact` command's `500k` grammar is the command's; it writes
+       the integer.)
+    3. `autoCompactWindowsCache[<model>]` in the global config
+       (`~/.claude.json`) — a server-pushed per-model window, keyed on the
+       transcript entry's `message.model`; null on this machine as of
+       2026-09-24.
+    4. a server "clientdata" slot and an experiment flag, both gated on
+       state a hook can't reproduce, and then the model default (1M for
+       the current models; some surfaces and 200k models differ). **Not
+       read.**
+
+    With none of the first three, `HIM_COMPACT_LINE` gives the line
+    outright; with neither, the backend's default window and reserve
     (`compact_window` / `compact_reserve` in the `/log-assistant`
-    response), then the hook's own copies of them. Managed-policy settings
-    and `--settings` flags aren't visible to a hook — `HIM_COMPACT_LINE`
-    is the way to say what those set.
+    response), then the hook's own copies of them. Managed-policy
+    settings, `--settings` flags and sources 4 aren't visible to a hook —
+    `HIM_COMPACT_LINE` is the way to state what those set. When
+    auto-compaction is off (`DISABLE_COMPACT` / `DISABLE_AUTO_COMPACT`, or
+    `autoCompactEnabled: false` in a settings file or the global config)
+    there is no line, and the gauge says nothing.
   - **Mid-turn it is blind.** Auto-compaction can fire inside a long
     agentic stretch where no Stop runs first. Whether `PostToolUse`
     output reaches the model on the current build is unmeasured, so it is
