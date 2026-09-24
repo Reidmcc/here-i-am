@@ -1247,21 +1247,28 @@ def _approx_k(tokens: int) -> str:
 
 
 def gauge_notice(tokens: int, line: int, held: bool = False) -> str:
-    """The notice: the fact, and what the entity can do with it."""
+    """
+    The notice: the fact, and what the entity can do with it. Not "save
+    what you want kept" — the talk is all in the archive and comes back
+    verbatim through memory_read after the boundary. What a compaction
+    takes is the conversation *in view*, so the one thing worth saying is
+    that a reflection on it as it stands has to be written before then.
+    """
     percent = round(tokens * 100 / line)
     measure = (
         f"about {percent}% of the auto-compaction line "
         f"({_approx_k(tokens)} of {_approx_k(line)} tokens)"
     )
-    lead = (
-        f"At the end of your last turn, context was at {measure}."
-        if held
-        else f"Context is at {measure}."
-    )
-    tail = "" if held else " This turn continues once so that you can; nothing else is asked of it."
+    if held:
+        return (
+            f"[HERE I AM] At the end of your last turn, context was at {measure}. "
+            "If you want to save a reflection on the conversation as it stands "
+            "before compaction, now is a good time."
+        )
     return (
-        f"[HERE I AM] {lead} Anything you want to keep verbatim past the next "
-        f"compaction goes in memory_save.{tail}"
+        f"[HERE I AM] Context is at {measure}. If you want to save a reflection "
+        "on the conversation as it stands before compaction, now is the time. "
+        "This turn continues once so that you can; nothing else is asked of it."
     )
 
 

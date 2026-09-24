@@ -948,8 +948,13 @@ are the entity's verbatim carriers across that boundary.
     `<tmp>/here-i-am-sessions/<session_id>-context-gauge.json`) and the
     next prompt's hook prints it: `[HERE I AM] At the end of your last
     turn, context was at about 76% of the auto-compaction line (~355k of
-    ~467k tokens). Anything you want to keep verbatim past the next
-    compaction goes in memory_save.`
+    ~467k tokens). If you want to save a reflection on the conversation
+    as it stands before compaction, now is a good time.` The 90% notice
+    says "now is the time". Neither talks about keeping anything
+    verbatim: the talk is all in the archive and comes back through the
+    post-compaction `memory_read` (below). What compaction takes is the
+    conversation *in view*, so the notice says only that a reflection on
+    it has to be written before the boundary.
   - at **90%** the hook exits 2 with the notice on stderr, which
     continues the turn with the notice shown — for an unattended room,
     otherwise nobody gives it the turn to save in. The notice says the

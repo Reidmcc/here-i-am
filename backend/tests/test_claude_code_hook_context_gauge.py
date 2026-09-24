@@ -230,7 +230,10 @@ def test_low_band_is_held_for_the_next_prompt_once():
     held = hook_util.take_held_gauge_notice("s")
     assert held.startswith("[HERE I AM] At the end of your last turn, context was at about 76%")
     assert "of the auto-compaction line (~" in held and "of ~467k tokens)" in held
-    assert "memory_save" in held
+    assert held.endswith(
+        "If you want to save a reflection on the conversation as it stands "
+        "before compaction, now is a good time."
+    )
     # Taken means gone; and the band doesn't speak again on later turns
     assert hook_util.take_held_gauge_notice("s") == ""
     for fraction in (0.78, 0.8, 0.85, 0.89):
@@ -242,7 +245,9 @@ def test_top_band_interrupts_once():
     hook_util.check_context_gauge("s", _pct(0.76), LINE_500K)
     notice = hook_util.check_context_gauge("s", _pct(0.91), LINE_500K)
     assert notice.startswith("[HERE I AM] Context is at about 91% of the auto-compaction line")
-    assert "memory_save" in notice
+    assert "If you want to save a reflection on the conversation as it stands before compaction, now is the time." in notice
+    # Not "keep verbatim": the talk comes back through memory_read
+    assert "verbatim" not in notice
     assert "This turn continues once" in notice
     # An unseen low-band notice is superseded by the newer one, not stacked
     assert hook_util.take_held_gauge_notice("s") == ""
