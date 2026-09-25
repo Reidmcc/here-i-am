@@ -1073,37 +1073,54 @@ backward read arrived (issue #351).
   assistant entry's `message.usage` (input + cache reads + cache writes +
   output, the last `iterations` entry when there is one — the provider's
   own count, no estimate) against the **auto-compaction line**, and says
-  so once per band:
-  - at **75%** the notice is held (a per-session state file,
+  so once, at **90%**, by the next prompt:
+  - the Stop hook holds the notice (a per-session state file,
     `<tmp>/here-i-am-sessions/<session_id>-context-gauge.json`) and the
-    next prompt's hook prints it: `[HERE I AM] At the end of your last
-    turn, context was at about 76% of the auto-compaction line (~355k of
-    ~467k tokens). If you want to save a reflection on the conversation
-    as it stands before compaction, now is a good time.` The 90% notice
-    says "now is the time". Neither talks about keeping anything
-    verbatim: the talk is all in the archive and comes back through the
-    post-compaction `memory_read` (below). What compaction takes is the
-    conversation *in view*, so the notice says only that a reflection on
-    it has to be written before the boundary.
-  - at **90%** the hook exits 2 with the notice on stderr, which
-    continues the turn with the notice shown — for an unattended room,
-    otherwise nobody gives it the turn to save in. The notice says the
-    turn continues once for that and nothing else is asked of it. A turn
-    that is already a Stop continuation (`stop_hook_active`) never
-    interrupts again; a crossing there is held like the low band. A
-    recording failure and the gauge share the one exit 2.
-  - **One line per band, never per turn.** A band that has spoken stays
+    next prompt's hook prints it, since a Stop hook's stdout never
+    reaches context: `[HERE I AM] At the end of your last turn, context
+    was at about 91% of the auto-compaction line (~880k of ~967k tokens).
+    If you want to save a reflection on the conversation as it stands
+    before compaction, now is a good time.` It doesn't talk about keeping
+    anything verbatim: the talk is all in the archive and comes back
+    through the post-compaction `memory_read` (below). What compaction
+    takes is the conversation *in view*, so the notice says only that a
+    reflection on it has to be written before the boundary.
+  - **It is one quiet notice on purpose** (issue #373). A notice that
+    reads as a coming loss the archive doesn't actually allow invites the
+    wrong response; the right response is to do nothing differently apart
+    from the reflection, if one is wanted. So the notice says "a good
+    time", not "the time"; 10% of the line is a good while (~97k tokens at
+    1M), and a reflection needs no urgent prodding. Two earlier pieces went
+    for the same reason:
+    - **a 75% band**, held for the next prompt. The first live firing, in
+      a loop room at 500k, showed what it would have cost: after the 90%
+      notice the room ran about seven more hours of quiet ticks on the ~26k
+      tokens left, so at that burn rate 75% comes most of a day before the
+      boundary, and a reflection saved there is on a conversation with its
+      day still ahead. And an early notice made the right response harder
+      to hold to — that room narrowed its ticks for hours after the 90%
+      one and planned each wake around the boundary, though the text asked
+      for neither.
+    - **the 90% interruption.** The crossing used to exit 2 and continue
+      the turn once, so an unattended room had a turn to save in. That
+      was one more note of urgency the situation doesn't have: an
+      unattended loop room's next tick comes long before 10% of the line
+      is spent. Exit 2 from the Stop hook is now only the recording
+      failure's.
+
+    The cost is under "Mid-turn it is blind", below.
+  - **One line per band, never per turn.** The band that has spoken stays
     quiet until the context falls under half its level (only a compaction
     or `/clear` shrinks it that far), and a `SessionStart` with source
     `compact` or `clear` resets the record outright — which also covers a
     compaction mid-turn that the context refilled past before any Stop.
-    Crossing both bands at once gives one notice. **A fork carries its
+    **A fork carries its
     bands:** the desktop app forks a session under a new id on a restart,
     rewind, or edited prompt, with the same context, so a session with no
     record of its own takes the bands of its nearest ancestor that has one
     (the desktop record's prior ids, parent last — the same lookup fork
     adoption uses) and writes its own record from then on. Without it every
-    fork of a room at 92% would exit 2 again. The ancestor's held notice
+    fork of a room at 92% would be told again. The ancestor's held notice
     stays behind, and a rewind that cut the context far back is re-armed by
     the halving rule; the compact reset writes an *empty* record rather
     than deleting one, so a later fork inherits that, not an older
@@ -1117,8 +1134,8 @@ backward read arrived (issue #351).
     the recipe): compaction fires at the auto-compact *window* less
     33,000 tokens (an output reserve of min(max output, 20,000), then a
     13,000-token buffer), never above the model's context — so 1M
-    compacts near 967k and the notes directory's
-    `autoCompactWindow: 500000` near 467k. A gauge on the model's 1M
+    compacts near 967k and `autoCompactWindow: 500000` (the notes
+    directory's setting from 2026-09-18 to 09-25) near 467k. A gauge on the model's 1M
     would speak after the room had already compacted. The harness takes
     the window from the first of these sources that has one, and the hook
     reads the first three the same way:
@@ -1155,7 +1172,11 @@ backward read arrived (issue #351).
   - **Mid-turn it is blind.** Auto-compaction can fire inside a long
     agentic stretch where no Stop runs first. Whether `PostToolUse`
     output reaches the model on the current build is unmeasured, so it is
-    not used; the 75% band exists to leave room for exactly this.
+    not used. A turn that starts under 90% and reads past the line — at a
+    500k window the margin is ~47k tokens, about one large file or one long
+    paper — compacts with no notice. The removed 75% band was the early
+    warning for this case; loop rooms rarely spend that much in one turn,
+    workshops reading big files sometimes do.
 - **Post-compaction re-injection.** `SessionStart` fires with
   `source: "compact"` right after compaction, and its stdout is injected;
   the backend answers with `build_post_compact_context`: a reorientation

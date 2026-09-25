@@ -26,13 +26,12 @@ escalation is guarded by stop_hook_active so a persistently down backend
 gets exactly one loud retry per turn, never a loop; the retry's Stop fires
 with stop_hook_active set and any failure there exits 0 silently.
 
-The context gauge (issue #365) rides the same channel. After every turn
-the hook measures the context against the auto-compaction line and, the
-first time it crosses a band, says so: the top band by exit 2 (the turn
-continues so the entity can save a reflection on the conversation while
-it is still in view), the lower
-band held for the next prompt. Once per band, never per turn, and never an
-interrupt on a turn that is itself a continuation (see hook_util).
+The context gauge (issue #365) is measured here too, but never
+interrupts. After every turn the hook measures the context against the
+auto-compaction line and, the first time it crosses 90%, leaves a notice
+for the next prompt's hook to print (see hook_util). It used to exit 2 and
+continue the turn; issue #373 took that out as one more note of urgency
+the situation doesn't have.
 
 Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE (see session_start.py),
 HIM_COMPACT_LINE (see hook_util.py).
@@ -141,35 +140,29 @@ def main() -> None:
     if not session_id or not transcript_path:
         return
 
-    # Everything that has to reach the entity from here goes out as one
-    # exit 2: a recording failure, the context gauge's top band, or both
-    notices = []
     body = {}
+    failure = None
     text, entry_uuid, model = turn_assistant_text(transcript_path)
     if text:
         body, failure = record_final_message(data, text, entry_uuid, model)
-        if failure and not data.get("stop_hook_active"):
-            notices.append(failure)
 
     # The context gauge (issue #365): measured after every turn, spoken
-    # once per band — see hook_util. A continuation turn never interrupts
-    # again; its notice is held for the next prompt
+    # once per band, always by a notice held for the next prompt — see
+    # hook_util. Measured before any exit so a recording failure doesn't
+    # skip it
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or data.get("cwd")
     if hook_util.auto_compact_enabled(project_dir):
         tokens, context_model = hook_util.last_context_usage(transcript_path)
-        gauge = hook_util.check_context_gauge(
+        hook_util.check_context_gauge(
             session_id,
             tokens,
             hook_util.compact_line(body, project_dir, context_model),
-            may_interrupt=not data.get("stop_hook_active"),
             # A fork carries its parent's context, so it carries its bands
             parents=lambda: hook_util.desktop_prior_session_ids(session_id),
         )
-        if gauge:
-            notices.append(gauge)
 
-    if notices:
-        print("\n\n".join(notices), file=sys.stderr)
+    if failure and not data.get("stop_hook_active"):
+        print(failure, file=sys.stderr)
         sys.exit(2)
 
 
