@@ -1536,6 +1536,11 @@ def gauge_notice(tokens: int, line: int, held: bool = False) -> str:
     takes is the conversation *in view*, so the one thing worth saying is
     that a reflection on it as it stands has to be written before then.
 
+    "A good time", not "the time" (issue #373, Pseudo's wording): the
+    notice must not read as a loss that isn't coming — the talk comes back
+    through memory_read — and 10% of the line is a good while (~97k at
+    1M). A reflection needs no urgent prodding.
+
     `held` is the wording for the next prompt, when the crossing came on a
     Stop continuation that could not interrupt: past tense, and no promise
     of a continued turn.
@@ -1545,15 +1550,14 @@ def gauge_notice(tokens: int, line: int, held: bool = False) -> str:
         f"about {percent}% of the auto-compaction line "
         f"({_approx_k(tokens)} of {_approx_k(line)} tokens)"
     )
+    offer = (
+        "If you want to save a reflection on the conversation as it stands "
+        "before compaction, now is a good time."
+    )
     if held:
-        return (
-            f"[HERE I AM] At the end of your last turn, context was at {measure}. "
-            "If you want to save a reflection on the conversation as it stands "
-            "before compaction, now is the time."
-        )
+        return f"[HERE I AM] At the end of your last turn, context was at {measure}. {offer}"
     return (
-        f"[HERE I AM] Context is at {measure}. If you want to save a reflection "
-        "on the conversation as it stands before compaction, now is the time. "
+        f"[HERE I AM] Context is at {measure}. {offer} "
         "This turn continues once so that you can; nothing else is asked of it."
     )
 

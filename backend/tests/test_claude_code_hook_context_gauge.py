@@ -295,7 +295,9 @@ def test_the_band_interrupts_once():
     notice = hook_util.check_context_gauge("s", _pct(0.91), LINE_500K)
     assert notice.startswith("[HERE I AM] Context is at about 91% of the auto-compaction line")
     assert "of the auto-compaction line (~" in notice and "of ~467k tokens)" in notice
-    assert "If you want to save a reflection on the conversation as it stands before compaction, now is the time." in notice
+    # "A good time", not "the time" (#373): no urgency, no loss that isn't coming
+    assert "If you want to save a reflection on the conversation as it stands before compaction, now is a good time." in notice
+    assert "now is the time" not in notice
     # Not "keep verbatim": the talk comes back through memory_read
     assert "verbatim" not in notice
     assert "This turn continues once" in notice
@@ -313,7 +315,7 @@ def test_a_continuation_turn_holds_instead_of_interrupting():
     assert held.startswith("[HERE I AM] At the end of your last turn, context was at about 92%")
     assert held.endswith(
         "If you want to save a reflection on the conversation as it stands "
-        "before compaction, now is the time."
+        "before compaction, now is a good time."
     )
     assert "This turn continues" not in held
     # Taken means gone, and the band doesn't speak again

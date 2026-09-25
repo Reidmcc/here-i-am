@@ -1077,15 +1077,19 @@ backward read arrived (issue #351).
   - the hook exits 2 with the notice on stderr, which continues the turn
     with the notice shown — for an unattended room, otherwise nobody gives
     it the turn to save in: `[HERE I AM] Context is at about 91% of the
-    auto-compaction line (~425k of ~467k tokens). If you want to save a
+    auto-compaction line (~880k of ~967k tokens). If you want to save a
     reflection on the conversation as it stands before compaction, now is
-    the time. This turn continues once so that you can; nothing else is
+    a good time. This turn continues once so that you can; nothing else is
     asked of it.` It doesn't talk about keeping anything verbatim: the
     talk is all in the archive and comes back through the post-compaction
     `memory_read` (below). What compaction takes is the conversation *in
     view*, so the notice says only that a reflection on it has to be
-    written before the boundary. A recording failure and the gauge share
-    the one exit 2.
+    written before the boundary. And it says "a good time", not "the
+    time" (the wording the 75% band had; issue #373): a notice that reads
+    as a coming loss the archive doesn't actually allow invites the wrong
+    response, 10% of the line is a good while (~97k tokens at 1M), and a
+    reflection needs no urgent prodding. A recording failure and the
+    gauge share the one exit 2.
   - a turn that is already a Stop continuation (`stop_hook_active`) never
     interrupts again: a crossing there is **held** (a per-session state
     file, `<tmp>/here-i-am-sessions/<session_id>-context-gauge.json`) and
