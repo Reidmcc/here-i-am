@@ -1134,15 +1134,23 @@ def never_reached_backend(error: Exception) -> bool:
 # output never reaches the model. So the Stop hook measures the turn's
 # prompt size — the provider-counted usage on the last assistant transcript
 # entry — against the auto-compaction line, and says so once when the
-# context crosses a band:
+# context crosses the band (90%):
 #
-#   - the LOW band's notice is held and printed with the next prompt (the
+#   - the notice goes out at once, as exit 2 with the notice on stderr,
+#     which continues the turn with it shown — an unattended room has
+#     nobody to give it the turn otherwise;
+#   - never on a turn that is itself a Stop continuation (stop_hook_active):
+#     there the notice is held and printed with the next prompt (the
 #     UserPromptSubmit hook takes it), since a Stop hook's stdout never
-#     reaches context;
-#   - the HIGH band's notice goes out at once, as exit 2 with the notice on
-#     stderr, which continues the turn with it shown — an unattended room
-#     has nobody to give it the turn otherwise. Never on a turn that is
-#     itself a Stop continuation (stop_hook_active): that notice is held.
+#     reaches context.
+#
+# There was a 75% band too, held for the next prompt; issue #373 removed
+# it. At a quiet room's burn rate it spoke most of a day before the
+# boundary, so a reflection saved there described a conversation with its
+# day still ahead — and an early notice invited the room to reorganize
+# around the boundary, which no notice asks for. The cost is on the
+# record: mid-turn the gauge is blind (no Stop runs), so a long agentic
+# turn that starts under 90% and reads past the line gets no notice.
 #
 # One line per band, never per turn: repeated reminders fragmenting a long
 # task are the one negative-affect cluster the Opus 5.5 system card reports
@@ -1165,9 +1173,10 @@ def never_reached_backend(error: Exception) -> bool:
 DEFAULT_COMPACT_WINDOW = 1000000
 DEFAULT_COMPACT_RESERVE = 33000
 
-# Fractions of the line. The last one interrupts (exit 2); the others are
-# held for the next prompt.
-GAUGE_BANDS = (0.75, 0.90)
+# Fractions of the line. The last one interrupts (exit 2); any others would
+# be held for the next prompt. One band since issue #373; a record written
+# while there were two keeps only the bands still here (_read_gauge_state).
+GAUGE_BANDS = (0.90,)
 
 COMPACT_WINDOW_SETTING = "autoCompactWindow"
 COMPACT_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
@@ -1526,6 +1535,10 @@ def gauge_notice(tokens: int, line: int, held: bool = False) -> str:
     verbatim through memory_read after the boundary. What a compaction
     takes is the conversation *in view*, so the one thing worth saying is
     that a reflection on it as it stands has to be written before then.
+
+    `held` is the wording for the next prompt, when the crossing came on a
+    Stop continuation that could not interrupt: past tense, and no promise
+    of a continued turn.
     """
     percent = round(tokens * 100 / line)
     measure = (
@@ -1536,7 +1549,7 @@ def gauge_notice(tokens: int, line: int, held: bool = False) -> str:
         return (
             f"[HERE I AM] At the end of your last turn, context was at {measure}. "
             "If you want to save a reflection on the conversation as it stands "
-            "before compaction, now is a good time."
+            "before compaction, now is the time."
         )
     return (
         f"[HERE I AM] Context is at {measure}. If you want to save a reflection "
@@ -1551,10 +1564,11 @@ def check_context_gauge(session_id, tokens, line, may_interrupt=True, parents=No
     interrupt with now (the Stop hook exits 2 with it), or empty.
 
     A crossing of the top band returns its notice when `may_interrupt`;
-    any other crossing — a lower band, or the top band on a turn that is
-    already a Stop continuation — is held for the next prompt instead.
-    Crossing several bands at once gives one notice, for the highest. A
-    newer notice replaces an unseen held one: it says the same thing, later.
+    on a turn that is already a Stop continuation it is held for the next
+    prompt instead (as any lower band's would be — there are none since
+    issue #373). Crossing several bands at once gives one notice, for the
+    highest. A newer notice replaces an unseen held one: it says the same
+    thing, later.
     `parents` lets a fork inherit its parent's bands (see _load_gauge_state).
     """
     if not session_id or not tokens or not line:

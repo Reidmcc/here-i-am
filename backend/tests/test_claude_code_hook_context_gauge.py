@@ -5,9 +5,10 @@ The identity block asks the entity to save a reflection "when you notice
 context running low", and in Claude Code mode nothing let it notice. The
 Stop hook now measures each turn's context — the provider-counted usage on
 the last main-thread assistant entry — against the auto-compaction line,
-and speaks once per band: the low band held for the next prompt, the top
-band as exit 2 so an unattended room gets a turn to save in. Never per
-turn, never twice from a continuation, re-armed after a compaction.
+and speaks once, at 90%, as exit 2 so an unattended room gets a turn to
+save in (the 75% band was removed in issue #373). Never per turn, never
+twice from a continuation — a crossing there is held for the next
+prompt — re-armed after a compaction.
 
 The line is the harness's: the auto-compact window (its environment
 variable, else the settings files) less the measured reserve — a room set
@@ -283,46 +284,25 @@ def _pct(fraction):
     return round(LINE_500K * fraction)
 
 
-def test_quiet_below_the_first_band():
-    assert hook_util.check_context_gauge("s", _pct(0.5), LINE_500K) == ""
-    assert hook_util.take_held_gauge_notice("s") == ""
-
-
-def test_low_band_is_held_for_the_next_prompt_once():
-    assert hook_util.check_context_gauge("s", _pct(0.76), LINE_500K) == ""
-    held = hook_util.take_held_gauge_notice("s")
-    assert held.startswith("[HERE I AM] At the end of your last turn, context was at about 76%")
-    assert "of the auto-compaction line (~" in held and "of ~467k tokens)" in held
-    assert held.endswith(
-        "If you want to save a reflection on the conversation as it stands "
-        "before compaction, now is a good time."
-    )
-    # Taken means gone; and the band doesn't speak again on later turns
-    assert hook_util.take_held_gauge_notice("s") == ""
-    for fraction in (0.78, 0.8, 0.85, 0.89):
+def test_quiet_below_the_band():
+    # Issue #373: 75% no longer speaks, held or otherwise — nothing below 90%
+    for fraction in (0.5, 0.75, 0.76, 0.8, 0.85, 0.89):
         assert hook_util.check_context_gauge("s", _pct(fraction), LINE_500K) == ""
-    assert hook_util.take_held_gauge_notice("s") == ""
+        assert hook_util.take_held_gauge_notice("s") == ""
 
 
-def test_top_band_interrupts_once():
-    hook_util.check_context_gauge("s", _pct(0.76), LINE_500K)
+def test_the_band_interrupts_once():
     notice = hook_util.check_context_gauge("s", _pct(0.91), LINE_500K)
     assert notice.startswith("[HERE I AM] Context is at about 91% of the auto-compaction line")
+    assert "of the auto-compaction line (~" in notice and "of ~467k tokens)" in notice
     assert "If you want to save a reflection on the conversation as it stands before compaction, now is the time." in notice
     # Not "keep verbatim": the talk comes back through memory_read
     assert "verbatim" not in notice
     assert "This turn continues once" in notice
-    # An unseen low-band notice is superseded by the newer one, not stacked
     assert hook_util.take_held_gauge_notice("s") == ""
-    assert hook_util.check_context_gauge("s", _pct(0.95), LINE_500K) == ""
+    for fraction in (0.93, 0.95, 0.99):
+        assert hook_util.check_context_gauge("s", _pct(fraction), LINE_500K) == ""
     assert hook_util.take_held_gauge_notice("s") == ""
-
-
-def test_crossing_both_bands_at_once_is_one_notice():
-    notice = hook_util.check_context_gauge("s", _pct(0.93), LINE_500K)
-    assert notice
-    assert hook_util.take_held_gauge_notice("s") == ""
-    assert hook_util.check_context_gauge("s", _pct(0.94), LINE_500K) == ""
 
 
 def test_a_continuation_turn_holds_instead_of_interrupting():
@@ -330,17 +310,35 @@ def test_a_continuation_turn_holds_instead_of_interrupting():
     # second exit 2 would chain; the crossing is held for the next prompt
     assert hook_util.check_context_gauge("s", _pct(0.92), LINE_500K, may_interrupt=False) == ""
     held = hook_util.take_held_gauge_notice("s")
-    assert held.startswith("[HERE I AM] At the end of your last turn")
+    assert held.startswith("[HERE I AM] At the end of your last turn, context was at about 92%")
+    assert held.endswith(
+        "If you want to save a reflection on the conversation as it stands "
+        "before compaction, now is the time."
+    )
     assert "This turn continues" not in held
+    # Taken means gone, and the band doesn't speak again
+    assert hook_util.take_held_gauge_notice("s") == ""
     assert hook_util.check_context_gauge("s", _pct(0.93), LINE_500K) == ""
+
+
+def test_a_record_from_the_two_band_gauge_keeps_only_the_band_still_here(tmp_path):
+    # A state file written before #373 can carry 0.75 as fired; it reads as
+    # not fired, and 90% still speaks when it hasn't
+    state_dir = tmp_path / "here-i-am-sessions"
+    state_dir.mkdir()
+    (state_dir / "s-context-gauge.json").write_text(
+        json.dumps({"fired": [0.75], "held": None}), encoding="utf-8"
+    )
+    assert hook_util.check_context_gauge("s", _pct(0.80), LINE_500K) == ""
+    assert hook_util.check_context_gauge("s", _pct(0.91), LINE_500K)
 
 
 def test_bands_re_arm_after_the_context_shrinks():
     assert hook_util.check_context_gauge("s", _pct(0.92), LINE_500K)
     # Compaction: the context falls to a few percent, then refills
     assert hook_util.check_context_gauge("s", _pct(0.03), LINE_500K) == ""
-    assert hook_util.check_context_gauge("s", _pct(0.76), LINE_500K) == ""
-    assert hook_util.take_held_gauge_notice("s")
+    assert hook_util.check_context_gauge("s", _pct(0.80), LINE_500K) == ""
+    assert hook_util.take_held_gauge_notice("s") == ""
     assert hook_util.check_context_gauge("s", _pct(0.91), LINE_500K)
 
 
@@ -376,18 +374,19 @@ def test_a_fork_takes_the_nearest_ancestor_with_a_record():
     assert hook_util.check_context_gauge("grandparent", _pct(0.92), LINE_500K)
     hook_util.reset_context_gauge("parent")  # the parent compacted
     notice = hook_util.check_context_gauge(
-        "fork", _pct(0.80), LINE_500K, parents=["grandparent", "parent"]
+        "fork", _pct(0.92), LINE_500K, parents=["grandparent", "parent"]
     )
     # The parent's empty post-compaction record wins, not the grandparent's
-    # bands: 75% speaks (held) in the refilled context
-    assert notice == ""
-    assert hook_util.take_held_gauge_notice("fork")
+    # bands: 90% speaks again in the refilled context
+    assert notice
 
 
 def test_a_fork_leaves_the_parents_held_notice_behind():
-    hook_util.check_context_gauge("parent", _pct(0.80), LINE_500K)
-    hook_util.check_context_gauge("fork", _pct(0.81), LINE_500K, parents=["parent"])
+    hook_util.check_context_gauge("parent", _pct(0.92), LINE_500K, may_interrupt=False)
+    hook_util.check_context_gauge("fork", _pct(0.93), LINE_500K, parents=["parent"])
     assert hook_util.take_held_gauge_notice("fork") == ""
+    # It was the parent's turn it described, and it is still the parent's
+    assert hook_util.take_held_gauge_notice("parent")
 
 
 def test_a_rewind_far_back_re_arms_the_inherited_bands():
@@ -504,29 +503,31 @@ def test_stop_exits_2_at_the_top_band_with_the_notice_on_stderr(tmp_path):
     assert code == 0 and err == ""
 
 
-def test_stop_holds_the_low_band_and_the_next_prompt_prints_it(tmp_path):
+def test_stop_says_nothing_below_the_band(tmp_path):
+    # Issue #373: no 75% notice, not now and not on the next prompt
     code, out, err = _stop(tmp_path, _pct(0.8))
     assert (code, out, err) == (0, "", "")
+    _, out, _ = _prompt(tmp_path)
+    assert "At the end of your last turn" not in out
+    assert "auto-compaction line" not in out
+
+
+def test_no_second_interrupt_from_a_continuation(tmp_path):
+    code, _, err = _stop(tmp_path, _pct(0.92), stop_hook_active=True)
+    assert (code, err) == (0, "")
     code, out, _ = _prompt(tmp_path)
     assert code == 0
-    assert "[HERE I AM] At the end of your last turn, context was at about 80%" in out
+    assert "[HERE I AM] At the end of your last turn, context was at about 92%" in out
     # Printed once
     _, out, _ = _prompt(tmp_path)
     assert "At the end of your last turn" not in out
 
 
 def test_the_held_notice_prints_on_a_plumbing_only_prompt(tmp_path):
-    _stop(tmp_path, _pct(0.8))
+    _stop(tmp_path, _pct(0.92), stop_hook_active=True)
     _, out, _ = _prompt(tmp_path, "<system-reminder>tick</system-reminder>")
     assert "No automatic retrieval ran" in out
     assert "At the end of your last turn" in out
-
-
-def test_no_second_interrupt_from_a_continuation(tmp_path):
-    code, _, err = _stop(tmp_path, _pct(0.92), stop_hook_active=True)
-    assert (code, err) == (0, "")
-    _, out, _ = _prompt(tmp_path)
-    assert "At the end of your last turn, context was at about 92%" in out
 
 
 def test_one_exit_2_carries_a_recording_failure_and_the_gauge(tmp_path):

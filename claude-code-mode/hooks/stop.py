@@ -28,11 +28,11 @@ with stop_hook_active set and any failure there exits 0 silently.
 
 The context gauge (issue #365) rides the same channel. After every turn
 the hook measures the context against the auto-compaction line and, the
-first time it crosses a band, says so: the top band by exit 2 (the turn
-continues so the entity can save a reflection on the conversation while
-it is still in view), the lower
-band held for the next prompt. Once per band, never per turn, and never an
-interrupt on a turn that is itself a continuation (see hook_util).
+first time it crosses 90%, says so by exit 2 (the turn continues so the
+entity can save a reflection on the conversation while it is still in
+view). Once per band, never per turn, and never an interrupt on a turn
+that is itself a continuation — there the notice is held for the next
+prompt (see hook_util).
 
 Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE (see session_start.py),
 HIM_COMPACT_LINE (see hook_util.py).
