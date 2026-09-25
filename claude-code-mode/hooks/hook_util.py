@@ -1134,23 +1134,22 @@ def never_reached_backend(error: Exception) -> bool:
 # output never reaches the model. So the Stop hook measures the turn's
 # prompt size — the provider-counted usage on the last assistant transcript
 # entry — against the auto-compaction line, and says so once when the
-# context crosses the band (90%):
+# context crosses the band (90%). The notice is held in a per-session
+# state file and printed with the next prompt (the UserPromptSubmit hook
+# takes it), since a Stop hook's stdout never reaches context.
 #
-#   - the notice goes out at once, as exit 2 with the notice on stderr,
-#     which continues the turn with it shown — an unattended room has
-#     nobody to give it the turn otherwise;
-#   - never on a turn that is itself a Stop continuation (stop_hook_active):
-#     there the notice is held and printed with the next prompt (the
-#     UserPromptSubmit hook takes it), since a Stop hook's stdout never
-#     reaches context.
-#
-# There was a 75% band too, held for the next prompt; issue #373 removed
-# it. At a quiet room's burn rate it spoke most of a day before the
-# boundary, so a reflection saved there described a conversation with its
-# day still ahead — and an early notice invited the room to reorganize
-# around the boundary, which no notice asks for. The cost is on the
-# record: mid-turn the gauge is blind (no Stop runs), so a long agentic
-# turn that starts under 90% and reads past the line gets no notice.
+# Issue #373 made it one quiet notice. There was a 75% band: at a quiet
+# room's burn rate it spoke most of a day before the boundary, so a
+# reflection saved there described a conversation with its day still
+# ahead, and an early notice invited the room to reorganize around the
+# boundary, which no notice asks for. And the 90% crossing used to exit 2,
+# continuing the turn so an unattended room had one to save in — another
+# note of urgency the situation doesn't have: the talk comes back through
+# memory_read after compaction, 10% of the line is a good while, and the
+# next prompt (a loop room's next tick) comes long before it is spent.
+# The cost is on the record: mid-turn the gauge is blind (no Stop runs),
+# so a long agentic turn that starts under 90% and reads past the line
+# gets no notice.
 #
 # One line per band, never per turn: repeated reminders fragmenting a long
 # task are the one negative-affect cluster the Opus 5.5 system card reports
@@ -1173,9 +1172,9 @@ def never_reached_backend(error: Exception) -> bool:
 DEFAULT_COMPACT_WINDOW = 1000000
 DEFAULT_COMPACT_RESERVE = 33000
 
-# Fractions of the line. The last one interrupts (exit 2); any others would
-# be held for the next prompt. One band since issue #373; a record written
-# while there were two keeps only the bands still here (_read_gauge_state).
+# Fractions of the line, each told once by a held notice. One band since
+# issue #373; a record written while there were two keeps only the bands
+# still here (_read_gauge_state).
 GAUGE_BANDS = (0.90,)
 
 COMPACT_WINDOW_SETTING = "autoCompactWindow"
@@ -1468,7 +1467,7 @@ def _load_gauge_state(session_id: str, parents=None) -> dict:
     The desktop app forks a session under a new id on a restart, a rewind,
     or an edited prompt, and the fork carries the same context (issue
     #357). A fork starting from an empty record would count every band it
-    is above as uncrossed and speak again — an exit 2 in a room that had
+    is above as uncrossed and speak again — a notice in a room that had
     one already, once per fork until it compacts. So a session with no
     record of its own takes the bands its nearest ancestor with a record
     has fired (`parents` is a callable returning the prior session ids,
@@ -1528,7 +1527,7 @@ def _approx_k(tokens: int) -> str:
     return f"~{round(tokens / 1000)}k"
 
 
-def gauge_notice(tokens: int, line: int, held: bool = False) -> str:
+def gauge_notice(tokens: int, line: int) -> str:
     """
     The notice: the fact, and what the entity can do with it. Not "save
     what you want kept" — the talk is all in the archive and comes back
@@ -1540,43 +1539,27 @@ def gauge_notice(tokens: int, line: int, held: bool = False) -> str:
     notice must not read as a loss that isn't coming — the talk comes back
     through memory_read — and 10% of the line is a good while (~97k at
     1M). A reflection needs no urgent prodding.
-
-    `held` is the wording for the next prompt, when the crossing came on a
-    Stop continuation that could not interrupt: past tense, and no promise
-    of a continued turn.
     """
     percent = round(tokens * 100 / line)
-    measure = (
-        f"about {percent}% of the auto-compaction line "
-        f"({_approx_k(tokens)} of {_approx_k(line)} tokens)"
-    )
-    offer = (
-        "If you want to save a reflection on the conversation as it stands "
-        "before compaction, now is a good time."
-    )
-    if held:
-        return f"[HERE I AM] At the end of your last turn, context was at {measure}. {offer}"
     return (
-        f"[HERE I AM] Context is at {measure}. {offer} "
-        "This turn continues once so that you can; nothing else is asked of it."
+        f"[HERE I AM] At the end of your last turn, context was at about "
+        f"{percent}% of the auto-compaction line ({_approx_k(tokens)} of "
+        f"{_approx_k(line)} tokens). If you want to save a reflection on the "
+        "conversation as it stands before compaction, now is a good time."
     )
 
 
-def check_context_gauge(session_id, tokens, line, may_interrupt=True, parents=None) -> str:
+def check_context_gauge(session_id, tokens, line, parents=None) -> None:
     """
-    Record a turn's context size against the bands and return the notice to
-    interrupt with now (the Stop hook exits 2 with it), or empty.
+    Record a turn's context size against the bands, and when it crosses one
+    it hasn't, hold the notice for the next prompt (take_held_gauge_notice).
 
-    A crossing of the top band returns its notice when `may_interrupt`;
-    on a turn that is already a Stop continuation it is held for the next
-    prompt instead (as any lower band's would be — there are none since
-    issue #373). Crossing several bands at once gives one notice, for the
-    highest. A newer notice replaces an unseen held one: it says the same
-    thing, later.
+    Crossing several bands at once gives one notice. A newer notice
+    replaces an unseen held one: it says the same thing, later.
     `parents` lets a fork inherit its parent's bands (see _load_gauge_state).
     """
     if not session_id or not tokens or not line:
-        return ""
+        return
     fraction = tokens / line
     # A session with no record yet (a new one, or a fork inheriting) writes
     # one this turn, so a fork's inheritance is its own from here on
@@ -1590,12 +1573,7 @@ def check_context_gauge(session_id, tokens, line, may_interrupt=True, parents=No
     if not crossed:
         if changed:
             _save_gauge_state(session_id, state)
-        return ""
+        return
     state["fired"] = sorted(fired | {band for band in GAUGE_BANDS if fraction >= band})
-    if max(crossed) == GAUGE_BANDS[-1] and may_interrupt:
-        state["held"] = None
-        _save_gauge_state(session_id, state)
-        return gauge_notice(tokens, line)
-    state["held"] = gauge_notice(tokens, line, held=True)
+    state["held"] = gauge_notice(tokens, line)
     _save_gauge_state(session_id, state)
-    return ""

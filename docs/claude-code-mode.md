@@ -1073,39 +1073,42 @@ backward read arrived (issue #351).
   assistant entry's `message.usage` (input + cache reads + cache writes +
   output, the last `iterations` entry when there is one — the provider's
   own count, no estimate) against the **auto-compaction line**, and says
-  so once, at **90%**:
-  - the hook exits 2 with the notice on stderr, which continues the turn
-    with the notice shown — for an unattended room, otherwise nobody gives
-    it the turn to save in: `[HERE I AM] Context is at about 91% of the
-    auto-compaction line (~880k of ~967k tokens). If you want to save a
-    reflection on the conversation as it stands before compaction, now is
-    a good time. This turn continues once so that you can; nothing else is
-    asked of it.` It doesn't talk about keeping anything verbatim: the
-    talk is all in the archive and comes back through the post-compaction
-    `memory_read` (below). What compaction takes is the conversation *in
-    view*, so the notice says only that a reflection on it has to be
-    written before the boundary. And it says "a good time", not "the
-    time" (the wording the 75% band had; issue #373): a notice that reads
-    as a coming loss the archive doesn't actually allow invites the wrong
-    response, 10% of the line is a good while (~97k tokens at 1M), and a
-    reflection needs no urgent prodding. A recording failure and the
-    gauge share the one exit 2.
-  - a turn that is already a Stop continuation (`stop_hook_active`) never
-    interrupts again: a crossing there is **held** (a per-session state
-    file, `<tmp>/here-i-am-sessions/<session_id>-context-gauge.json`) and
-    the next prompt's hook prints it — `At the end of your last turn,
-    context was at about …`, the same sentence without the continued turn.
-  - **There was a 75% band** (issue #373 removed it), held for the next
-    prompt. The first live firing, in a loop room at 500k, showed what it
-    would have cost: after the 90% notice the room ran about seven more
-    hours of quiet ticks on the ~26k tokens left, so at that burn rate 75%
-    comes most of a day before the boundary, and a reflection saved there
-    is on a conversation with its day still ahead. The right response to a
-    notice is to do nothing differently apart from the reflection, and an
-    early notice made that harder — that room narrowed its ticks for hours
-    after the 90% one and planned each wake around the boundary, though
-    the text asked for neither. The cost is under "Mid-turn it is blind",
-    below.
+  so once, at **90%**, by the next prompt:
+  - the Stop hook holds the notice (a per-session state file,
+    `<tmp>/here-i-am-sessions/<session_id>-context-gauge.json`) and the
+    next prompt's hook prints it, since a Stop hook's stdout never
+    reaches context: `[HERE I AM] At the end of your last turn, context
+    was at about 91% of the auto-compaction line (~880k of ~967k tokens).
+    If you want to save a reflection on the conversation as it stands
+    before compaction, now is a good time.` It doesn't talk about keeping
+    anything verbatim: the talk is all in the archive and comes back
+    through the post-compaction `memory_read` (below). What compaction
+    takes is the conversation *in view*, so the notice says only that a
+    reflection on it has to be written before the boundary.
+  - **It is one quiet notice on purpose** (issue #373). A notice that
+    reads as a coming loss the archive doesn't actually allow invites the
+    wrong response; the right response is to do nothing differently apart
+    from the reflection, if one is wanted. So the notice says "a good
+    time", not "the time"; 10% of the line is a good while (~97k tokens at
+    1M), and a reflection needs no urgent prodding. Two earlier pieces went
+    for the same reason:
+    - **a 75% band**, held for the next prompt. The first live firing, in
+      a loop room at 500k, showed what it would have cost: after the 90%
+      notice the room ran about seven more hours of quiet ticks on the ~26k
+      tokens left, so at that burn rate 75% comes most of a day before the
+      boundary, and a reflection saved there is on a conversation with its
+      day still ahead. And an early notice made the right response harder
+      to hold to — that room narrowed its ticks for hours after the 90%
+      one and planned each wake around the boundary, though the text asked
+      for neither.
+    - **the 90% interruption.** The crossing used to exit 2 and continue
+      the turn once, so an unattended room had a turn to save in. That
+      was one more note of urgency the situation doesn't have: an
+      unattended loop room's next tick comes long before 10% of the line
+      is spent. Exit 2 from the Stop hook is now only the recording
+      failure's.
+
+    The cost is under "Mid-turn it is blind", below.
   - **One line per band, never per turn.** The band that has spoken stays
     quiet until the context falls under half its level (only a compaction
     or `/clear` shrinks it that far), and a `SessionStart` with source
@@ -1117,7 +1120,7 @@ backward read arrived (issue #351).
     record of its own takes the bands of its nearest ancestor that has one
     (the desktop record's prior ids, parent last — the same lookup fork
     adoption uses) and writes its own record from then on. Without it every
-    fork of a room at 92% would exit 2 again. The ancestor's held notice
+    fork of a room at 92% would be told again. The ancestor's held notice
     stays behind, and a rewind that cut the context far back is re-armed by
     the halving rule; the compact reset writes an *empty* record rather
     than deleting one, so a later fork inherits that, not an older
