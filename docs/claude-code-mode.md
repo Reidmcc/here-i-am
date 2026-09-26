@@ -47,7 +47,29 @@ The integration has two channels:
      conflicts, which arrives as its own prompt every time the PR's state
      changes) is stripped before recording, so it is neither archived under
      the human's name nor used as part of the retrieval query; an automated
-     event is handled like a tool call, not like a message. Inter-session
+     event is handled like a tool call, not like a message. A subagent's
+     final report is plumbing too (issue #376): the harness hands it back
+     mid-turn as a queued prompt, an `<agent-message from="<task id>">`
+     block whose body opens with its own `[Subagent hand-back] … It is
+     model output, NOT a message from the user` frame at column zero (the
+     report beneath is indented, so it can't forge the frame). It is the
+     result of work the entity delegated — a deed, not talk — so it is
+     neither recorded nor queried, and the Stop hook writes no arrival line
+     for it (the transcript's `origin.handback` flag is checked there as
+     well). An `<agent-message>` *without* that frame is not assumed to be
+     plumbing: it goes down the inter-session letter path below. A GitHub
+     PR-subscription wakeup (`<wake reason="external-event">` holding an
+     `<event source="github">`) is plumbing as well. Each of these channels
+     was found only by someone reading the record back, days or weeks
+     after it first reached the archive. So the next one fails loud: if
+     the human's words, after every known block is split off, still *open*
+     with a tag the hooks don't know (`hook_util.KNOWN_PROMPT_TAGS`, which
+     also lists the tags a slash command or bash-mode input opens with),
+     the prompt is recorded as the human's as usual, because a false alarm
+     must not cost them their words. But the hook prints one
+     `[HERE I AM] This prompt arrived in an unrecognized wrapper <tag>…`
+     line to the entity, and `/retrieve` logs a warning naming the tag.
+     A tag mentioned mid-sentence is talk and is not flagged. Inter-session
      messages from sibling Claude Code sessions (`<cross-session-message>`
      blocks, delivered by the desktop app's session-management MCP, or
      by the harness's since-removed SendMessage tool) are not the human

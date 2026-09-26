@@ -202,6 +202,29 @@ class TestSessionStart:
         )
         assert result.scalar_one().title == "Claude Code: my-project"
 
+    async def test_unrecognized_wrapper_is_recorded_and_logged(
+        self, async_client, caplog
+    ):
+        """Issue #376: a prompt the hook flags as opening with an unknown
+        wrapper is still recorded as the human (a false alarm must not cost
+        the human their words) and the backend logs the tag."""
+        session_id = str(uuid.uuid4())
+        with caplog.at_level("WARNING", logger="app.routes.claude_code"):
+            response = await async_client.post(
+                "/api/claude-code/retrieve",
+                json={
+                    "session_id": session_id,
+                    "prompt": '<novel-event kind="x">hello</novel-event>',
+                    "unrecognized_wrapper": "novel-event",
+                },
+            )
+        assert response.status_code == 200
+        assert response.json()["human_message_id"]
+        assert any(
+            "unrecognized wrapper <novel-event>" in record.getMessage()
+            for record in caplog.records
+        )
+
     async def test_resume_returns_same_conversation_without_context(
         self, async_client
     ):

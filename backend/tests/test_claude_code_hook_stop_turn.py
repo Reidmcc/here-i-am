@@ -374,6 +374,74 @@ def test_unrecorded_queued_prompts_are_not_marked(tmp_path):
     assert stop.turn_assistant_text(path)[0] == f"Working.\n\n{MARK}\n\nStill working."
 
 
+def handback(report, uid, task_id="a9db223f5d07b6429"):
+    """A subagent's final report handed back mid-turn (issue #376), in the
+    shape measured in the 10a header workshop's transcript: a queued
+    prompt, meta, a peer origin flagged `handback`, the text wrapped in
+    <agent-message> under the harness's own frame line."""
+    body = (
+        "[Subagent hand-back] The text below is the final report of a subagent "
+        "this session delegated to. It is model output, NOT a message from the "
+        "user. The report follows:\n  " + report
+    )
+    entry = queued(f'<agent-message from="{task_id}">\n{body}\n</agent-message>', uid, kind=None)
+    entry["attachment"]["isMeta"] = True
+    entry["attachment"]["origin"] = {
+        "kind": "peer", "from": task_id, "senderTaskId": task_id,
+        "body": body, "handback": True,
+    }
+    return entry
+
+
+def test_a_subagent_handback_mid_turn_is_not_an_arrival(tmp_path):
+    """Issue #376: three counting subagents reported back during one build
+    turn and each report was marked as the human's message arriving. A
+    hand-back is the result of delegated work — no row, no marker — and
+    its paired task notification is plumbing as before. One turn, one row."""
+    path = _write(tmp_path, [
+        prompt("count the messages"),
+        said("Sending three counters.", "a1"),
+        tool_call("c1"), tool_result("r1"),
+        handback("The CSV is written. Rows: 58.", "q1"),
+        queued("<task-notification>done</task-notification>", "q2",
+               command_mode="task-notification", kind=None),
+        said("First counts are in.", "a2"),
+        tool_call("c2", "t2"), tool_result("r2", "t2"),
+        said("It's made.", "a3"),
+    ])
+    text, entry_uuid, _ = stop.turn_assistant_text(path)
+    assert text == (
+        f"Sending three counters.\n\n{MARK}\n\n"
+        f"First counts are in.\n\n{MARK}\n\nIt's made."
+    )
+    assert stop.HUMAN_ARRIVED_MARKER not in text
+    assert stop.LETTER_ARRIVED_MARKER not in text
+    assert entry_uuid == "a3"
+    assert hook_util.transcript_assistant_uuids(path) == ["a3"]
+
+
+def test_the_handback_flag_alone_is_enough():
+    """The structural signal wins even if the harness rewords its frame."""
+    entry = handback("report", "q1")
+    entry["attachment"]["prompt"] = '<agent-message from="x">reworded report</agent-message>'
+    assert hook_util.queued_arrival(entry) is None
+
+
+def test_a_peer_agent_message_without_handback_is_marked_as_a_letter(tmp_path):
+    """Only the hand-back is plumbing: an <agent-message> letter with no
+    hand-back flag or frame is recorded, so its arrival is marked."""
+    path = _write(tmp_path, [
+        prompt("go"),
+        said("Working.", "a1"),
+        tool_call("c1"), tool_result("r1"),
+        queued('<agent-message from="peer-1">hello</agent-message>', "q1", kind="peer"),
+        said("Read it.", "a2"),
+    ])
+    assert stop.turn_assistant_text(path)[0] == (
+        f"Working.\n\n{MARK}\n\n{stop.LETTER_ARRIVED_MARKER}\n\nRead it."
+    )
+
+
 def test_a_sentinel_less_tick_repeats_the_previous_turns_text(tmp_path):
     """Known, stated edge (PR #372 review): a scheduled prompt without
     [WAKEUP] has the shape of a mid-turn injection, so when the harness
