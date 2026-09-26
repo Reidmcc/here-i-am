@@ -109,15 +109,48 @@ DEFAULT_INLINE_BUDGET = 9600
 # sending session marked (issue #312). None of this touches what the
 # harness delivers to the session's context — the message itself still
 # arrives and can be answered.
+#
+# A subagent's final report comes back the same way (issue #376, measured
+# 2026-09-26 in the only transcript that had one): a queued prompt whose
+# text is an <agent-message from="<subagent task id>"> block, the body
+# opening with the harness's own frame line, "[Subagent hand-back] ... It
+# is model output, NOT a message from the user ...", and the report
+# indented beneath it. That is the result of work the entity delegated — a
+# deed, like a tool result — so it is plumbing: not recorded, not queried.
+# The frame is recognized at column zero only; the harness indents every
+# line of the report precisely so a report can't forge it. For the same
+# reason the block ends only at a </agent-message> at column zero — the
+# close the harness's own parser uses — never at the first one anywhere: a
+# report that quotes the tag (any subagent reading these hooks will) must
+# not cut the block short and leave its tail behind as the human's words
+# (PR #377 review). Any OTHER <agent-message> (no frame — a peer's letter
+# in that wrapper, if the harness ever sends one) is a letter, extracted
+# like a cross-session message, never dropped and never the human. No such
+# letter has been measured, and the one measured sender of the wrapper is a
+# subagent, so one whose `from=` is not a session address (`local_…`) is
+# also said aloud (unmeasured_agent_letters).
+#
+# Harness wakeups for a GitHub PR subscription arrive as a bare
+# <wake reason="external-event" ...> block holding an <event source="github"
+# ...> (the transcript marks it origin task-notification; found 2026-09-26
+# by the survey behind the unrecognized-wrapper check below — two had been
+# archived as the human's words on 2026-09-16). Plumbing, like the CI
+# monitor's events.
 _PLUMBING_BLOCK_RE = re.compile(
-    r"<(system-reminder|task-notification|ci-monitor-event)"
+    r"<(system-reminder|task-notification|ci-monitor-event|wake)"
     r"(?:\s[^>]*)?>.*?</\1>\s*",
     re.DOTALL,
 )
-_CROSS_SESSION_RE = re.compile(
-    r"<cross-session-message((?:\s[^>]*)?)>(.*?)</cross-session-message>\s*",
+# One pass over both wrappers, so delivery order holds across them; the
+# conditional picks each wrapper's close (see above for agent-message's)
+_DELIVERY_RE = re.compile(
+    r"<(?:(?P<cross>cross-session-message)|agent-message)(?P<attrs>(?:\s[^>]*)?)>"
+    r"(?P<body>.*?)"
+    r"(?(cross)</cross-session-message>|\r?\n</agent-message>)\s*",
     re.DOTALL,
 )
+SUBAGENT_HANDBACK_FRAME = "[Subagent hand-back]"
+_HANDBACK_FRAME_RE = re.compile(r"^" + re.escape(SUBAGENT_HANDBACK_FRAME), re.MULTILINE)
 # `from-name="..."` (old wrapper) or `name="..."` (new wrapper). The word
 # boundary keeps `name=` from matching inside another attribute's name.
 _FROM_NAME_RE = re.compile(r'\b(?:from-)?name="([^"]*)"')
@@ -156,20 +189,43 @@ def split_prompt_for_recording(prompt: str):
     Plumbing blocks (system reminders, task notifications, CI monitor
     events) are discarded —
     including anything nested inside them, which is harness echo, not a
-    delivery. Each <cross-session-message> block becomes one
+    delivery — and so is a subagent hand-back (an <agent-message> carrying
+    the harness's hand-back frame). Each <cross-session-message> block,
+    and any <agent-message> that is not a hand-back, becomes one
     {"content", "sender", "sender_session"} dict (sender is the wrapper's
     name attribute — `name=` in the current wrapper, `from-name=` in the
     2026-08 one — or None; sender_session is its `from=` attribute, the
     sending session's messaging address, or None), in delivery order. What
     remains, stripped, is the human's own words — possibly empty.
     """
+    words, peer_messages, _ = _split(prompt)
+    return words, peer_messages
+
+
+def unmeasured_agent_letters(prompt: str):
+    """The `from=` of each <agent-message> the letter path would record
+    whose sender is not a session address (`local_…`) — "" when it has
+    none — in delivery order. Such a letter is recorded all the same (issue
+    #376), but no letter in that wrapper has ever been measured and the one
+    measured sender of it is a subagent, whose words are not the entity's;
+    the hook says so aloud so the first real one is checked, not archived
+    quietly."""
+    return _split(prompt)[2]
+
+
+def _split(prompt: str):
     without_plumbing = _PLUMBING_BLOCK_RE.sub("", prompt)
     peer_messages = []
+    unmeasured = []
 
     def _capture(match):
-        content = match.group(2).strip()
+        agent_message = not match.group("cross")
+        body = match.group("body")
+        if agent_message and _HANDBACK_FRAME_RE.search(body):
+            return ""
+        content = body.strip()
         if content:
-            attributes = match.group(1) or ""
+            attributes = match.group("attrs") or ""
             name_match = _FROM_NAME_RE.search(attributes)
             sender = (name_match.group(1).strip() if name_match else "") or None
             from_match = _FROM_RE.search(attributes)
@@ -179,10 +235,72 @@ def split_prompt_for_recording(prompt: str):
                 "sender": sender,
                 "sender_session": sender_session,
             })
+            if agent_message and not (sender_session or "").startswith("local_"):
+                unmeasured.append(sender_session or "")
         return ""
 
-    remaining = _CROSS_SESSION_RE.sub(_capture, without_plumbing)
-    return remaining.strip(), peer_messages
+    remaining = _DELIVERY_RE.sub(_capture, without_plumbing)
+    return remaining.strip(), peer_messages, unmeasured
+
+
+# Fail loud on the NEXT new channel (issue #376, the porch's suggestion).
+# Every harness channel above was found the same way: a new wrapper
+# arrived, was archived as the human's words, and someone noticed on
+# reading the record back — a day to three weeks later (<cross-session-
+# message> 8/26, <ci-monitor-event> 9/7, <wake> 9/16, <agent-message>
+# 9/26). So when the human's words, after every known block is split off,
+# still OPEN with a tag the hooks don't know, the prompt is recorded as
+# usual (a false alarm must not cost the human their words) and the hook
+# says so to the entity at once. The known tags are the ones a survey of
+# every transcript found opening a prompt on the human's own act (slash
+# commands and their local output, bash mode) — the human invoking
+# something, correctly recorded as theirs. The tags handled above are
+# deliberately NOT in the set: one that survives the split is a block the
+# parser didn't understand (an unmeasured shape, an unclosed or oddly
+# closed wrapper), which is exactly what this check exists to catch. The
+# harness has more wrappers on the prompt channel than these hooks have
+# met (teammate-message, slack-ping, coordinator-relay, ...), so that is
+# where the check will most likely fire first: a flag there is the check
+# working, not a bug in it.
+KNOWN_PROMPT_TAGS = frozenset({
+    "command-name", "command-message", "command-args",
+    "local-command-caveat", "local-command-stdout", "local-command-stderr",
+    "bash-input", "bash-stdout", "bash-stderr",
+})
+_OPENING_TAG_RE = re.compile(r"<([A-Za-z][\w-]*)(?=[\s>/])")
+
+
+def unrecognized_wrapper(words: str) -> Optional[str]:
+    """The tag name when the human's words (split_prompt_for_recording's
+    first element) open with an XML-style tag the hooks don't recognize,
+    else None. Column zero only: a tag mentioned mid-sentence is talk."""
+    match = _OPENING_TAG_RE.match(words)
+    if match and match.group(1).lower() not in KNOWN_PROMPT_TAGS:
+        return match.group(1)
+    return None
+
+
+def unrecognized_wrapper_notice(tag: str) -> str:
+    """The one line the prompt hook prints for an unrecognized wrapper."""
+    return (
+        f"[HERE I AM] This prompt arrived in an unrecognized wrapper <{tag}>; "
+        "it was recorded as the human's words. If the human didn't write it, "
+        "tell them: it may be a new harness channel reaching the archive "
+        "under their name (see issue #376)."
+    )
+
+
+def unmeasured_agent_letter_notice(sender: str) -> str:
+    """The one line the prompt hook prints for an <agent-message> recorded
+    as a letter whose sender is not a session address."""
+    who = f'from "{sender}"' if sender else "with no sender address"
+    return (
+        f"[HERE I AM] A message arrived in an <agent-message> wrapper {who}, "
+        "which is not a session address; it was recorded as a letter from a "
+        "sibling session, in your own name. If it came from a subagent rather "
+        "than a sister session, tell the human: that shape is unmeasured (see "
+        "issue #376)."
+    )
 
 
 def is_wakeup_prompt(text: str) -> bool:
@@ -697,9 +815,11 @@ def queued_arrival(entry):
     before the turn's one assistant row, which is written at Stop. The Stop
     hook marks where it fell so the chunks said before it don't read as a
     reply to it (issue #364 review). Split exactly as the prompt hook
-    splits what it records: task notifications and plumbing are nobody
-    speaking, a [WAKEUP] tick is not recorded, and each sibling letter is
-    recorded as a letter.
+    splits what it records: task notifications, subagent hand-backs and
+    plumbing are nobody speaking, a [WAKEUP] tick is not recorded, and each
+    sibling letter is recorded as a letter. A hand-back is recognized by
+    its structural flag (`origin.handback`, which the prompt hook never
+    sees) as well as by its frame in the text.
     """
     if not isinstance(entry, dict) or entry.get("type") != "attachment":
         return None
@@ -709,6 +829,9 @@ def queued_arrival(entry):
     if not isinstance(attachment, dict) or attachment.get("type") != "queued_command":
         return None
     if attachment.get("commandMode") == "task-notification":
+        return None
+    origin = attachment.get("origin")
+    if isinstance(origin, dict) and origin.get("handback"):
         return None
     words, letters = split_prompt_for_recording(
         _user_entry_text(attachment.get("prompt"))

@@ -9,11 +9,15 @@ context alongside the prompt.
 
 Not everything on the prompt channel is the human: harness plumbing
 (system reminders, task notifications, the desktop app's CI monitor
-events) is stripped and dropped, while
+events, subagent hand-backs — issue #376) is stripped and dropped, while
 inter-session messages from sibling Claude Code sessions are extracted and
 sent separately (peer_messages), so the backend can record them under the
 entity's own name with the sending session marked instead of archiving
-them as the human's words (issue #312). Self-scheduled wakeup prompts —
+them as the human's words (issue #312). Words that, after all that, still
+open with a tag the hooks don't recognize are recorded as the human's as
+usual, but the hook says so in one line and the backend logs it — the next
+new harness channel is caught when it arrives, not when someone reads the
+record back (issue #376). Self-scheduled wakeup prompts —
 marked by the entity with the [WAKEUP] sentinel, since the harness marks
 them with nothing (issue #318) — are dropped from recording too, though
 the backend is still pinged so notes sync and the mailbox flag survive a
@@ -93,16 +97,17 @@ def main() -> None:
         return
     session_id = data.get("session_id") or ""
     # Harness blocks (system reminders, task notifications, CI monitor
-    # events) are not the human speaking — stripped so they are neither
-    # archived under the
-    # human's name nor used as a retrieval query. Inter-session messages
-    # from sibling sessions aren't the human either, but they are the
-    # entity: extracted and sent alongside the prompt for recording with
-    # honest provenance. A prompt that was pure harness plumbing leaves
-    # nothing to send.
-    prompt, peer_messages = hook_util.split_prompt_for_recording(
-        data.get("prompt") or ""
-    )
+    # events, subagent hand-backs) are not the human speaking — stripped so
+    # they are neither archived under the human's name nor used as a
+    # retrieval query. Inter-session messages from sibling sessions aren't
+    # the human either, but they are the entity: extracted and sent
+    # alongside the prompt for recording with honest provenance. A prompt
+    # that was pure harness plumbing leaves nothing to send.
+    raw_prompt = data.get("prompt") or ""
+    prompt, peer_messages = hook_util.split_prompt_for_recording(raw_prompt)
+    # An <agent-message> letter from something that isn't a session address
+    # is recorded as a letter, but said aloud: unmeasured (issue #376)
+    unmeasured_letters = hook_util.unmeasured_agent_letters(raw_prompt)
     # A self-scheduled wakeup prompt (the [WAKEUP] sentinel convention,
     # issue #318) is the entity's own timer firing, not anyone speaking:
     # dropped from recording and retrieval entirely. The backend is still
@@ -111,6 +116,10 @@ def main() -> None:
     wakeup = hook_util.is_wakeup_prompt(prompt)
     if wakeup:
         prompt = ""
+    # Words that still open with a tag nobody knows: recorded as the human
+    # all the same, but said aloud now, so a new harness channel is caught
+    # when it arrives rather than when someone reads the record (issue #376)
+    wrapper = hook_util.unrecognized_wrapper(prompt)
     if not session_id:
         return
     # The context gauge's notice (issue #365): the band the last turn's
@@ -141,6 +150,8 @@ def main() -> None:
         "prompt": prompt,
         "message_id": human_id,
         "peer_messages": peer_messages,
+        # Logged by the backend, where the researcher watches (issue #376)
+        "unrecognized_wrapper": wrapper,
         "entity": os.environ.get("HIM_ENTITY") or None,
         "cwd": data.get("cwd"),
         # Rooms registry: a prompt anywhere (a wakeup tick included) is a
@@ -197,11 +208,16 @@ def main() -> None:
     # what every other line in it refers to — which conversation this
     # session is recording into
     adopted = adoption_notice(body)
+    unrecognized = hook_util.unrecognized_wrapper_notice(wrapper) if wrapper else ""
+    unmeasured = [
+        hook_util.unmeasured_agent_letter_notice(sender) for sender in unmeasured_letters
+    ]
     # Rooms registry: a rename observed this turn, or a loud write failure
     tail = [
         part
         for part in (
-            adopted, gauge, mailbox, *hook_util.rooms_output_lines(body), reminder
+            adopted, unrecognized, *unmeasured, gauge, mailbox,
+            *hook_util.rooms_output_lines(body), reminder,
         )
         if part
     ]
