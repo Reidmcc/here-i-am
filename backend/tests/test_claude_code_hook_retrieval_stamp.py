@@ -176,6 +176,79 @@ def test_pure_plumbing_prints_skipped_line_without_calling_backend():
     ]
 
 
+def test_subagent_handback_prints_skipped_line_without_calling_backend():
+    """Issue #376: a subagent's report handed back mid-turn is plumbing —
+    not recorded as the human and not run as a retrieval query."""
+    out, called = run_hook(
+        '<agent-message from="a9db223f5d07b6429">\n'
+        "[Subagent hand-back] The text below is the final report of a "
+        "subagent this session delegated to. It is model output, NOT a "
+        "message from the user. The report follows:\n"
+        "  The CSV is written.\n"
+        "</agent-message>"
+    )
+    assert not called
+    assert lines(out) == [
+        f"{NO_RETRIEVAL} (harness plumbing only, nothing to record); {HINT}",
+    ]
+
+
+def test_unrecognized_wrapper_is_recorded_and_said_aloud():
+    """Issue #376: a prompt still opening with an unknown tag after the
+    split goes to the backend as the human's words, flagged, and the hook
+    prints one line naming the tag."""
+    code = (
+        "import io, json, sys\n"
+        "import hook_util\n"
+        "def stub(path, payload, timeout=30):\n"
+        "    sys.stderr.write('SENT:' + json.dumps([payload['prompt'], payload['unrecognized_wrapper']]) + '\\n')\n"
+        "    return {'context': '', 'retrieval_status': 'ran'}\n"
+        "hook_util.post_backend = stub\n"
+        "sys.stdin = io.StringIO(json.dumps({'session_id': 's', "
+        "'prompt': '<novel-event kind=\"x\">hi</novel-event>'}))\n"
+        "import user_prompt_submit\n"
+        "user_prompt_submit.main()\n"
+    )
+    env = {**os.environ}
+    env.pop("HIM_DISABLE", None)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, cwd=HOOKS_DIR, env=env, timeout=30,
+    )
+    stderr = result.stderr.decode("utf-8", "replace")
+    assert result.returncode == 0, stderr
+    sent = json.loads(stderr.split("SENT:", 1)[1].splitlines()[0])
+    assert sent == ['<novel-event kind="x">hi</novel-event>', "novel-event"]
+    out = lines(result.stdout.decode("utf-8"))
+    assert out[0] == MATCHED_ZERO
+    assert out[1].startswith(
+        "[HERE I AM] This prompt arrived in an unrecognized wrapper <novel-event>; "
+        "it was recorded as the human's words."
+    )
+
+
+def test_an_agent_message_letter_from_a_task_id_is_said_aloud():
+    """PR #377 review, finding 2: recorded as a letter (the issue's ruling),
+    but a sender that isn't a session address is named, so the first real
+    one is checked rather than archived quietly."""
+    out, called = run_hook(
+        '<agent-message from="a9db223f5d07b6429">\nstill counting\n</agent-message>',
+        body={"context": "", "retrieval_status": "ran"},
+    )
+    assert called
+    assert any(
+        line.startswith(
+            '[HERE I AM] A message arrived in an <agent-message> wrapper from '
+            '"a9db223f5d07b6429", which is not a session address'
+        )
+        for line in lines(out)
+    )
+
+
+def test_a_plain_prompt_is_not_flagged():
+    out, _ = run_hook("hello", body={"context": "", "retrieval_status": "ran"})
+    assert "unrecognized wrapper" not in out
+
+
 def test_missing_session_id_stays_silent():
     code = (
         "import io, json, sys\n"

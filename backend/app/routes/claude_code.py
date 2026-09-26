@@ -191,6 +191,9 @@ class RetrieveRequest(BaseModel):
     message_id: Optional[str] = None
     # Inter-session messages that rode in with (or stood in for) the prompt
     peer_messages: List[PeerMessage] = []
+    # The tag when the prompt's words open with a wrapper the hook doesn't
+    # recognize (issue #376): still recorded as the human, but logged
+    unrecognized_wrapper: Optional[str] = None
     # Live-session snapshot for the rooms registry (see SessionStartRequest)
     sessions: List[SessionObservationIn] = []
     # Fork-adoption lineage hints (issue #357; see SessionStartRequest)
@@ -527,6 +530,18 @@ async def retrieve(
                 content=prompt,
                 message_id=_valid_uuid(data.message_id),
                 token_count=cc.safe_token_count(prompt),
+            )
+        if data.unrecognized_wrapper:
+            # Recorded as the human all the same; the log line is where the
+            # researcher sees a new harness channel on the day it arrives,
+            # and it names the row to release if it wasn't the human
+            logger.warning(
+                "[CC] Prompt in unrecognized wrapper <%s> recorded as the "
+                "human's words (message %s, conversation %s); if it was "
+                "harness plumbing, add it to hook_util (issue #376)",
+                data.unrecognized_wrapper[:64],
+                human_msg.id,
+                conversation.id,
             )
 
     peer_message_ids: List[str] = []
