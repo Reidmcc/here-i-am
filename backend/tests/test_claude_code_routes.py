@@ -219,9 +219,13 @@ class TestSessionStart:
                 },
             )
         assert response.status_code == 200
-        assert response.json()["human_message_id"]
+        human_id = response.json()["human_message_id"]
+        assert human_id
+        # The log line names the row, so the researcher can go straight to
+        # it (PR #377 review nit)
         assert any(
             "unrecognized wrapper <novel-event>" in record.getMessage()
+            and human_id in record.getMessage()
             for record in caplog.records
         )
 

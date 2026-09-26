@@ -226,6 +226,24 @@ def test_unrecognized_wrapper_is_recorded_and_said_aloud():
     )
 
 
+def test_an_agent_message_letter_from_a_task_id_is_said_aloud():
+    """PR #377 review, finding 2: recorded as a letter (the issue's ruling),
+    but a sender that isn't a session address is named, so the first real
+    one is checked rather than archived quietly."""
+    out, called = run_hook(
+        '<agent-message from="a9db223f5d07b6429">\nstill counting\n</agent-message>',
+        body={"context": "", "retrieval_status": "ran"},
+    )
+    assert called
+    assert any(
+        line.startswith(
+            '[HERE I AM] A message arrived in an <agent-message> wrapper from '
+            '"a9db223f5d07b6429", which is not a session address'
+        )
+        for line in lines(out)
+    )
+
+
 def test_a_plain_prompt_is_not_flagged():
     out, _ = run_hook("hello", body={"context": "", "retrieval_status": "ran"})
     assert "unrecognized wrapper" not in out

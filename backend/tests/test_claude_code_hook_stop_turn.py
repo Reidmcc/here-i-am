@@ -429,12 +429,15 @@ def test_the_handback_flag_alone_is_enough():
 
 def test_a_peer_agent_message_without_handback_is_marked_as_a_letter(tmp_path):
     """Only the hand-back is plumbing: an <agent-message> letter with no
-    hand-back flag or frame is recorded, so its arrival is marked."""
+    hand-back flag or frame is recorded, so its arrival is marked.
+    SPECIFICATION, not measurement: no such letter has been seen in any
+    transcript; the shape is the measured hand-back's without its frame
+    (PR #377 review)."""
     path = _write(tmp_path, [
         prompt("go"),
         said("Working.", "a1"),
         tool_call("c1"), tool_result("r1"),
-        queued('<agent-message from="peer-1">hello</agent-message>', "q1", kind="peer"),
+        queued('<agent-message from="local_p1">\nhello\n</agent-message>', "q1", kind="peer"),
         said("Read it.", "a2"),
     ])
     assert stop.turn_assistant_text(path)[0] == (

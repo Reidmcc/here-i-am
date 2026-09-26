@@ -418,24 +418,76 @@ def test_a_forged_frame_inside_the_report_does_not_make_a_letter_plumbing():
     assert letters[0]["sender_session"] == "peer-1"
 
 
+def test_a_report_quoting_the_closing_tag_stays_one_block():
+    """PR #377 review, finding 1: the block ends only at a close at column
+    zero. A report that quotes </agent-message> — as any subagent reading
+    these hooks will — must not cut the block short and leave its tail as
+    the human's words."""
+    prompt = (
+        '<agent-message from="a9db223f5d07b6429">\n'
+        f"{HANDBACK_FRAME}\n"
+        "  The block closes at `</agent-message>` and the splitter's regex\n"
+        "  is non-greedy, so it stops there.\n"
+        "</agent-message>"
+    )
+    assert hook_util.split_prompt_for_recording(prompt) == ("", [])
+    assert hook_util.split_prompt_for_recording(prompt.replace("\n", "\r\n")) == ("", [])
+
+
+def test_an_agent_message_closed_mid_line_is_flagged_not_passed_as_known():
+    """A shape the parser doesn't understand (a close that isn't at column
+    zero) is left as words — recorded as the human's, but said aloud, since
+    the handled tags are deliberately not in the known set."""
+    words, letters = hook_util.split_prompt_for_recording(
+        '<agent-message from="x">hello</agent-message>'
+    )
+    assert letters == []
+    assert hook_util.unrecognized_wrapper(words) == "agent-message"
+
+
+# The letter fixtures below are SPECIFICATION, not measurement: no
+# <agent-message> letter has been seen in any transcript (the one measured
+# sender of the wrapper is a subagent). They use the measured hand-back's
+# multi-line shape without its frame. Replace them with a measured shape
+# once one exists (PR #377 review, findings 2 and 3).
 def test_agent_message_without_the_frame_is_a_letter_not_dropped():
     """Issue #376, ask 2: only the hand-back is plumbing. A peer's letter in
     the same wrapper is recorded as a letter, never dropped and never the
-    human."""
-    prompt = '<agent-message from="peer-1" name="Porch">hello from the porch</agent-message>'
+    human. (Specification — see the note above.)"""
+    prompt = '<agent-message from="local_p1" name="Porch">\nhello from the porch\n</agent-message>'
     assert hook_util.split_prompt_for_recording(prompt) == ("", [{
         "content": "hello from the porch",
         "sender": "Porch",
-        "sender_session": "peer-1",
+        "sender_session": "local_p1",
     }])
+    assert hook_util.unmeasured_agent_letters(prompt) == []
+
+
+def test_an_agent_message_letter_from_a_non_session_is_said_aloud():
+    """Recorded as a letter all the same, but a `from=` that isn't a session
+    address (a subagent's task id, or none) is unmeasured, so it is named.
+    (Specification — see the note above.)"""
+    prompt = (
+        '<agent-message from="a9db223f5d07b6429">\nstill counting\n</agent-message>\n'
+        "<agent-message>\nno sender\n</agent-message>\n"
+        f"{HANDBACK}\n"
+        '<cross-session-message from="uds:pipe" from-name="CLI room">hi</cross-session-message>'
+    )
+    words, letters = hook_util.split_prompt_for_recording(prompt)
+    assert words == ""
+    assert [letter["content"] for letter in letters] == ["still counting", "no sender", "hi"]
+    # Neither the hand-back nor a cross-session letter is flagged
+    assert hook_util.unmeasured_agent_letters(prompt) == ["a9db223f5d07b6429", ""]
+    assert '"a9db223f5d07b6429"' in hook_util.unmeasured_agent_letter_notice("a9db223f5d07b6429")
+    assert "with no sender address" in hook_util.unmeasured_agent_letter_notice("")
 
 
 def test_letters_in_both_wrappers_keep_delivery_order():
     prompt = (
-        '<agent-message from="a1">first</agent-message>\n'
+        '<agent-message from="local_a1">\nfirst\n</agent-message>\n'
         '<cross-session-message from="local_b" name="Porch">second</cross-session-message>\n'
         f"{HANDBACK}\n"
-        '<agent-message from="c3">third</agent-message>'
+        '<agent-message from="local_c3">\nthird\n</agent-message>'
     )
     words, letters = hook_util.split_prompt_for_recording(prompt)
     assert words == ""
@@ -473,6 +525,13 @@ def test_known_and_human_shapes_are_not_flagged():
         "<bash-input>ls</bash-input>",
     ):
         assert hook_util.unrecognized_wrapper(words) is None, words
+
+
+def test_a_handled_tag_that_survives_the_split_is_flagged():
+    """Handled tags are not in the known set: one left in the words is a
+    block the parser didn't understand, which is what the check is for."""
+    words, _ = hook_util.split_prompt_for_recording("<system-reminder>never closed")
+    assert hook_util.unrecognized_wrapper(words) == "system-reminder"
 
 
 def test_split_off_deliveries_leave_nothing_to_flag():

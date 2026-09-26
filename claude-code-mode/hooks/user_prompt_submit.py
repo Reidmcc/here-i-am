@@ -97,16 +97,17 @@ def main() -> None:
         return
     session_id = data.get("session_id") or ""
     # Harness blocks (system reminders, task notifications, CI monitor
-    # events, subagent hand-backs) are not the human speaking — stripped so they are neither
-    # archived under the
-    # human's name nor used as a retrieval query. Inter-session messages
-    # from sibling sessions aren't the human either, but they are the
-    # entity: extracted and sent alongside the prompt for recording with
-    # honest provenance. A prompt that was pure harness plumbing leaves
-    # nothing to send.
-    prompt, peer_messages = hook_util.split_prompt_for_recording(
-        data.get("prompt") or ""
-    )
+    # events, subagent hand-backs) are not the human speaking — stripped so
+    # they are neither archived under the human's name nor used as a
+    # retrieval query. Inter-session messages from sibling sessions aren't
+    # the human either, but they are the entity: extracted and sent
+    # alongside the prompt for recording with honest provenance. A prompt
+    # that was pure harness plumbing leaves nothing to send.
+    raw_prompt = data.get("prompt") or ""
+    prompt, peer_messages = hook_util.split_prompt_for_recording(raw_prompt)
+    # An <agent-message> letter from something that isn't a session address
+    # is recorded as a letter, but said aloud: unmeasured (issue #376)
+    unmeasured_letters = hook_util.unmeasured_agent_letters(raw_prompt)
     # A self-scheduled wakeup prompt (the [WAKEUP] sentinel convention,
     # issue #318) is the entity's own timer firing, not anyone speaking:
     # dropped from recording and retrieval entirely. The backend is still
@@ -208,11 +209,14 @@ def main() -> None:
     # session is recording into
     adopted = adoption_notice(body)
     unrecognized = hook_util.unrecognized_wrapper_notice(wrapper) if wrapper else ""
+    unmeasured = [
+        hook_util.unmeasured_agent_letter_notice(sender) for sender in unmeasured_letters
+    ]
     # Rooms registry: a rename observed this turn, or a loud write failure
     tail = [
         part
         for part in (
-            adopted, unrecognized, gauge, mailbox,
+            adopted, unrecognized, *unmeasured, gauge, mailbox,
             *hook_util.rooms_output_lines(body), reminder,
         )
         if part

@@ -118,10 +118,17 @@ DEFAULT_INLINE_BUDGET = 9600
 # indented beneath it. That is the result of work the entity delegated — a
 # deed, like a tool result — so it is plumbing: not recorded, not queried.
 # The frame is recognized at column zero only; the harness indents every
-# line of the report precisely so a report can't forge it. Any OTHER
-# <agent-message> (no frame — a peer's letter in that wrapper, if the
-# harness ever sends one) is a letter, extracted like a cross-session
-# message, never dropped and never the human.
+# line of the report precisely so a report can't forge it. For the same
+# reason the block ends only at a </agent-message> at column zero — the
+# close the harness's own parser uses — never at the first one anywhere: a
+# report that quotes the tag (any subagent reading these hooks will) must
+# not cut the block short and leave its tail behind as the human's words
+# (PR #377 review). Any OTHER <agent-message> (no frame — a peer's letter
+# in that wrapper, if the harness ever sends one) is a letter, extracted
+# like a cross-session message, never dropped and never the human. No such
+# letter has been measured, and the one measured sender of the wrapper is a
+# subagent, so one whose `from=` is not a session address (`local_…`) is
+# also said aloud (unmeasured_agent_letters).
 #
 # Harness wakeups for a GitHub PR subscription arrive as a bare
 # <wake reason="external-event" ...> block holding an <event source="github"
@@ -134,8 +141,12 @@ _PLUMBING_BLOCK_RE = re.compile(
     r"(?:\s[^>]*)?>.*?</\1>\s*",
     re.DOTALL,
 )
+# One pass over both wrappers, so delivery order holds across them; the
+# conditional picks each wrapper's close (see above for agent-message's)
 _DELIVERY_RE = re.compile(
-    r"<(cross-session-message|agent-message)((?:\s[^>]*)?)>(.*?)</\1>\s*",
+    r"<(?:(?P<cross>cross-session-message)|agent-message)(?P<attrs>(?:\s[^>]*)?)>"
+    r"(?P<body>.*?)"
+    r"(?(cross)</cross-session-message>|\r?\n</agent-message>)\s*",
     re.DOTALL,
 )
 SUBAGENT_HANDBACK_FRAME = "[Subagent hand-back]"
@@ -187,15 +198,34 @@ def split_prompt_for_recording(prompt: str):
     sending session's messaging address, or None), in delivery order. What
     remains, stripped, is the human's own words — possibly empty.
     """
+    words, peer_messages, _ = _split(prompt)
+    return words, peer_messages
+
+
+def unmeasured_agent_letters(prompt: str):
+    """The `from=` of each <agent-message> the letter path would record
+    whose sender is not a session address (`local_…`) — "" when it has
+    none — in delivery order. Such a letter is recorded all the same (issue
+    #376), but no letter in that wrapper has ever been measured and the one
+    measured sender of it is a subagent, whose words are not the entity's;
+    the hook says so aloud so the first real one is checked, not archived
+    quietly."""
+    return _split(prompt)[2]
+
+
+def _split(prompt: str):
     without_plumbing = _PLUMBING_BLOCK_RE.sub("", prompt)
     peer_messages = []
+    unmeasured = []
 
     def _capture(match):
-        if match.group(1) == "agent-message" and _HANDBACK_FRAME_RE.search(match.group(3)):
+        agent_message = not match.group("cross")
+        body = match.group("body")
+        if agent_message and _HANDBACK_FRAME_RE.search(body):
             return ""
-        content = match.group(3).strip()
+        content = body.strip()
         if content:
-            attributes = match.group(2) or ""
+            attributes = match.group("attrs") or ""
             name_match = _FROM_NAME_RE.search(attributes)
             sender = (name_match.group(1).strip() if name_match else "") or None
             from_match = _FROM_RE.search(attributes)
@@ -205,10 +235,12 @@ def split_prompt_for_recording(prompt: str):
                 "sender": sender,
                 "sender_session": sender_session,
             })
+            if agent_message and not (sender_session or "").startswith("local_"):
+                unmeasured.append(sender_session or "")
         return ""
 
     remaining = _DELIVERY_RE.sub(_capture, without_plumbing)
-    return remaining.strip(), peer_messages
+    return remaining.strip(), peer_messages, unmeasured
 
 
 # Fail loud on the NEXT new channel (issue #376, the porch's suggestion).
@@ -219,13 +251,18 @@ def split_prompt_for_recording(prompt: str):
 # 9/26). So when the human's words, after every known block is split off,
 # still OPEN with a tag the hooks don't know, the prompt is recorded as
 # usual (a false alarm must not cost the human their words) and the hook
-# says so to the entity at once. The known tags are the ones handled above
-# plus the ones a survey of every transcript found opening a prompt on the
-# human's own act (slash commands and their local output, bash mode) — the
-# human invoking something, correctly recorded as theirs.
+# says so to the entity at once. The known tags are the ones a survey of
+# every transcript found opening a prompt on the human's own act (slash
+# commands and their local output, bash mode) — the human invoking
+# something, correctly recorded as theirs. The tags handled above are
+# deliberately NOT in the set: one that survives the split is a block the
+# parser didn't understand (an unmeasured shape, an unclosed or oddly
+# closed wrapper), which is exactly what this check exists to catch. The
+# harness has more wrappers on the prompt channel than these hooks have
+# met (teammate-message, slack-ping, coordinator-relay, ...), so that is
+# where the check will most likely fire first: a flag there is the check
+# working, not a bug in it.
 KNOWN_PROMPT_TAGS = frozenset({
-    "system-reminder", "task-notification", "ci-monitor-event", "wake",
-    "cross-session-message", "agent-message",
     "command-name", "command-message", "command-args",
     "local-command-caveat", "local-command-stdout", "local-command-stderr",
     "bash-input", "bash-stdout", "bash-stderr",
@@ -250,6 +287,19 @@ def unrecognized_wrapper_notice(tag: str) -> str:
         "it was recorded as the human's words. If the human didn't write it, "
         "tell them: it may be a new harness channel reaching the archive "
         "under their name (see issue #376)."
+    )
+
+
+def unmeasured_agent_letter_notice(sender: str) -> str:
+    """The one line the prompt hook prints for an <agent-message> recorded
+    as a letter whose sender is not a session address."""
+    who = f'from "{sender}"' if sender else "with no sender address"
+    return (
+        f"[HERE I AM] A message arrived in an <agent-message> wrapper {who}, "
+        "which is not a session address; it was recorded as a letter from a "
+        "sibling session, in your own name. If it came from a subagent rather "
+        "than a sister session, tell the human: that shape is unmeasured (see "
+        "issue #376)."
     )
 
 

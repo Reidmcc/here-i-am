@@ -482,17 +482,6 @@ async def retrieve(
         data.session_id
     )
 
-    if data.unrecognized_wrapper:
-        # Recorded as the human all the same; the log line is where the
-        # researcher sees a new harness channel on the day it arrives
-        logger.warning(
-            "[CC] Prompt in unrecognized wrapper <%s> recorded as the human's "
-            "words (conversation %s); if it was harness plumbing, add it to "
-            "hook_util (issue #376)",
-            data.unrecognized_wrapper[:64],
-            conversation.id,
-        )
-
     prompt = data.prompt or ""
     # The bare-slash-command skip applies to the human's words only: a
     # sibling's letter is prose from the entity, not harness input
@@ -541,6 +530,18 @@ async def retrieve(
                 content=prompt,
                 message_id=_valid_uuid(data.message_id),
                 token_count=cc.safe_token_count(prompt),
+            )
+        if data.unrecognized_wrapper:
+            # Recorded as the human all the same; the log line is where the
+            # researcher sees a new harness channel on the day it arrives,
+            # and it names the row to release if it wasn't the human
+            logger.warning(
+                "[CC] Prompt in unrecognized wrapper <%s> recorded as the "
+                "human's words (message %s, conversation %s); if it was "
+                "harness plumbing, add it to hook_util (issue #376)",
+                data.unrecognized_wrapper[:64],
+                human_msg.id,
+                conversation.id,
             )
 
     peer_message_ids: List[str] = []
