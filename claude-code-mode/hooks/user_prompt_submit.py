@@ -51,9 +51,9 @@ either count is nonzero the stamp carries both — on the matched: 0 line,
 or as one line after a printed block ("matched: 3 new (2 in-context
 reflections skipped; in-context verbatim held 0 slots)").
 
-The context gauge's held notice (issue #365) is printed here too: when the
-last turn's Stop saw the context cross a band it doesn't interrupt for,
-it left a line for this prompt (see hook_util and stop.py).
+The context gauge's notice (issue #365) is printed here too: when the
+last turn's Stop saw the context cross the band, it left a line for this
+prompt (see hook_util and stop.py).
 
 Fail-soft, loudly: a failure still exits 0 with the prompt going through
 unmodified (never exits 2 — that would block the prompt), but prints a
@@ -121,8 +121,8 @@ def main() -> None:
     wrapper = hook_util.unrecognized_wrapper(prompt)
     if not session_id:
         return
-    # The context gauge's held notice (issue #365): a band the last turn's
-    # Stop crossed without interrupting. Printed on every path below —
+    # The context gauge's notice (issue #365): the band the last turn's
+    # Stop crossed, held for this prompt. Printed on every path below —
     # it is about the context, not about this prompt's recording
     gauge = hook_util.take_held_gauge_notice(session_id)
     if not prompt and not peer_messages and not wakeup:
