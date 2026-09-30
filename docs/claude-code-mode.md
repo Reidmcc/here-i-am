@@ -63,13 +63,16 @@ The integration has two channels:
      `SendMessage` partway through its work (issue #379). That arrives in
      the same wrapper from the same sender, but with no frame. It is
      plumbing for the same reason, and what marks it is the sender. Every
-     `<agent-message>` measured (41 by 2026-09-30: 40 hand-backs and one
+     `<agent-message>` measured (91 by 2026-09-30: 90 hand-backs and one
      status report) came from the session's own subagent, with a `from=`
      equal to the transcript's `origin.senderTaskId` and always of one
      shape, `a` and 16 hex digits (the id in every subagent transcript's
      file name, too). The prompt hook, which sees only the text, drops an
-     `<agent-message>` from a sender of exactly that shape; the Stop hook
-     also drops anything whose origin carries `senderTaskId`. Any other
+     `<agent-message>` from a sender of exactly that shape. The Stop hook
+     splits the same text the same way and writes no arrival line for
+     one. It does not also key on the transcript's `senderTaskId`: the
+     arrival line has to mirror what was recorded, and the prompt hook
+     can't see that field. Any other
      `<agent-message>` is not assumed to be plumbing: it goes down the
      inter-session letter path below. No such letter has ever been
      measured (every sister letter measured came as a

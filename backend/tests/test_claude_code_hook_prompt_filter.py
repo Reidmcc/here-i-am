@@ -474,11 +474,11 @@ def test_a_subagents_status_message_beside_real_text_keeps_the_humans_words():
 
 
 def test_a_subagent_task_id_is_matched_exactly():
-    """Every measured sender of the wrapper is "a" and 16 hex digits (41 of
-    41; the subagent transcript files carry the same id). A near miss is
-    not assumed to be a subagent: it stays a letter and is said aloud, so a
-    change in the harness's id shape fails loud instead of dropping a real
-    letter unseen."""
+    """Every measured sender of the wrapper is "a" and 16 hex digits (91 of
+    91 by 2026-09-30; the subagent transcript files carry the same id). A
+    near miss is not assumed to be a subagent: it stays a letter and is
+    said aloud, so a change in the harness's id shape fails loud instead of
+    dropping a real letter unseen."""
     assert hook_util.is_subagent_task_id("a70623a1636427102")
     assert hook_util.is_subagent_task_id("a9db223f5d07b6429")
     for sender in (None, "", "local_7d7e55dd", "a70623a163642710", "a70623a16364271020",
@@ -509,7 +509,7 @@ def test_a_subagent_task_id_on_a_cross_session_message_is_still_a_letter():
 
 # The letter fixtures below are SPECIFICATION, not measurement: no
 # <agent-message> letter has been seen in any transcript (every measured
-# sender of the wrapper is a subagent — 41 of 41 by 2026-09-30, issue #379).
+# sender of the wrapper is a subagent — 91 of 91 by 2026-09-30, issue #379).
 # They use the measured hand-back's multi-line shape without its frame.
 # Replace them with a measured shape once one exists (PR #377 review,
 # findings 2 and 3).

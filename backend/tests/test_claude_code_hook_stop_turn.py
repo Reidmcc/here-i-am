@@ -472,13 +472,17 @@ def test_a_subagents_status_message_mid_turn_is_not_an_arrival(tmp_path):
     assert entry_uuid == "a2"
 
 
-def test_the_sender_task_id_alone_is_enough():
-    """The structural signal wins even if the text doesn't carry the task
-    id — the prompt hook's text rule is the fallback, not the other way
-    round."""
+def test_the_sender_task_id_alone_does_not_hide_a_recorded_letter():
+    """PR #380 review, finding 1 (and the #377 decline it restates): the
+    prompt hook can't see `origin`, so it decides the record from the text
+    alone. A message whose text isn't from a subagent task id is recorded
+    as a letter whatever its origin says, so its arrival is marked. If the
+    harness ever changes its id shape, the fix belongs in what is recorded,
+    and the marker follows by construction."""
     entry = subagent_status("status", "q1")
     entry["attachment"]["prompt"] = '<agent-message from="x">\nstatus\n</agent-message>'
-    assert hook_util.queued_arrival(entry) is None
+    assert hook_util.split_prompt_for_recording(entry["attachment"]["prompt"])[1]
+    assert hook_util.queued_arrival(entry) == (False, 1)
 
 
 def test_a_peer_agent_message_without_handback_is_marked_as_a_letter(tmp_path):

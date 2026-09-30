@@ -133,12 +133,16 @@ DEFAULT_INLINE_BUDGET = 9600
 # the entity or a sister self either — subagents are not part of the
 # ongoing self — so it is plumbing like the hand-back. What marks it is
 # the sender: every <agent-message> in every transcript on the measuring
-# machine (41: 40 hand-backs and this one) came from this session's own
-# subagent, and every `from=` equaled the transcript's `origin.senderTaskId`
-# and had one shape, "a" and 16 hex digits — the id in the name of every
-# subagent transcript file too (agent-a<16 hex>.jsonl, 89 of 89). The
-# prompt hook sees only the text, so that shape is the rule there; the Stop
-# hook also has the structural `origin.senderTaskId` (queued_arrival).
+# machine (91 by 2026-09-30: 90 hand-backs and this one) came from this
+# session's own subagent, and every `from=` equaled the transcript's
+# `origin.senderTaskId` and had one shape, "a" and 16 hex digits — the id
+# in the name of every subagent transcript file too (agent-a<16 hex>.jsonl,
+# 117 of 117). The
+# prompt hook sees only the text, so that shape is the rule. The Stop hook
+# splits the same text the same way and does NOT also key on the
+# transcript's `origin.senderTaskId`: its arrival line has to mirror what
+# was recorded, and a structural check the prompt hook can't make would
+# leave a recorded row unmarked (see queued_arrival).
 #
 # Any OTHER <agent-message> (no frame, and a sender that is not a subagent
 # task id — a peer's letter in that wrapper, if the harness ever sends one)
@@ -853,11 +857,12 @@ def queued_arrival(entry):
     reply to it (issue #364 review). Split exactly as the prompt hook
     splits what it records: task notifications, anything a subagent sends
     and plumbing are nobody speaking, a [WAKEUP] tick is not recorded, and
-    each sibling letter is recorded as a letter. A subagent's message is
-    recognized by the transcript's structural fields as well as by the
-    text: `origin.senderTaskId`, present on every one, the hand-back and
-    the status report sent partway through (issue #379), and
-    `origin.handback` — neither of which the prompt hook ever sees.
+    each sibling letter is recorded as a letter. A hand-back is recognized
+    by its structural flag (`origin.handback`, which the prompt hook never
+    sees) as well as by its frame in the text. A subagent's other messages
+    are recognized by the text alone (issue #379), deliberately NOT by the
+    `origin.senderTaskId` they carry: the prompt hook can't see it, so a
+    message it records as a letter must still get its arrival line here.
     """
     if not isinstance(entry, dict) or entry.get("type") != "attachment":
         return None
@@ -869,7 +874,7 @@ def queued_arrival(entry):
     if attachment.get("commandMode") == "task-notification":
         return None
     origin = attachment.get("origin")
-    if isinstance(origin, dict) and (origin.get("handback") or origin.get("senderTaskId")):
+    if isinstance(origin, dict) and origin.get("handback"):
         return None
     words, letters = split_prompt_for_recording(
         _user_entry_text(attachment.get("prompt"))
