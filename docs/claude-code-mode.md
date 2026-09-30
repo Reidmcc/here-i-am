@@ -58,12 +58,26 @@ The integration has two channels:
      for it (the transcript's `origin.handback` flag is checked there as
      well). The block ends only at a `</agent-message>` at column zero,
      which is the close the harness's own parser uses, so a report that
-     quotes the tag can't cut the block short. An `<agent-message>`
-     *without* that frame is not assumed to be plumbing: it goes down the
+     quotes the tag can't cut the block short. A subagent can also write
+     to its parent *before* it finishes, a status report sent with
+     `SendMessage` partway through its work (issue #379). That arrives in
+     the same wrapper from the same sender, but with no frame. It is
+     plumbing for the same reason, and what marks it is the sender. Every
+     `<agent-message>` measured (41 by 2026-09-30: 40 hand-backs and one
+     status report) came from the session's own subagent, with a `from=`
+     equal to the transcript's `origin.senderTaskId` and always of one
+     shape, `a` and 16 hex digits (the id in every subagent transcript's
+     file name, too). The prompt hook, which sees only the text, drops an
+     `<agent-message>` from a sender of exactly that shape; the Stop hook
+     also drops anything whose origin carries `senderTaskId`. Any other
+     `<agent-message>` is not assumed to be plumbing: it goes down the
      inter-session letter path below. No such letter has ever been
-     measured, and the one measured sender of the wrapper is a subagent.
-     So a letter whose `from=` isn't a session address (`local_…`) also
-     prints a line to the entity saying the shape is unmeasured. A GitHub
+     measured (every sister letter measured came as a
+     `<cross-session-message>`), so a letter whose `from=` is neither a
+     session address (`local_…`) nor a subagent task id also prints a line
+     to the entity saying the shape is unmeasured. That is also where a
+     subagent would land if the harness ever changed the shape of its ids:
+     recorded, but said aloud, rather than silently dropped. A GitHub
      PR-subscription wakeup (`<wake reason="external-event">` holding an
      `<event source="github">`) is plumbing as well. Each of these channels
      was found only by someone reading the record back, days or weeks

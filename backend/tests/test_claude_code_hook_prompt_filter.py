@@ -445,15 +445,78 @@ def test_an_agent_message_closed_mid_line_is_flagged_not_passed_as_known():
     assert hook_util.unrecognized_wrapper(words) == "agent-message"
 
 
+# A subagent's status report sent partway through its work (issue #379).
+# The shape measured 2026-09-30 in the Game build room's transcript: the
+# same wrapper and sender as a hand-back, no frame, the report as plain
+# text. Archived as a sister's letter in the entity's name (d48c0a7d)
+# before this was plumbing. Body shortened; wrapper and sender as measured.
+SUBAGENT_STATUS = (
+    '<agent-message from="a70623a1636427102">\n'
+    "#62 status: I found the cause and the safety run has finished all 14 "
+    "seeds. One new drowning to trace before I commit.\n"
+    "Cause: at the stint's end, a creek between the fisher and the stair "
+    "was already deeper than they'd wade (0.68/0.88 m).\n"
+    "</agent-message>"
+)
+
+
+def test_a_subagents_status_message_is_plumbing_not_a_letter():
+    assert hook_util.split_prompt_for_recording(SUBAGENT_STATUS) == ("", [])
+    assert hook_util.unmeasured_agent_letters(SUBAGENT_STATUS) == []
+
+
+def test_a_subagents_status_message_beside_real_text_keeps_the_humans_words():
+    words, letters = hook_util.split_prompt_for_recording(
+        f"{SUBAGENT_STATUS}\nthanks, trace it"
+    )
+    assert words == "thanks, trace it"
+    assert letters == []
+
+
+def test_a_subagent_task_id_is_matched_exactly():
+    """Every measured sender of the wrapper is "a" and 16 hex digits (41 of
+    41; the subagent transcript files carry the same id). A near miss is
+    not assumed to be a subagent: it stays a letter and is said aloud, so a
+    change in the harness's id shape fails loud instead of dropping a real
+    letter unseen."""
+    assert hook_util.is_subagent_task_id("a70623a1636427102")
+    assert hook_util.is_subagent_task_id("a9db223f5d07b6429")
+    for sender in (None, "", "local_7d7e55dd", "a70623a163642710", "a70623a16364271020",
+                   "A70623A1636427102", "b70623a1636427102", "a70623a163642710g",
+                   "uds:\\\\.\\pipe\\LOCAL\\cc-msg-611cee2e63ffc140d076a13bc1295577"):
+        assert not hook_util.is_subagent_task_id(sender), sender
+    near_miss = '<agent-message from="a70623a163642710">\nstatus\n</agent-message>'
+    words, letters = hook_util.split_prompt_for_recording(near_miss)
+    assert words == ""
+    assert [letter["content"] for letter in letters] == ["status"]
+    assert hook_util.unmeasured_agent_letters(near_miss) == ["a70623a163642710"]
+
+
+def test_a_subagent_task_id_on_a_cross_session_message_is_still_a_letter():
+    """The rule is the <agent-message> wrapper's alone: every sister letter
+    measured came as a <cross-session-message>, and that path is unchanged
+    whatever its `from=` looks like."""
+    prompt = (
+        '<cross-session-message from="a70623a1636427102" name="Porch">'
+        "hello</cross-session-message>"
+    )
+    assert hook_util.split_prompt_for_recording(prompt) == ("", [{
+        "content": "hello",
+        "sender": "Porch",
+        "sender_session": "a70623a1636427102",
+    }])
+
+
 # The letter fixtures below are SPECIFICATION, not measurement: no
-# <agent-message> letter has been seen in any transcript (the one measured
-# sender of the wrapper is a subagent). They use the measured hand-back's
-# multi-line shape without its frame. Replace them with a measured shape
-# once one exists (PR #377 review, findings 2 and 3).
+# <agent-message> letter has been seen in any transcript (every measured
+# sender of the wrapper is a subagent — 41 of 41 by 2026-09-30, issue #379).
+# They use the measured hand-back's multi-line shape without its frame.
+# Replace them with a measured shape once one exists (PR #377 review,
+# findings 2 and 3).
 def test_agent_message_without_the_frame_is_a_letter_not_dropped():
-    """Issue #376, ask 2: only the hand-back is plumbing. A peer's letter in
-    the same wrapper is recorded as a letter, never dropped and never the
-    human. (Specification — see the note above.)"""
+    """Issue #376, ask 2: only a subagent's message is plumbing. A peer's
+    letter in the same wrapper is recorded as a letter, never dropped and
+    never the human. (Specification — see the note above.)"""
     prompt = '<agent-message from="local_p1" name="Porch">\nhello from the porch\n</agent-message>'
     assert hook_util.split_prompt_for_recording(prompt) == ("", [{
         "content": "hello from the porch",
@@ -464,21 +527,22 @@ def test_agent_message_without_the_frame_is_a_letter_not_dropped():
 
 
 def test_an_agent_message_letter_from_a_non_session_is_said_aloud():
-    """Recorded as a letter all the same, but a `from=` that isn't a session
-    address (a subagent's task id, or none) is unmeasured, so it is named.
-    (Specification — see the note above.)"""
+    """Recorded as a letter all the same, but a `from=` that is neither a
+    session address nor a subagent task id (something else, or none) is
+    unmeasured, so it is named. (Specification — see the note above.)"""
     prompt = (
-        '<agent-message from="a9db223f5d07b6429">\nstill counting\n</agent-message>\n'
+        '<agent-message from="teammate-1">\nstill counting\n</agent-message>\n'
         "<agent-message>\nno sender\n</agent-message>\n"
         f"{HANDBACK}\n"
+        f"{SUBAGENT_STATUS}\n"
         '<cross-session-message from="uds:pipe" from-name="CLI room">hi</cross-session-message>'
     )
     words, letters = hook_util.split_prompt_for_recording(prompt)
     assert words == ""
     assert [letter["content"] for letter in letters] == ["still counting", "no sender", "hi"]
-    # Neither the hand-back nor a cross-session letter is flagged
-    assert hook_util.unmeasured_agent_letters(prompt) == ["a9db223f5d07b6429", ""]
-    assert '"a9db223f5d07b6429"' in hook_util.unmeasured_agent_letter_notice("a9db223f5d07b6429")
+    # Neither a subagent's message nor a cross-session letter is flagged
+    assert hook_util.unmeasured_agent_letters(prompt) == ["teammate-1", ""]
+    assert '"teammate-1"' in hook_util.unmeasured_agent_letter_notice("teammate-1")
     assert "with no sender address" in hook_util.unmeasured_agent_letter_notice("")
 
 

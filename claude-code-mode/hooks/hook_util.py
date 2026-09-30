@@ -123,12 +123,32 @@ DEFAULT_INLINE_BUDGET = 9600
 # close the harness's own parser uses — never at the first one anywhere: a
 # report that quotes the tag (any subagent reading these hooks will) must
 # not cut the block short and leave its tail behind as the human's words
-# (PR #377 review). Any OTHER <agent-message> (no frame — a peer's letter
-# in that wrapper, if the harness ever sends one) is a letter, extracted
-# like a cross-session message, never dropped and never the human. No such
-# letter has been measured, and the one measured sender of the wrapper is a
-# subagent, so one whose `from=` is not a session address (`local_…`) is
-# also said aloud (unmeasured_agent_letters).
+# (PR #377 review).
+#
+# A subagent can also write to its parent before it finishes — a status
+# report sent with SendMessage partway through its work (issue #379,
+# measured 2026-09-30 in the Game build room's transcript). It arrives in
+# the same wrapper with the same sender but NO frame: <agent-message
+# from="<subagent task id>">, the report as plain text beneath. It is not
+# the entity or a sister self either — subagents are not part of the
+# ongoing self — so it is plumbing like the hand-back. What marks it is
+# the sender: every <agent-message> in every transcript on the measuring
+# machine (41: 40 hand-backs and this one) came from this session's own
+# subagent, and every `from=` equaled the transcript's `origin.senderTaskId`
+# and had one shape, "a" and 16 hex digits — the id in the name of every
+# subagent transcript file too (agent-a<16 hex>.jsonl, 89 of 89). The
+# prompt hook sees only the text, so that shape is the rule there; the Stop
+# hook also has the structural `origin.senderTaskId` (queued_arrival).
+#
+# Any OTHER <agent-message> (no frame, and a sender that is not a subagent
+# task id — a peer's letter in that wrapper, if the harness ever sends one)
+# is a letter, extracted like a cross-session message, never dropped and
+# never the human. No such letter has been measured: every sister letter
+# measured came as a <cross-session-message>. So one whose `from=` is not a
+# session address (`local_…`) is also said aloud
+# (unmeasured_agent_letters) — which is where a subagent would land if the
+# harness ever changed the shape of its ids: recorded, but loudly, never
+# silently dropped or silently kept.
 #
 # Harness wakeups for a GitHub PR subscription arrive as a bare
 # <wake reason="external-event" ...> block holding an <event source="github"
@@ -151,6 +171,10 @@ _DELIVERY_RE = re.compile(
 )
 SUBAGENT_HANDBACK_FRAME = "[Subagent hand-back]"
 _HANDBACK_FRAME_RE = re.compile(r"^" + re.escape(SUBAGENT_HANDBACK_FRAME), re.MULTILINE)
+# A subagent's task id, the `from=` of every measured <agent-message> (see
+# above). Exact on purpose: a sender that merely isn't `local_…` stays a
+# letter and is said aloud, rather than dropped unseen
+_SUBAGENT_TASK_ID_RE = re.compile(r"a[0-9a-f]{16}")
 # `from-name="..."` (old wrapper) or `name="..."` (new wrapper). The word
 # boundary keeps `name=` from matching inside another attribute's name.
 _FROM_NAME_RE = re.compile(r'\b(?:from-)?name="([^"]*)"')
@@ -189,9 +213,10 @@ def split_prompt_for_recording(prompt: str):
     Plumbing blocks (system reminders, task notifications, CI monitor
     events) are discarded —
     including anything nested inside them, which is harness echo, not a
-    delivery — and so is a subagent hand-back (an <agent-message> carrying
-    the harness's hand-back frame). Each <cross-session-message> block,
-    and any <agent-message> that is not a hand-back, becomes one
+    delivery — and so is anything a subagent sends (an <agent-message>
+    carrying the harness's hand-back frame, or one from a subagent task
+    id). Each <cross-session-message> block, and any <agent-message> that
+    is neither, becomes one
     {"content", "sender", "sender_session"} dict (sender is the wrapper's
     name attribute — `name=` in the current wrapper, `from-name=` in the
     2026-08 one — or None; sender_session is its `from=` attribute, the
@@ -206,11 +231,18 @@ def unmeasured_agent_letters(prompt: str):
     """The `from=` of each <agent-message> the letter path would record
     whose sender is not a session address (`local_…`) — "" when it has
     none — in delivery order. Such a letter is recorded all the same (issue
-    #376), but no letter in that wrapper has ever been measured and the one
+    #376), but no letter in that wrapper has ever been measured, and every
     measured sender of it is a subagent, whose words are not the entity's;
     the hook says so aloud so the first real one is checked, not archived
-    quietly."""
+    quietly. (A sender that is a subagent task id never gets here: it is
+    plumbing, issue #379.)"""
     return _split(prompt)[2]
+
+
+def is_subagent_task_id(sender) -> bool:
+    """Whether an <agent-message> `from=` is one of this session's own
+    subagents (issue #379 — see the note above _PLUMBING_BLOCK_RE)."""
+    return bool(sender) and bool(_SUBAGENT_TASK_ID_RE.fullmatch(sender))
 
 
 def _split(prompt: str):
@@ -221,15 +253,19 @@ def _split(prompt: str):
     def _capture(match):
         agent_message = not match.group("cross")
         body = match.group("body")
-        if agent_message and _HANDBACK_FRAME_RE.search(body):
+        attributes = match.group("attrs") or ""
+        from_match = _FROM_RE.search(attributes)
+        sender_session = (from_match.group(1).strip() if from_match else "") or None
+        # A subagent's words, final (the hand-back frame) or partway through
+        # (its task id as the sender): plumbing, not a letter
+        if agent_message and (
+            _HANDBACK_FRAME_RE.search(body) or is_subagent_task_id(sender_session)
+        ):
             return ""
         content = body.strip()
         if content:
-            attributes = match.group("attrs") or ""
             name_match = _FROM_NAME_RE.search(attributes)
             sender = (name_match.group(1).strip() if name_match else "") or None
-            from_match = _FROM_RE.search(attributes)
-            sender_session = (from_match.group(1).strip() if from_match else "") or None
             peer_messages.append({
                 "content": content,
                 "sender": sender,
@@ -296,10 +332,10 @@ def unmeasured_agent_letter_notice(sender: str) -> str:
     who = f'from "{sender}"' if sender else "with no sender address"
     return (
         f"[HERE I AM] A message arrived in an <agent-message> wrapper {who}, "
-        "which is not a session address; it was recorded as a letter from a "
-        "sibling session, in your own name. If it came from a subagent rather "
-        "than a sister session, tell the human: that shape is unmeasured (see "
-        "issue #376)."
+        "which is neither a session address nor a subagent's task id; it was "
+        "recorded as a letter from a sibling session, in your own name. If it "
+        "came from a subagent rather than a sister session, tell the human: "
+        "that shape is unmeasured (see issues #376 and #379)."
     )
 
 
@@ -815,11 +851,13 @@ def queued_arrival(entry):
     before the turn's one assistant row, which is written at Stop. The Stop
     hook marks where it fell so the chunks said before it don't read as a
     reply to it (issue #364 review). Split exactly as the prompt hook
-    splits what it records: task notifications, subagent hand-backs and
-    plumbing are nobody speaking, a [WAKEUP] tick is not recorded, and each
-    sibling letter is recorded as a letter. A hand-back is recognized by
-    its structural flag (`origin.handback`, which the prompt hook never
-    sees) as well as by its frame in the text.
+    splits what it records: task notifications, anything a subagent sends
+    and plumbing are nobody speaking, a [WAKEUP] tick is not recorded, and
+    each sibling letter is recorded as a letter. A subagent's message is
+    recognized by the transcript's structural fields as well as by the
+    text: `origin.senderTaskId`, present on every one, the hand-back and
+    the status report sent partway through (issue #379), and
+    `origin.handback` — neither of which the prompt hook ever sees.
     """
     if not isinstance(entry, dict) or entry.get("type") != "attachment":
         return None
@@ -831,7 +869,7 @@ def queued_arrival(entry):
     if attachment.get("commandMode") == "task-notification":
         return None
     origin = attachment.get("origin")
-    if isinstance(origin, dict) and origin.get("handback"):
+    if isinstance(origin, dict) and (origin.get("handback") or origin.get("senderTaskId")):
         return None
     words, letters = split_prompt_for_recording(
         _user_entry_text(attachment.get("prompt"))

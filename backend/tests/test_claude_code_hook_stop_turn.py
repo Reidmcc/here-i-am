@@ -283,6 +283,18 @@ def test_boundaries_that_start_a_turn(tmp_path):
         {"type": "system", "subtype": "stop_hook_summary", "uuid": "b7"},
         meta("<task-notification>done</task-notification>", "b8",
              origin={"kind": "task-notification"}),
+        # Issue #379, as measured: a subagent's status report reaching an
+        # idle room is its own prompt, and the entity's answer its own turn
+        meta(
+            "Another Claude session sent a message:\n"
+            '<agent-message from="a70623a1636427102">\n#62 status: nearly done\n</agent-message>',
+            "b9",
+            origin={
+                "kind": "peer", "from": "a70623a1636427102",
+                "senderTaskId": "a70623a1636427102", "name": "general-purpose",
+                "body": "#62 status: nearly done",
+            },
+        ),
     ]
     for start in starts:
         assert hook_util.is_turn_boundary(start), start["uuid"]
@@ -427,12 +439,54 @@ def test_the_handback_flag_alone_is_enough():
     assert hook_util.queued_arrival(entry) is None
 
 
+def subagent_status(report, uid, task_id="a70623a1636427102"):
+    """A subagent's status report sent partway through its work (issue
+    #379). The origin is as measured in the Game build room's transcript —
+    `senderTaskId` and the agent's `name`, no `handback` — where it arrived
+    at an idle room as its own prompt. Queued mid-turn it takes the
+    attachment form the hand-back was measured in both ways."""
+    entry = queued(f'<agent-message from="{task_id}">\n{report}\n</agent-message>', uid, kind=None)
+    entry["attachment"]["isMeta"] = True
+    entry["attachment"]["origin"] = {
+        "kind": "peer", "from": task_id, "senderTaskId": task_id,
+        "name": "general-purpose", "body": report,
+    }
+    return entry
+
+
+def test_a_subagents_status_message_mid_turn_is_not_an_arrival(tmp_path):
+    """Issue #379: a subagent writing to its parent before it finishes is
+    no more the human, or a sister, than its hand-back is. No row, so no
+    marker. One turn, one row."""
+    path = _write(tmp_path, [
+        prompt("check in on #62"),
+        said("Asking the #62 agent where it stands.", "a1"),
+        tool_call("c1"), tool_result("r1"),
+        subagent_status("#62 status: one new drowning to trace.", "q1"),
+        said("It's nearly done.", "a2"),
+    ])
+    text, entry_uuid, _ = stop.turn_assistant_text(path)
+    assert text == f"Asking the #62 agent where it stands.\n\n{MARK}\n\nIt's nearly done."
+    assert stop.HUMAN_ARRIVED_MARKER not in text
+    assert stop.LETTER_ARRIVED_MARKER not in text
+    assert entry_uuid == "a2"
+
+
+def test_the_sender_task_id_alone_is_enough():
+    """The structural signal wins even if the text doesn't carry the task
+    id — the prompt hook's text rule is the fallback, not the other way
+    round."""
+    entry = subagent_status("status", "q1")
+    entry["attachment"]["prompt"] = '<agent-message from="x">\nstatus\n</agent-message>'
+    assert hook_util.queued_arrival(entry) is None
+
+
 def test_a_peer_agent_message_without_handback_is_marked_as_a_letter(tmp_path):
-    """Only the hand-back is plumbing: an <agent-message> letter with no
-    hand-back flag or frame is recorded, so its arrival is marked.
-    SPECIFICATION, not measurement: no such letter has been seen in any
-    transcript; the shape is the measured hand-back's without its frame
-    (PR #377 review)."""
+    """Only a subagent's message is plumbing: an <agent-message> letter with
+    no hand-back flag or frame and no subagent sender is recorded, so its
+    arrival is marked. SPECIFICATION, not measurement: no such letter has
+    been seen in any transcript; the shape is the measured hand-back's
+    without its frame (PR #377 review)."""
     path = _write(tmp_path, [
         prompt("go"),
         said("Working.", "a1"),
