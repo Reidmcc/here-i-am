@@ -226,19 +226,37 @@ def test_unrecognized_wrapper_is_recorded_and_said_aloud():
     )
 
 
-def test_an_agent_message_letter_from_a_task_id_is_said_aloud():
-    """PR #377 review, finding 2: recorded as a letter (the issue's ruling),
-    but a sender that isn't a session address is named, so the first real
-    one is checked rather than archived quietly."""
+def test_a_subagents_status_message_prints_skipped_line_without_calling_backend():
+    """Issue #379: a subagent's status report sent partway through its work
+    (measured shape: the hand-back's wrapper and sender, no frame) is
+    plumbing too — not recorded as a sister's letter in the entity's name,
+    not run as a retrieval query, and not flagged as unmeasured."""
     out, called = run_hook(
-        '<agent-message from="a9db223f5d07b6429">\nstill counting\n</agent-message>',
+        '<agent-message from="a70623a1636427102">\n'
+        "#62 status: I found the cause and the safety run has finished all "
+        "14 seeds. One new drowning to trace before I commit.\n"
+        "</agent-message>"
+    )
+    assert not called
+    assert lines(out) == [
+        f"{NO_RETRIEVAL} (harness plumbing only, nothing to record); {HINT}",
+    ]
+
+
+def test_an_agent_message_letter_from_an_unknown_sender_is_said_aloud():
+    """PR #377 review, finding 2: recorded as a letter (the issue's ruling),
+    but a sender that is neither a session address nor a subagent task id
+    is named, so the first real one is checked rather than archived
+    quietly."""
+    out, called = run_hook(
+        '<agent-message from="teammate-1">\nstill counting\n</agent-message>',
         body={"context": "", "retrieval_status": "ran"},
     )
     assert called
     assert any(
         line.startswith(
             '[HERE I AM] A message arrived in an <agent-message> wrapper from '
-            '"a9db223f5d07b6429", which is not a session address'
+            '"teammate-1", which is neither a session address nor a subagent\'s task id'
         )
         for line in lines(out)
     )

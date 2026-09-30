@@ -54,16 +54,35 @@ The integration has two channels:
      model output, NOT a message from the user` frame at column zero (the
      report beneath is indented, so it can't forge the frame). It is the
      result of work the entity delegated — a deed, not talk — so it is
-     neither recorded nor queried, and the Stop hook writes no arrival line
-     for it (the transcript's `origin.handback` flag is checked there as
-     well). The block ends only at a `</agent-message>` at column zero,
+     neither recorded nor queried, and the Stop hook, which splits the same
+     text the same way, writes no arrival line for it. The block ends only
+     at a `</agent-message>` at column zero,
      which is the close the harness's own parser uses, so a report that
-     quotes the tag can't cut the block short. An `<agent-message>`
-     *without* that frame is not assumed to be plumbing: it goes down the
+     quotes the tag can't cut the block short. A subagent can also write
+     to its parent *before* it finishes, a status report sent with
+     `SendMessage` partway through its work (issue #379). That arrives in
+     the same wrapper from the same sender, but with no frame. It is
+     plumbing for the same reason, and what marks it is the sender. Every
+     `<agent-message>` measured (91 by 2026-09-30: 90 hand-backs and one
+     status report) came from the session's own subagent, with a `from=`
+     equal to the transcript's `origin.senderTaskId` and always of one
+     shape, `a` and 16 hex digits (the id in every subagent transcript's
+     file name, too). The prompt hook, which sees only the text, drops an
+     `<agent-message>` from a sender of exactly that shape. The Stop hook
+     splits the same text the same way and writes no arrival line for
+     one. It does not key on the transcript's structural fields
+     (`senderTaskId`, `handback`) for either kind: the arrival line has to
+     mirror what was recorded, and the prompt hook can't see those fields
+     (see "One row per turn" below).
+     Any other
+     `<agent-message>` is not assumed to be plumbing: it goes down the
      inter-session letter path below. No such letter has ever been
-     measured, and the one measured sender of the wrapper is a subagent.
-     So a letter whose `from=` isn't a session address (`local_…`) also
-     prints a line to the entity saying the shape is unmeasured. A GitHub
+     measured (every sister letter measured came as a
+     `<cross-session-message>`), so a letter whose `from=` is neither a
+     session address (`local_…`) nor a subagent task id also prints a line
+     to the entity saying the shape is unmeasured. That is also where a
+     subagent would land if the harness ever changed the shape of its ids:
+     recorded, but said aloud, rather than silently dropped. A GitHub
      PR-subscription wakeup (`<wake reason="external-event">` holding an
      `<event source="github">`) is plumbing as well. Each of these channels
      was found only by someone reading the record back, days or weeks
@@ -310,8 +329,14 @@ are never read — the extraction takes `text` blocks only.
   already spoken, the row carries `[… the human's message arrived here]`
   or `[… a letter arrived here]` (`hook_util.queued_arrival`; wording
   Pseudo's), so the chunks said before it don't read as a reply to it.
-  Queued task notifications and `[WAKEUP]` ticks are never recorded, so
-  they get no marker.
+  The rule is that the marker is hidden for exactly what the prompt hook
+  doesn't record (PR #380): the Stop hook runs the same split on the same
+  text, and nothing else. Queued task notifications, whatever a subagent
+  sends, other plumbing, and `[WAKEUP]` ticks are never recorded, so they
+  get no marker. The transcript's structural fields (`commandMode`,
+  `origin.handback`, `origin.senderTaskId`) are deliberately not read.
+  The prompt hook never sees them, so a check on them could only hide the
+  arrival of a row that *was* recorded.
 - **Not the entity's words:** sidechain (subagent) entries, and
   `<synthetic>` assistant entries — the harness's own "No response
   requested.", API errors, and usage-limit notices, which the old

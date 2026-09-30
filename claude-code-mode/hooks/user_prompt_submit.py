@@ -9,7 +9,8 @@ context alongside the prompt.
 
 Not everything on the prompt channel is the human: harness plumbing
 (system reminders, task notifications, the desktop app's CI monitor
-events, subagent hand-backs — issue #376) is stripped and dropped, while
+events, a subagent's hand-back or its status reports partway through —
+issues #376 and #379) is stripped and dropped, while
 inter-session messages from sibling Claude Code sessions are extracted and
 sent separately (peer_messages), so the backend can record them under the
 entity's own name with the sending session marked instead of archiving
@@ -97,7 +98,7 @@ def main() -> None:
         return
     session_id = data.get("session_id") or ""
     # Harness blocks (system reminders, task notifications, CI monitor
-    # events, subagent hand-backs) are not the human speaking — stripped so
+    # events, whatever a subagent sends) are not the human speaking — stripped so
     # they are neither archived under the human's name nor used as a
     # retrieval query. Inter-session messages from sibling sessions aren't
     # the human either, but they are the entity: extracted and sent
@@ -105,8 +106,9 @@ def main() -> None:
     # that was pure harness plumbing leaves nothing to send.
     raw_prompt = data.get("prompt") or ""
     prompt, peer_messages = hook_util.split_prompt_for_recording(raw_prompt)
-    # An <agent-message> letter from something that isn't a session address
-    # is recorded as a letter, but said aloud: unmeasured (issue #376)
+    # An <agent-message> letter from something that is neither a session
+    # address nor a subagent is recorded as a letter, but said aloud:
+    # unmeasured (issues #376, #379)
     unmeasured_letters = hook_util.unmeasured_agent_letters(raw_prompt)
     # A self-scheduled wakeup prompt (the [WAKEUP] sentinel convention,
     # issue #318) is the entity's own timer firing, not anyone speaking:

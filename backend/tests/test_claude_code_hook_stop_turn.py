@@ -283,6 +283,18 @@ def test_boundaries_that_start_a_turn(tmp_path):
         {"type": "system", "subtype": "stop_hook_summary", "uuid": "b7"},
         meta("<task-notification>done</task-notification>", "b8",
              origin={"kind": "task-notification"}),
+        # Issue #379, as measured: a subagent's status report reaching an
+        # idle room is its own prompt, and the entity's answer its own turn
+        meta(
+            "Another Claude session sent a message:\n"
+            '<agent-message from="a70623a1636427102">\n#62 status: nearly done\n</agent-message>',
+            "b9",
+            origin={
+                "kind": "peer", "from": "a70623a1636427102",
+                "senderTaskId": "a70623a1636427102", "name": "general-purpose",
+                "body": "#62 status: nearly done",
+            },
+        ),
     ]
     for start in starts:
         assert hook_util.is_turn_boundary(start), start["uuid"]
@@ -374,6 +386,49 @@ def test_unrecorded_queued_prompts_are_not_marked(tmp_path):
     assert stop.turn_assistant_text(path)[0] == f"Working.\n\n{MARK}\n\nStill working."
 
 
+def _prompt_hook_records_something(text):
+    """What user_prompt_submit.main decides from a prompt's text: the
+    human's words (unless a [WAKEUP] tick) or any letter."""
+    words, letters = hook_util.split_prompt_for_recording(text)
+    return bool(words and not hook_util.is_wakeup_prompt(words)) or bool(letters)
+
+
+def test_the_stop_hook_hides_exactly_what_the_prompt_hook_does_not_record():
+    """PR #380, Pseudo's rule: what the Stop hook hides and what the prompt
+    hook doesn't save to the archive match. Both decide from the same text;
+    the transcript's structural fields, which the prompt hook never sees,
+    change nothing — each entry here carries every one of them set the way
+    that would once have hidden it."""
+    texts = [
+        "actually, try the other approach",
+        "[WAKEUP] tick",
+        "<task-notification>done</task-notification>",
+        "<system-reminder>x</system-reminder>",
+        '<agent-message from="a9db223f5d07b6429">\n[Subagent hand-back] The report follows:\n  done\n</agent-message>',
+        '<agent-message from="a70623a1636427102">\n#62 status: nearly done\n</agent-message>',
+        '<agent-message from="x">\nreworded report\n</agent-message>',
+        '<cross-session-message from="local_x" name="Porch">hello</cross-session-message>',
+        "done — the harness dropped its <task-notification> wrapper",
+        '<novel-event kind="x">hi</novel-event>',
+    ]
+    for text in texts:
+        entry = queued(text, "q1", command_mode="task-notification", kind="peer")
+        entry["attachment"]["origin"].update(
+            {"handback": True, "senderTaskId": "a9db223f5d07b6429"}
+        )
+        hidden = hook_util.queued_arrival(entry) is None
+        assert hidden == (not _prompt_hook_records_something(text)), text
+
+
+def test_the_task_notification_mode_alone_does_not_hide_a_recorded_prompt():
+    """All 212 queued task notifications measured (2026-09-30) arrive
+    wrapped in <task-notification>, which the split drops. Were one to
+    arrive without the wrapper, the prompt hook would record it as the
+    human's words, so its arrival line is written like any other."""
+    entry = queued("done", "q1", command_mode="task-notification", kind=None)
+    assert hook_util.queued_arrival(entry) == (True, 0)
+
+
 def handback(report, uid, task_id="a9db223f5d07b6429"):
     """A subagent's final report handed back mid-turn (issue #376), in the
     shape measured in the 10a header workshop's transcript: a queued
@@ -420,19 +475,71 @@ def test_a_subagent_handback_mid_turn_is_not_an_arrival(tmp_path):
     assert hook_util.transcript_assistant_uuids(path) == ["a3"]
 
 
-def test_the_handback_flag_alone_is_enough():
-    """The structural signal wins even if the harness rewords its frame."""
+def test_the_handback_flag_alone_does_not_hide_a_recorded_letter():
+    """PR #380: the same rule as `senderTaskId` below. Were the harness to
+    reword its frame AND change its id shape, the prompt hook — which never
+    sees `origin` — would record the hand-back as a letter (and say so
+    aloud). The flag must not then hide that row's arrival line: the
+    marker follows the record, and the fix for such a shape belongs in
+    what is recorded."""
     entry = handback("report", "q1")
-    entry["attachment"]["prompt"] = '<agent-message from="x">reworded report</agent-message>'
-    assert hook_util.queued_arrival(entry) is None
+    entry["attachment"]["prompt"] = '<agent-message from="x">\nreworded report\n</agent-message>'
+    assert hook_util.split_prompt_for_recording(entry["attachment"]["prompt"])[1]
+    assert hook_util.queued_arrival(entry) == (False, 1)
+
+
+def subagent_status(report, uid, task_id="a70623a1636427102"):
+    """A subagent's status report sent partway through its work (issue
+    #379). The origin is as measured in the Game build room's transcript —
+    `senderTaskId` and the agent's `name`, no `handback` — where it arrived
+    at an idle room as its own prompt. Queued mid-turn it takes the
+    attachment form the hand-back was measured in both ways."""
+    entry = queued(f'<agent-message from="{task_id}">\n{report}\n</agent-message>', uid, kind=None)
+    entry["attachment"]["isMeta"] = True
+    entry["attachment"]["origin"] = {
+        "kind": "peer", "from": task_id, "senderTaskId": task_id,
+        "name": "general-purpose", "body": report,
+    }
+    return entry
+
+
+def test_a_subagents_status_message_mid_turn_is_not_an_arrival(tmp_path):
+    """Issue #379: a subagent writing to its parent before it finishes is
+    no more the human, or a sister, than its hand-back is. No row, so no
+    marker. One turn, one row."""
+    path = _write(tmp_path, [
+        prompt("check in on #62"),
+        said("Asking the #62 agent where it stands.", "a1"),
+        tool_call("c1"), tool_result("r1"),
+        subagent_status("#62 status: one new drowning to trace.", "q1"),
+        said("It's nearly done.", "a2"),
+    ])
+    text, entry_uuid, _ = stop.turn_assistant_text(path)
+    assert text == f"Asking the #62 agent where it stands.\n\n{MARK}\n\nIt's nearly done."
+    assert stop.HUMAN_ARRIVED_MARKER not in text
+    assert stop.LETTER_ARRIVED_MARKER not in text
+    assert entry_uuid == "a2"
+
+
+def test_the_sender_task_id_alone_does_not_hide_a_recorded_letter():
+    """PR #380 review, finding 1 (and the #377 decline it restates): the
+    prompt hook can't see `origin`, so it decides the record from the text
+    alone. A message whose text isn't from a subagent task id is recorded
+    as a letter whatever its origin says, so its arrival is marked. If the
+    harness ever changes its id shape, the fix belongs in what is recorded,
+    and the marker follows by construction."""
+    entry = subagent_status("status", "q1")
+    entry["attachment"]["prompt"] = '<agent-message from="x">\nstatus\n</agent-message>'
+    assert hook_util.split_prompt_for_recording(entry["attachment"]["prompt"])[1]
+    assert hook_util.queued_arrival(entry) == (False, 1)
 
 
 def test_a_peer_agent_message_without_handback_is_marked_as_a_letter(tmp_path):
-    """Only the hand-back is plumbing: an <agent-message> letter with no
-    hand-back flag or frame is recorded, so its arrival is marked.
-    SPECIFICATION, not measurement: no such letter has been seen in any
-    transcript; the shape is the measured hand-back's without its frame
-    (PR #377 review)."""
+    """Only a subagent's message is plumbing: an <agent-message> letter with
+    no hand-back flag or frame and no subagent sender is recorded, so its
+    arrival is marked. SPECIFICATION, not measurement: no such letter has
+    been seen in any transcript; the shape is the measured hand-back's
+    without its frame (PR #377 review)."""
     path = _write(tmp_path, [
         prompt("go"),
         said("Working.", "a1"),
