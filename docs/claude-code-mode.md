@@ -54,9 +54,9 @@ The integration has two channels:
      model output, NOT a message from the user` frame at column zero (the
      report beneath is indented, so it can't forge the frame). It is the
      result of work the entity delegated — a deed, not talk — so it is
-     neither recorded nor queried, and the Stop hook writes no arrival line
-     for it (the transcript's `origin.handback` flag is checked there as
-     well). The block ends only at a `</agent-message>` at column zero,
+     neither recorded nor queried, and the Stop hook, which splits the same
+     text the same way, writes no arrival line for it. The block ends only
+     at a `</agent-message>` at column zero,
      which is the close the harness's own parser uses, so a report that
      quotes the tag can't cut the block short. A subagent can also write
      to its parent *before* it finishes, a status report sent with
@@ -70,9 +70,10 @@ The integration has two channels:
      file name, too). The prompt hook, which sees only the text, drops an
      `<agent-message>` from a sender of exactly that shape. The Stop hook
      splits the same text the same way and writes no arrival line for
-     one. It does not also key on the transcript's `senderTaskId`: the
-     arrival line has to mirror what was recorded, and the prompt hook
-     can't see that field. Any other
+     one. It does not key on the transcript's structural fields
+     (`senderTaskId`, `handback`) for either kind: the arrival line has to
+     mirror what was recorded, and the prompt hook can't see those fields.
+     Any other
      `<agent-message>` is not assumed to be plumbing: it goes down the
      inter-session letter path below. No such letter has ever been
      measured (every sister letter measured came as a

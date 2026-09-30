@@ -432,11 +432,17 @@ def test_a_subagent_handback_mid_turn_is_not_an_arrival(tmp_path):
     assert hook_util.transcript_assistant_uuids(path) == ["a3"]
 
 
-def test_the_handback_flag_alone_is_enough():
-    """The structural signal wins even if the harness rewords its frame."""
+def test_the_handback_flag_alone_does_not_hide_a_recorded_letter():
+    """PR #380: the same rule as `senderTaskId` below. Were the harness to
+    reword its frame AND change its id shape, the prompt hook — which never
+    sees `origin` — would record the hand-back as a letter (and say so
+    aloud). The flag must not then hide that row's arrival line: the
+    marker follows the record, and the fix for such a shape belongs in
+    what is recorded."""
     entry = handback("report", "q1")
-    entry["attachment"]["prompt"] = '<agent-message from="x">reworded report</agent-message>'
-    assert hook_util.queued_arrival(entry) is None
+    entry["attachment"]["prompt"] = '<agent-message from="x">\nreworded report\n</agent-message>'
+    assert hook_util.split_prompt_for_recording(entry["attachment"]["prompt"])[1]
+    assert hook_util.queued_arrival(entry) == (False, 1)
 
 
 def subagent_status(report, uid, task_id="a70623a1636427102"):
