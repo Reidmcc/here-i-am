@@ -854,19 +854,23 @@ def queued_arrival(entry):
     after them), and UserPromptSubmit records it THEN — so its row lands
     before the turn's one assistant row, which is written at Stop. The Stop
     hook marks where it fell so the chunks said before it don't read as a
-    reply to it (issue #364 review). Split exactly as the prompt hook
-    splits what it records: task notifications, anything a subagent sends
-    and plumbing are nobody speaking, a [WAKEUP] tick is not recorded, and
-    each sibling letter is recorded as a letter.
+    reply to it (issue #364 review).
 
-    Anything a subagent sends is recognized by the text alone — the
-    hand-back's frame, or a subagent task id as the sender — deliberately
-    NOT by the transcript's structural fields (`origin.handback`,
-    `origin.senderTaskId`). The prompt hook never sees those, so a check on
-    them here could only ever disagree with the record: a message it
-    recorded as a letter would get no arrival line, the one thing the line
-    exists for (PR #380 review). If the harness changes a subagent's shape,
-    the fix belongs in what is recorded, and this follows by construction.
+    The rule: what this hides is exactly what the prompt hook doesn't
+    record. So it is decided the way the prompt hook decides — the same
+    split of the same text (task notifications, anything a subagent sends
+    and plumbing are nobody speaking, a [WAKEUP] tick is not recorded, and
+    each sibling letter is recorded as a letter) — and by nothing else.
+    In particular, never by the transcript's structural fields
+    (`commandMode`, `origin.handback`, `origin.senderTaskId`): the prompt
+    hook never sees those, so a check on them here could only ever
+    disagree with the record, hiding the arrival line of a row that was
+    recorded — the one thing the line exists for (PR #380). If the harness
+    changes a shape, the fix belongs in what is recorded, and this follows
+    by construction. (The sidechain exit is not such a check: a sidechain
+    entry is a subagent's own thread, and none has ever been measured in a
+    main transcript, the only file this reads — 256 queued prompts carry
+    it, all in subagent files, 2026-09-30.)
     """
     if not isinstance(entry, dict) or entry.get("type") != "attachment":
         return None
@@ -874,8 +878,6 @@ def queued_arrival(entry):
         return None
     attachment = entry.get("attachment")
     if not isinstance(attachment, dict) or attachment.get("type") != "queued_command":
-        return None
-    if attachment.get("commandMode") == "task-notification":
         return None
     words, letters = split_prompt_for_recording(
         _user_entry_text(attachment.get("prompt"))

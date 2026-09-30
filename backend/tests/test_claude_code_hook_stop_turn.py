@@ -386,6 +386,49 @@ def test_unrecorded_queued_prompts_are_not_marked(tmp_path):
     assert stop.turn_assistant_text(path)[0] == f"Working.\n\n{MARK}\n\nStill working."
 
 
+def _prompt_hook_records_something(text):
+    """What user_prompt_submit.main decides from a prompt's text: the
+    human's words (unless a [WAKEUP] tick) or any letter."""
+    words, letters = hook_util.split_prompt_for_recording(text)
+    return bool(words and not hook_util.is_wakeup_prompt(words)) or bool(letters)
+
+
+def test_the_stop_hook_hides_exactly_what_the_prompt_hook_does_not_record():
+    """PR #380, Pseudo's rule: what the Stop hook hides and what the prompt
+    hook doesn't save to the archive match. Both decide from the same text;
+    the transcript's structural fields, which the prompt hook never sees,
+    change nothing — each entry here carries every one of them set the way
+    that would once have hidden it."""
+    texts = [
+        "actually, try the other approach",
+        "[WAKEUP] tick",
+        "<task-notification>done</task-notification>",
+        "<system-reminder>x</system-reminder>",
+        '<agent-message from="a9db223f5d07b6429">\n[Subagent hand-back] The report follows:\n  done\n</agent-message>',
+        '<agent-message from="a70623a1636427102">\n#62 status: nearly done\n</agent-message>',
+        '<agent-message from="x">\nreworded report\n</agent-message>',
+        '<cross-session-message from="local_x" name="Porch">hello</cross-session-message>',
+        "done — the harness dropped its <task-notification> wrapper",
+        '<novel-event kind="x">hi</novel-event>',
+    ]
+    for text in texts:
+        entry = queued(text, "q1", command_mode="task-notification", kind="peer")
+        entry["attachment"]["origin"].update(
+            {"handback": True, "senderTaskId": "a9db223f5d07b6429"}
+        )
+        hidden = hook_util.queued_arrival(entry) is None
+        assert hidden == (not _prompt_hook_records_something(text)), text
+
+
+def test_the_task_notification_mode_alone_does_not_hide_a_recorded_prompt():
+    """All 212 queued task notifications measured (2026-09-30) arrive
+    wrapped in <task-notification>, which the split drops. Were one to
+    arrive without the wrapper, the prompt hook would record it as the
+    human's words, so its arrival line is written like any other."""
+    entry = queued("done", "q1", command_mode="task-notification", kind=None)
+    assert hook_util.queued_arrival(entry) == (True, 0)
+
+
 def handback(report, uid, task_id="a9db223f5d07b6429"):
     """A subagent's final report handed back mid-turn (issue #376), in the
     shape measured in the 10a header workshop's transcript: a queued

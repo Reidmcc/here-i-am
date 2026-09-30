@@ -72,7 +72,8 @@ The integration has two channels:
      splits the same text the same way and writes no arrival line for
      one. It does not key on the transcript's structural fields
      (`senderTaskId`, `handback`) for either kind: the arrival line has to
-     mirror what was recorded, and the prompt hook can't see those fields.
+     mirror what was recorded, and the prompt hook can't see those fields
+     (see "One row per turn" below).
      Any other
      `<agent-message>` is not assumed to be plumbing: it goes down the
      inter-session letter path below. No such letter has ever been
@@ -328,8 +329,14 @@ are never read — the extraction takes `text` blocks only.
   already spoken, the row carries `[… the human's message arrived here]`
   or `[… a letter arrived here]` (`hook_util.queued_arrival`; wording
   Pseudo's), so the chunks said before it don't read as a reply to it.
-  Queued task notifications and `[WAKEUP]` ticks are never recorded, so
-  they get no marker.
+  The rule is that the marker is hidden for exactly what the prompt hook
+  doesn't record (PR #380): the Stop hook runs the same split on the same
+  text, and nothing else. Queued task notifications, whatever a subagent
+  sends, other plumbing, and `[WAKEUP]` ticks are never recorded, so they
+  get no marker. The transcript's structural fields (`commandMode`,
+  `origin.handback`, `origin.senderTaskId`) are deliberately not read.
+  The prompt hook never sees them, so a check on them could only hide the
+  arrival of a row that *was* recorded.
 - **Not the entity's words:** sidechain (subagent) entries, and
   `<synthetic>` assistant entries — the harness's own "No response
   requested.", API errors, and usage-limit notices, which the old
