@@ -150,8 +150,10 @@ class SessionStartResponse(BaseModel):
     rooms_notice: str = ""
     rooms_error: str = ""
     # The entity's GitHub identity, on every firing (startup, resume,
-    # compact): the environment file is per session process, so a resume
-    # needs it as much as a fresh start. None = entity has none configured.
+    # compact): the hook replaces the identity in the session's environment
+    # file each time (issue #381), so every firing carries the whole
+    # identity and a changed one lands on the next. None = entity has none
+    # configured, and the hook removes one an earlier firing exported.
     git_identity: Optional[GitIdentity] = None
 
 

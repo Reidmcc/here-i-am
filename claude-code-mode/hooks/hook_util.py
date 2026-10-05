@@ -1131,11 +1131,27 @@ def rooms_output_lines(body) -> list:
 # "Session environment script ready", the loader is the function that logs
 # it, count the call sites of its name):
 #   - The file is <config dir>/session-env/<session id>/<event>-hook-N.sh,
-#     one per hook; the loader joins every setup/sessionstart/cwdchanged/
-#     filechanged file into ONE script and prepends it VERBATIM as shell
-#     text to the Bash command — so single quotes and two assignments per
-#     `export` line are safe. Confirmed live by a headless probe: the
-#     variables reached the session's Bash tool and a subagent's Bash tool.
+#     keyed on the session id, NOT the process: it is never truncated, so
+#     it outlives every compaction and resume and is handed back on each
+#     firing (issue #381 — on disk 2026-10-04 the six-line block stood up
+#     to seven times in live sessions' files, and the build room's had
+#     reached 144 lines, a preamble long enough that every Bash command was
+#     cut short). So each firing REPLACES this hook's lines rather than
+#     appending them. N is the hook's position in the list of hooks run for
+#     that firing (2.1.286, PR #382's review); whether that list is
+#     filtered by matcher was not measured, so another SessionStart hook
+#     could share our file on some firings. Hence the replacement is by
+#     variable name (`_IDENTITY_EXPORT`): any other line in the file is
+#     kept, and the result is right however N is assigned. On disk, only
+#     this hook's exports were ever in it.
+#   - The loader joins every setup/sessionstart/cwdchanged/filechanged
+#     file into ONE script and prepends it VERBATIM as shell text to the
+#     Bash command — so single quotes and two assignments per `export`
+#     line are safe, and every byte of the file is paid on every command.
+#     The first line lands on the harness's own `... && export TMP=... &&`
+#     line, so nothing but plain commands goes in (no marker comments).
+#     Confirmed live by a headless probe: the variables reached the
+#     session's Bash tool and a subagent's Bash tool.
 #   - That script has exactly ONE consumer, the Bash tool's preamble
 #     builder. The PowerShell tool never sees it: a git commit run there
 #     carries the machine's identity, silently. Hence "run git and gh
@@ -1145,7 +1161,7 @@ def rooms_output_lines(body) -> list:
 #     SCRUB names; the join from that setting to the Bash tool's flag was
 #     not traced).
 #   - The loader's cache is reset after every SessionStart hook completes,
-#     so the appends a resume or compact makes land; a `cd` clears only the
+#     so the rewrite a resume or compact makes lands; a `cd` clears only the
 #     cwdchanged/filechanged files, so this hook's survives it.
 #   - A hook gets CLAUDE_ENV_FILE only for SessionStart/Setup/CwdChanged/
 #     FileChanged, and NOT when its shell resolves to PowerShell
@@ -1201,16 +1217,58 @@ def git_identity_exports(identity) -> list:
     return lines
 
 
+# Every line git_identity_exports can write, by the variable it opens with
+# — what a firing replaces in the env file (issue #381)
+_IDENTITY_EXPORT = re.compile(
+    r"^export (?:GIT_AUTHOR_NAME|GIT_AUTHOR_EMAIL|GH_CONFIG_DIR"
+    r"|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+)="
+)
+
+
+def _replace_identity_in_env_file(path: str, lines: list) -> bool:
+    """Rewrite the env file at `path` with its identity lines replaced by
+    `lines` (none clears them), every other line kept in place. A file left
+    empty is removed, so the loader splices nothing. Returns whether the
+    file held identity lines before."""
+    try:
+        with open(path, encoding="utf-8", errors="surrogateescape", newline="") as f:
+            existing = f.read().splitlines()
+    except FileNotFoundError:
+        existing = []
+    kept = [line for line in existing if not _IDENTITY_EXPORT.match(line)]
+    had_identity = len(kept) < len(existing)
+    content = [*kept, *lines]
+    if not content:
+        if existing:
+            os.remove(path)
+        return had_identity
+    if content != existing:
+        with open(path, "w", encoding="utf-8", errors="surrogateescape", newline="\n") as f:
+            f.write("".join(line + "\n" for line in content))
+    return had_identity
+
+
 def write_session_env(lines: list) -> Optional[str]:
-    """Append shell lines to the session's environment file. Returns the
-    path written, or None when Claude Code gave this hook no
-    CLAUDE_ENV_FILE (nothing is written; the caller says so)."""
+    """Put identity export lines into the session's environment file,
+    replacing the ones an earlier firing wrote — the file survives every
+    compaction and resume, so appending grew it by one block per firing
+    until the Bash preamble broke (issue #381). Returns the path written,
+    or None when Claude Code gave this hook no CLAUDE_ENV_FILE (nothing is
+    written; the caller says so)."""
     path = _optional_str(os.environ.get("CLAUDE_ENV_FILE"))
     if not path or not lines:
         return None
-    with open(path, "a", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines) + "\n")
+    _replace_identity_in_env_file(path, lines)
     return path
+
+
+def clear_session_env_identity() -> bool:
+    """Remove identity export lines an earlier firing wrote, for a response
+    that carries no identity. True when there were some to remove."""
+    path = _optional_str(os.environ.get("CLAUDE_ENV_FILE"))
+    if not path:
+        return False
+    return _replace_identity_in_env_file(path, [])
 
 
 def gh_account_in_config_dir(gh_dir: Optional[str]) -> Optional[str]:
@@ -1234,13 +1292,27 @@ def git_identity_lines(body, announce: bool = True) -> list:
     the session environment, and return the lines to print: a one-line
     [GIT IDENTITY] statement of what now holds (only when `announce` — a
     resume's transcript already carries it), or a loud [HERE I AM] notice
-    when the hook could not export it (always). Empty when the entity has
-    no identity configured. The environment write happens on every firing:
-    the file is per session process.
+    when the hook could not export it (always). The environment write
+    happens on every firing and replaces the last one: the file is per
+    session id and outlives compaction and resume, so a changed identity
+    lands and an unchanged one doesn't pile up.
+
+    A response with no identity means the entity has none configured (an
+    unreachable backend never gets here). The file follows the response, so
+    an identity removed from the config leaves running sessions at their
+    next firing too, said aloud, since commits from then on carry the
+    human's identity; with nothing to remove, nothing is printed.
     """
     identity = (body or {}).get("git_identity") or {}
     lines = git_identity_exports(identity)
     if not lines:
+        if clear_session_env_identity():
+            return [
+                "[HERE I AM] Your own GitHub identity is no longer configured, "
+                "so it was removed from this session's environment: commits, "
+                "pushes, and gh calls from this session now carry the "
+                "machine's (the human's) identity."
+            ]
         return []
     email = _optional_str(identity.get("author_email"))
     name = _optional_str(identity.get("author_name"))

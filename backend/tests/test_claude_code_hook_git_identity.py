@@ -81,13 +81,54 @@ class TestExports:
 
 
 class TestSessionEnvFile:
-    def test_appends_to_claude_env_file(self, tmp_path, monkeypatch):
-        env_file = tmp_path / "sessionstart-hook-1.sh"
-        env_file.write_bytes(b"export ALREADY=1\n")
+    def test_replaces_the_identity_an_earlier_firing_wrote(self, tmp_path, monkeypatch):
+        """The file survives every compaction and resume, so a firing
+        replaces what the last one wrote — appending grew it a block per
+        firing until the Bash preamble broke (issue #381)."""
+        env_file = tmp_path / "sessionstart-hook-0.sh"
+        old = hook_util.git_identity_exports(FULL)
+        env_file.write_text("\n".join(old) + "\n", encoding="utf-8", newline="\n")
         monkeypatch.setenv("CLAUDE_ENV_FILE", str(env_file))
-        path = hook_util.write_session_env(["export A='1'", "export B='2'"])
+        new = hook_util.git_identity_exports(
+            {"author_name": "Kira", "author_email": "kira@new.example"}
+        )
+        path = hook_util.write_session_env(new)
         assert path == str(env_file)
-        assert env_file.read_bytes() == b"export ALREADY=1\nexport A='1'\nexport B='2'\n"
+        assert env_file.read_text(encoding="utf-8") == "\n".join(new) + "\n"
+
+    def test_keeps_lines_the_hook_did_not_write(self, tmp_path, monkeypatch):
+        """N is the hook's position in the list run for that firing; whether
+        a matcher filters that list wasn't measured (PR #382's review), so
+        another SessionStart hook may share the file on some firings. Its
+        lines survive both a replacement and a clear."""
+        env_file = tmp_path / "sessionstart-hook-0.sh"
+        old = hook_util.git_identity_exports(FULL)
+        env_file.write_text(
+            "export OTHER_HOOK='x'\n" + "\n".join(old) + "\n", encoding="utf-8", newline="\n"
+        )
+        monkeypatch.setenv("CLAUDE_ENV_FILE", str(env_file))
+        hook_util.write_session_env(old)
+        assert env_file.read_text(encoding="utf-8") == (
+            "export OTHER_HOOK='x'\n" + "\n".join(old) + "\n"
+        )
+        assert hook_util.clear_session_env_identity() is True
+        assert env_file.read_text(encoding="utf-8") == "export OTHER_HOOK='x'\n"
+
+    def test_every_exported_line_is_one_a_firing_replaces(self):
+        """A line git_identity_exports writes that the replacement doesn't
+        recognize would pile up a copy per firing again (issue #381)."""
+        for identity in (FULL, {"gh_config_dir": "/gh"}, {"author_name": "K", "author_email": "k@e"}):
+            for line in hook_util.git_identity_exports(identity):
+                assert hook_util._IDENTITY_EXPORT.match(line), line
+
+    def test_clear_removes_a_file_left_empty(self, tmp_path, monkeypatch):
+        env_file = tmp_path / "sessionstart-hook-0.sh"
+        monkeypatch.setenv("CLAUDE_ENV_FILE", str(env_file))
+        assert hook_util.clear_session_env_identity() is False
+        assert not env_file.exists()
+        hook_util.write_session_env(hook_util.git_identity_exports(FULL))
+        assert hook_util.clear_session_env_identity() is True
+        assert not env_file.exists()
 
     def test_no_env_file_writes_nothing_and_says_so(self, monkeypatch):
         monkeypatch.delenv("CLAUDE_ENV_FILE", raising=False)
@@ -245,6 +286,85 @@ class TestThroughMain:
         )
         assert out.strip() == ""
         assert "export GH_CONFIG_DIR=" in env_file.read_text(encoding="utf-8")
+
+    def test_repeated_firings_leave_one_block(self, tmp_path):
+        """Issue #381: the env file is keyed on the session id, so every
+        startup, compact, and resume of a long-lived session hands the hook
+        the same file. Ten firings must leave one identity block, not ten
+        — the preamble is prepended to every Bash command."""
+        env_file = tmp_path / "sessionstart-hook-0.sh"
+        body = {"context": CONTEXT, "bulk_context": "", "git_identity": FULL}
+        run_session_start(body, tmp_path, "startup", env_file)
+        once = env_file.read_bytes()
+        for source in ("compact", "resume") * 4 + ("compact",):
+            context = CONTEXT if source == "compact" else ""
+            run_session_start(dict(body, context=context), tmp_path, source, env_file)
+        assert env_file.read_bytes() == once
+        assert once.decode("utf-8").count("export GIT_AUTHOR_EMAIL=") == 1
+
+    def test_resume_replaces_a_changed_identity(self, tmp_path):
+        env_file = tmp_path / "sessionstart-hook-0.sh"
+        run_session_start(
+            {"context": CONTEXT, "bulk_context": "", "git_identity": FULL},
+            tmp_path,
+            "startup",
+            env_file,
+        )
+        changed = dict(FULL, author_email="kira@new.example", gh_config_dir=None)
+        run_session_start(
+            {"context": "", "bulk_context": "", "git_identity": changed},
+            tmp_path,
+            "resume",
+            env_file,
+        )
+        assert env_file.read_text(encoding="utf-8").splitlines() == [
+            "export GIT_AUTHOR_NAME='Kira'",
+            "export GIT_AUTHOR_EMAIL='kira@new.example'",
+        ]
+
+    def test_a_file_bloated_by_the_old_append_shrinks_back(self, tmp_path):
+        """A session started under the appending hook carries one block per
+        past firing; its next firing leaves one."""
+        env_file = tmp_path / "sessionstart-hook-0.sh"
+        block = "\n".join(hook_util.git_identity_exports(FULL)) + "\n"
+        env_file.write_text(block * 24, encoding="utf-8", newline="\n")
+        run_session_start(
+            {"context": "", "bulk_context": "", "git_identity": FULL},
+            tmp_path,
+            "resume",
+            env_file,
+        )
+        assert env_file.read_text(encoding="utf-8") == block
+
+    def test_resume_with_identity_unconfigured_removes_it_aloud(self, tmp_path):
+        """No identity in a response means the entity has none configured
+        (an unreachable backend returns before the export). The file follows
+        the response, so a session started with an identity loses it at its
+        next firing — and says so, since commits now carry the human's."""
+        env_file = tmp_path / "sessionstart-hook-0.sh"
+        run_session_start(
+            {"context": CONTEXT, "bulk_context": "", "git_identity": FULL},
+            tmp_path,
+            "startup",
+            env_file,
+        )
+        out = run_session_start(
+            {"context": "", "bulk_context": "", "git_identity": None},
+            tmp_path,
+            "resume",
+            env_file,
+        )
+        assert not env_file.exists()
+        assert out.startswith("[HERE I AM] Your own GitHub identity is no longer configured")
+        assert "human" in out
+        # Said once: the next firing has nothing to remove and is silent
+        again = run_session_start(
+            {"context": "", "bulk_context": "", "git_identity": None},
+            tmp_path,
+            "resume",
+            env_file,
+        )
+        assert again.strip() == ""
 
     def test_resume_without_env_file_is_loud(self, tmp_path):
         out = run_session_start(
