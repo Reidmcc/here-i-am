@@ -1547,8 +1547,16 @@ while the human keeps merge authority.
 hands every `SessionStart` hook the path of a per-session shell script in
 `CLAUDE_ENV_FILE` and runs that script as a preamble before each Bash
 command (Claude Code's tools reference and hooks guide). The hook
-appends `export` lines there on every firing — startup, resume, and
-compact alike, since the file belongs to the session process — so a
+writes `export` lines there on every firing — startup, resume, and
+compact alike — **replacing** the file's contents rather than appending:
+the file is keyed on the session id, not the process, and outlives every
+compaction and resume, so an append grew it by one block per firing.
+Issue #381: a build room up for days with many auto-compactions reached
+144 lines, and since every byte is prepended to every Bash command, the
+preamble grew until each command was cut short (`unexpected EOF while
+looking for matching '`), and a resume didn't fix it. Rewriting also
+lets a resume or compact carry a changed identity, and shrinks a file
+the old hook bloated back to one block at its next firing. So a
 session the hooks run in commits and posts as the entity, and a plain
 Claude Code session on the same machine (hooks off, e.g. the `--settings`
 escape hatch under "Output styles") keeps the human's identity by
@@ -1560,8 +1568,9 @@ What the harness does with the file was measured, not assumed
 review session, 2.1.275 as bundled by the desktop app on Windows by the
 author; recipe in the comment block above `git_identity_exports` in
 `hook_util.py`): the file is `<config dir>/session-env/<session
-id>/<event>-hook-N.sh`, one per hook; the loader joins every such file
-into one script and prepends it **verbatim as shell text** to the Bash
+id>/<event>-hook-N.sh`, one per hook (N is the hook's index), which is
+why the hook may rewrite it whole: nothing else writes it. The loader
+joins every such file into one script and prepends it **verbatim as shell text** to the Bash
 command (so the quoting and the two assignments per `export` line are
 safe — a headless probe confirmed the variables reaching the Bash tool and
 a subagent's Bash tool); that script has **exactly one consumer, the Bash
@@ -1569,7 +1578,8 @@ tool's preamble builder** — the PowerShell tool never sees it, so a `git
 commit` run there carries the machine's identity silently, which is why
 the statement says to run git and gh through Bash; the loader's cache is
 reset after every SessionStart hook completes, so a resume's or compact's
-append lands; a `cd` clears only the `cwdchanged`/`filechanged` files;
+rewrite lands (a hand edit seemed to land only at the next SessionStart
+— observed once in issue #381, not measured); a `cd` clears only the `cwdchanged`/`filechanged` files;
 and the preamble is skipped when the tool context is marked to scrub
 credentials (the scrub `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` names; the join
 from that setting to the Bash tool's flag was not traced).

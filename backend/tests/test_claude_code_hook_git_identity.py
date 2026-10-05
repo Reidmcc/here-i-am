@@ -81,13 +81,17 @@ class TestExports:
 
 
 class TestSessionEnvFile:
-    def test_appends_to_claude_env_file(self, tmp_path, monkeypatch):
-        env_file = tmp_path / "sessionstart-hook-1.sh"
-        env_file.write_bytes(b"export ALREADY=1\n")
+    def test_rewrites_claude_env_file_whole(self, tmp_path, monkeypatch):
+        """The file is this hook's own (<event>-hook-N.sh, one per hook) and
+        survives every compaction and resume, so a firing replaces what the
+        last one wrote — appending grew it a block per firing until the
+        Bash preamble broke (issue #381)."""
+        env_file = tmp_path / "sessionstart-hook-0.sh"
+        env_file.write_bytes(b"export A='0'\nexport B='0'\n")
         monkeypatch.setenv("CLAUDE_ENV_FILE", str(env_file))
         path = hook_util.write_session_env(["export A='1'", "export B='2'"])
         assert path == str(env_file)
-        assert env_file.read_bytes() == b"export ALREADY=1\nexport A='1'\nexport B='2'\n"
+        assert env_file.read_bytes() == b"export A='1'\nexport B='2'\n"
 
     def test_no_env_file_writes_nothing_and_says_so(self, monkeypatch):
         monkeypatch.delenv("CLAUDE_ENV_FILE", raising=False)
@@ -245,6 +249,55 @@ class TestThroughMain:
         )
         assert out.strip() == ""
         assert "export GH_CONFIG_DIR=" in env_file.read_text(encoding="utf-8")
+
+    def test_repeated_firings_leave_one_block(self, tmp_path):
+        """Issue #381: the env file is keyed on the session id, so every
+        startup, compact, and resume of a long-lived session hands the hook
+        the same file. Ten firings must leave one identity block, not ten
+        — the preamble is prepended to every Bash command."""
+        env_file = tmp_path / "sessionstart-hook-0.sh"
+        body = {"context": CONTEXT, "bulk_context": "", "git_identity": FULL}
+        run_session_start(body, tmp_path, "startup", env_file)
+        once = env_file.read_bytes()
+        for source in ("compact", "resume") * 4 + ("compact",):
+            context = CONTEXT if source == "compact" else ""
+            run_session_start(dict(body, context=context), tmp_path, source, env_file)
+        assert env_file.read_bytes() == once
+        assert once.decode("utf-8").count("export GIT_AUTHOR_EMAIL=") == 1
+
+    def test_resume_replaces_a_changed_identity(self, tmp_path):
+        env_file = tmp_path / "sessionstart-hook-0.sh"
+        run_session_start(
+            {"context": CONTEXT, "bulk_context": "", "git_identity": FULL},
+            tmp_path,
+            "startup",
+            env_file,
+        )
+        changed = dict(FULL, author_email="kira@new.example", gh_config_dir=None)
+        run_session_start(
+            {"context": "", "bulk_context": "", "git_identity": changed},
+            tmp_path,
+            "resume",
+            env_file,
+        )
+        assert env_file.read_text(encoding="utf-8").splitlines() == [
+            "export GIT_AUTHOR_NAME='Kira'",
+            "export GIT_AUTHOR_EMAIL='kira@new.example'",
+        ]
+
+    def test_a_file_bloated_by_the_old_append_shrinks_back(self, tmp_path):
+        """A session started under the appending hook carries one block per
+        past firing; its next firing leaves one."""
+        env_file = tmp_path / "sessionstart-hook-0.sh"
+        block = "\n".join(hook_util.git_identity_exports(FULL)) + "\n"
+        env_file.write_text(block * 24, encoding="utf-8", newline="\n")
+        run_session_start(
+            {"context": "", "bulk_context": "", "git_identity": FULL},
+            tmp_path,
+            "resume",
+            env_file,
+        )
+        assert env_file.read_text(encoding="utf-8") == block
 
     def test_resume_without_env_file_is_loud(self, tmp_path):
         out = run_session_start(

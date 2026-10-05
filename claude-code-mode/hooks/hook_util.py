@@ -1131,10 +1131,19 @@ def rooms_output_lines(body) -> list:
 # "Session environment script ready", the loader is the function that logs
 # it, count the call sites of its name):
 #   - The file is <config dir>/session-env/<session id>/<event>-hook-N.sh,
-#     one per hook; the loader joins every setup/sessionstart/cwdchanged/
-#     filechanged file into ONE script and prepends it VERBATIM as shell
-#     text to the Bash command — so single quotes and two assignments per
-#     `export` line are safe. Confirmed live by a headless probe: the
+#     one per hook (N is the hook's index in the settings) and keyed on the
+#     session id, NOT the process: it is never truncated, so it outlives
+#     every compaction and resume and is handed back on each firing (issue
+#     #381 — on disk 2026-10-04 the six-line block stood up to seven times
+#     in live sessions' files, and the build room's had reached 144 lines,
+#     a preamble long enough that every Bash command was cut short). The
+#     file is this hook's alone (another hook gets its own N), so each
+#     firing REWRITES it whole: one block however many firings, and a file
+#     an older hook bloated is back to one block at its next firing.
+#   - The loader joins every setup/sessionstart/cwdchanged/filechanged
+#     file into ONE script and prepends it VERBATIM as shell text to the
+#     Bash command — so single quotes and two assignments per `export`
+#     line are safe, and every byte of the file is paid on every command. Confirmed live by a headless probe: the
 #     variables reached the session's Bash tool and a subagent's Bash tool.
 #   - That script has exactly ONE consumer, the Bash tool's preamble
 #     builder. The PowerShell tool never sees it: a git commit run there
@@ -1145,7 +1154,7 @@ def rooms_output_lines(body) -> list:
 #     SCRUB names; the join from that setting to the Bash tool's flag was
 #     not traced).
 #   - The loader's cache is reset after every SessionStart hook completes,
-#     so the appends a resume or compact makes land; a `cd` clears only the
+#     so the rewrite a resume or compact makes lands; a `cd` clears only the
 #     cwdchanged/filechanged files, so this hook's survives it.
 #   - A hook gets CLAUDE_ENV_FILE only for SessionStart/Setup/CwdChanged/
 #     FileChanged, and NOT when its shell resolves to PowerShell
@@ -1202,13 +1211,16 @@ def git_identity_exports(identity) -> list:
 
 
 def write_session_env(lines: list) -> Optional[str]:
-    """Append shell lines to the session's environment file. Returns the
-    path written, or None when Claude Code gave this hook no
-    CLAUDE_ENV_FILE (nothing is written; the caller says so)."""
+    """Write shell lines as the whole of this hook's session environment
+    file, replacing what an earlier firing wrote — the file survives every
+    compaction and resume, so appending grew it by one block per firing
+    until the Bash preamble broke (issue #381). Returns the path written,
+    or None when Claude Code gave this hook no CLAUDE_ENV_FILE (nothing is
+    written; the caller says so)."""
     path = _optional_str(os.environ.get("CLAUDE_ENV_FILE"))
     if not path or not lines:
         return None
-    with open(path, "a", encoding="utf-8", newline="\n") as f:
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
     return path
 
@@ -1235,8 +1247,10 @@ def git_identity_lines(body, announce: bool = True) -> list:
     [GIT IDENTITY] statement of what now holds (only when `announce` — a
     resume's transcript already carries it), or a loud [HERE I AM] notice
     when the hook could not export it (always). Empty when the entity has
-    no identity configured. The environment write happens on every firing:
-    the file is per session process.
+    no identity configured. The environment write happens on every firing
+    and replaces the last one: the file is per session id and outlives
+    compaction and resume, so a changed identity lands and an unchanged
+    one doesn't pile up.
     """
     identity = (body or {}).get("git_identity") or {}
     lines = git_identity_exports(identity)
