@@ -98,9 +98,10 @@ def main() -> None:
     context = (body.get("context") or "").strip()
 
     # GitHub identity (issue #362): exported into the session environment
-    # on every firing, rewriting the file rather than appending to it — the
-    # file is per session id and outlives compaction and resume (issue
-    # #381), and a resume or compact may carry a changed identity. The
+    # on every firing, replacing the lines the last firing wrote rather than
+    # appending — the file is per session id and outlives compaction and
+    # resume (issue #381), and a resume or compact may carry a changed or
+    # removed identity. The
     # statement of what holds is printed only with a context
     # block (startup, compact); a resume's transcript already carries it.
     # A failure to export is printed every time.

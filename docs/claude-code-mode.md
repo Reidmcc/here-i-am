@@ -1548,16 +1548,19 @@ hands every `SessionStart` hook the path of a per-session shell script in
 `CLAUDE_ENV_FILE` and runs that script as a preamble before each Bash
 command (Claude Code's tools reference and hooks guide). The hook
 writes `export` lines there on every firing — startup, resume, and
-compact alike — **replacing** the file's contents rather than appending:
-the file is keyed on the session id, not the process, and outlives every
-compaction and resume, so an append grew it by one block per firing.
-Issue #381: a build room up for days with many auto-compactions reached
-144 lines, and since every byte is prepended to every Bash command, the
-preamble grew until each command was cut short (`unexpected EOF while
-looking for matching '`), and a resume didn't fix it. Rewriting also
-lets a resume or compact carry a changed identity, and shrinks a file
-the old hook bloated back to one block at its next firing. So a
-session the hooks run in commits and posts as the entity, and a plain
+compact alike — **replacing** the identity lines an earlier firing wrote
+rather than appending: the file is keyed on the session id, not the
+process, and outlives every compaction and resume, so an append grew it
+by one block per firing. Issue #381: a build room up for days with many
+auto-compactions reached 144 lines, and since every byte is prepended to
+every Bash command, the preamble grew until each command was cut short
+(`unexpected EOF while looking for matching '`), and a resume didn't fix
+it. Replacing also lets a resume or compact carry a changed identity,
+and shrinks a file the old hook bloated back to one block at its next
+firing. The replacement is by variable name (every `export` the hook can
+write), and any other line in the file is kept — see the next paragraph
+for why. So a session the hooks run in commits and posts as the entity,
+and a plain
 Claude Code session on the same machine (hooks off, e.g. the `--settings`
 escape hatch under "Output styles") keeps the human's identity by
 construction. No file the human's sessions read is touched: not the
@@ -1568,18 +1571,25 @@ What the harness does with the file was measured, not assumed
 review session, 2.1.275 as bundled by the desktop app on Windows by the
 author; recipe in the comment block above `git_identity_exports` in
 `hook_util.py`): the file is `<config dir>/session-env/<session
-id>/<event>-hook-N.sh`, one per hook (N is the hook's index), which is
-why the hook may rewrite it whole: nothing else writes it. The loader
-joins every such file into one script and prepends it **verbatim as shell text** to the Bash
-command (so the quoting and the two assignments per `export` line are
-safe — a headless probe confirmed the variables reaching the Bash tool and
-a subagent's Bash tool); that script has **exactly one consumer, the Bash
+id>/<event>-hook-N.sh`, where N is the hook's position in the list of
+hooks run for that firing (2.1.286, read by PR #382's review). Whether
+that list is filtered by matcher was not measured, so another
+SessionStart hook could share this hook's file on some firings; on disk
+(2026-10-04, 26 sessions) only this hook's exports were ever in it, and
+keeping every other line makes the replacement right either way. The
+loader joins every such file into one script and prepends it **verbatim
+as shell text** to the Bash command — the file's first line lands on the
+harness's own `… && export TMP=… &&` line, so it holds plain commands
+only, no marker comments (so the quoting and the two assignments per
+`export` line are safe — a headless probe confirmed the variables
+reaching the Bash tool and a subagent's Bash tool); that script has **exactly one consumer, the Bash
 tool's preamble builder** — the PowerShell tool never sees it, so a `git
 commit` run there carries the machine's identity silently, which is why
 the statement says to run git and gh through Bash; the loader's cache is
 reset after every SessionStart hook completes, so a resume's or compact's
 rewrite lands (a hand edit seemed to land only at the next SessionStart
-— observed once in issue #381, not measured); a `cd` clears only the `cwdchanged`/`filechanged` files;
+— observed once in issue #381, not measured); a `cd` clears only the
+`cwdchanged`/`filechanged` files;
 and the preamble is skipped when the tool context is marked to scrub
 credentials (the scrub `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` names; the join
 from that setting to the Bash tool's flag was not traced).
@@ -1597,7 +1607,14 @@ two strings ever pass through the backend (`git_identity` on the
 `/session-start` response) or the hook; the token lives in the gh config
 directory, which should sit outside the live server directory and outside
 the notes. An entity with neither field set gets nothing exported and no
-line about it.
+line about it. The file follows the response: removing both fields from
+the config removes the identity from running sessions too, at each one's
+next SessionStart (a session id's file would otherwise keep exporting it
+for the session's whole life), with a one-time loud `[HERE I AM]` line
+that commits now carry the human's identity. A backend that can't be
+reached never gets this far, so an outage leaves the file as it was. To
+revoke *access* at once rather than at the next firing, log the entity
+out of its gh config directory — that is where the token lives.
 
 **What the entity is told.** With a context block (startup, compact) the
 hook prints one `[GIT IDENTITY]` line naming the author identity, the
