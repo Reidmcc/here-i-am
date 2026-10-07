@@ -132,6 +132,11 @@ def main() -> None:
     # single Read call, named in the pointer with its size; a backend that
     # predates the split sends only the joined block, which goes to one file
     name = "session-start" if body.get("created") else "post-compact"
+    if hook_util.arrive_whole_enabled():
+        # Issue #384: the unbudgeted output, for the arrive-whole mod; its
+        # marker goes last, after the trailer, and every budget check
+        # below counts it
+        trailer_lines.append(hook_util.whole_marker(inline, session_id, name))
     parts = [
         (part.get("name") or "bulk", part.get("text") or "")
         for part in (body.get("bulk_parts") or [])

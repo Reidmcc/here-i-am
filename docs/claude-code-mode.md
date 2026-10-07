@@ -232,6 +232,48 @@ tool result and goes to disk over 50 KB.
   header-only memory stays openable through the readers instead of
   rendering as an in-context pointer there. `memory_read` / `memory_find`
   page by the same budget already (issue #353, below).
+- **Arriving whole (issue #384).** Fit-then-point costs the entity a
+  fetch of itself every session, and most large pulls arrive as summary
+  lines. A Claude Code *mod* (`claude-code-mode/arrive-whole/`, a
+  function-hooks plugin) closes that without changing what the backend
+  builds. Measured on 2.1.288 with headless probes: the hook-stdout line is
+  applied **before** the hook's row exists. A mod's `session.append` hook
+  on door `hook-context` sees the row already holding the harness's
+  `<persisted-output>` preview, and the `classic.*` events see the same, so
+  nothing in a mod can stop the cut. But nothing applies the line *after*
+  the row is made either: text the mod puts in the row reaches the request
+  whole (30k and 60k test blocks; a 73 KB session start and an 18 KB
+  six-memory pull end to end through the real hooks). The rewrite is
+  stored in the transcript's `rendered` field beside the hook's original
+  payload, and a `--resume` loads it, so a forked or restarted room keeps
+  it. So the hooks keep fitting and pointing exactly as above (that is the
+  path whenever the mod is absent). With `HIM_ARRIVE_WHOLE` set, a hook
+  that spills also files its output **exactly as it would print with no
+  budget** (`<session>-<name>-whole.md`, UTF-8, bare newlines) and ends
+  with one marker line: `[HERE I AM WHOLE] <path> sha256=<hex>`, followed
+  by a sentence saying that seeing the line means the mod didn't act. The
+  mod swaps the whole row for that file when the hash matches. It also
+  drops the harness's framing (`<system-reminder>` and "`<Event>` hook
+  success:"), since what arrives is the archive, which our own `[HERE I AM
+  …]` / `[MEMORY …]` headers already say, and strips Windows' carriage
+  returns. It touches only rows whose text opens with `[HERE I AM` from
+  the SessionStart and UserPromptSubmit hooks. An output over the line
+  anyway (an identity block too large for the budget) is read back from
+  the harness's own file first. Every failure is loud: an unreadable or
+  changed file keeps the pointers and the marker and appends the reason,
+  and a missing mod leaves the marker in view. The cost is new tokens
+  only for retrieval. Measured over 81 real retrieval spills, the whole
+  block is 5.1k tokens at the median (9.4k at p90, 11.8k max), about 1.7k
+  more than today's inline part (6.1k at p90). Session start is about
+  even, since the entity read those files every session anyway: 34.5k
+  tokens for this entity's index and reflections. Two things now read
+  differently. Our rows sit unwrapped beside the human's prompt in the
+  same user message (a UserPromptSubmit row comes *before* the prompt's
+  text block), so the headers are the only boundary. And a SessionStart
+  row no longer names its source in a prefix (the memory pane reads
+  `source` from `classic.SessionStart` instead, PR #386). The mod's logic
+  is pure functions in `hooks/whole.ts`, tested with `claude plugin test`;
+  the hooks' side is in `tests/test_claude_code_hook_fit.py`.
 
 2. **MCP tools** (deliberate acts): the entity's `memory_query` /
    `memory_save` / `memory_mark` / `memory_release`, the archive readers
@@ -1418,7 +1460,9 @@ characters of hook stdout, overriding the backend's `inline_budget`; the
 default is 9,600, under the measured 10,000-character line — see "Context
 channels"), `HIM_COMPACT_LINE` (the auto-compaction line in tokens for the
 context gauge, used when the hook can't see the harness's own window — see
-"Compaction survival").
+"Compaction survival"), `HIM_ARRIVE_WHOLE` (any value: a hook that spills
+also files its unbudgeted output and prints the marker the arrive-whole mod
+looks for; set it together with loading the mod — see "Context channels").
 
 Per entity, on its `PINECONE_INDEXES` entry: `git_author_email`,
 `git_author_name`, `gh_config_dir` — the entity's own GitHub identity for

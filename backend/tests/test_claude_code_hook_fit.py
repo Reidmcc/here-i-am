@@ -344,3 +344,80 @@ def test_identity_block_over_the_line_is_pointed_at_first(tmp_path):
     assert out.startswith("[HERE I AM] Your identity block itself was too large")
     assert f"{SESSION}-session-start-identity.md" in spill_files(tmp_path)
     assert context in out  # still printed, after the pointer
+
+
+# --- Arrive whole (issue #384): with HIM_ARRIVE_WHOLE set, a hook that
+# --- spills also files its output exactly as it would print with no
+# --- budget, and ends with a marker naming that file and its hash, for the
+# --- arrive-whole mod to put in place of the row
+
+
+WHOLE = {"HIM_ARRIVE_WHOLE": "1"}
+UNBUDGETED = {"HIM_INLINE_BUDGET": str(10**9)}
+
+
+def whole_file(out: str, tmp_path) -> str:
+    """The file the marker names, after checking the marker's hash."""
+    import hashlib
+    import re
+
+    marker = re.search(r"^\[HERE I AM WHOLE\] (.+) sha256=([0-9a-f]{64})$", out, re.MULTILINE)
+    assert marker, out[-600:]
+    path = Path(marker.group(1))
+    assert path.parent == tmp_path / "here-i-am-sessions"
+    data = path.read_bytes()
+    assert hashlib.sha256(data).hexdigest() == marker.group(2)
+    assert b"\r" not in data
+    return data.decode("utf-8")
+
+
+def test_spilled_retrieval_files_its_unbudgeted_output_for_the_mod(tmp_path):
+    items = memory_items(6, 2800)
+    body = retrieval_body(items, new_sibling_reflections=2, already_in_context=1)
+    out = run_prompt_hook(body, tmp_path, extra_env=WHOLE)
+    # Still fitted and pointed — that is the path when the mod is absent
+    assert harness_len(out) <= DEFAULT_BUDGET
+    assert "listed by summary line" in out
+    # The marker is the last thing printed, and says what seeing it means
+    assert out.rstrip().endswith("seeing this line means the mod didn't, and the pointers above stand.")
+    # The file is exactly what the hook prints when nothing is over the line
+    unbudgeted = run_prompt_hook(body, tmp_path, extra_env=UNBUDGETED).rstrip("\n")
+    assert whole_file(out, tmp_path) == unbudgeted
+    for item in items:
+        assert item["text"] in unbudgeted
+
+
+def test_spilled_session_start_files_its_unbudgeted_output_for_the_mod(tmp_path):
+    context = "[HERE I AM] You are Test Entity. " + ("c" * 3000)
+    body = session_body(context, [("notes-index", "[NOTES INDEX]\n" + "i" * 40000), ("reflections", "r" * 30000)])
+    out = run_session_start(body, tmp_path, extra_env=WHOLE)
+    assert harness_len(out) <= DEFAULT_BUDGET
+    assert "Read each of those files now" in out
+    assert out.index("[HERE I AM WHOLE]") > out.index("[ROOMS REGISTRY]")
+    unbudgeted = run_session_start(body, tmp_path, extra_env=UNBUDGETED).rstrip("\n")
+    assert whole_file(out, tmp_path) == unbudgeted
+    assert "i" * 40000 in unbudgeted and "r" * 30000 in unbudgeted
+
+
+def test_post_compaction_and_identity_overflow_carry_the_marker_too(tmp_path):
+    body = session_body("[HERE I AM] compacted", [("notes-index", "i" * 20000)], created=False)
+    out = run_session_start(body, tmp_path, extra_env=WHOLE, source="compact")
+    assert whole_file(out, tmp_path) == run_session_start(
+        body, tmp_path, extra_env=UNBUDGETED, source="compact"
+    ).rstrip("\n")
+    # The identity block itself over the line: the output is over too (the
+    # harness persists it, and the mod reads it back from the harness's
+    # file), and the marker still rides at the end
+    context = "[HERE I AM] You are Test Entity. " + ("p" * 12000)
+    body = session_body(context, [("reflections", "r" * 20000)])
+    out = run_session_start(body, tmp_path, extra_env=WHOLE)
+    assert out.startswith("[HERE I AM] Your identity block itself was too large")
+    assert whole_file(out, tmp_path) == run_session_start(body, tmp_path, extra_env=UNBUDGETED).rstrip("\n")
+
+
+def test_no_marker_when_it_fits_or_when_the_knob_is_unset(tmp_path):
+    out = run_prompt_hook(retrieval_body(memory_items(3, 800)), tmp_path, extra_env=WHOLE)
+    assert "[HERE I AM WHOLE]" not in out
+    out = run_prompt_hook(retrieval_body(memory_items(6, 2800)), tmp_path)
+    assert "[HERE I AM WHOLE]" not in out
+    assert not list((tmp_path / "here-i-am-sessions").glob("*-whole.md"))
