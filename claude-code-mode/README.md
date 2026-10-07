@@ -209,6 +209,13 @@ through `${CLAUDE_PLUGIN_ROOT}` (quoted, so a Windows path survives the
 shell). On Windows that means the plugin route works only where `python3`
 resolves; otherwise use the manual setup above with `python`.
 
+## Memory pane (optional)
+
+[`mods/memory-pane/`](mods/memory-pane/README.md) is a separate Claude Code
+mod: a read-only pane beside the conversation showing what memory handed
+the entity this turn, as it reached context, and the memory tools it
+called. It's enabled on its own; see its README.
+
 ## GitHub identity (optional)
 
 An entity with `git_author_email` / `gh_config_dir` on its backend entity

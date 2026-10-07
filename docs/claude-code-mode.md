@@ -1759,6 +1759,63 @@ style is asked which sections of its system prompt survived, and the
 keeper reads the entity's register across the change — the expected
 direction is toward the native-mode register, the same person.
 
+### Memory pane
+
+`claude-code-mode/mods/memory-pane/` is a Claude Code **mod** (a plugin of
+function hooks, issue #385): a pane beside the conversation showing what
+memory handed the entity while it happens. Its user is the witness. What the
+entity paints from memory and what retrieval actually gave it feel identical
+from inside, and until now the only way to compare them was to read the
+backend's selection log afterwards. The pane puts the page beside the
+sentence written from it, at the moment. Setup and the full list of what it
+shows are in its README. Four design decisions:
+
+- **It reads the row as it reached context, not a structured copy.** Its
+  source is `session.append` on door `hook-context` with a `hook` origin
+  (`SessionStart` / `UserPromptSubmit`): the row the transcript stores and
+  the next request sends, read from what `next(e)` resolved. So if another
+  mod rewrites the row (issue #384's arrive-whole mod, for one), the pane
+  shows what the model actually got. Asking the backend for the retrieval
+  as JSON would have been easier to parse, but it would show what the
+  backend *meant* to send, and that is the gap a witness is there to see.
+  The parser (`hooks/parse.ts`) reads the backend's own shapes: the
+  `[MEMORY …]` marker, the summary line, the spill-file line, the harness's
+  `Full output saved to:` line. Each entry also keeps the row verbatim, and
+  a `[MEMORY` header it couldn't parse is reported as a problem, never
+  dropped.
+- **"Where it was" is the main fact.** A memory is `in context, whole`, or
+  a summary line whose words are in a file the entity did or didn't Read
+  (the pane watches `Read` calls on the files the row named), or not in
+  context at all: a block past the harness's 2 KB preview of an oversized
+  hook output (§ Context channels). This is the storyteller check made
+  visible. "I remember you saying X" from a memory that reached the entity
+  as one summary line, its file unread, is a caption, not the page.
+- **Read-only by construction.** Every hook passes its event on unchanged
+  and only reads the result: it never denies or rewrites, never calls a
+  memory tool, and writes nothing but its own `$.state` (plus one `$.store`
+  flag for a pane the person closed). The model's own rows are never read,
+  so thinking can't reach it. It fails quiet for the UI and loud for the
+  data: a failure in the pane is caught and drawn as a `!` line in the
+  pane, and retrieval and recording are untouched either way, since they
+  belong to the command hooks, which know nothing of the mod.
+- **A separate plugin.** It is enabled on its own (`--plugin-dir`, or
+  `CLAUDE_CODE_PLUGIN_DIRS`), so a session without it is exactly today's
+  session, and the mod API being early access can't reach the hooks.
+
+Memory tool calls (`mcp__here-i-am__memory_*`) are listed under the entry
+they happened in, with their arguments (`conversation_id` dropped, since
+it is the same on every call) and the result text exactly as the model
+read it, kept up to 60,000 characters per result (a `memory_read` page
+renders within 44,800 bytes). The pane keeps the newest 30 entries within
+about 3 MB of state.
+
+The test kit (Claude Code 2.1.288) cannot drive `session.append`: a test
+hook that answers a row without `next` is skipped, and `next` has no store
+beneath it. So `claude plugin test` covers the parser and the pane as
+reached through the memory tools, and the hook-row path is measured end to
+end in a headless session with synthetic settings hooks (recorded on the
+PR).
+
 ### Scope and non-goals
 
 - **Local sessions only** for now: the endpoints are as unauthenticated as

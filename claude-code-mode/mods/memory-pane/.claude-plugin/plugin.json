@@ -1,0 +1,6 @@
+{
+  "name": "memory-pane",
+  "version": "0.1.0",
+  "description": "Here I Am: a read-only pane showing what memory handed the entity this turn, as it reached context, and the memory tools it called",
+  "types": "./types/index.d.ts"
+}
