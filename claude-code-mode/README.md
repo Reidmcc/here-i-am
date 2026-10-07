@@ -221,9 +221,13 @@ from the hooks' rows. Two settings turn it on, both in the `env` block of
 ```json
 "env": {
   "HIM_ARRIVE_WHOLE": "1",
-  "CLAUDE_CODE_PLUGIN_DIRS": "E:/here-i-am/claude-code-mode/mods/arrive-whole"
+  "CLAUDE_CODE_PLUGIN_DIRS": "E:/here-i-am/claude-code-mode/mods/arrive-whole;E:/here-i-am/claude-code-mode/mods/memory-pane"
 }
 ```
+
+`CLAUDE_CODE_PLUGIN_DIRS` is one list for every mod: add this folder to
+the others already there, separated by the platform's path-list
+separator (`;` on Windows, `:` elsewhere), or setting it drops them.
 
 `HIM_ARRIVE_WHOLE` makes a hook that spills also file its unbudgeted output
 and print a `[HERE I AM WHOLE]` marker line naming it; the mod swaps that
@@ -234,6 +238,13 @@ project's. Without the mod, nothing changes but the marker line, which
 says the mod didn't act, so a missing or broken mod is visible from
 inside. Changes take effect in sessions started after the setting. Design
 and measurements: [docs/claude-code-mode.md § Context channels](../docs/claude-code-mode.md#context-channels-fit-then-point).
+
+## Memory pane (optional)
+
+[`mods/memory-pane/`](mods/memory-pane/README.md) is a separate Claude Code
+mod: a read-only pane beside the conversation showing what memory handed
+the entity this turn, as it reached context, and the memory tools it
+called. It's enabled on its own; see its README.
 
 ## GitHub identity (optional)
 

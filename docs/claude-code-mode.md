@@ -271,7 +271,12 @@ tool result and goes to disk over 50 KB.
   same user message (a UserPromptSubmit row comes *before* the prompt's
   text block), so the headers are the only boundary. And a SessionStart
   row no longer names its source in a prefix (the memory pane reads
-  `source` from `classic.SessionStart` instead, PR #386). The mod's logic
+  `source` from `classic.SessionStart` instead, PR #386). The three mods
+  meet without fighting: compact-talk (#383) works on `session.compact`'s
+  message list and never touches this row, and the pane reads hook rows
+  as stored, after `next`, so it sees this rewrite wherever it sits in the
+  chain. `CLAUDE_CODE_PLUGIN_DIRS` is one list for all of them (`;` on
+  Windows, measured on 2.1.288). The mod's logic
   is pure functions in `hooks/whole.ts`, tested with `claude plugin test`;
   the hooks' side is in `tests/test_claude_code_hook_fit.py`.
 
@@ -352,8 +357,10 @@ are never read — the extraction takes `text` blocks only.
   (a Stop fired and recorded just before it) — or the harness's own
   `stop_hook_summary`. **Not** boundaries: tool-result carriers; the
   compaction summary (auto-compaction lands mid-turn, and the entries
-  before it stay in the file, so the whole turn is still collected); and
-  meta injections with no origin, which the harness delivers inside a
+  before it stay in the file, so the whole turn is still collected); the
+  talk the compaction mod appends after it (a plain non-meta user entry,
+  recognized by its opening `COMPACT_TALK_MARKER` — issue #383, see
+  "Compaction survival"); and meta injections with no origin, which the harness delivers inside a
   running turn (a skill's body, an image placeholder, "Continue from where
   you left off", the classifier's note that it stopped a response). The
   stop summary is not the only boundary because it is not always written.
@@ -1156,7 +1163,9 @@ Compaction replaces the conversation in view with a paraphrased summary.
 The talk itself survives it: every recorded prompt and everything the
 entity said in each turn (issue #364) is in
 the archive verbatim, and the post-compaction block names the `memory_read`
-call that reads it back (below). Reflections carry what the archive can't
+call that reads it back (below) — or, with the compaction mod loaded, the
+session wakes already holding it, after one turn of its own before the
+boundary (issue #383, "The compaction mod" below). Reflections carry what the archive can't
 hold by itself — what the entity concluded, in its own words — and the most
 recent are re-shown after the boundary. The session-start identity block
 says exactly this. Until issue #365 it said reflections were "the only
@@ -1165,8 +1174,9 @@ backward read arrived (issue #351).
 
 - **The nudge is standing guidance, not a pre-compact message.** Only
   `SessionStart` / `UserPromptSubmit` / `UserPromptExpansion` hook output
-  reaches the model — `PreCompact` output does not — so nothing can be
-  said to the entity at the moment before compaction. Instead the
+  reaches the model — `PreCompact` output does not — so no hook can say
+  anything to the entity at the moment before compaction (the compaction
+  mod can, by giving it a turn; below). Instead the
   session-start identity block says what compaction takes and what it
   leaves, that a reflection is saved when a conclusion forms, and that the
   hooks will say when context is getting full (the gauge, below). The
@@ -1385,6 +1395,141 @@ backward read arrived (issue #351).
   tool result, not by the context: since issue #353 the budget is
   measured on the page as rendered in the harness's own units, and the
   16k maximum is the largest page that clears its 50 KB persist line.)
+- **The compaction mod: waking with the talk, a turn before it (issue
+  #383).** Claude Code 2.1.288 made the harness moddable: a plugin of
+  function hooks can hook `session.compact` itself. `claude-code-mode/mods/compact-talk/`
+  is that mod (`hooks/register.ts`, tests beside it, run with
+  `claude plugin test claude-code-mode/mods/compact-talk`). On the way down a
+  compaction of the main thread (precompute and subagent compactions pass
+  straight through, and `HIM_DISABLE` turns the mod off silently, as it
+  does the Python hooks — it matters most here, since a mod loaded from
+  user settings runs in every session):
+  1. **One turn of the entity's own** (`$.model.fork`: the last request
+     resent with one message added, same model and context, tools off).
+     The prompt gives the current UTC time — the fork has no clock, and
+     the last stamp in view can be hours old (the first live test's
+     reflection guessed it four hours early) — says nobody sees the turn,
+     that the talk comes back verbatim either way, and asks for a
+     reflection as the whole reply or exactly `NO REFLECTION`. Either is
+     fine: it is a turn, not a nag.
+  2. **`POST /api/claude-code/compact-talk`** with what the turn came to
+     (`pre_compaction` = `saved` with the text, `declined`, or `failed`
+     with why). The backend saves a reflection through `memory_save`'s
+     own path (`claude_code_mcp.build_tool_context` + `save_memory`) —
+     opening the session's conversation for it if nothing was recorded
+     yet, the way any endpoint that records content does; a reflection it
+     can't save (refused, or the session's conversation belongs to another
+     entity) comes back as `reflection_error`, which the mod logs, never
+     dropped. Then it renders this conversation's talk **newest first back
+     to a budget** through `memory_read`'s
+     own paging core and row format (`services/compact_talk.py`), shown
+     oldest first under `COMPACT_TALK_MARKER`, the header saying how much
+     it holds and what the turn before came to, a saved reflection being
+     the last row, and an end line that either says it reached the
+     conversation's first message or names the `memory_read` call, with
+     its cursor, for what is older. It records the **delivery** in memory
+     (an id, the rows, count, cursor; 15 minutes, taken once), first
+     discarding any delivery an earlier compaction fetched and never used.
+
+     **The budget follows the session's window.** The mod asks the engine
+     for its own auto-compaction line (`$.session.usage({ breakdown:
+     'summary' })` → `autoCompactThreshold`, or with auto-compaction off
+     the compaction window, `rawMaxTokens`) and sends a fifth of it as
+     `budget_tokens` — about 193k at 1M, 93k at a 500k window — so the
+     session wakes well under its line at any window. A fixed 200k would
+     wake a 500k room at half its line and send a 200k window straight
+     into another compaction, which would append the talk again.
+     `CLAUDE_CODE_COMPACT_TALK_TOKENS` (default 200,000) is the ceiling
+     and the default; a line the mod can't read holds the talk to 30,000
+     tokens, said in the transcript.
+
+  Then `next(e)` runs the engine's compaction — and **inside it** the
+  `PreCompact` and `SessionStart(compact)` hooks (measured: the mod's
+  down-leg, the engine, both hooks, then the mod's up-leg). So the
+  post-compact block is built before the mod appends anything, and
+  learns of the talk from the delivery record: with one it says "the
+  talk itself is right below this block", names the read only for what
+  is older, and links the delivered rows (`link_memories_once`, one bulk
+  insert and one commit — a commit per row took 14 s for 1,000 rows on a
+  SQLite file, inside a hook with a 20 s timeout; 0.06 s now) so
+  retrieval doesn't hand them back and `memory_read` renders them as
+  pointers. On the way up the mod asks `POST
+  /api/claude-code/compact-talk/taken` whether the block took this
+  delivery, and appends the talk as one user message after the summary
+  only if it did.
+
+  **Fail loud by construction: the block and the talk agree.** The block
+  says the talk is below only when it took this compaction's delivery,
+  and the talk is appended only when the backend confirms it did.
+  Anything else — the mod missing, a call failed, a late adoption (issue
+  #359) moving the session to its parent conversation in between, so the
+  block resolves a different id, a block branch that doesn't say the
+  talk is below — leaves the old block, with its `memory_read` call, and
+  nothing appended. When the backend can't tell, the mod appends anyway,
+  because a block that took the talk without it would be a loss and the
+  other way is only a duplicate: the `taken` question failing, or the
+  backend having restarted since the fetch (it answers `null` for a
+  delivery id it never issued — a restart after the block took the talk
+  would otherwise answer "not taken" and lose it; under hot reload any
+  backend edit restarts it). So a restart costs at most a duplicate: the
+  old block and the talk both.
+  Every failure in the mod is also said as a dim `here-i-am-compact-talk:`
+  line in the transcript (`$.ui.log`). A failed fork still fetches the
+  talk; the header says the turn did not happen and why, the engine's
+  description bounded to 400 characters. The mod touches no permission
+  and no deny rule. Nothing it appends is recorded again: the talk is the
+  archive's own rows, and the Stop hook skips it (next).
+
+  **The appended message is stored as a plain user entry** — not
+  `isMeta`, no `origin`, not `isCompactSummary`, string content (measured
+  twice, by a probe and in the live test). `is_turn_boundary` would
+  read that as a prompt, so an auto-compaction mid-turn would cut that
+  turn's row at the boundary; the hook skips an entry whose text opens
+  with `COMPACT_TALK_MARKER` (`hook_util`, shared with the backend and
+  pinned by a test). It never reaches `/retrieve`: it is not on the
+  prompt channel.
+
+  **Why HTTP and not `$.mcp.call`.** The mods docs say `$.mcp.call` runs
+  without a permission prompt; in practice auto mode's classifier was
+  asked anyway, mid-compaction, and refused because nothing in the
+  conversation asked for the call. A compaction is exactly when the
+  conversation's say-so may not be in view, so the mod reaches the
+  backend the way the Python hooks do, `$.http.fetch` to
+  `HIM_BACKEND_URL` (default `http://localhost:8000`), with `HIM_ENTITY`
+  if set.
+
+  **Loading it.** A mod loads from a plugin folder: `--plugin-dir`,
+  `CLAUDE_CODE_PLUGIN_DIRS` (user settings `env` or the process
+  environment, never a project's settings) pointed at
+  `claude-code-mode/mods/compact-talk`, or, for development, the session's
+  `~/.claude/dev-mods/<session id>/<mod>/` folder, which hot-reloads at
+  turn end once the person says yes to "Enable hot reloading for this
+  session?". That folder is written with the model's own file tools, so
+  an `Edit(~/.claude/**)` deny rule (deny beats allow; no allow rule
+  reopens it) shuts the intended path at the first write — narrow the
+  deny to the parts worth protecting instead. A project's
+  `.claude/skills/<name>` plugin also loads, but only at plugin load
+  (`/reload-plugins`), not when the folder appears.
+
+  **Measured.** On 2.1.288, with a probe mod and then the real one: the
+  fork answered mid-compaction in 1.5 s, almost all from cache (190k
+  read, 49 new); the ordering above; the stored shape above. Live test
+  2026-10-07, manual `/compact` of the #383 workshop: reflection saved
+  in the turn before, all 17 messages back under the marker with the
+  reflection last, the block saying the talk is below, nothing recorded
+  twice. **Not yet measured:** whether a talk message near the 200k
+  budget (~560 KB) arrives whole, and an auto compaction — near the line
+  the fork is one more request of nearly the whole context, and a
+  reactive compaction after a prompt-too-long would fail it (said in the
+  header, the talk still comes). **Known edge:** the engine keeps the
+  last assistant message after the summary, so that row appears twice.
+  One narrow window stays: a compaction that fails after fetching the
+  talk, followed within 15 minutes by one with the mod no longer loaded
+  at all — nothing then discards the first delivery, and the block would
+  take it with nothing appended. A second reader (PR #390) found the window-blind budget, the per-row
+  link commits, a reflection dropped when the session had no
+  conversation, the missing `HIM_DISABLE`, and the stale and
+  never-taken deliveries; all are fixed as described above.
 - **Pre-compaction memory becomes retrievable again.** The compact
   `session-start` stamps `Conversation.last_compacted_at` (before the
   re-injection runs), and that stamp is the same-conversation eligibility
@@ -1816,6 +1961,73 @@ Code's docs, so it is verified empirically: the first session on a new
 style is asked which sections of its system prompt survived, and the
 keeper reads the entity's register across the change — the expected
 direction is toward the native-mode register, the same person.
+
+### Memory pane
+
+`claude-code-mode/mods/memory-pane/` is a Claude Code **mod** (a plugin of
+function hooks, issue #385): a pane beside the conversation showing what
+memory handed the entity while it happens. Its user is the witness. What the
+entity paints from memory and what retrieval actually gave it feel identical
+from inside, and until now the only way to compare them was to read the
+backend's selection log afterwards. The pane puts the page beside the
+sentence written from it, at the moment. Setup and the full list of what it
+shows are in its README. Four design decisions:
+
+- **It reads the row as it reached context, not a structured copy.** Its
+  source is `session.append` on door `hook-context` with a `hook` origin
+  (`SessionStart` / `UserPromptSubmit`): the row the transcript stores and
+  the next request sends, read from what `next(e)` resolved. So if another
+  mod rewrites the row (issue #384's arrive-whole mod, for one), the pane
+  shows what the model actually got. Asking the backend for the retrieval
+  as JSON would have been easier to parse, but it would show what the
+  backend *meant* to send, and that is the gap a witness is there to see.
+  The parser (`hooks/parse.ts`) reads the backend's own shapes: the
+  `[MEMORY …]` marker, the summary line, the spill-file line, the harness's
+  `Full output saved to:` line. Each entry also keeps the row verbatim, and
+  a `[MEMORY` header it couldn't parse is reported as a problem, never
+  dropped.
+- **"Where it was" is the main fact.** A memory is `in context, whole`, or
+  a summary line whose words are in a file the entity did or didn't Read
+  (the pane watches `Read` calls on the files the row named), or not in
+  context at all: a block past the harness's 2 KB preview of an oversized
+  hook output (§ Context channels). This is the storyteller check made
+  visible. "I remember you saying X" from a memory that reached the entity
+  as one summary line, its file unread, is a caption, not the page.
+- **Read-only by construction.** Every hook passes its event on unchanged
+  and only reads the result: it never denies or rewrites, never calls a
+  memory tool, and writes nothing but its own `$.state` (plus one `$.store`
+  flag for a pane the person closed). The model's own rows are never read,
+  so thinking can't reach it. It fails quiet for the UI and loud for the
+  data: a failure in the pane is caught and drawn as a `!` line in the
+  pane, and retrieval and recording are untouched either way, since they
+  belong to the command hooks, which know nothing of the mod.
+- **A separate plugin.** It is enabled on its own (`--plugin-dir`, or
+  `CLAUDE_CODE_PLUGIN_DIRS`), so a session without it is exactly today's
+  session, and the mod API being early access can't reach the hooks.
+
+A surface refuses a whole tree if any text child is over 10,000
+characters or holds a control character other than tab and newline. The
+engine then draws its own placeholder, which blanked the pane the first time
+a `memory_query` result (10.8k characters) was drawn. Hook rows also carry
+`\r\n`. So everything drawn goes through `parse.clean` (CRLF to LF, other
+control characters dropped) and long text through `parse.pieces`: one
+`Text` per piece of at most 8,000 characters, cut at line ends where
+possible, nothing dropped.
+
+Memory tool calls (`mcp__here-i-am__memory_*`) are listed under the entry
+they happened in, with their arguments (`conversation_id` dropped, since
+it is the same on every call), the ids of the memories the result names
+(its `--- Memory xxxxxxxx (` headers, the same shape the reload parser
+keys on), and the result text exactly as the model read it, kept up to 60,000 characters per result (a `memory_read` page
+renders within 44,800 bytes). The pane keeps the newest 30 entries within
+about 3 MB of state.
+
+The test kit (Claude Code 2.1.288) cannot drive `session.append`: a test
+hook that answers a row without `next` is skipped, and `next` has no store
+beneath it. So `claude plugin test` covers the parser and the pane as
+reached through the memory tools, and the hook-row path is measured end to
+end in a headless session with synthetic settings hooks (recorded on the
+PR).
 
 ### Scope and non-goals
 

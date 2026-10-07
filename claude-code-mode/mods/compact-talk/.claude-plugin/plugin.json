@@ -1,0 +1,5 @@
+{
+  "name": "here-i-am-compact-talk",
+  "version": "0.1.0",
+  "description": "Here I Am: at a compaction, gives the entity one turn to save a reflection, then puts the conversation's talk back verbatim after the summary (issue #383)."
+}
