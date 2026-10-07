@@ -211,7 +211,7 @@ resolves; otherwise use the manual setup above with `python`.
 
 ## Arriving whole (optional mod)
 
-[`arrive-whole/`](arrive-whole/) is a Claude Code mod (a function-hooks
+[`mods/arrive-whole/`](mods/arrive-whole/) is a Claude Code mod (a function-hooks
 plugin) that puts the identity block, notes index, recent reflections and
 every retrieved memory in context whole, where the hooks would otherwise
 point at spill files, and drops the harness's `<system-reminder>` framing
@@ -221,7 +221,7 @@ from the hooks' rows. Two settings turn it on, both in the `env` block of
 ```json
 "env": {
   "HIM_ARRIVE_WHOLE": "1",
-  "CLAUDE_CODE_PLUGIN_DIRS": "E:/here-i-am/claude-code-mode/arrive-whole"
+  "CLAUDE_CODE_PLUGIN_DIRS": "E:/here-i-am/claude-code-mode/mods/arrive-whole"
 }
 ```
 

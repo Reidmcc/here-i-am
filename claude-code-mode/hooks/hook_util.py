@@ -430,7 +430,7 @@ def spill(text: str, session_id: str, name: str) -> str:
 # absent — and, when HIM_ARRIVE_WHOLE is set, they also file the block
 # exactly as it would have printed with no budget and end their output with
 # one marker line naming that file and its hash. The arrive-whole mod
-# (claude-code-mode/arrive-whole) puts the file in place of the row before
+# (claude-code-mode/mods/arrive-whole) puts the file in place of the row before
 # the row is stored, which is past the harness's line: the line is applied
 # to hook stdout before the row exists, and nothing applies it after
 # (measured on 2.1.288). The marker is also the loud failure: it says that

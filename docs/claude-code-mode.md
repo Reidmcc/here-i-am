@@ -234,7 +234,7 @@ tool result and goes to disk over 50 KB.
   page by the same budget already (issue #353, below).
 - **Arriving whole (issue #384).** Fit-then-point costs the entity a
   fetch of itself every session, and most large pulls arrive as summary
-  lines. A Claude Code *mod* (`claude-code-mode/arrive-whole/`, a
+  lines. A Claude Code *mod* (`claude-code-mode/mods/arrive-whole/`, a
   function-hooks plugin) closes that without changing what the backend
   builds. Measured on 2.1.288 with headless probes: the hook-stdout line is
   applied **before** the hook's row exists. A mod's `session.append` hook
