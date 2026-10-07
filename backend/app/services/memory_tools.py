@@ -1536,6 +1536,24 @@ def _page_weigher(
     return weigh
 
 
+def archive_row_weigher(entity_id: Optional[str]) -> Callable[[Dict[str, Any]], int]:
+    """The readers' row weight (UTC stamps, no model), for a caller outside
+    the tools that pages the archive the same way: the compaction mod's
+    talk (services/compact_talk.py)."""
+    return _page_weigher(entity_id, None, False)
+
+
+def render_archive_rows(items: List[Dict[str, Any]], entity_id: Optional[str]) -> List[str]:
+    """Archive rows as the readers print them (UTC stamps, no model), each
+    row's header, content and blank line, for the same caller."""
+    labels = _entity_labels()
+    now = datetime.utcnow()
+    lines: List[str] = []
+    for item in items:
+        lines.extend(_format_archive_item(item, entity_id, labels, None, False, now))
+    return lines
+
+
 def _normalize_direction(direction: Any) -> Tuple[bool, Optional[str]]:
     """(backward, error) for a direction argument; omitted means forward."""
     value = str(direction if direction is not None else "").strip().lower() or DIRECTION_FORWARD

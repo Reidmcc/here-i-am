@@ -4089,3 +4089,410 @@ class TestLateForkAdoption:
         assert repoints == [
             ("Test Entity", fork_session, parent_conv, orphan_conv)
         ]
+
+
+class TestCompactTalk:
+    """The compaction mod's endpoint and what the post-compact block does
+    with it (issue #383; services/compact_talk.py)."""
+
+    async def _record(self, async_client, session_id, turns):
+        """Record (prompt, reply) pairs for a session; returns its conversation id."""
+        conversation_id = None
+        for prompt_text, reply in turns:
+            await async_client.post(
+                "/api/claude-code/retrieve",
+                json={"session_id": session_id, "prompt": prompt_text},
+            )
+            response = await async_client.post(
+                "/api/claude-code/log-assistant",
+                json={"session_id": session_id, "content": reply,
+                      "message_uuid": str(uuid.uuid4())},
+            )
+            conversation_id = response.json()["conversation_id"]
+        return conversation_id
+
+    async def _compact(self, async_client, session_id):
+        response = await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": session_id, "source": "compact"},
+        )
+        return response.json()["context"]
+
+    async def test_no_conversation_means_nothing_to_put_back(self, async_client):
+        response = await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": str(uuid.uuid4())}
+        )
+        body = response.json()
+        assert body["available"] is False
+        assert body["text"] == ""
+        assert "no conversation" in body["reason"]
+
+    async def test_the_talk_comes_back_in_order_under_the_marker(self, async_client):
+        from app.services.compact_talk import COMPACT_TALK_END, COMPACT_TALK_MARKER
+
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [
+            ("first prompt", "first reply"),
+            ("second prompt", "second reply"),
+        ])
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": session_id}
+        )).json()
+        assert body["available"] is True
+        assert (body["shown"], body["total"]) == (4, 4)
+        text = body["text"]
+        assert text.startswith(COMPACT_TALK_MARKER)
+        positions = [text.index(s) for s in (
+            "first prompt", "first reply", "second prompt", "second reply"
+        )]
+        assert positions == sorted(positions)
+        assert COMPACT_TALK_END in text
+        assert "back to its first message" in text
+        # memory_read's own row format, so the ids work with the other tools
+        assert "--- Memory " in text and "Human said" in text and "You said" in text
+
+    async def test_the_block_says_the_talk_is_below_and_links_it(
+        self, async_client, db_session
+    ):
+        session_id = str(uuid.uuid4())
+        conversation_id = await self._record(async_client, session_id, [
+            ("a prompt", "a reply"),
+        ])
+        await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": session_id}
+        )
+        context = await self._compact(async_client, session_id)
+        assert "The talk itself is right below this block" in context
+        assert "all 2 of this conversation's messages" in context
+        assert "Read the talk with memory_read" not in context
+        assert "back to the conversation's first message" in context
+
+        # The delivered rows count as in view from the boundary on
+        conversation = (await db_session.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )).scalar_one()
+        rows = (await db_session.execute(
+            select(Message.id).where(Message.conversation_id == conversation_id)
+        )).scalars().all()
+        linked = await memory_service.get_retrieved_ids_for_conversation(
+            conversation_id, db_session, entity_id="test-entity",
+            linked_after=conversation.last_compacted_at,
+        )
+        assert rows and set(rows) <= set(linked)
+
+    async def test_without_the_mod_the_block_is_unchanged(self, async_client):
+        """Fail loud by construction: no delivery, the old block and its read."""
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        context = await self._compact(async_client, session_id)
+        assert "Read the talk with memory_read" in context
+        assert "right below this block" not in context
+
+    async def test_a_delivery_is_used_once(self, async_client):
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": session_id}
+        )
+        assert "right below this block" in await self._compact(async_client, session_id)
+        # The next compaction without a fresh call from the mod: the old block
+        assert "Read the talk with memory_read" in await self._compact(
+            async_client, session_id
+        )
+
+    async def test_a_stale_delivery_is_not_used(self):
+        from app.services import compact_talk
+
+        handed_out = datetime(2026, 10, 7, 12, 0)
+        compact_talk.record_delivery("conv", compact_talk.TalkDelivery(
+            message_ids=["m"], oldest="2026-10-07T11:00:00", newest="2026-10-07T11:59:00",
+            shown=1, total=1, next_cursor=None, at=handed_out,
+        ))
+        later = handed_out + compact_talk.DELIVERY_TTL + timedelta(seconds=1)
+        assert compact_talk.take_delivery("conv", now=later) is None
+        assert compact_talk.take_delivery("conv") is None  # taken, not left behind
+
+    async def test_a_budget_shows_the_newest_and_points_at_the_rest(
+        self, async_client
+    ):
+        session_id = str(uuid.uuid4())
+        conversation_id = await self._record(async_client, session_id, [
+            (f"prompt {i} " + "word " * 300, f"reply {i} " + "word " * 300)
+            for i in range(6)
+        ])
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk",
+            json={"session_id": session_id, "budget_tokens": 2000},
+        )).json()
+        assert 0 < body["shown"] < body["total"] == 12
+        text = body["text"]
+        assert "reply 5" in text and "prompt 0" not in text
+        assert f'in_conversation="{conversation_id}", cursor="' in text
+
+        context = await self._compact(async_client, session_id)
+        assert f"the newest {body['shown']} of this conversation's 12 messages" in context
+        assert 'cursor="' in context
+
+    def _saving_patches(self, test_engine, seen, outcome):
+        """Stand-ins for the MCP save path (memory is unconfigured here):
+        outcome "saved" writes a reflection row the way save_memory does."""
+        maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+        async def build_tool_context(conversation_id):
+            seen.append(conversation_id)
+            return memory_tools.MemoryToolContext(
+                entity_id="test-entity", conversation_id=conversation_id
+            ), None
+
+        async def save_memory(ctx, content, **kwargs):
+            if outcome != "saved":
+                return "Error: Memory system not configured for this entity"
+            row = Message(
+                id=str(uuid.uuid4()), conversation_id=ctx.conversation_id,
+                role=MessageRole.REFLECTION, content=content,
+                speaker_entity_id="test-entity",
+            )
+            async with maker() as session:
+                session.add(row)
+                await session.commit()
+            return f"Saved reflection as memory {row.id[:8]}. (...)"
+
+        return (
+            patch("app.services.claude_code_mcp.build_tool_context", build_tool_context),
+            patch("app.services.memory_tools.save_memory", save_memory),
+        )
+
+    async def test_a_reflection_from_the_turn_before_is_saved_and_shown_last(
+        self, async_client, test_engine
+    ):
+        session_id = str(uuid.uuid4())
+        conversation_id = await self._record(async_client, session_id, [
+            ("a prompt", "a reply"),
+        ])
+        seen = []
+        p1, p2 = self._saving_patches(test_engine, seen, "saved")
+        with p1, p2:
+            body = (await async_client.post(
+                "/api/claude-code/compact-talk",
+                json={"session_id": session_id, "pre_compaction": "saved",
+                      "reflection": "What this stretch was, in my words."},
+            )).json()
+        assert seen == [conversation_id]
+        assert body["reflection_id"] and body["reflection_error"] is None
+        text = body["text"]
+        assert f"you saved a reflection in it (memory {body['reflection_id']})" in text
+        # Saved just now, so it is the newest row: the last thing in the talk
+        assert text.index("You reflected") > text.index("a reply")
+        assert "What this stretch was, in my words." in text
+
+    async def test_a_refused_save_is_said_and_the_talk_still_comes(
+        self, async_client, test_engine
+    ):
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        p1, p2 = self._saving_patches(test_engine, [], "refused")
+        with p1, p2:
+            body = (await async_client.post(
+                "/api/claude-code/compact-talk",
+                json={"session_id": session_id, "pre_compaction": "saved",
+                      "reflection": "Something."},
+            )).json()
+        assert body["available"] is True
+        assert body["reflection_id"] is None
+        assert "not configured" in body["reflection_error"]
+        assert "it did not happen: the save was refused" in body["text"]
+
+    async def test_declined_and_failed_turns_are_named(self, async_client):
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        declined = (await async_client.post(
+            "/api/claude-code/compact-talk",
+            json={"session_id": session_id, "pre_compaction": "declined"},
+        )).json()["text"]
+        assert "you chose not to save a reflection" in declined
+        failed = (await async_client.post(
+            "/api/claude-code/compact-talk",
+            json={"session_id": session_id, "pre_compaction": "failed",
+                  "pre_compaction_detail": "api-error (413)"},
+        )).json()["text"]
+        assert "it did not happen: api-error (413)" in failed
+
+    async def test_the_mod_hears_whether_the_block_took_it(self, async_client):
+        """The mod appends only what the block said is below."""
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": session_id}
+        )).json()
+
+        async def taken():
+            return (await async_client.post(
+                "/api/claude-code/compact-talk/taken",
+                json={"delivery_id": body["delivery_id"]},
+            )).json()["taken"]
+
+        assert await taken() is False  # not before the block has run
+        await self._compact(async_client, session_id)
+        assert await taken() is True
+        assert await taken() is None  # answered once; then it is not known
+
+    async def test_a_delivery_the_block_never_took_is_not_taken(self, async_client):
+        """A late adoption between the two calls moves the session to its
+        parent; the block takes nothing, so the mod must append nothing."""
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": session_id}
+        )).json()
+        with patch("app.services.compact_talk.take_delivery", return_value=None):
+            context = await self._compact(async_client, session_id)
+        assert "Read the talk with memory_read" in context
+        assert (await async_client.post(
+            "/api/claude-code/compact-talk/taken",
+            json={"delivery_id": body["delivery_id"]},
+        )).json()["taken"] is False
+
+    async def test_an_earlier_unused_delivery_is_discarded(self, async_client):
+        """A compaction that fetched the talk and then failed must not lend
+        its delivery to the next one, whose own call failed."""
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": session_id}
+        )
+        with patch(
+            "app.services.compact_talk.render_talk", side_effect=RuntimeError("boom")
+        ), pytest.raises(RuntimeError):
+            await async_client.post(
+                "/api/claude-code/compact-talk", json={"session_id": session_id}
+            )
+        context = await self._compact(async_client, session_id)
+        assert "Read the talk with memory_read" in context
+        assert "right below this block" not in context
+
+    async def test_a_reflection_with_no_conversation_yet_opens_one(
+        self, async_client, test_engine
+    ):
+        session_id = str(uuid.uuid4())
+        seen = []
+        p1, p2 = self._saving_patches(test_engine, seen, "saved")
+        with p1, p2:
+            body = (await async_client.post(
+                "/api/claude-code/compact-talk",
+                json={"session_id": session_id, "pre_compaction": "saved",
+                      "reflection": "Kept, though nothing was recorded yet."},
+            )).json()
+        assert seen == [cc.conversation_id_for_session(session_id)]
+        assert body["available"] is True and body["reflection_id"]
+        assert "Kept, though nothing was recorded yet." in body["text"]
+
+    async def test_a_reflection_for_another_entity_is_reported_not_dropped(
+        self, async_client, db_session
+    ):
+        session_id = str(uuid.uuid4())
+        conversation_id = await self._record(async_client, session_id, [
+            ("a prompt", "a reply"),
+        ])
+        conversation = (await db_session.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )).scalar_one()
+        conversation.entity_id = "another-entity"
+        await db_session.commit()
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk",
+            json={"session_id": session_id, "pre_compaction": "saved",
+                  "reflection": "Something."},
+        )).json()
+        assert body["available"] is False
+        assert "was not saved" in body["reflection_error"]
+
+    async def test_the_setting_is_a_ceiling_on_the_mods_budget(self, async_client):
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [
+            (f"prompt {i} " + "word " * 300, f"reply {i} " + "word " * 300)
+            for i in range(6)
+        ])
+        with patch.object(settings, "claude_code_compact_talk_tokens", 2000):
+            body = (await async_client.post(
+                "/api/claude-code/compact-talk",
+                json={"session_id": session_id, "budget_tokens": 1_000_000},
+            )).json()
+        assert 0 < body["shown"] < body["total"] == 12
+
+    async def test_a_long_failure_detail_is_bounded(self, async_client):
+        from app.services.compact_talk import MAX_DETAIL_CHARS
+
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        text = (await async_client.post(
+            "/api/claude-code/compact-talk",
+            json={"session_id": session_id, "pre_compaction": "failed",
+                  "pre_compaction_detail": "x" * 5000},
+        )).json()["text"]
+        assert "x" * MAX_DETAIL_CHARS + " […]" in text
+        assert "x" * (MAX_DETAIL_CHARS + 1) not in text
+
+    async def test_linking_once_writes_the_new_and_refreshes_the_old(
+        self, async_client, db_session
+    ):
+        session_id = str(uuid.uuid4())
+        conversation_id = await self._record(async_client, session_id, [
+            ("one", "two"), ("three", "four"),
+        ])
+        rows = (await db_session.execute(
+            select(Message.id).where(Message.conversation_id == conversation_id)
+        )).scalars().all()
+        assert await memory_service.link_memories_once(
+            conversation_id, rows[:1], db_session, entity_id="test-entity"
+        ) == 1
+        assert await memory_service.link_memories_once(
+            conversation_id, rows, db_session, entity_id="test-entity"
+        ) == len(rows) - 1
+        linked = await memory_service.get_retrieved_ids_for_conversation(
+            conversation_id, db_session, entity_id="test-entity"
+        )
+        assert set(rows) <= set(linked)
+
+    async def test_a_restart_after_the_fetch_is_unknown_not_untaken(self, async_client):
+        """A backend that restarted after the fetch (maybe after the block
+        took it) can't say, and says so: the mod then appends."""
+        from app.services import compact_talk
+
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": session_id}
+        )).json()
+        await self._compact(async_client, session_id)
+        compact_talk._issued.clear()  # what a restart loses
+        compact_talk._taken.clear()
+        assert (await async_client.post(
+            "/api/claude-code/compact-talk/taken",
+            json={"delivery_id": body["delivery_id"]},
+        )).json()["taken"] is None
+
+    async def test_only_the_branch_that_says_so_marks_it_taken(
+        self, async_client, db_session
+    ):
+        """With nothing archived before the boundary the block says there
+        is no earlier talk, so the mod must not append any."""
+        session_id = str(uuid.uuid4())
+        conversation_id = await self._record(async_client, session_id, [
+            ("a prompt", "a reply"),
+        ])
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": session_id}
+        )).json()
+        # Every row after the coming boundary: the "nothing archived" branch
+        rows = (await db_session.execute(
+            select(Message).where(Message.conversation_id == conversation_id)
+        )).scalars().all()
+        for row in rows:
+            row.created_at = datetime.utcnow() + timedelta(hours=1)
+        await db_session.commit()
+        context = await self._compact(async_client, session_id)
+        assert "nothing archived from before the boundary" in context
+        assert (await async_client.post(
+            "/api/claude-code/compact-talk/taken",
+            json={"delivery_id": body["delivery_id"]},
+        )).json()["taken"] is False
