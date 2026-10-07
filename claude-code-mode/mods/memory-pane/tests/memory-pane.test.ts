@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { cardsFor, clean, parseBlocks, parseFiles, parseStamps, parseSummaries, pieces, toolMemoryIds } from '../hooks/parse'
+import { cardsFor, clean, entryKind, parseBlocks, parseFiles, parseStamps, parseSummaries, pieces, toolMemoryIds } from '../hooks/parse'
 
 // Synthetic memories in the backend's exact shapes (memory_context's marker,
 // claude_code_mode's summary line, the hooks' spill wording). No real
@@ -98,6 +98,16 @@ describe('parsing the hooks rows', () => {
   test('tool results name their memories by either header', async () => {
     const text = '--- Memory 9a3cdf83 (You said, 1 day ago) ---\nx\n--- >> Memory 1b617a16 (Human said) ---\ny\n' + BLOCK_A
     expect(toolMemoryIds(text)).toEqual(['9a3cdf83', '1b617a16', 'aaaa1111'])
+  })
+
+  test('a SessionStart row is kinded by its source, wrapper or not', async () => {
+    const unwrapped = '[HERE I AM] You are a test entity.'
+    expect(entryKind('SessionStart', unwrapped, 'compact')).toBe('compact')
+    expect(entryKind('SessionStart', unwrapped, 'resume')).toBe('resume')
+    expect(entryKind('SessionStart', unwrapped)).toBe('start')
+    expect(entryKind('SessionStart', `<system-reminder>\nSessionStart:compact hook success: ${unwrapped}`)).toBe('compact')
+    expect(entryKind('UserPromptSubmit', unwrapped)).toBe('prompt')
+    expect(entryKind('Stop', unwrapped)).toBeUndefined()
   })
 
   test('an unparsed header is said aloud, not dropped', async () => {

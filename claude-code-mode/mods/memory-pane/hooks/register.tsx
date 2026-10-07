@@ -167,10 +167,19 @@ function entrySummary(entry: Entry): string {
 }
 
 function firstLine(text: string): string {
-  return text.split(/\r?\n/).find(line => line.trim() !== '')?.trim() ?? ''
+  return clip(text.split(/\r?\n/).find(line => line.trim() !== '') ?? '')
 }
 
 export const register: Register = on => {
+  // The source of the SessionStart now firing (startup / resume / compact /
+  // clear), read when its row is appended; its classic event settles first
+  let startSource: string | undefined
+
+  on('classic.SessionStart', async ($, e, next) => {
+    startSource = e.source
+    return next(e)
+  })
+
   on('session.start', async ($, e, next) => {
     try {
       await $.command.register({
@@ -210,7 +219,7 @@ export const register: Register = on => {
       if (stored.deny !== undefined || e.agentId !== undefined || e.origin.kind !== 'hook') return stored
       const text = rowText(stored.message.content)
       if (text === '' || !isOurs(text)) return stored
-      const kind = entryKind(e.origin.event, text)
+      const kind = entryKind(e.origin.event, text, e.origin.event === 'SessionStart' ? startSource : undefined)
       if (kind === undefined) return stored
       await ingestRow($, stored.uuid, kind, text)
     } catch (err) {

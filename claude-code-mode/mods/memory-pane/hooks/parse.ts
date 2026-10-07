@@ -112,12 +112,19 @@ export function parseStamps(text: string): string[] {
   return out
 }
 
-/** Which of our hooks wrote a row, from the event the row names and its text. */
-export function entryKind(event: string, text: string): Entry['kind'] | undefined {
+/**
+ * Which of our hooks wrote a row, from the event the row names. A
+ * SessionStart's kind comes from the `source` its classic event carried
+ * (measured on 2.1.288: that event settles before the row is appended),
+ * else from the harness's "SessionStart:<source>" prefix, which a mod that
+ * unwraps the row (#384) removes.
+ */
+export function entryKind(event: string, text: string, source?: string): Entry['kind'] | undefined {
   if (event === 'UserPromptSubmit') return 'prompt'
   if (event !== 'SessionStart') return undefined
-  if (/SessionStart:compact\b/.test(text)) return 'compact'
-  if (/SessionStart:resume\b/.test(text)) return 'resume'
+  const from = source ?? /SessionStart:(\w+)/.exec(text)?.[1]
+  if (from === 'compact') return 'compact'
+  if (from === 'resume') return 'resume'
   return 'start'
 }
 
