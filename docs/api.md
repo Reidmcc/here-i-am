@@ -68,7 +68,7 @@ Called by Claude Code lifecycle hooks, not the frontend. Gated by
 - `GET /api/entities/{id}/status` — get entity Pinecone connection status
 
 ## Notes
-- `POST /api/notes/reindex` — rebuild the semantic notes index (backfill/recovery)
+- `POST /api/notes/reindex` — rebuild the semantic notes index (backfill/recovery): re-vectorizes every note file on disk, then deletes the vectors of note files no longer on disk. Returns `{indexed, removed, errors}`
 
 ## Messages
 - `PUT /api/messages/{id}` — edit human message content

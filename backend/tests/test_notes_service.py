@@ -1332,3 +1332,240 @@ class TestNotesVectorizeBatching:
 
             assert ok is False
             assert ("shared", "big.md") not in service._synced_hashes
+
+
+class TestNotesReindexPrunesOrphans:
+    """reindex_all deletes the vectors of note files no longer on disk. The
+    incremental sync can't: it removes only files it has tracked since the
+    backend started, so a note deleted while the backend was down (or before
+    the first sync after a restart) kept its chunks in notes_search."""
+
+    @pytest.fixture
+    def world(self, tmp_path, monkeypatch):
+        """Two entities, Ada (index-a) and Bo (index-b), over a temp notes
+        tree; returns (service, indexes by name, notes root, entities)."""
+        import sys
+        from types import SimpleNamespace
+
+        from app.services.notes_vector_service import NotesVectorService
+
+        # The module itself: app.services binds this name to the singleton
+        nvs = sys.modules["app.services.notes_vector_service"]
+        monkeypatch.setattr(notes_service, "_base_dir", tmp_path)
+        for folder in ("Ada", "Bo", "shared"):
+            (tmp_path / folder).mkdir()
+
+        indexes = {"index-a": _FakeNotesIndex(), "index-b": _FakeNotesIndex()}
+        entities = [
+            SimpleNamespace(label="Ada", index_name="index-a"),
+            SimpleNamespace(label="Bo", index_name="index-b"),
+        ]
+        monkeypatch.setattr(nvs, "settings", SimpleNamespace(get_entities=lambda: entities))
+        monkeypatch.setattr(nvs.memory_service, "is_configured", lambda entity_id=None: True)
+        monkeypatch.setattr(nvs.memory_service, "get_index", lambda name=None: indexes.get(name))
+        # A fresh service: the in-memory maps are empty, as after a restart
+        return NotesVectorService(), indexes, tmp_path, entities
+
+    @staticmethod
+    def _write(root, folder, filename, text="some note text"):
+        (root / folder / filename).write_text(text, encoding="utf-8")
+
+    @staticmethod
+    def _refuse_deletes(ids, namespace):
+        raise RuntimeError("simulated delete failure")
+
+    @pytest.mark.asyncio
+    async def test_private_note_deleted_while_down_is_pruned(self, world):
+        service, indexes, root, _ = world
+        self._write(root, "Ada", "kept.md")
+        # gone.md was vectorized in an earlier run and deleted while the
+        # backend was down; the fresh service has never heard of it
+        indexes["index-a"].ids.update({"note:private:gone.md:0", "note:private:gone.md:1"})
+
+        summary = await service.reindex_all()
+
+        assert summary["removed"] == 1
+        assert summary["errors"] == []
+        assert indexes["index-a"].ids == {"note:private:kept.md:0"}
+
+    @pytest.mark.asyncio
+    async def test_sync_alone_never_sees_it(self, world):
+        # The gap this closes, pinned: a fresh service's sync leaves the orphan
+        service, indexes, root, _ = world
+        self._write(root, "Ada", "kept.md")
+        indexes["index-a"].ids.add("note:private:gone.md:0")
+
+        summary = await service.sync_entity_notes("Ada")
+
+        assert summary["removed"] == 0
+        assert "note:private:gone.md:0" in indexes["index-a"].ids
+
+    @pytest.mark.asyncio
+    async def test_private_prune_follows_each_entitys_own_folder(self, world):
+        service, indexes, root, _ = world
+        # Both entities once had plan.md; only Bo still does
+        self._write(root, "Bo", "plan.md")
+        indexes["index-a"].ids.add("note:private:plan.md:0")
+        indexes["index-b"].ids.add("note:private:plan.md:0")
+
+        summary = await service.reindex_all()
+
+        assert summary["removed"] == 1
+        assert "note:private:plan.md:0" not in indexes["index-a"].ids
+        assert "note:private:plan.md:0" in indexes["index-b"].ids
+
+    @pytest.mark.asyncio
+    async def test_shared_orphan_is_pruned_from_every_index_and_counted_once(self, world):
+        service, indexes, root, _ = world
+        self._write(root, "shared", "rules.md")
+        for index in indexes.values():
+            index.ids.update({"note:shared:old.md:0", "note:shared:old.md:1"})
+
+        summary = await service.reindex_all()
+
+        assert summary["removed"] == 1
+        for index in indexes.values():
+            assert index.ids == {"note:shared:rules.md:0"}
+
+    @pytest.mark.asyncio
+    async def test_entities_sharing_an_index_keep_each_others_private_notes(self, world):
+        service, indexes, root, entities = world
+        entities[1].index_name = "index-a"  # Bo now lives in Ada's index too
+        self._write(root, "Bo", "bo-only.md")
+        indexes["index-a"].ids.update(
+            {"note:private:bo-only.md:0", "note:private:nobodys.md:0"}
+        )
+
+        summary = await service.reindex_all()
+
+        assert summary["removed"] == 1
+        assert "note:private:bo-only.md:0" in indexes["index-a"].ids
+        assert "note:private:nobodys.md:0" not in indexes["index-a"].ids
+
+    @pytest.mark.asyncio
+    async def test_orphans_are_deleted_in_batches_under_the_cap(self, world):
+        from app.services.memory_service import DELETE_BATCH_SIZE
+
+        service, indexes, root, _ = world
+        indexes["index-a"].ids.update(f"note:private:huge.md:{i}" for i in range(1500))
+
+        summary = await service.reindex_all()
+
+        assert summary["removed"] == 1
+        assert summary["errors"] == []
+        assert indexes["index-a"].ids == set()
+        assert max(indexes["index-a"].delete_sizes) <= DELETE_BATCH_SIZE
+
+    @pytest.mark.asyncio
+    async def test_filenames_with_colons_and_foreign_ids(self, world):
+        service, indexes, root, _ = world
+        foreign = {"note:shared:no-chunk-number", "note:private:x.md:abc", "memory:123"}
+        indexes["index-a"].ids.update(foreign | {"note:private:a:b.md:3"})
+
+        summary = await service.reindex_all()
+
+        # "a:b.md" parsed whole (between the scope and the LAST colon) and
+        # pruned; ids not in our shape are left alone rather than guessed at
+        assert summary["removed"] == 1
+        assert indexes["index-a"].ids == foreign
+
+    @pytest.mark.asyncio
+    async def test_failed_id_listing_prunes_nothing_and_says_so(self, world):
+        service, indexes, root, _ = world
+        indexes["index-a"].ids.add("note:private:gone.md:0")
+        indexes["index-a"].fail_listing = True
+
+        summary = await service.reindex_all()
+
+        assert summary["removed"] == 0
+        assert "note:private:gone.md:0" in indexes["index-a"].ids
+        assert any("orphans not pruned" in e for e in summary["errors"])
+
+    @pytest.mark.asyncio
+    async def test_failed_disk_listing_is_not_read_as_an_empty_folder(
+        self, world, monkeypatch
+    ):
+        service, indexes, root, _ = world
+        self._write(root, "shared", "rules.md")
+        indexes["index-a"].ids.add("note:shared:rules.md:0")
+        real_list = notes_service.list_notes
+
+        def broken_shared(label, shared=False):
+            if shared:
+                return {"success": False, "error": "disk on fire"}
+            return real_list(label, shared=shared)
+
+        monkeypatch.setattr(notes_service, "list_notes", broken_shared)
+
+        summary = await service.reindex_all()
+
+        assert "note:shared:rules.md:0" in indexes["index-a"].ids
+        assert any("listing note files failed" in e for e in summary["errors"])
+
+    @pytest.mark.asyncio
+    async def test_failed_delete_is_an_error_not_a_removal(self, world, monkeypatch):
+        service, indexes, root, _ = world
+        indexes["index-a"].ids.add("note:private:gone.md:0")
+        monkeypatch.setattr(indexes["index-a"], "delete", self._refuse_deletes)
+
+        summary = await service.reindex_all()
+
+        assert summary["removed"] == 0
+        assert any("orphaned chunk(s) failed" in e for e in summary["errors"])
+
+    # Both orders: a "last index decides" bug gets through only when the
+    # failing index comes first, an "any index" bug only when it's second
+    @pytest.mark.parametrize("failing,good", [("index-a", "index-b"), ("index-b", "index-a")])
+    @pytest.mark.asyncio
+    async def test_shared_note_failing_in_one_index_is_not_counted(
+        self, world, monkeypatch, failing, good
+    ):
+        service, indexes, root, _ = world
+        for index in indexes.values():
+            index.ids.add("note:shared:old.md:0")
+        monkeypatch.setattr(indexes[failing], "delete", self._refuse_deletes)
+
+        summary = await service.reindex_all()
+
+        assert summary["removed"] == 0
+        assert indexes[good].ids == set()
+        assert indexes[failing].ids == {"note:shared:old.md:0"}
+
+    @pytest.mark.asyncio
+    async def test_note_created_mid_prune_is_kept(self, world, monkeypatch):
+        # A sync writes new.md and its chunk while the prune is listing ids.
+        # Disk is read after the ids, so the file is there and its chunk kept.
+        service, indexes, root, _ = world
+        index = indexes["index-a"]
+        real_listing = index.list_paginated
+        landed = []
+
+        def listing_while_a_sync_lands(namespace, limit, prefix, pagination_token=None):
+            if prefix == "note:private:" and not landed:
+                landed.append(True)
+                self._write(root, "Ada", "new.md")
+                index.ids.add("note:private:new.md:0")
+            return real_listing(namespace, limit, prefix, pagination_token)
+
+        monkeypatch.setattr(index, "list_paginated", listing_while_a_sync_lands)
+
+        summary = await service.reindex_all()
+
+        assert landed
+        assert summary["removed"] == 0
+        assert "note:private:new.md:0" in index.ids
+
+    @pytest.mark.asyncio
+    async def test_route_reports_removed(self, monkeypatch):
+        import app.routes.notes as notes_routes
+
+        async def fake_reindex():
+            return {"indexed": 3, "removed": 2, "errors": []}
+
+        monkeypatch.setattr(notes_routes.settings, "notes_enabled", True)
+        monkeypatch.setattr(
+            notes_routes.memory_service, "is_configured", lambda entity_id=None: True
+        )
+        monkeypatch.setattr(notes_routes.notes_vector_service, "reindex_all", fake_reindex)
+
+        assert await notes_routes.reindex_notes() == {"indexed": 3, "removed": 2, "errors": []}

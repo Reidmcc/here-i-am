@@ -23,7 +23,7 @@ import asyncio
 import hashlib
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.config import settings
 from app.services.memory_service import (
@@ -102,9 +102,27 @@ def chunk_note_content(content: str, max_chars: int = CHUNK_MAX_CHARS) -> List[s
     return chunks
 
 
+def _scope_id_prefix(shared: bool) -> str:
+    return "note:shared:" if shared else "note:private:"
+
+
 def _note_id_prefix(shared: bool, filename: str) -> str:
-    scope = "shared" if shared else "private"
-    return f"note:{scope}:{filename}:"
+    return f"{_scope_id_prefix(shared)}{filename}:"
+
+
+def _note_filename_from_id(vector_id: str, shared: bool) -> Optional[str]:
+    """
+    The filename in a "note:{scope}:{filename}:{chunk}" id: everything between
+    the scope and the last colon. None for an id not in that shape, which the
+    orphan prune then leaves alone rather than guess at.
+    """
+    scope_prefix = _scope_id_prefix(shared)
+    if not vector_id.startswith(scope_prefix):
+        return None
+    filename, sep, chunk = vector_id[len(scope_prefix):].rpartition(":")
+    if not sep or not filename or not chunk.isdigit():
+        return None
+    return filename
 
 
 class NotesVectorService:
@@ -116,8 +134,10 @@ class NotesVectorService:
         # sync below: unchanged files are skipped, files present in the map
         # but gone from disk get their vectors removed. In-memory only — a
         # backend restart just means the next sync re-vectorizes everything
-        # once (idempotent), and deletions that happened while the backend
-        # was down go uncaught until a manual reindex, same as before.
+        # once (idempotent), but a file deleted while the backend was down,
+        # or before that first sync, is never in the map, so the sync can't
+        # see it go. reindex_all's orphan prune (which lists the ids
+        # themselves) is what catches those.
         self._synced_hashes: Dict[Tuple[str, str], str] = {}
         # Chunk count of each file as last written, same keys. Only sizes the
         # fallback delete when prefix listing fails; same in-memory caveat.
@@ -155,6 +175,27 @@ class NotesVectorService:
         index = self._get_index_for_label(entity_label)
         return [index] if index is not None else []
 
+    @staticmethod
+    def _list_note_ids(index, prefix: str) -> List[str]:
+        """Every id in the notes namespace starting with prefix. Raises if
+        listing fails."""
+        ids = []
+        pagination_token = None
+        while True:
+            kwargs = {"namespace": NOTES_NAMESPACE, "limit": 100, "prefix": prefix}
+            if pagination_token:
+                kwargs["pagination_token"] = pagination_token
+            response = index.list_paginated(**kwargs)
+
+            if hasattr(response, "vectors") and response.vectors:
+                for v in response.vectors:
+                    ids.append(v.id if hasattr(v, "id") else v)
+
+            if hasattr(response, "pagination") and response.pagination and response.pagination.next:
+                pagination_token = response.pagination.next
+            else:
+                return ids
+
     def _delete_note_chunks(
         self,
         index,
@@ -174,24 +215,10 @@ class NotesVectorService:
         prefix = _note_id_prefix(shared, filename)
         keep = {f"{prefix}{i}" for i in range(keep_count)}
         try:
-            ids_to_delete = []
-            pagination_token = None
-            while True:
-                kwargs = {"namespace": NOTES_NAMESPACE, "limit": 100, "prefix": prefix}
-                if pagination_token:
-                    kwargs["pagination_token"] = pagination_token
-                response = index.list_paginated(**kwargs)
-
-                if hasattr(response, "vectors") and response.vectors:
-                    for v in response.vectors:
-                        vector_id = v.id if hasattr(v, "id") else v
-                        if vector_id not in keep:
-                            ids_to_delete.append(vector_id)
-
-                if hasattr(response, "pagination") and response.pagination and response.pagination.next:
-                    pagination_token = response.pagination.next
-                else:
-                    break
+            ids_to_delete = [
+                vector_id for vector_id in self._list_note_ids(index, prefix)
+                if vector_id not in keep
+            ]
         except Exception as e:
             bound = max(known_count, FALLBACK_DELETE_MAX_CHUNKS)
             logger.warning(
@@ -397,12 +424,103 @@ class NotesVectorService:
             else:
                 summary["errors"].append(f"{label_prefix}/{filename}: vectorization failed")
 
+    @staticmethod
+    def _files_on_disk(labels: List[str], shared: bool) -> Optional[Set[str]]:
+        """
+        Filenames the notes listing shows for these entities' private folders
+        (union), or for the shared folder. None if any listing failed: then
+        a file's absence is unknown, and nothing may be pruned on it.
+        """
+        files: Set[str] = set()
+        for label in [""] if shared else labels:
+            listing = notes_service.list_notes(label, shared=shared)
+            if not listing.get("success"):
+                return None
+            files.update(f["filename"] for f in listing["files"])
+        return files
+
+    async def _prune_orphaned_notes(self, summary: Dict[str, Any]) -> None:
+        """
+        Delete every note vector whose file is no longer on disk, from every
+        entity's index, accumulating into summary ("removed" counts files).
+
+        The incremental sync removes only files it has tracked since the
+        backend started, so a note deleted while the backend was down, or
+        before the first sync after a restart, leaves its chunks behind. This
+        is the full sweep that catches those: it lists the ids themselves
+        instead of trusting the in-memory map.
+        """
+        # Each index with the entities whose private notes it holds. Private
+        # ids carry no entity label, so where two entities share an index a
+        # private id is an orphan only if neither of them has the file.
+        owners: Dict[str, List[str]] = {}
+        for entity in settings.get_entities():
+            owners.setdefault(entity.index_name, []).append(entity.label)
+
+        # Per orphaned file: True while every chunk found so far was deleted.
+        # A shared note counts once however many indexes held it.
+        removed: Dict[Tuple[str, str], bool] = {}
+        for index_name, labels in owners.items():
+            index = memory_service.get_index(index_name)
+            if index is None:
+                continue
+            for shared in (False, True):
+                scope = "shared" if shared else f"private@{index_name}"
+                try:
+                    ids = await run_pinecone(
+                        self._list_note_ids, index, _scope_id_prefix(shared)
+                    )
+                except Exception as e:
+                    summary["errors"].append(
+                        f"{scope}: listing note vectors failed, orphans not pruned: {e}"
+                    )
+                    continue
+                # Disk is read AFTER the ids are listed: a note created in
+                # between is on disk by then and kept, so chunks a concurrent
+                # sync has just written are never taken for orphans
+                on_disk = self._files_on_disk(labels, shared)
+                if on_disk is None:
+                    summary["errors"].append(
+                        f"{scope}: listing note files failed, orphans not pruned"
+                    )
+                    continue
+
+                orphans: Dict[str, List[str]] = {}
+                for vector_id in ids:
+                    filename = _note_filename_from_id(vector_id, shared)
+                    if filename is not None and filename not in on_disk:
+                        orphans.setdefault(filename, []).append(vector_id)
+
+                to_delete = [vid for vids in orphans.values() for vid in vids]
+                deleted: Set[str] = set()
+                for i in range(0, len(to_delete), DELETE_BATCH_SIZE):
+                    batch = to_delete[i : i + DELETE_BATCH_SIZE]
+                    try:
+                        await run_pinecone(
+                            index.delete, ids=batch, namespace=NOTES_NAMESPACE
+                        )
+                    except Exception as e:
+                        summary["errors"].append(
+                            f"{scope}: deleting {len(batch)} orphaned chunk(s) failed: {e}"
+                        )
+                        continue
+                    deleted.update(batch)
+
+                for filename, vids in orphans.items():
+                    key = (scope, filename)
+                    landed = all(vid in deleted for vid in vids)
+                    removed[key] = removed.get(key, True) and landed
+
+        summary["removed"] += sum(removed.values())
+
     async def reindex_all(self) -> Dict[str, Any]:
         """
         Re-vectorize every note file for every configured entity, plus shared
-        notes. Used to backfill notes created before vectorization existed.
+        notes, then prune the vectors of note files no longer on disk. Used
+        to backfill notes created before vectorization existed, and to catch
+        deletions the incremental sync never saw.
         """
-        summary = {"indexed": 0, "errors": []}
+        summary = {"indexed": 0, "removed": 0, "errors": []}
 
         if not memory_service.is_configured():
             summary["errors"].append("Pinecone not configured")
@@ -415,8 +533,11 @@ class NotesVectorService:
         # Shared notes (indexed into every entity's index)
         await self._reindex_listing("", shared=True, summary=summary)
 
+        await self._prune_orphaned_notes(summary)
+
         logger.info(
             f"[NOTES] Reindex complete: {summary['indexed']} note(s) vectorized, "
+            f"{summary['removed']} deleted note(s) pruned, "
             f"{len(summary['errors'])} error(s)"
         )
         return summary

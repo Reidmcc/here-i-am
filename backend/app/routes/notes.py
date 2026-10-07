@@ -20,9 +20,12 @@ router = APIRouter(prefix="/api/notes", tags=["notes"])
 async def reindex_notes():
     """
     Re-vectorize all note files (every entity's private notes plus shared
-    notes) into the "notes" namespace of each entity's Pinecone index.
+    notes) into the "notes" namespace of each entity's Pinecone index, then
+    delete the vectors of any note file no longer on disk.
 
-    Idempotent: existing chunks for each file are replaced.
+    Idempotent: existing chunks for each file are replaced. Returns
+    {"indexed": files vectorized, "removed": deleted files whose vectors
+    were pruned, "errors": [...]}.
     """
     if not settings.notes_enabled:
         raise HTTPException(status_code=503, detail="Notes feature is not enabled")
