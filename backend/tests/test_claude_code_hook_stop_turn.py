@@ -246,6 +246,65 @@ def test_a_mid_turn_compaction_keeps_the_whole_turn(tmp_path):
     assert entry_uuid == "a2"
 
 
+def compact_talk_entry(uid="talk"):
+    """The talk the compaction mod appends after the summary (issue #383),
+    in the shape the harness stored it (measured 2026-10-07): a plain user
+    entry, not meta, no origin, not the summary, string content."""
+    from app.services.compact_talk import COMPACT_TALK_MARKER
+
+    return {
+        "type": "user",
+        "uuid": uid,
+        "promptId": "p",
+        "message": {
+            "role": "user",
+            "content": f"{COMPACT_TALK_MARKER}\nThe talk of this conversation...",
+        },
+    }
+
+
+def test_the_compaction_talk_is_not_a_boundary(tmp_path):
+    """Auto-compaction mid-turn with the mod: the talk lands after the
+    summary as a plain user entry, and the turn's text before it is still
+    the turn's."""
+    path = _write(tmp_path, [
+        prompt("go"),
+        said("Before compaction.", "a1"),
+        tool_call("c1"), tool_result("r1"),
+        {"type": "system", "subtype": "compact_boundary", "uuid": "s1"},
+        {
+            "type": "user",
+            "uuid": "sum",
+            "isCompactSummary": True,
+            "isVisibleInTranscriptOnly": True,
+            "message": {"role": "user", "content": "This session is being continued..."},
+        },
+        compact_talk_entry(),
+        said("After compaction.", "a2"),
+    ])
+    text, entry_uuid, _ = stop.turn_assistant_text(path)
+    assert text == f"Before compaction.\n\n{MARK}\n\nAfter compaction."
+    assert entry_uuid == "a2"
+
+
+def test_the_hook_and_the_backend_share_the_marker():
+    from app.services.compact_talk import COMPACT_TALK_MARKER
+
+    assert hook_util.COMPACT_TALK_MARKER == COMPACT_TALK_MARKER
+
+
+def test_a_prompt_quoting_the_marker_midway_is_still_a_prompt():
+    """Only an entry that OPENS with the marker is the mod's."""
+    from app.services.compact_talk import COMPACT_TALK_MARKER
+
+    entry = {
+        "type": "user", "uuid": "p",
+        "message": {"role": "user", "content": f"what does {COMPACT_TALK_MARKER} mean?"},
+    }
+    assert hook_util.is_turn_boundary(entry)
+    assert not hook_util.is_turn_boundary(compact_talk_entry())
+
+
 def test_mid_turn_meta_injections_are_not_boundaries(tmp_path):
     path = _write(tmp_path, [
         prompt("go"),

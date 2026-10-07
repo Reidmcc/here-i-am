@@ -761,7 +761,16 @@ def desktop_prior_session_ids(
 # too: whatever came before it was already recorded. It is not the only
 # boundary because it is not always written — measured turns ended with
 # no summary before the next prompt.
+#
+# One more user entry is not a boundary: the talk the compaction mod
+# appends after the summary (issue #383). The harness stores a message a
+# mod adds to a compaction's result as a plain user entry — not meta, no
+# origin, not the summary (measured 2026-10-07) — so only its text tells
+# it apart, and it always opens with this marker (the backend renders it:
+# claude_code_mode.COMPACT_TALK_MARKER). It lands where the summary does,
+# mid-turn under auto-compaction, and is context, not a prompt.
 STOP_HOOK_FEEDBACK_PREFIX = "Stop hook feedback:"
+COMPACT_TALK_MARKER = "[HERE I AM — THE TALK BEFORE THE BOUNDARY]"
 
 
 def _user_entry_text(content):
@@ -793,7 +802,7 @@ def is_turn_boundary(entry) -> bool:
     ):
         return False
     if not entry.get("isMeta"):
-        return True
+        return not _user_entry_text(content).lstrip().startswith(COMPACT_TALK_MARKER)
     origin = entry.get("origin")
     if isinstance(origin, dict) and origin.get("kind"):
         return True

@@ -51,6 +51,7 @@ from app.models import (
     Message,
     MessageRole,
 )
+from app.services import compact_talk
 from app.services.memory_context import (
     SINCE_THIS_SESSION_WAS_TOLD,
     format_memory_as_context_message,
@@ -1266,6 +1267,9 @@ async def build_post_compact_context(
             )
         )
     ).scalar_one()
+    # Taken whichever branch runs, so a delivery never outlives the
+    # compaction it was made for
+    delivery = compact_talk.take_delivery(str(conversation.id))
     if not archived_before_boundary:
         # What is known is the count, not the cause: say "usually because"
         # rather than assert a re-key onto a session that may simply have
@@ -1285,6 +1289,32 @@ async def build_post_compact_context(
             f'direction="backward", to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}'
             '+00:00") with no in_conversation walks your whole archive back '
             "from this moment, across whatever ids it was written under."
+        )
+    elif delivery is not None:
+        # The compaction mod already fetched the talk and appends it after
+        # this block (services/compact_talk.py): say so instead of naming
+        # the read, and count its rows as in view from the boundary on, so
+        # retrieval doesn't hand them back and memory_read renders them as
+        # pointers — the dedup record a read of them would have made
+        await memory_service.link_memories_once(
+            str(conversation.id), delivery.message_ids, db,
+            entity_id=entity.index_name,
+        )
+        if delivery.next_cursor:
+            older = (
+                "Anything older is one call away; the talk's last line names it: "
+                f"{compact_talk.older_talk_call(str(conversation.id), delivery.next_cursor)}."
+            )
+        else:
+            older = "It reaches back to the conversation's first message."
+        parts.append(
+            "The summary above is a caption, not a record: of the talk it "
+            "carries nothing. The talk itself is right below this block, "
+            f"verbatim from your archive: {delivery.shown} of this conversation's "
+            f"{delivery.total} messages, the newest stretch, put there by the "
+            "compaction mod, so there is nothing to read back for it. What stays "
+            "gone is only the tool traffic (files open, commands run, results), "
+            f"which the summary is the one record of. {older}"
         )
     else:
         parts.append(
