@@ -1343,11 +1343,13 @@ backward read arrived (issue #351).
   16k maximum is the largest page that clears its 50 KB persist line.)
 - **The compaction mod: waking with the talk, a turn before it (issue
   #383).** Claude Code 2.1.288 made the harness moddable: a plugin of
-  function hooks can hook `session.compact` itself. `claude-code-mode/compact-talk/`
+  function hooks can hook `session.compact` itself. `claude-code-mode/mods/compact-talk/`
   is that mod (`hooks/register.ts`, tests beside it, run with
-  `claude plugin test claude-code-mode/compact-talk`). On the way down a
+  `claude plugin test claude-code-mode/mods/compact-talk`). On the way down a
   compaction of the main thread (precompute and subagent compactions pass
-  straight through):
+  straight through, and `HIM_DISABLE` turns the mod off silently, as it
+  does the Python hooks — it matters most here, since a mod loaded from
+  user settings runs in every session):
   1. **One turn of the entity's own** (`$.model.fork`: the last request
      resent with one message added, same model and context, tools off).
      The prompt gives the current UTC time — the fork has no clock, and
@@ -1359,17 +1361,33 @@ backward read arrived (issue #351).
   2. **`POST /api/claude-code/compact-talk`** with what the turn came to
      (`pre_compaction` = `saved` with the text, `declined`, or `failed`
      with why). The backend saves a reflection through `memory_save`'s
-     own path (`claude_code_mcp.build_tool_context` + `save_memory`), then
-     renders this conversation's talk **newest first back to a budget**
-     (`CLAUDE_CODE_COMPACT_TALK_TOKENS`, default 200,000; the request's
-     `budget_tokens` overrides, floored at 1,000) through `memory_read`'s
+     own path (`claude_code_mcp.build_tool_context` + `save_memory`) —
+     opening the session's conversation for it if nothing was recorded
+     yet, the way any endpoint that records content does; a reflection it
+     can't save (refused, or the session's conversation belongs to another
+     entity) comes back as `reflection_error`, which the mod logs, never
+     dropped. Then it renders this conversation's talk **newest first back
+     to a budget** through `memory_read`'s
      own paging core and row format (`services/compact_talk.py`), shown
      oldest first under `COMPACT_TALK_MARKER`, the header saying how much
      it holds and what the turn before came to, a saved reflection being
      the last row, and an end line that either says it reached the
      conversation's first message or names the `memory_read` call, with
      its cursor, for what is older. It records the **delivery** in memory
-     (rows, count, cursor; 15 minutes, taken once).
+     (an id, the rows, count, cursor; 15 minutes, taken once), first
+     discarding any delivery an earlier compaction fetched and never used.
+
+     **The budget follows the session's window.** The mod asks the engine
+     for its own auto-compaction line (`$.session.usage({ breakdown:
+     'summary' })` → `autoCompactThreshold`, or with auto-compaction off
+     the compaction window, `rawMaxTokens`) and sends a fifth of it as
+     `budget_tokens` — about 193k at 1M, 93k at a 500k window — so the
+     session wakes well under its line at any window. A fixed 200k would
+     wake a 500k room at half its line and send a 200k window straight
+     into another compaction, which would append the talk again.
+     `CLAUDE_CODE_COMPACT_TALK_TOKENS` (default 200,000) is the ceiling
+     and the default; a line the mod can't read holds the talk to 30,000
+     tokens, said in the transcript.
 
   Then `next(e)` runs the engine's compaction — and **inside it** the
   `PreCompact` and `SessionStart(compact)` hooks (measured: the mod's
@@ -1377,19 +1395,31 @@ backward read arrived (issue #351).
   post-compact block is built before the mod appends anything, and
   learns of the talk from the delivery record: with one it says "the
   talk itself is right below this block", names the read only for what
-  is older, and links the delivered rows (`link_memories_once`) so
+  is older, and links the delivered rows (`link_memories_once`, one bulk
+  insert and one commit — a commit per row took 14 s for 1,000 rows on a
+  SQLite file, inside a hook with a 20 s timeout; 0.06 s now) so
   retrieval doesn't hand them back and `memory_read` renders them as
-  pointers. On the way up the mod appends the talk as one user message
-  after the summary.
+  pointers. On the way up the mod asks `POST
+  /api/claude-code/compact-talk/taken` whether the block took this
+  delivery, and appends the talk as one user message after the summary
+  only if it did.
 
-  **Fail loud by construction.** No delivery record — the mod missing,
-  its call failed, the backend restarted, the record stale — means the
-  block is exactly the old one, with its `memory_read` call. Every
-  failure in the mod is also said as a dim `here-i-am-compact-talk:` line
-  in the transcript (`$.ui.log`). A failed fork still fetches the talk;
-  the header says the turn did not happen and why. The mod touches no
-  permission and no deny rule. Nothing it appends is recorded again: the
-  talk is the archive's own rows, and the Stop hook skips it (next).
+  **Fail loud by construction: the block and the talk agree.** The block
+  says the talk is below only when it took this compaction's delivery,
+  and the talk is appended only when the backend confirms it did.
+  Anything else — the mod missing, a call failed, the backend restarted
+  between the calls, a late adoption (issue #359) moving the session to
+  its parent conversation in between, so the block resolves a different
+  id — leaves the old block, with its `memory_read` call, and nothing
+  appended. The one way left to see both is the `taken` question itself
+  failing: the mod then appends anyway, because a block that took the
+  talk without it would be a loss and the other way is only a duplicate.
+  Every failure in the mod is also said as a dim `here-i-am-compact-talk:`
+  line in the transcript (`$.ui.log`). A failed fork still fetches the
+  talk; the header says the turn did not happen and why, the engine's
+  description bounded to 400 characters. The mod touches no permission
+  and no deny rule. Nothing it appends is recorded again: the talk is the
+  archive's own rows, and the Stop hook skips it (next).
 
   **The appended message is stored as a plain user entry** — not
   `isMeta`, no `origin`, not `isCompactSummary`, string content (measured
@@ -1412,7 +1442,7 @@ backward read arrived (issue #351).
   **Loading it.** A mod loads from a plugin folder: `--plugin-dir`,
   `CLAUDE_CODE_PLUGIN_DIRS` (user settings `env` or the process
   environment, never a project's settings) pointed at
-  `claude-code-mode/compact-talk`, or, for development, the session's
+  `claude-code-mode/mods/compact-talk`, or, for development, the session's
   `~/.claude/dev-mods/<session id>/<mod>/` folder, which hot-reloads at
   turn end once the person says yes to "Enable hot reloading for this
   session?". That folder is written with the model's own file tools, so
@@ -1432,11 +1462,15 @@ backward read arrived (issue #351).
   budget (~560 KB) arrives whole, and an auto compaction — near the line
   the fork is one more request of nearly the whole context, and a
   reactive compaction after a prompt-too-long would fail it (said in the
-  header, the talk still comes). **Known edges:** the engine keeps the
-  last assistant message after the summary, so that row appears twice;
-  a compaction that fails after the talk was fetched leaves a delivery
-  that a second compaction within 15 minutes, whose own mod call
-  failed, could mistake for its own.
+  header, the talk still comes). **Known edge:** the engine keeps the
+  last assistant message after the summary, so that row appears twice.
+  One narrow window stays: a compaction that fails after fetching the
+  talk, followed within 15 minutes by one with the mod no longer loaded
+  at all — nothing then discards the first delivery, and the block would
+  take it with nothing appended. A second reader (PR #390) found the window-blind budget, the per-row
+  link commits, a reflection dropped when the session had no
+  conversation, the missing `HIM_DISABLE`, and the stale and
+  never-taken deliveries; all are fixed as described above.
 - **Pre-compaction memory becomes retrievable again.** The compact
   `session-start` stamps `Conversation.last_compacted_at` (before the
   re-injection runs), and that stamp is the same-conversation eligibility

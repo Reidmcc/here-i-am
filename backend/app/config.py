@@ -337,11 +337,13 @@ class Settings(BaseSettings):
     # compaction; 0 disables)
     claude_code_post_compact_reflections_count: int = 10
     # The talk the compaction mod puts back after a Claude Code compaction
-    # (issue #383; claude-code-mode/compact-talk): this conversation's own
-    # rows, newest first back to this many tokens (rendered rows, in the
-    # harness's units — services/memory_tools.rendered_tokens), shown oldest
-    # first. Older talk stays one memory_read cursor away. Only the mod
-    # asks for it; without the mod, nothing changes.
+    # (issue #383; claude-code-mode/mods/compact-talk): this conversation's own
+    # rows, newest first back to a budget (rendered rows, in the harness's
+    # units — services/memory_tools.rendered_tokens), shown oldest first.
+    # The mod sends a fifth of the session's auto-compaction line; this is
+    # the ceiling on it, and the budget when none is sent. Older talk stays
+    # one memory_read cursor away. Only the mod asks for it; without the
+    # mod, nothing changes.
     claude_code_compact_talk_tokens: int = 200000
     # Rooms registry (issue #323): the hooks keep rooms.json / rooms.md in
     # the entity's private notes directory current with each declared

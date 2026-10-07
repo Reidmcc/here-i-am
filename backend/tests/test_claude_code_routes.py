@@ -4316,3 +4316,139 @@ class TestCompactTalk:
                   "pre_compaction_detail": "api-error (413)"},
         )).json()["text"]
         assert "it did not happen: api-error (413)" in failed
+
+    async def test_the_mod_hears_whether_the_block_took_it(self, async_client):
+        """The mod appends only what the block said is below."""
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": session_id}
+        )).json()
+
+        async def taken():
+            return (await async_client.post(
+                "/api/claude-code/compact-talk/taken",
+                json={"delivery_id": body["delivery_id"]},
+            )).json()["taken"]
+
+        assert await taken() is False  # not before the block has run
+        await self._compact(async_client, session_id)
+        assert await taken() is True
+        assert await taken() is False  # asked once
+
+    async def test_a_delivery_the_block_never_took_is_not_taken(self, async_client):
+        """A late adoption between the two calls moves the session to its
+        parent; the block takes nothing, so the mod must append nothing."""
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": session_id}
+        )).json()
+        with patch("app.services.compact_talk.take_delivery", return_value=None):
+            context = await self._compact(async_client, session_id)
+        assert "Read the talk with memory_read" in context
+        assert (await async_client.post(
+            "/api/claude-code/compact-talk/taken",
+            json={"delivery_id": body["delivery_id"]},
+        )).json()["taken"] is False
+
+    async def test_an_earlier_unused_delivery_is_discarded(self, async_client):
+        """A compaction that fetched the talk and then failed must not lend
+        its delivery to the next one, whose own call failed."""
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": session_id}
+        )
+        with patch(
+            "app.services.compact_talk.render_talk", side_effect=RuntimeError("boom")
+        ), pytest.raises(RuntimeError):
+            await async_client.post(
+                "/api/claude-code/compact-talk", json={"session_id": session_id}
+            )
+        context = await self._compact(async_client, session_id)
+        assert "Read the talk with memory_read" in context
+        assert "right below this block" not in context
+
+    async def test_a_reflection_with_no_conversation_yet_opens_one(
+        self, async_client, test_engine
+    ):
+        session_id = str(uuid.uuid4())
+        seen = []
+        p1, p2 = self._saving_patches(test_engine, seen, "saved")
+        with p1, p2:
+            body = (await async_client.post(
+                "/api/claude-code/compact-talk",
+                json={"session_id": session_id, "pre_compaction": "saved",
+                      "reflection": "Kept, though nothing was recorded yet."},
+            )).json()
+        assert seen == [cc.conversation_id_for_session(session_id)]
+        assert body["available"] is True and body["reflection_id"]
+        assert "Kept, though nothing was recorded yet." in body["text"]
+
+    async def test_a_reflection_for_another_entity_is_reported_not_dropped(
+        self, async_client, db_session
+    ):
+        session_id = str(uuid.uuid4())
+        conversation_id = await self._record(async_client, session_id, [
+            ("a prompt", "a reply"),
+        ])
+        conversation = (await db_session.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )).scalar_one()
+        conversation.entity_id = "another-entity"
+        await db_session.commit()
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk",
+            json={"session_id": session_id, "pre_compaction": "saved",
+                  "reflection": "Something."},
+        )).json()
+        assert body["available"] is False
+        assert "was not saved" in body["reflection_error"]
+
+    async def test_the_setting_is_a_ceiling_on_the_mods_budget(self, async_client):
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [
+            (f"prompt {i} " + "word " * 300, f"reply {i} " + "word " * 300)
+            for i in range(6)
+        ])
+        with patch.object(settings, "claude_code_compact_talk_tokens", 2000):
+            body = (await async_client.post(
+                "/api/claude-code/compact-talk",
+                json={"session_id": session_id, "budget_tokens": 1_000_000},
+            )).json()
+        assert 0 < body["shown"] < body["total"] == 12
+
+    async def test_a_long_failure_detail_is_bounded(self, async_client):
+        from app.services.compact_talk import MAX_DETAIL_CHARS
+
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        text = (await async_client.post(
+            "/api/claude-code/compact-talk",
+            json={"session_id": session_id, "pre_compaction": "failed",
+                  "pre_compaction_detail": "x" * 5000},
+        )).json()["text"]
+        assert "x" * MAX_DETAIL_CHARS + " […]" in text
+        assert "x" * (MAX_DETAIL_CHARS + 1) not in text
+
+    async def test_linking_once_writes_the_new_and_refreshes_the_old(
+        self, async_client, db_session
+    ):
+        session_id = str(uuid.uuid4())
+        conversation_id = await self._record(async_client, session_id, [
+            ("one", "two"), ("three", "four"),
+        ])
+        rows = (await db_session.execute(
+            select(Message.id).where(Message.conversation_id == conversation_id)
+        )).scalars().all()
+        assert await memory_service.link_memories_once(
+            conversation_id, rows[:1], db_session, entity_id="test-entity"
+        ) == 1
+        assert await memory_service.link_memories_once(
+            conversation_id, rows, db_session, entity_id="test-entity"
+        ) == len(rows) - 1
+        linked = await memory_service.get_retrieved_ids_for_conversation(
+            conversation_id, db_session, entity_id="test-entity"
+        )
+        assert set(rows) <= set(linked)

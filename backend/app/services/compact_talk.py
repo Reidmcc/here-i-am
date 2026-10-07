@@ -5,7 +5,7 @@ Compaction turns the conversation into a summary that carries nothing of
 the talk. Since #343 the post-compaction block has named a memory_read
 call that reads the talk back from the archive, which works, and costs
 the first turn after every boundary going to get it. The compaction mod
-(claude-code-mode/compact-talk) closes that seam: on its way down a
+(claude-code-mode/mods/compact-talk) closes that seam: on its way down a
 compaction it asks /api/claude-code/compact-talk for this conversation's
 own rows, newest first back to a budget, and on the way up it appends
 them after the summary, so the session wakes already holding them.
@@ -21,6 +21,16 @@ of naming the read. No delivery recorded — no mod, the mod failed, the
 backend restarted between the two calls — and the block is the old one,
 memory_read call and all: the failure is loud by construction.
 
+The two halves are kept in step from both ends. The block only says the
+talk is below when it took this compaction's delivery, and the mod only
+appends the talk once the backend confirms the block took it
+(was_taken, after the engine's compaction returns): a delivery the block
+never took (a late adoption moved the session to its parent between the
+two calls, the backend restarted) leaves the old block and nothing
+appended. Each new call discards whatever an earlier compaction left
+behind (discard_delivery), so a compaction that failed after fetching
+can't lend its delivery to the next one.
+
 What is put back is the archive itself (memory_read's own row format,
 UTC stamps), so it is the talk and nothing else: prompts, turns, letters,
 reflections; never tool traffic, never thinking. It is never recorded
@@ -30,7 +40,8 @@ and only prompts and the entity's turns are ever recorded.
 """
 
 import logging
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -56,6 +67,10 @@ TALK_FRAME_TOKENS = 600
 # of a 190k context took 67 s; this leaves room for a slow one.
 DELIVERY_TTL = timedelta(minutes=15)
 
+# A failed fork's detail is the engine's own description; it goes into the
+# talk's header, which TALK_FRAME_TOKENS budgets for
+MAX_DETAIL_CHARS = 400
+
 # What the mod reports of the turn it gave the entity before compacting
 PRE_COMPACTION_SAVED = "saved"
 PRE_COMPACTION_DECLINED = "declined"
@@ -72,6 +87,8 @@ class TalkDelivery:
     total: int
     next_cursor: Optional[str]
     at: datetime
+    # What the mod asks about after the compaction (was_taken)
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 @dataclass
@@ -81,10 +98,33 @@ class RenderedTalk:
 
 
 _deliveries: Dict[str, TalkDelivery] = {}
+# Delivery ids the post-compact block took, and when
+_taken: Dict[str, datetime] = {}
 
 
 def record_delivery(conversation_id: str, delivery: TalkDelivery) -> None:
     _deliveries[str(conversation_id)] = delivery
+
+
+def discard_delivery(conversation_id: str) -> None:
+    """Drop a delivery an earlier compaction fetched and never used."""
+    stale = _deliveries.pop(str(conversation_id), None)
+    if stale is not None:
+        logger.info(
+            f"[CC] Compact talk for {conversation_id}: discarded an unused "
+            f"delivery from {stale.at.isoformat()}"
+        )
+
+
+def was_taken(delivery_id: str, now: Optional[datetime] = None) -> bool:
+    """Whether the post-compact block took this delivery — asked once by
+    the mod after the engine's compaction, which decides whether it
+    appends the talk."""
+    now = now or datetime.utcnow()
+    for key, at in list(_taken.items()):
+        if now - at > DELIVERY_TTL:
+            del _taken[key]
+    return _taken.pop(str(delivery_id), None) is not None
 
 
 def take_delivery(conversation_id: str, now: Optional[datetime] = None) -> Optional[TalkDelivery]:
@@ -99,6 +139,7 @@ def take_delivery(conversation_id: str, now: Optional[datetime] = None) -> Optio
             f"(handed out {delivery.at.isoformat()})"
         )
         return None
+    _taken[delivery.id] = now or datetime.utcnow()
     return delivery
 
 
@@ -107,11 +148,12 @@ def _stamp(iso: str) -> str:
 
 
 def older_talk_call(conversation_id: str, cursor: str) -> str:
-    """The memory_read call that continues from the oldest row delivered."""
+    """The memory_read call that continues from the oldest row delivered.
+    The cursor counts the delivery as page 1, so 26 pages is 25 more."""
     return (
         f'memory_read(conversation_id="{conversation_id}", direction="backward", '
         f'in_conversation="{conversation_id}", cursor="{cursor}", '
-        f"page_tokens=12000, max_pages=25)"
+        f"page_tokens=12000, max_pages=26)"
     )
 
 
@@ -132,6 +174,8 @@ def pre_compaction_line(
             "context still in view, and you chose not to save a reflection."
         )
     if status == PRE_COMPACTION_FAILED:
+        if detail and len(detail) > MAX_DETAIL_CHARS:
+            detail = detail[:MAX_DETAIL_CHARS] + " […]"
         return (
             "Before the compaction the mod tried to give you one turn to save "
             f"a reflection, and it did not happen: {detail or 'no reason given'}. "

@@ -767,7 +767,7 @@ def desktop_prior_session_ids(
 # mod adds to a compaction's result as a plain user entry — not meta, no
 # origin, not the summary (measured 2026-10-07) — so only its text tells
 # it apart, and it always opens with this marker (the backend renders it:
-# claude_code_mode.COMPACT_TALK_MARKER). It lands where the summary does,
+# compact_talk.COMPACT_TALK_MARKER). It lands where the summary does,
 # mid-turn under auto-compaction, and is context, not a prompt.
 STOP_HOOK_FEEDBACK_PREFIX = "Stop hook feedback:"
 COMPACT_TALK_MARKER = "[HERE I AM — THE TALK BEFORE THE BOUNDARY]"

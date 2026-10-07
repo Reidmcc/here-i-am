@@ -705,7 +705,8 @@ class CompactTalkRequest(BaseModel):
     pre_compaction: Optional[str] = None
     reflection: Optional[str] = None
     pre_compaction_detail: Optional[str] = None
-    # Overrides CLAUDE_CODE_COMPACT_TALK_TOKENS for this call
+    # The mod's budget for this session, a share of its auto-compaction
+    # line; CLAUDE_CODE_COMPACT_TALK_TOKENS is the ceiling and the default
     budget_tokens: Optional[int] = None
 
 
@@ -722,6 +723,16 @@ class CompactTalkResponse(BaseModel):
     # The save's refusal or error, when a reflection was sent and not saved
     reflection_error: Optional[str] = None
     reason: Optional[str] = None
+    # Asked about after the compaction (/compact-talk/taken)
+    delivery_id: Optional[str] = None
+
+
+class CompactTalkTakenRequest(BaseModel):
+    delivery_id: str
+
+
+class CompactTalkTakenResponse(BaseModel):
+    taken: bool
 
 
 SAVED_REFLECTION_ID = re.compile(r"Saved reflection as memory ([0-9a-f]{8})")
@@ -741,24 +752,46 @@ async def compact_talk_for_session(
     the compaction, before the mod appends) says the talk is below. See
     services/compact_talk.py.
 
-    Creates no conversation: a compaction of a session with nothing
-    recorded has no talk to put back, and the SessionStart hook registers
-    the row as before.
+    Creates a conversation only to hold a reflection, the way any endpoint
+    that records content does: with nothing recorded and nothing to save
+    there is no talk to put back, and the SessionStart hook registers the
+    row as before. A reflection that can't be saved is always reported
+    (reflection_error), never dropped.
     """
     _require_enabled()
     entity = _resolve_entity_or_400(data.entity)
+    status = data.pre_compaction
+    detail = data.pre_compaction_detail
+    saving = status == compact_talk.PRE_COMPACTION_SAVED
+
     conversation = await cc.get_conversation_for_session(db, data.session_id)
-    if conversation is None or conversation.entity_id != entity.index_name:
+    if conversation is not None and conversation.entity_id != entity.index_name:
         return CompactTalkResponse(
             available=False,
+            reflection_error=(
+                "this session's conversation belongs to another entity, so the "
+                "reflection was not saved" if saving else None
+            ),
+            reason="this session's conversation belongs to another entity",
+        )
+    if conversation is None and saving:
+        resolution = await cc.resolve_session(db, data.session_id, entity, create=True)
+        conversation = resolution.conversation if resolution else None
+    if conversation is None:
+        return CompactTalkResponse(
+            available=False,
+            reflection_error=(
+                "no conversation could be opened for this session, so the "
+                "reflection was not saved" if saving else None
+            ),
             reason="no conversation is recorded for this session",
         )
     conversation_id = str(conversation.id)
+    # Whatever an earlier compaction fetched and never used is not this one's
+    compact_talk.discard_delivery(conversation_id)
 
-    status = data.pre_compaction
-    detail = data.pre_compaction_detail
     reflection_id = reflection_error = None
-    if status == compact_talk.PRE_COMPACTION_SAVED:
+    if saving:
         # The same path memory_save takes over MCP, validation and all
         ctx, error = await claude_code_mcp.build_tool_context(conversation_id)
         result = error or await memory_tools.save_memory(ctx, data.reflection or "")
@@ -773,7 +806,8 @@ async def compact_talk_for_session(
             status, detail = compact_talk.PRE_COMPACTION_FAILED, f"the save was refused ({result})"
             logger.warning(f"[CC] Compact talk: pre-compaction reflection not saved: {result}")
 
-    budget = data.budget_tokens or settings.claude_code_compact_talk_tokens
+    ceiling = settings.claude_code_compact_talk_tokens
+    budget = min(data.budget_tokens, ceiling) if data.budget_tokens else ceiling
     rendered = await compact_talk.render_talk(
         db,
         conversation,
@@ -796,7 +830,20 @@ async def compact_talk_for_session(
         total=rendered.delivery.total,
         reflection_id=reflection_id,
         reflection_error=reflection_error,
+        delivery_id=rendered.delivery.id,
     )
+
+
+@router.post("/compact-talk/taken", response_model=CompactTalkTakenResponse)
+async def compact_talk_taken(data: CompactTalkTakenRequest):
+    """
+    The compaction mod's second call, after the engine's compaction
+    returns: did the post-compact block take this delivery (and so say
+    the talk is below)? The mod appends the talk only if it did, so the
+    block and the appended message never disagree (issue #383).
+    """
+    _require_enabled()
+    return CompactTalkTakenResponse(taken=compact_talk.was_taken(data.delivery_id))
 
 
 @router.post("/log-assistant", response_model=LogAssistantResponse)

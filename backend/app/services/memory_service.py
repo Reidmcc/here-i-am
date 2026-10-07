@@ -2297,10 +2297,31 @@ class MemoryService:
                 db=db,
                 entity_id=entity_id,
             )
+        new_ids = [mid for mid in ids if mid not in already]
+        if not new_ids:
+            return 0
+        # One commit for all of them: the compaction mod's delivery can be a
+        # thousand rows, linked inside the SessionStart hook's timeout, and a
+        # commit per row took 14 s for 1000 on a SQLite file (PR #390 review)
+        now = datetime.utcnow()
+        try:
+            db.add_all([
+                ConversationMemoryLink(
+                    conversation_id=conversation_id,
+                    message_id=mid,
+                    entity_id=entity_id,
+                    retrieved_at=now,
+                )
+                for mid in new_ids
+            ])
+            await db.commit()
+            return len(new_ids)
+        except Exception as e:
+            # Row by row instead, so one bad id can't cost the rest
+            logger.warning(f"Bulk memory link insert failed ({e}); linking row by row")
+            await db.rollback()
         written = 0
-        for mid in ids:
-            if mid in already:
-                continue
+        for mid in new_ids:
             if await self.record_memory_link(
                 message_id=mid, conversation_id=conversation_id, db=db, entity_id=entity_id
             ):
