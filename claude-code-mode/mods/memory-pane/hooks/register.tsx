@@ -15,7 +15,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Entry, MemoryCard, SpillFile, ToolEntry } from '../types'
 import {
-  argsText, cardsFor, clock, entryKind, isOurs, normPath, parseBlocks, parseFiles, parseStamps,
+  argsText, cardsFor, clip, clock, entryKind, isOurs, normPath, parseFiles, parseStamps, pieces, toolMemoryIds,
 } from './parse'
 
 const PANE = 'memory'
@@ -224,7 +224,7 @@ export const register: Register = on => {
     try {
       await attachTool($, {
         id, tool: String(e.tool).replace(/^mcp__here-i-am__/, ''), args: argsText(e as Record<string, unknown>),
-        at: await $.clock.now(), status: 'running', memories: [],
+        at: await $.clock.now(), status: 'running', ids: [],
         ...(e.agentId !== undefined ? { agentId: e.agentId } : {}),
       })
     } catch (err) {
@@ -239,7 +239,7 @@ export const register: Register = on => {
         status: ran.deny !== undefined || ran.isError === true ? 'error' : 'done',
         text: isCapped ? text.slice(0, TOOL_TEXT_CAP) : text,
         isCapped,
-        memories: parseBlocks(text, 'context'),
+        ids: toolMemoryIds(text),
       })
     } catch (err) {
       await addProblem($, `couldn't record a ${String(e.tool)} result: ${String(err)}`).catch(() => {})
@@ -288,9 +288,9 @@ export const register: Register = on => {
             <Text bold>{memory.id}</Text> · {memory.date.slice(0, 19)} · {memory.from} · {memory.via}
           </Text>
           <Text dimColor wrap="wrap">{whereLabel(memory, entry.files)}</Text>
-          {memory.marks.map(mark => <Text dimColor wrap="wrap">{mark}</Text>)}
+          {memory.marks.map(mark => <Text dimColor wrap="wrap">{clip(mark)}</Text>)}
           {isOpen
-            ? <Text wrap="wrap">{memory.text}</Text>
+            ? pieces(memory.text).map(piece => <Text wrap="wrap">{piece}</Text>)
             : <Text wrap="truncate-end">{firstLine(memory.text)}</Text>}
           <Button key={key} plain label={isOpen ? 'close' : 'open'} onPress={toggle(key)} />
         </Box>
@@ -305,10 +305,13 @@ export const register: Register = on => {
       return (
         <Box key={key} flexDirection="column" marginTop={1}>
           <Text wrap="wrap"><Text bold>{call.tool}</Text>{who} · {clock(call.at)}</Text>
-          <Text dimColor wrap={isOpen ? 'wrap' : 'truncate-end'}>{call.args}</Text>
           {isOpen
-            ? <Text wrap="wrap">{call.text ?? ''}{call.isCapped ? `\n[… the pane kept the first ${TOOL_TEXT_CAP} characters]` : ''}</Text>
-            : <Text wrap="truncate-end">→ {state}{call.memories.length > 0 ? ` (${call.memories.length} memories)` : ''}</Text>}
+            ? pieces(call.args).map(piece => <Text dimColor wrap="wrap">{piece}</Text>)
+            : <Text dimColor wrap="truncate-end">{clip(call.args)}</Text>}
+          {call.ids.length > 0 && <Text wrap="wrap">memories: {call.ids.join(' ')}</Text>}
+          {isOpen
+            ? pieces(`${call.text ?? ''}${call.isCapped ? `\n[… the pane kept the first ${TOOL_TEXT_CAP} characters]` : ''}`).map(piece => <Text wrap="wrap">{piece}</Text>)
+            : <Text wrap="truncate-end">→ {state}</Text>}
           {call.status !== 'running' && <Button key={key} plain label={isOpen ? 'close' : 'open'} onPress={toggle(key)} />}
         </Box>
       )
@@ -327,8 +330,8 @@ export const register: Register = on => {
           </Box>
           {isOpen && (
             <Box flexDirection="column" paddingLeft={1}>
-              {entry.problems.map(problem => <Text bold wrap="wrap">! {problem}</Text>)}
-              {entry.stamps.map(stamp => <Text dimColor wrap="wrap">{stamp}</Text>)}
+              {entry.problems.map(problem => <Text bold wrap="wrap">! {clip(problem, 1000)}</Text>)}
+              {entry.stamps.map(stamp => <Text dimColor wrap="wrap">{clip(stamp, 1000)}</Text>)}
               {entry.files.map(file => (
                 <Text dimColor wrap="wrap">
                   file{file.kind === 'harness' ? ' (harness persisted)' : ''}{file.size ? ` ${file.size}` : ''}: {file.path} · {file.readAt !== undefined ? `read at ${clock(file.readAt)}` : 'not read'}
@@ -339,7 +342,7 @@ export const register: Register = on => {
               {entry.raw !== '' && (
                 <Box flexDirection="column" marginTop={1}>
                   <Button key={rawKey} plain label={keys.has(rawKey) ? 'hide the row as it reached context' : 'show the row as it reached context'} onPress={toggle(rawKey)} />
-                  {keys.has(rawKey) && <Text wrap="wrap">{entry.raw}</Text>}
+                  {keys.has(rawKey) && pieces(entry.raw).map(piece => <Text wrap="wrap">{piece}</Text>)}
                 </Box>
               )}
             </Box>

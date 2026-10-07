@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { cardsFor, parseBlocks, parseFiles, parseStamps, parseSummaries } from '../hooks/parse'
+import { cardsFor, clean, parseBlocks, parseFiles, parseStamps, parseSummaries, pieces, toolMemoryIds } from '../hooks/parse'
 
 // Synthetic memories in the backend's exact shapes (memory_context's marker,
 // claude_code_mode's summary line, the hooks' spill wording). No real
@@ -81,6 +81,25 @@ describe('parsing the hooks rows', () => {
     expect(memories.map(card => card.where)).toEqual(['disk'])
   })
 
+  test('text is cut into drawable pieces, nothing dropped', async () => {
+    const lines = `a\r\nb\u0007c\r\n${'line\n'.repeat(3000)}`
+    const cut = pieces(lines)
+    expect(cut.every(piece => piece.length <= 8000)).toBe(true)
+    // Cut at line ends only: joined with newlines, the cleaned text exactly
+    expect(cut.join('\n')).toBe(clean(lines))
+    expect(clean(lines)).not.toMatch(/[\r\u0007]/)
+
+    const longLine = `start\n${'x'.repeat(20000)}\nend`
+    const hard = pieces(longLine)
+    expect(hard.every(piece => piece.length <= 8000)).toBe(true)
+    expect(hard.join('').replace(/\n/g, '')).toBe(longLine.replace(/\n/g, ''))
+  })
+
+  test('tool results name their memories by either header', async () => {
+    const text = '--- Memory 9a3cdf83 (You said, 1 day ago) ---\nx\n--- >> Memory 1b617a16 (Human said) ---\ny\n' + BLOCK_A
+    expect(toolMemoryIds(text)).toEqual(['9a3cdf83', '1b617a16', 'aaaa1111'])
+  })
+
   test('an unparsed header is said aloud, not dropped', async () => {
     const odd = '[HERE I AM MEMORY RETRIEVAL] x\n[MEMORY eeee5555 from 2026-01-01 - something new]\ntext\n[/MEMORY]'
     expect(cardsFor(odd, []).problems).toHaveLength(1)
@@ -101,7 +120,8 @@ describe('the pane', () => {
       expect(text).toContain('memory_query')
       expect(text).toContain('{"query":"the first memory"}')
       expect(text).not.toContain('conv-1')
-      expect(text).toContain('→ Found 1: (1 memories)')
+      expect(text).toContain('memories: aaaa1111')
+      expect(text).toContain('→ Found 1:')
       expect(text).not.toContain('Its second line.')
 
       const call = await ui.find({ type: 'Button', text: 'open' })
@@ -121,6 +141,27 @@ describe('the pane', () => {
       expect(texts[0]?.text).toContain('1 memory tool call')
       await ui.press({ key: 'collapse' })
       expect(await shownText(ui)).toContain('memory_find')
+    })
+
+    // The first live run: a 10.8k-character memory_query result was one text
+    // child, the surface refused the tree, and the engine drew its own
+    test(`draws a long CRLF result whole, ids listed, on ${surface}`, async ($, on) => {
+      mock.clock(on)
+      const result = Array.from({ length: 12 }, (_, i) =>
+        `--- Memory ${(0xabc00000 + i).toString(16)} (You said, ${i + 1} days ago, similarity: 0.4, via Here I Am) ---\r\n${'word '.repeat(400)}\r\n`,
+      ).join('\r\n')
+      expect(result.length).toBeGreaterThan(20000)
+      toolBeneath(on, `Found 12 memories matching: "x"\r\n\r\n${result}`)
+      await $.tool.call({ tool: 'mcp__here-i-am__memory_query', query: 'x', conversation_id: 'c' } as never)
+
+      const ui = await mountPane($, surface)
+      expect(await shownText(ui)).toContain('memories: abc00000 abc00001')
+      const call = await ui.find({ type: 'Button', text: 'open' })
+      await ui.press({ key: String(call?.key) })
+      // Drawn, not refused: every child within the limit, no CR anywhere
+      const texts = await ui.findAll({ type: 'Text' })
+      expect(texts.every(found => found.text.length <= 10000 && !found.text.includes('\r'))).toBe(true)
+      expect(await shownText(ui)).toContain('--- Memory abc0000b (You said, 12 days ago')
     })
   }
 

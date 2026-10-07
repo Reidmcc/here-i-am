@@ -1802,10 +1802,20 @@ shows are in its README. Four design decisions:
   `CLAUDE_CODE_PLUGIN_DIRS`), so a session without it is exactly today's
   session, and the mod API being early access can't reach the hooks.
 
+A surface refuses a whole tree if any text child is over 10,000
+characters or holds a control character other than tab and newline. The
+engine then draws its own placeholder, which blanked the pane the first time
+a `memory_query` result (10.8k characters) was drawn. Hook rows also carry
+`\r\n`. So everything drawn goes through `parse.clean` (CRLF to LF, other
+control characters dropped) and long text through `parse.pieces`: one
+`Text` per piece of at most 8,000 characters, cut at line ends where
+possible, nothing dropped.
+
 Memory tool calls (`mcp__here-i-am__memory_*`) are listed under the entry
 they happened in, with their arguments (`conversation_id` dropped, since
-it is the same on every call) and the result text exactly as the model
-read it, kept up to 60,000 characters per result (a `memory_read` page
+it is the same on every call), the ids of the memories the result names
+(its `--- Memory xxxxxxxx (` headers, the same shape the reload parser
+keys on), and the result text exactly as the model read it, kept up to 60,000 characters per result (a `memory_read` page
 renders within 44,800 bytes). The pane keeps the newest 30 entries within
 about 3 MB of state.
 

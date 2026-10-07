@@ -45,8 +45,8 @@ export type ToolEntry = {
   /** The result exactly as the model read it, up to TOOL_TEXT_CAP. */
   text?: string
   isCapped?: boolean
-  /** [MEMORY] blocks found in the result. */
-  memories: MemoryCard[]
+  /** The memory ids the result names, in order: what can be cited from it. */
+  ids: string[]
   /** Set when a subagent made the call. */
   agentId?: string
 }

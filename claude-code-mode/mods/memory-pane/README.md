@@ -31,8 +31,9 @@ In each entry:
 - the files the row pointed at, and whether each was read
 - each memory tool call (`memory_query`, `memory_read`, `memory_find`,
   `memory_neighbors`, `memory_save`, `memory_mark`, `memory_release`) with its
-  arguments (`conversation_id` left out) and, on `open`, the result exactly as
-  the model read it. A subagent's call is labeled so
+  arguments (`conversation_id` left out), the ids of the memories its result
+  names (from its `--- Memory xxxxxxxx (` headers), and, on `open`, the result
+  exactly as the model read it. A subagent's call is labeled so
 - `show the row as it reached context`: the hook row verbatim, the backstop
   for anything the parser didn't understand (an unparsed `[MEMORY` header is
   reported as a `!` problem line, never dropped)

@@ -16,7 +16,7 @@ const HEADER = /\[MEMORY [0-9a-f]{6,} from /g
 
 // - <id> (<date> - <role label> - via <origin>): <first line>
 // (claude_code_mode.render_retrieval_summary_line)
-const SUMMARY = /^- ([0-9a-f]{8}) \((\d{4}-\d{2}-\d{2}) - (.+?) - (via [^)]+)\): (.*)$/gm
+const SUMMARY = /^- ([0-9a-f]{8}) \((\d{4}-\d{2}-\d{2}) - (.+?) - (via [^)]+)\): (.*?)\r?$/gm
 
 // Link marker lines sit directly under a header (memory_context.format_memory_link_lines)
 const MARK = /^\[(?:revises|sources:|later |cited by|source withdrawn)[^\]]*\]$/
@@ -30,6 +30,15 @@ const HARNESS_FILE = /Full output saved to: ([^\r\n]+?)\s*$/gm
 // The hooks' own lines worth showing: stamps, notices, failures. The long
 // identity paragraphs are left to the raw view.
 const STAMP = /^\[(HERE I AM[^\]]*|MEMORY (?:STATUS|ARCHIVE) NOTICE)\] ?(.*)$/
+
+// The memory tools head each result "--- Memory xxxxxxxx (" (memory_neighbors
+// marks its target "--- >> Memory"), the shape memory_tools' reload parser keys on
+const TOOL_HEADER = /^--- (?:>> )?Memory ([0-9a-f]{8}) \(/gm
+
+// What a surface draws in one text child: at most 10,000 characters, and no
+// control characters but tab and newline. Kept under the line with room
+const TEXT_CHILD_MAX = 8000
+const CONTROL = /[\u0000-\u0008\u000B-\u001F\u007F]/g
 
 const IDENTITY_TAGS = new Set(['HERE I AM MEMORY TOOLS', 'ROOMS REGISTRY', 'YOUR NOTES', 'GIT IDENTITY'])
 
@@ -173,4 +182,52 @@ export function clock(ms: number): string {
   const d = new Date(ms)
   const two = (n: number) => String(n).padStart(2, '0')
   return `${two(d.getHours())}:${two(d.getMinutes())}`
+}
+
+/** The memory ids a tool result names, in order, each once. */
+export function toolMemoryIds(text: string): string[] {
+  const ids: string[] = []
+  for (const m of text.matchAll(TOOL_HEADER)) if (!ids.includes(g(m, 1))) ids.push(g(m, 1))
+  for (const card of parseBlocks(text, 'context')) if (!ids.includes(card.id)) ids.push(card.id)
+  return ids
+}
+
+/** Text as a surface may draw it: CRLF made LF, other control characters dropped. */
+export function clean(text: string): string {
+  return text.replace(/\r\n?/g, '\n').replace(CONTROL, '')
+}
+
+/**
+ * Cleaned text cut into pieces a text child can hold, at line ends where it
+ * can be (one Text each, so a long result draws whole instead of refusing
+ * the tree). Nothing is dropped: in order, they hold every character of the
+ * cleaned text, a line longer than a piece being split across pieces.
+ */
+export function pieces(text: string): string[] {
+  const out: string[] = []
+  let current = ''
+  for (const line of clean(text).split('\n')) {
+    let rest = line
+    // A single line longer than a piece is cut where it must be
+    while (rest.length > TEXT_CHILD_MAX) {
+      if (current !== '') out.push(current)
+      out.push(rest.slice(0, TEXT_CHILD_MAX))
+      current = ''
+      rest = rest.slice(TEXT_CHILD_MAX)
+    }
+    if (current === '') current = rest
+    else if (current.length + 1 + rest.length <= TEXT_CHILD_MAX) current += '\n' + rest
+    else {
+      out.push(current)
+      current = rest
+    }
+  }
+  out.push(current)
+  return out
+}
+
+/** One line for a closed card or call: cleaned and kept short. */
+export function clip(text: string, max = 300): string {
+  const line = clean(text).replace(/\s+/g, ' ').trim()
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line
 }
