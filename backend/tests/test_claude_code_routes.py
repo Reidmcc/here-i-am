@@ -4334,7 +4334,7 @@ class TestCompactTalk:
         assert await taken() is False  # not before the block has run
         await self._compact(async_client, session_id)
         assert await taken() is True
-        assert await taken() is False  # asked once
+        assert await taken() is None  # answered once; then it is not known
 
     async def test_a_delivery_the_block_never_took_is_not_taken(self, async_client):
         """A late adoption between the two calls moves the session to its
@@ -4452,3 +4452,47 @@ class TestCompactTalk:
             conversation_id, db_session, entity_id="test-entity"
         )
         assert set(rows) <= set(linked)
+
+    async def test_a_restart_after_the_fetch_is_unknown_not_untaken(self, async_client):
+        """A backend that restarted after the fetch (maybe after the block
+        took it) can't say, and says so: the mod then appends."""
+        from app.services import compact_talk
+
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": session_id}
+        )).json()
+        await self._compact(async_client, session_id)
+        compact_talk._issued.clear()  # what a restart loses
+        compact_talk._taken.clear()
+        assert (await async_client.post(
+            "/api/claude-code/compact-talk/taken",
+            json={"delivery_id": body["delivery_id"]},
+        )).json()["taken"] is None
+
+    async def test_only_the_branch_that_says_so_marks_it_taken(
+        self, async_client, db_session
+    ):
+        """With nothing archived before the boundary the block says there
+        is no earlier talk, so the mod must not append any."""
+        session_id = str(uuid.uuid4())
+        conversation_id = await self._record(async_client, session_id, [
+            ("a prompt", "a reply"),
+        ])
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk", json={"session_id": session_id}
+        )).json()
+        # Every row after the coming boundary: the "nothing archived" branch
+        rows = (await db_session.execute(
+            select(Message).where(Message.conversation_id == conversation_id)
+        )).scalars().all()
+        for row in rows:
+            row.created_at = datetime.utcnow() + timedelta(hours=1)
+        await db_session.commit()
+        context = await self._compact(async_client, session_id)
+        assert "nothing archived from before the boundary" in context
+        assert (await async_client.post(
+            "/api/claude-code/compact-talk/taken",
+            json={"delivery_id": body["delivery_id"]},
+        )).json()["taken"] is False

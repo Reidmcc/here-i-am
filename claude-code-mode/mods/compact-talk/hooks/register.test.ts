@@ -45,7 +45,7 @@ function engine(on: any, opts: Opts): Seen {
     seen.posts.push({ url: e.url, ...JSON.parse(e.init.body) })
     const taken = e.url.endsWith('/taken')
     const status = taken ? (opts.takenStatus ?? 200) : (opts.status ?? 200)
-    const body = taken ? { taken: opts.taken ?? true } : (opts.backend ?? DELIVERED)
+    const body = taken ? { taken: 'taken' in opts ? opts.taken : true } : (opts.backend ?? DELIVERED)
     return { value: { status, ok: status < 400, headers: {}, text: JSON.stringify(body) } }
   })
   on('ui.log', async (_$: any, e: any) => { seen.logs.push(JSON.stringify(e)); return { value: undefined } })
@@ -114,6 +114,13 @@ describe('the talk', () => {
     const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
     expect(result.messages.length).toBe(1)
     expect(seen.logs.join('\n')).toContain('did not take the talk')
+  })
+
+  test('is appended when the backend no longer knows the delivery, and that is said', async ($, on) => {
+    const seen = engine(on, { taken: null as unknown as boolean })
+    const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(result.messages.length).toBe(2)
+    expect(seen.logs.join('\n')).toContain('no longer knows this delivery')
   })
 
   test('is appended anyway when the question fails: a duplicate, never a loss', async ($, on) => {

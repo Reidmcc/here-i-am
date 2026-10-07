@@ -129,14 +129,18 @@ export const register: Register = (on) => {
     const result = await next(e)
     if (talk === undefined || deliveryId === undefined || !('messages' in result) || !result.messages) return result
 
-    // Append only what the block said is below. If the question itself
-    // fails, append anyway: a block that took the talk without it would be
-    // a loss, one that didn't only a duplicate.
+    // Append only what the block said is below. If the backend can't say
+    // (it restarted since the fetch, so taken is null) or the question
+    // itself fails, append anyway: a block that took the talk without it
+    // would be a loss, one that didn't only a duplicate.
     try {
       const { taken } = await post('compact-talk/taken', { delivery_id: deliveryId })
-      if (!taken) {
+      if (taken === false) {
         await $.ui.log('here-i-am-compact-talk: the post-compaction block did not take the talk (the session may have moved to its parent conversation); nothing appended, the block names the read')
         return result
+      }
+      if (taken !== true) {
+        await $.ui.log('here-i-am-compact-talk: the backend no longer knows this delivery (it restarted since the fetch); appending the talk anyway')
       }
     } catch (err) {
       await $.ui.log(`here-i-am-compact-talk: could not confirm the block took the talk (${String(err)}); appending it anyway`)

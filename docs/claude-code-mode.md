@@ -1407,13 +1407,18 @@ backward read arrived (issue #351).
   **Fail loud by construction: the block and the talk agree.** The block
   says the talk is below only when it took this compaction's delivery,
   and the talk is appended only when the backend confirms it did.
-  Anything else — the mod missing, a call failed, the backend restarted
-  between the calls, a late adoption (issue #359) moving the session to
-  its parent conversation in between, so the block resolves a different
-  id — leaves the old block, with its `memory_read` call, and nothing
-  appended. The one way left to see both is the `taken` question itself
-  failing: the mod then appends anyway, because a block that took the
-  talk without it would be a loss and the other way is only a duplicate.
+  Anything else — the mod missing, a call failed, a late adoption (issue
+  #359) moving the session to its parent conversation in between, so the
+  block resolves a different id, a block branch that doesn't say the
+  talk is below — leaves the old block, with its `memory_read` call, and
+  nothing appended. When the backend can't tell, the mod appends anyway,
+  because a block that took the talk without it would be a loss and the
+  other way is only a duplicate: the `taken` question failing, or the
+  backend having restarted since the fetch (it answers `null` for a
+  delivery id it never issued — a restart after the block took the talk
+  would otherwise answer "not taken" and lose it; under hot reload any
+  backend edit restarts it). So a restart costs at most a duplicate: the
+  old block and the talk both.
   Every failure in the mod is also said as a dim `here-i-am-compact-talk:`
   line in the transcript (`$.ui.log`). A failed fork still fetches the
   talk; the header says the turn did not happen and why, the engine's

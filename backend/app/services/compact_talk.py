@@ -98,12 +98,25 @@ class RenderedTalk:
 
 
 _deliveries: Dict[str, TalkDelivery] = {}
-# Delivery ids the post-compact block took, and when
+# Delivery ids this process handed out, and those the post-compact block
+# took, each with when
+_issued: Dict[str, datetime] = {}
 _taken: Dict[str, datetime] = {}
+
+# What was_taken answers
+TAKEN = True
+NOT_TAKEN = False
+UNKNOWN = None
 
 
 def record_delivery(conversation_id: str, delivery: TalkDelivery) -> None:
     _deliveries[str(conversation_id)] = delivery
+    _issued[delivery.id] = delivery.at
+
+
+def mark_taken(delivery: TalkDelivery, now: Optional[datetime] = None) -> None:
+    """The post-compact block said this delivery's talk is below."""
+    _taken[delivery.id] = now or datetime.utcnow()
 
 
 def discard_delivery(conversation_id: str) -> None:
@@ -116,15 +129,24 @@ def discard_delivery(conversation_id: str) -> None:
         )
 
 
-def was_taken(delivery_id: str, now: Optional[datetime] = None) -> bool:
+def was_taken(delivery_id: str, now: Optional[datetime] = None) -> Optional[bool]:
     """Whether the post-compact block took this delivery — asked once by
     the mod after the engine's compaction, which decides whether it
-    appends the talk."""
+    appends the talk. UNKNOWN for an id this process never handed out: the
+    backend restarted after the fetch, maybe after the block took it too,
+    so the mod appends (a duplicate at worst, never a loss)."""
     now = now or datetime.utcnow()
-    for key, at in list(_taken.items()):
-        if now - at > DELIVERY_TTL:
-            del _taken[key]
-    return _taken.pop(str(delivery_id), None) is not None
+    for table in (_issued, _taken):
+        for key, at in list(table.items()):
+            if now - at > DELIVERY_TTL:
+                del table[key]
+    delivery_id = str(delivery_id)
+    if delivery_id not in _issued:
+        return UNKNOWN
+    if _taken.pop(delivery_id, None) is None:
+        return NOT_TAKEN  # the TTL clears the issued id
+    del _issued[delivery_id]
+    return TAKEN
 
 
 def take_delivery(conversation_id: str, now: Optional[datetime] = None) -> Optional[TalkDelivery]:
@@ -139,7 +161,6 @@ def take_delivery(conversation_id: str, now: Optional[datetime] = None) -> Optio
             f"(handed out {delivery.at.isoformat()})"
         )
         return None
-    _taken[delivery.id] = now or datetime.utcnow()
     return delivery
 
 

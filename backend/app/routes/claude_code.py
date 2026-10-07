@@ -732,7 +732,9 @@ class CompactTalkTakenRequest(BaseModel):
 
 
 class CompactTalkTakenResponse(BaseModel):
-    taken: bool
+    # null: this backend process never handed the delivery out (it
+    # restarted since the fetch), so it can't say; the mod appends
+    taken: Optional[bool] = None
 
 
 SAVED_REFLECTION_ID = re.compile(r"Saved reflection as memory ([0-9a-f]{8})")

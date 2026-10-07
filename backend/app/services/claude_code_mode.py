@@ -1299,13 +1299,16 @@ async def build_post_compact_context(
     elif delivery is not None:
         # The compaction mod already fetched the talk and appends it after
         # this block (services/compact_talk.py): say so instead of naming
-        # the read, and count its rows as in view from the boundary on, so
+        # the read — and only here is it marked taken, the mod's cue to
+        # append (every other branch leaves the mod appending nothing) —
+        # and count its rows as in view from the boundary on, so
         # retrieval doesn't hand them back and memory_read renders them as
         # pointers — the dedup record a read of them would have made
         await memory_service.link_memories_once(
             str(conversation.id), delivery.message_ids, db,
             entity_id=entity.index_name,
         )
+        compact_talk.mark_taken(delivery)
         if delivery.next_cursor:
             what = f"the newest {delivery.shown} of this conversation's {delivery.total} messages"
             older = (
