@@ -807,7 +807,8 @@ two layers:
   not true: a plumbing tag quoted inside a delivery's body is the sender's
   words and stays in the letter. A plumbing block counts only in the
   harness's measured shape, its open tag starting a line and its close
-  ending one; a tag mentioned mid-sentence, in the human's words or a
+  ending one, with no close earlier on the open tag's line; a tag
+  mentioned mid-sentence or closed mid-line, in the human's words or a
   letter's, is speech (2026-10-07: a letter quoting the hook wrapper inline
   was archived with the quote cut out).
 - **Recorded as the entity's own words, channel marked.** Each delivery is

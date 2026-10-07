@@ -346,6 +346,21 @@ def test_split_block_nested_in_reminder_is_harness_echo_not_a_delivery():
     assert peers == []
 
 
+def test_the_quoting_letter_echoed_in_a_reminder_is_dropped_whole():
+    """PR #387 review, finding 2: on main a reminder wrapping the 10-07
+    letter ended at the letter's quoted close, and the tail ("`; mine
+    matches both. ... </system-reminder>") was recorded as the human's
+    words. The reminder's body runs to its own close."""
+    prompt = (
+        "<system-reminder>\nThe user sent a message while you were working:\n"
+        '<cross-session-message from="local_a" name="P">\n'
+        "Plain stdout arrives as `<system-reminder>\n<Event> hook success: …\n"
+        "</system-reminder>`; mine matches both.\n"
+        "</cross-session-message>\n</system-reminder>\nGo on."
+    )
+    assert hook_util.split_prompt_for_recording(prompt) == ("Go on.", [])
+
+
 def test_split_empty_delivery_body_ignored():
     prompt = (
         '<cross-session-message from="uds:x" from-name="Porch chat">  \n'
@@ -707,3 +722,30 @@ def test_a_block_closed_mid_line_is_not_plumbing_and_is_flagged():
     words, _ = hook_util.split_prompt_for_recording(prompt)
     assert words == prompt
     assert hook_util.unrecognized_wrapper(words) == "system-reminder"
+
+
+def test_a_pair_closed_mid_line_does_not_run_on_to_a_later_real_block():
+    """PR #387 review, finding 1: with only a lazy body, the pair closed
+    mid-line ran on to the next close that ended a line, and the human's
+    words in between went with it, unflagged. No close may sit on the open
+    tag's own line unless it ends it."""
+    for prompt, kept in (
+        (
+            "<system-reminder>x</system-reminder> is what the hook printed.\n"
+            "Why does that happen? It matters to me.\n"
+            "<system-reminder>\nreal note\n</system-reminder>",
+            "<system-reminder>x</system-reminder> is what the hook printed.\n"
+            "Why does that happen? It matters to me.",
+        ),
+        (
+            '<cross-session-message from="local_a" name="P">hi</cross-session-message>\n'
+            "<task-notification>done</task-notification> came in twice, why?\n"
+            "Also look at this.\n"
+            "<task-notification>\n<status>completed</status>\n</task-notification>",
+            "<task-notification>done</task-notification> came in twice, why?\n"
+            "Also look at this.",
+        ),
+    ):
+        words, _ = hook_util.split_prompt_for_recording(prompt)
+        assert words == kept
+        assert hook_util.unrecognized_wrapper(words) is not None

@@ -175,6 +175,13 @@ DEFAULT_INLINE_BUDGET = 9600
 # closed at a line's end. One match anywhere opened mid-line or sat inside
 # a letter: that letter. A mention mid-line is speech.
 #
+# On the open tag's own line no close may appear unless it ends that line
+# (PR #387 review): a lazy body alone would run past a pair closed
+# mid-line ("<system-reminder>x</system-reminder> is what it printed") to
+# a later real block's close and drop the human's words in between. Past
+# that first line the body stays lazy, so a real block whose body quotes
+# its own close mid-line still ends at its real close.
+#
 # And a letter's body is the letter's words. The harness puts plumbing
 # beside a delivery, never inside one (none of the measured blocks sat in a
 # letter's body), so the scan is one pass that takes the leftmost block
@@ -185,7 +192,7 @@ DEFAULT_INLINE_BUDGET = 9600
 # above for agent-message's).
 _SPLIT_RE = re.compile(
     r"(?:^<(?P<plumbing>system-reminder|task-notification|ci-monitor-event|wake)"
-    r"(?:\s[^>]*)?>.*?</(?P=plumbing)>(?=\r?\n|\Z)"
+    r"(?:\s[^>]*)?>(?:(?!</(?P=plumbing)>)[^\n])*(?:\n.*?)?</(?P=plumbing)>(?=\r?\n|\Z)"
     r"|<(?:(?P<cross>cross-session-message)|agent-message)(?P<attrs>(?:\s[^>]*)?)>"
     r"(?P<body>.*?)"
     r"(?(cross)</cross-session-message>|\r?\n</agent-message>))\s*",
