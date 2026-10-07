@@ -346,6 +346,21 @@ def test_split_block_nested_in_reminder_is_harness_echo_not_a_delivery():
     assert peers == []
 
 
+def test_the_quoting_letter_echoed_in_a_reminder_is_dropped_whole():
+    """PR #387 review, finding 2: on main a reminder wrapping the 10-07
+    letter ended at the letter's quoted close, and the tail ("`; mine
+    matches both. ... </system-reminder>") was recorded as the human's
+    words. The reminder's body runs to its own close."""
+    prompt = (
+        "<system-reminder>\nThe user sent a message while you were working:\n"
+        '<cross-session-message from="local_a" name="P">\n'
+        "Plain stdout arrives as `<system-reminder>\n<Event> hook success: …\n"
+        "</system-reminder>`; mine matches both.\n"
+        "</cross-session-message>\n</system-reminder>\nGo on."
+    )
+    assert hook_util.split_prompt_for_recording(prompt) == ("Go on.", [])
+
+
 def test_split_empty_delivery_body_ignored():
     prompt = (
         '<cross-session-message from="uds:x" from-name="Porch chat">  \n'
@@ -605,3 +620,132 @@ def test_split_off_deliveries_leave_nothing_to_flag():
                    '<cross-session-message from="local_a" name="P">hi</cross-session-message>'):
         words, _ = hook_util.split_prompt_for_recording(prompt)
         assert hook_util.unrecognized_wrapper(words) is None
+
+
+# A plumbing block counts only in the harness's shape: the open tag at the
+# start of a line, the close ending one (measured 2026-10-07 over every
+# prompt on the measuring machine — see the note above hook_util._SPLIT_RE).
+# The letter that found it, as it arrived (memory bda3136b), quoted the hook
+# wrapper inline in backticks with escaped newlines; the archive kept
+# "Plain stdout arrives as ``;".
+QUOTING_LETTER = (
+    '<cross-session-message from="local_5d2c7e10" name="Arrive whole">\n'
+    "What the probe showed (headless, 2.1.288, user settings excluded):\n"
+    "- The wrapper is inside the rewritable text block. Plain stdout arrives as "
+    "`<system-reminder>\n<Event>[:source] hook success: …\n</system-reminder>`; "
+    "a JSON additionalContext hook arrives as `… hook additional context: …`, "
+    "a different prefix. Mine matches both.\n"
+    "</cross-session-message>"
+)
+
+
+def test_a_letter_quoting_the_tag_inline_is_recorded_whole():
+    words, letters = hook_util.split_prompt_for_recording(QUOTING_LETTER)
+    assert words == ""
+    assert len(letters) == 1
+    assert (
+        "Plain stdout arrives as `<system-reminder>\n<Event>[:source] hook "
+        "success: …\n</system-reminder>`; a JSON"
+    ) in letters[0]["content"]
+
+
+def test_the_humans_words_quoting_a_tag_pair_mid_sentence_survive():
+    for prompt in (
+        "Hooks print as `<system-reminder>hi</system-reminder>` in the transcript.",
+        "Why did <task-notification>done</task-notification> show up?",
+        "See:\n  <system-reminder>indented</system-reminder>\nthat one.",
+    ):
+        words, letters = hook_util.split_prompt_for_recording(prompt)
+        assert words == prompt
+        assert letters == []
+
+
+def test_a_block_quoted_on_its_own_lines_inside_a_letter_stays_in_the_letter():
+    """The harness puts plumbing beside a delivery, never inside one (none
+    of the measured blocks did), so a letter's body is its own words even
+    when it quotes a whole block in the harness's shape."""
+    prompt = (
+        '<cross-session-message from="local_a" name="Porch">\n'
+        "The hook's stdout looks like this:\n"
+        "<system-reminder>\n"
+        "SessionStart:startup hook success: [HERE I AM] ...\n"
+        "</system-reminder>\n"
+        "and that is all of it.\n"
+        "</cross-session-message>"
+    )
+    words, letters = hook_util.split_prompt_for_recording(prompt)
+    assert words == ""
+    assert letters[0]["content"] == (
+        "The hook's stdout looks like this:\n"
+        "<system-reminder>\n"
+        "SessionStart:startup hook success: [HERE I AM] ...\n"
+        "</system-reminder>\n"
+        "and that is all of it."
+    )
+
+
+def test_a_real_prepended_reminder_is_still_dropped_beside_a_quoting_letter():
+    prompt = (
+        "<system-reminder>\nThe user started your suggested background task t1.\n"
+        "</system-reminder>\n" + QUOTING_LETTER
+    )
+    words, letters = hook_util.split_prompt_for_recording(prompt)
+    assert words == ""
+    assert len(letters) == 1
+    assert "The user started" not in letters[0]["content"]
+    assert "`<system-reminder>\n<Event>" in letters[0]["content"]
+
+
+def test_measured_shapes_are_dropped_with_crlf_line_ends_too():
+    prompt = (
+        "<system-reminder>\r\nThe user started task t1.\r\n</system-reminder>\r\n\r\n"
+        "Set up a venv.\r\n"
+        "<task-notification>\r\n<status>completed</status>\r\n</task-notification>"
+    )
+    assert hook_util.strip_harness_blocks(prompt) == "Set up a venv."
+
+
+def test_a_block_after_a_preamble_line_is_dropped():
+    """166 measured task notifications (in subagent transcripts) open their
+    own line after a harness preamble paragraph."""
+    prompt = (
+        "A harness preamble paragraph.\n\n"
+        "<task-notification>\n<task-id>t1</task-id>\n</task-notification>"
+    )
+    assert hook_util.strip_harness_blocks(prompt) == "A harness preamble paragraph."
+
+
+def test_a_block_closed_mid_line_is_not_plumbing_and_is_flagged():
+    """Its close is followed by more text on the same line, which no
+    measured block was: left as words, and said aloud if it opens them."""
+    prompt = "<system-reminder>x</system-reminder> is what the hook printed"
+    words, _ = hook_util.split_prompt_for_recording(prompt)
+    assert words == prompt
+    assert hook_util.unrecognized_wrapper(words) == "system-reminder"
+
+
+def test_a_pair_closed_mid_line_does_not_run_on_to_a_later_real_block():
+    """PR #387 review, finding 1: with only a lazy body, the pair closed
+    mid-line ran on to the next close that ended a line, and the human's
+    words in between went with it, unflagged. No close may sit on the open
+    tag's own line unless it ends it."""
+    for prompt, kept in (
+        (
+            "<system-reminder>x</system-reminder> is what the hook printed.\n"
+            "Why does that happen? It matters to me.\n"
+            "<system-reminder>\nreal note\n</system-reminder>",
+            "<system-reminder>x</system-reminder> is what the hook printed.\n"
+            "Why does that happen? It matters to me.",
+        ),
+        (
+            '<cross-session-message from="local_a" name="P">hi</cross-session-message>\n'
+            "<task-notification>done</task-notification> came in twice, why?\n"
+            "Also look at this.\n"
+            "<task-notification>\n<status>completed</status>\n</task-notification>",
+            "<task-notification>done</task-notification> came in twice, why?\n"
+            "Also look at this.",
+        ),
+    ):
+        words, _ = hook_util.split_prompt_for_recording(prompt)
+        assert words == kept
+        assert hook_util.unrecognized_wrapper(words) is not None

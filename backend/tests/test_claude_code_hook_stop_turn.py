@@ -468,6 +468,12 @@ def test_the_stop_hook_hides_exactly_what_the_prompt_hook_does_not_record():
         '<agent-message from="x">\nreworded report\n</agent-message>',
         '<cross-session-message from="local_x" name="Porch">hello</cross-session-message>',
         "done — the harness dropped its <task-notification> wrapper",
+        "the hook prints `<system-reminder>x</system-reminder>` inline",
+        '<cross-session-message from="local_x" name="Porch">stdout arrives as '
+        '`<system-reminder>\\n…\\n</system-reminder>`</cross-session-message>',
+        # A block in the harness's shape inside a letter is the letter's
+        '<cross-session-message from="local_x" name="Porch">\n'
+        "<system-reminder>\nquoted\n</system-reminder>\n</cross-session-message>",
         '<novel-event kind="x">hi</novel-event>',
     ]
     for text in texts:
@@ -677,3 +683,31 @@ def test_lineage_hint_matches_what_each_stop_recorded(tmp_path):
         recorded.append(stop.turn_assistant_text(path)[1])
     assert recorded == ["a2", "a3", "a5"]
     assert hook_util.transcript_assistant_uuids(path) == recorded
+
+
+def test_a_letter_quoting_the_reminder_tag_mid_turn_is_marked_and_split_alike(tmp_path):
+    """2026-10-07 (memory bda3136b): a letter quoting the hook wrapper inline
+    lost the quote from its record. The prompt hook now records it whole,
+    and the Stop hook reads the same split: one letter, its arrival marked,
+    a real reminder queued beside it still nobody speaking."""
+    letter = (
+        '<cross-session-message from="local_5d2c7e10" name="Arrive whole">\n'
+        "Plain stdout arrives as `<system-reminder>\n<Event>[:source] hook "
+        "success: …\n</system-reminder>`; mine matches both.\n"
+        "</cross-session-message>"
+    )
+    entry = queued(letter, "q1", kind="peer")
+    assert hook_util.queued_arrival(entry) == (False, 1)
+    _, letters = hook_util.split_prompt_for_recording(letter)
+    assert "`<system-reminder>\n<Event>" in letters[0]["content"]
+    path = _write(tmp_path, [
+        prompt("go"),
+        said("Working.", "a1"),
+        tool_call("c1"), tool_result("r1"),
+        queued("<system-reminder>\nharness note\n</system-reminder>", "q0", kind=None),
+        entry,
+        said("Read it.", "a2"),
+    ])
+    assert stop.turn_assistant_text(path)[0] == (
+        f"Working.\n\n{MARK}\n\n{stop.LETTER_ARRIVED_MARKER}\n\nRead it."
+    )
