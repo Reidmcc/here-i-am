@@ -36,13 +36,14 @@ from app.models import (
     Message,
     MessageRole,
 )
-from app.services.memory_service import load_memory_link_ids, run_pinecone
+from app.services.memory_service import (
+    UPSERT_BATCH_SIZE,
+    load_memory_link_ids,
+    run_pinecone,
+)
 
 logger = logging.getLogger(__name__)
 
-# Pinecone's integrated-inference upsert_records accepts at most 96 records
-# per request; stay under it.
-UPSERT_BATCH_SIZE = 50
 FETCH_BATCH_SIZE = 100
 
 # Extracted text-file content is folded into the persisted human message as
