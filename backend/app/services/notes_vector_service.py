@@ -26,12 +26,23 @@ from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
 from app.config import settings
-from app.services.memory_service import memory_service, run_pinecone
+from app.services.memory_service import (
+    DELETE_BATCH_SIZE,
+    UPSERT_BATCH_SIZE,
+    memory_service,
+    run_pinecone,
+)
 from app.services.notes_service import notes_service
 
 logger = logging.getLogger(__name__)
 
 NOTES_NAMESPACE = "notes"
+
+# When prefix listing fails, stale chunks are deleted by guessing their ids:
+# every chunk id from the new chunk count up to this bound (or the file's last
+# known chunk count, if larger). Deleting an id that doesn't exist is a no-op,
+# so the bound only has to be generous: 1024 chunks is a ~2 MB note.
+FALLBACK_DELETE_MAX_CHUNKS = 1024
 
 
 def _content_hash(content: str) -> str:
@@ -108,6 +119,9 @@ class NotesVectorService:
         # once (idempotent), and deletions that happened while the backend
         # was down go uncaught until a manual reindex, same as before.
         self._synced_hashes: Dict[Tuple[str, str], str] = {}
+        # Chunk count of each file as last written, same keys. Only sizes the
+        # fallback delete when prefix listing fails; same in-memory caveat.
+        self._chunk_counts: Dict[Tuple[str, str], int] = {}
         # One sync at a time per entity; concurrent requests skip instead
         # of queueing (the next prompt will sync again anyway)
         self._sync_locks: Dict[str, asyncio.Lock] = {}
@@ -141,9 +155,24 @@ class NotesVectorService:
         index = self._get_index_for_label(entity_label)
         return [index] if index is not None else []
 
-    def _delete_note_chunks(self, index, shared: bool, filename: str) -> None:
-        """Delete all existing chunks for a file from one index (by ID prefix)."""
+    def _delete_note_chunks(
+        self,
+        index,
+        shared: bool,
+        filename: str,
+        keep_count: int = 0,
+        known_count: int = 0,
+    ) -> bool:
+        """
+        Delete a file's chunks from one index, except chunk ids 0..keep_count-1
+        (the ones a re-vectorization just wrote). Returns False if the stale
+        chunks may still be there.
+
+        Lists by ID prefix; if listing fails, falls back to deleting every id
+        from keep_count up to max(known_count, FALLBACK_DELETE_MAX_CHUNKS).
+        """
         prefix = _note_id_prefix(shared, filename)
+        keep = {f"{prefix}{i}" for i in range(keep_count)}
         try:
             ids_to_delete = []
             pagination_token = None
@@ -155,23 +184,32 @@ class NotesVectorService:
 
                 if hasattr(response, "vectors") and response.vectors:
                     for v in response.vectors:
-                        ids_to_delete.append(v.id if hasattr(v, "id") else v)
+                        vector_id = v.id if hasattr(v, "id") else v
+                        if vector_id not in keep:
+                            ids_to_delete.append(vector_id)
 
                 if hasattr(response, "pagination") and response.pagination and response.pagination.next:
                     pagination_token = response.pagination.next
                 else:
                     break
-
-            if ids_to_delete:
-                index.delete(ids=ids_to_delete, namespace=NOTES_NAMESPACE)
         except Exception as e:
-            # Fall back to deleting a generous fixed range of chunk IDs
-            logger.warning(f"[NOTES] Prefix listing failed ({e}); falling back to fixed-range delete")
-            try:
-                fallback_ids = [f"{prefix}{i}" for i in range(64)]
-                index.delete(ids=fallback_ids, namespace=NOTES_NAMESPACE)
-            except Exception as e2:
-                logger.warning(f"[NOTES] Fallback delete failed: {e2}")
+            bound = max(known_count, FALLBACK_DELETE_MAX_CHUNKS)
+            logger.warning(
+                f"[NOTES] Prefix listing failed ({e}); falling back to deleting "
+                f"chunk ids {keep_count}..{bound - 1} of '{filename}'"
+            )
+            ids_to_delete = [f"{prefix}{i}" for i in range(keep_count, bound)]
+
+        try:
+            for i in range(0, len(ids_to_delete), DELETE_BATCH_SIZE):
+                index.delete(
+                    ids=ids_to_delete[i : i + DELETE_BATCH_SIZE],
+                    namespace=NOTES_NAMESPACE,
+                )
+        except Exception as e:
+            logger.warning(f"[NOTES] Deleting stale chunks of '{filename}' failed: {e}")
+            return False
+        return True
 
     async def vectorize_note(
         self,
@@ -183,7 +221,15 @@ class NotesVectorService:
     ) -> bool:
         """
         (Re)index a note file. Replaces any previously indexed chunks.
-        Returns True if at least one index was updated.
+        Returns True only if every target index now holds exactly the new
+        chunks; only then is the content hash recorded, so anything less
+        is retried by the next sync.
+
+        The new chunks are upserted (in batches under Pinecone's per-request
+        cap) BEFORE the old ones are pruned: chunk ids are deterministic, so
+        the upsert overwrites ids 0..n-1 and the prune removes only ids past
+        the new end. A failure partway leaves the note searchable under a
+        mix of old and new chunks instead of under none.
 
         Bulk callers (reindex/sync) pass log_result=False and log a single
         summary line instead of one line per note.
@@ -208,23 +254,39 @@ class NotesVectorService:
             for i, chunk in enumerate(chunks)
         ]
 
-        updated = False
+        key = (self._scope_key(entity_label, shared), filename)
+        known_count = self._chunk_counts.get(key, 0)
+        complete = True
         for index in indexes:
             try:
-                await run_pinecone(self._delete_note_chunks, index, shared, filename)
-                if records:
+                for i in range(0, len(records), UPSERT_BATCH_SIZE):
                     await run_pinecone(
-                        index.upsert_records, namespace=NOTES_NAMESPACE, records=records
+                        index.upsert_records,
+                        namespace=NOTES_NAMESPACE,
+                        records=records[i : i + UPSERT_BATCH_SIZE],
                     )
-                updated = True
             except Exception as e:
-                logger.error(f"[NOTES] Failed to vectorize '{filename}' (shared={shared}): {e}")
+                logger.error(
+                    f"[NOTES] Failed to vectorize '{filename}' (shared={shared}, "
+                    f"{len(records)} chunks; failed at chunk {i}): {e}"
+                )
+                complete = False
+                continue
+            pruned = await run_pinecone(
+                self._delete_note_chunks, index, shared, filename,
+                keep_count=len(records), known_count=known_count,
+            )
+            if not pruned:
+                complete = False
 
-        if updated:
-            self._synced_hashes[(self._scope_key(entity_label, shared), filename)] = _content_hash(content)
+        # A failed or interrupted index may still hold chunks up to the larger
+        # of the two counts, and the next attempt's fallback must reach them
+        self._chunk_counts[key] = len(records) if complete else max(known_count, len(records))
+        if complete:
+            self._synced_hashes[key] = _content_hash(content)
             if log_result:
                 logger.info(f"[NOTES] Vectorized '{filename}' (shared={shared}, {len(records)} chunks)")
-        return updated
+        return complete
 
     async def remove_note_vectors(
         self,
@@ -232,17 +294,30 @@ class NotesVectorService:
         filename: str,
         shared: bool = False,
     ) -> bool:
-        """Remove a deleted note's chunks from all relevant indexes."""
+        """
+        Remove a deleted note's chunks from all relevant indexes. The file
+        stays tracked unless every index confirmed the delete, so the next
+        sync still sees it as gone-from-disk and retries.
+        """
         indexes = self._target_indexes(entity_label, shared)
         if not indexes:
             return False
+        key = (self._scope_key(entity_label, shared), filename)
+        complete = True
         for index in indexes:
             try:
-                await run_pinecone(self._delete_note_chunks, index, shared, filename)
+                removed = await run_pinecone(
+                    self._delete_note_chunks, index, shared, filename,
+                    known_count=self._chunk_counts.get(key, 0),
+                )
             except Exception as e:
                 logger.error(f"[NOTES] Failed to remove vectors for '{filename}': {e}")
-        self._synced_hashes.pop((self._scope_key(entity_label, shared), filename), None)
-        return True
+                removed = False
+            complete = complete and removed
+        if complete:
+            self._synced_hashes.pop(key, None)
+            self._chunk_counts.pop(key, None)
+        return complete
 
     async def search_notes(
         self,
@@ -411,8 +486,10 @@ class NotesVectorService:
                     if key[0] == scope_key and key[1] not in current_files
                 ]
                 for _, filename in stale:
-                    await self.remove_note_vectors(entity_label, filename, shared=shared)
-                    summary["removed"] += 1
+                    if await self.remove_note_vectors(entity_label, filename, shared=shared):
+                        summary["removed"] += 1
+                    else:
+                        summary["errors"].append(f"{scope_key}/{filename}: vector removal failed")
 
         if summary["indexed"] or summary["removed"] or summary["errors"]:
             logger.info(

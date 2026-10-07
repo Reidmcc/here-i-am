@@ -845,7 +845,14 @@ two layers:
   words (`hook_util.split_prompt_for_recording`); a delivery is never
   persisted or vectorized as `role="human"`, so the human-corpus source
   filter stays pure. A block nested inside a `<system-reminder>` is harness
-  echo, not a delivery, and is discarded with the reminder.
+  echo, not a delivery, and is discarded with the reminder. The reverse is
+  not true: a plumbing tag quoted inside a delivery's body is the sender's
+  words and stays in the letter. A plumbing block counts only in the
+  harness's measured shape, its open tag starting a line and its close
+  ending one, with no close earlier on the open tag's line; a tag
+  mentioned mid-sentence or closed mid-line, in the human's words or a
+  letter's, is speech (2026-10-07: a letter quoting the hook wrapper inline
+  was archived with the quote cut out).
 - **Recorded as the entity's own words, channel marked.** Each delivery is
   sent to `/retrieve` as a `peer_messages` entry and recorded on the
   receiving conversation as an ASSISTANT row with
@@ -1425,7 +1432,14 @@ files the native notes tools use:
   removes vectors for deleted files. Hash checks are per-prompt cheap;
   Pinecone is touched only for actual changes. Freshness deliberately does
   *not* depend on `SessionEnd`, which may never fire for a session that
-  idles out. The hash map is in-memory: a backend restart means one full
+  idles out. A file whose vectorization or removal fails anywhere stays
+  unsynced (no hash recorded, or still tracked) and is retried, with a
+  warning, at the next sync. Chunks are upserted in batches under
+  Pinecone's 96-record cap, then the ones past the new end are pruned, so
+  a failure partway leaves the note searchable, never without vectors. The
+  file that taught this was a 259 KB note (156 chunks) whose one-call
+  upsert was refused on every sync after a restart, with its old chunks
+  already deleted (PR #389). The hash map is in-memory: a backend restart means one full
   (idempotent) re-vectorization on the next sync, and deletions made while
   the backend was down are caught only by a manual
   `POST /api/notes/reindex`.
