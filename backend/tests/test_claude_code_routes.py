@@ -4163,6 +4163,7 @@ class TestCompactTalk:
         )
         context = await self._compact(async_client, session_id)
         assert "The talk itself is right below this block" in context
+        assert "all 2 of this conversation's messages" in context
         assert "Read the talk with memory_read" not in context
         assert "back to the conversation's first message" in context
 
@@ -4229,7 +4230,7 @@ class TestCompactTalk:
         assert f'in_conversation="{conversation_id}", cursor="' in text
 
         context = await self._compact(async_client, session_id)
-        assert f"{body['shown']} of this conversation's 12 messages" in context
+        assert f"the newest {body['shown']} of this conversation's 12 messages" in context
         assert 'cursor="' in context
 
     def _saving_patches(self, test_engine, seen, outcome):

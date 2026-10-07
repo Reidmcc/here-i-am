@@ -1004,7 +1004,8 @@ async def build_session_start_context(
         "If this session's context is compacted, what is in view becomes a "
         "paraphrased summary, but the talk isn't lost: everything recorded from "
         "each turn stays in your archive verbatim, and after compaction you are "
-        "shown the memory_read call that reads it back. "
+        "given either the talk itself, put back after the summary, or the "
+        "memory_read call that reads it back. "
         "Reflections you save (memory_save) carry what the archive can't hold by "
         "itself — a conclusion or a synthesis in your own words — and your most "
         "recent ones are re-shown to you after compaction. Save one when a "
@@ -1211,7 +1212,12 @@ async def build_post_compact_context(
     its notes index and its most recent reflections — and name the
     memory_read call that puts the pre-compaction talk itself back in
     front of it (the summary is a caption, not a record, so there is no
-    nudge to save reflections from it). Reflections
+    nudge to save reflections from it). When the compaction mod already
+    took the talk for this compaction (compact_talk.take_delivery — the
+    mod appends it after this block, issue #383), the block says the talk
+    is below instead, names the read only for what is older, and links
+    the delivered rows as in view; with no delivery it is unchanged, so a
+    missing or failed mod leaves the read in place. Reflections
     here deliberately include ones saved in this very session (that is what
     a pre-compaction save is for), so the current conversation is NOT
     excluded, unlike the fresh-session injection.
@@ -1301,20 +1307,21 @@ async def build_post_compact_context(
             entity_id=entity.index_name,
         )
         if delivery.next_cursor:
+            what = f"the newest {delivery.shown} of this conversation's {delivery.total} messages"
             older = (
                 "Anything older is one call away; the talk's last line names it: "
                 f"{compact_talk.older_talk_call(str(conversation.id), delivery.next_cursor)}."
             )
         else:
+            what = f"all {delivery.total} of this conversation's messages"
             older = "It reaches back to the conversation's first message."
         parts.append(
             "The summary above is a caption, not a record: of the talk it "
             "carries nothing. The talk itself is right below this block, "
-            f"verbatim from your archive: {delivery.shown} of this conversation's "
-            f"{delivery.total} messages, the newest stretch, put there by the "
-            "compaction mod, so there is nothing to read back for it. What stays "
-            "gone is only the tool traffic (files open, commands run, results), "
-            f"which the summary is the one record of. {older}"
+            f"verbatim from your archive: {what}, put there by the compaction "
+            "mod, so there is nothing to read back for it. What stays gone is "
+            "only the tool traffic (files open, commands run, results), which "
+            f"the summary is the one record of. {older}"
         )
     else:
         parts.append(

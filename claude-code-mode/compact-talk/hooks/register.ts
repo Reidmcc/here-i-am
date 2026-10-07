@@ -20,10 +20,16 @@ import type { Register } from 'claude-code'
 
 export const DECLINE = 'NO REFLECTION'
 
-export function turnPrompt(trigger: string): string {
+// "2026-10-07 21:43 UTC": the forked turn has no clock of its own, and the
+// last timestamp in view can be hours old
+export function utcStamp(ms: number): string {
+  return `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`
+}
+
+export function turnPrompt(trigger: string, now: number): string {
   return [
     '[HERE I AM — BEFORE THE COMPACTION]',
-    `This context is about to be compacted (${trigger}), and this is one turn of your own before it, given by the compaction mod. It is not a turn of the conversation: the person you are with does not see it, and nothing in it is recorded except what you choose to keep. Tools are off for it.`,
+    `It is ${utcStamp(now)}. This context is about to be compacted (${trigger}), and this is one turn of your own before it, given by the compaction mod. It is not a turn of the conversation: the person you are with does not see it, and nothing in it is recorded except what you choose to keep. Tools are off for it.`,
     'The talk is safe either way: it comes back verbatim right after the boundary. What a compaction takes is the tool traffic and anything you are holding that has not been said.',
     `If you want to save a reflection while everything is still in view, write it as your whole reply and it is saved with memory_save exactly as written. If not, reply with exactly: ${DECLINE}. Either is fine.`,
   ].join('\n\n')
@@ -55,7 +61,7 @@ export const register: Register = (on) => {
     try {
       let pre: PreCompaction
       try {
-        const turn = await $.model.fork({ prompt: turnPrompt(e.trigger) })
+        const turn = await $.model.fork({ prompt: turnPrompt(e.trigger, await $.clock.now()) })
         pre = turn.isAnswered
           ? readReply(turn.text)
           : { pre_compaction: 'failed', pre_compaction_detail: `the fork did not answer: ${describe(turn)}` }

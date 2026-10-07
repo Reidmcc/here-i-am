@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { DECLINE, readReply } from './register.ts'
+import { DECLINE, readReply, utcStamp } from './register.ts'
 
 const SUMMARY = { role: 'user' as const, text: 'This session is being continued...', toolUses: [] }
 const OLD = { role: 'assistant' as const, text: 'the talk before', toolUses: [] }
 const TALK = '[HERE I AM — THE TALK BEFORE THE BOUNDARY]\nthe talk'
+const NOW = Date.UTC(2026, 9, 7, 21, 43, 4)
 
 type Seen = { forks: string[]; posts: Record<string, unknown>[]; logs: string[] }
 
@@ -18,6 +19,7 @@ function engine(on: any, opts: { reply?: string; fork?: object; backend?: object
   })
   on('env.get', async (_$: any, e: any) => ({ value: (opts.env ?? {})[e.name] }))
   on('session.id', async () => ({ value: 'session-1' }))
+  on('clock.now', async () => ({ value: NOW }))
   on('http.fetch', async (_$: any, e: any) => {
     seen.posts.push({ url: e.url, ...JSON.parse(e.init.body) })
     const status = opts.status ?? 200
@@ -71,6 +73,7 @@ describe('the turn before', () => {
     await $.session.compact({ trigger: 'auto', messages: [OLD] })
     expect(seen.forks.length).toBe(1)
     expect(seen.forks[0]).toContain('(auto)')
+    expect(seen.forks[0]).toContain('It is 2026-10-07 21:43 UTC.')
     expect(seen.posts[0].pre_compaction).toBe('saved')
     expect(seen.posts[0].reflection).toBe('What this stretch was.')
   })
@@ -104,6 +107,12 @@ describe('passes through', () => {
     const result: any = await $.session.compact({ trigger: 'auto', agentId: 'a1', messages: [OLD] })
     expect(result.messages.length).toBe(1)
     expect(seen.forks.length + seen.posts.length).toBe(0)
+  })
+})
+
+describe('utcStamp', () => {
+  test('reads to the minute, in UTC', () => {
+    expect(utcStamp(Date.UTC(2026, 0, 2, 3, 4, 59))).toBe('2026-01-02 03:04 UTC')
   })
 })
 
