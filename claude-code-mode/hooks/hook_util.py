@@ -160,18 +160,43 @@ DEFAULT_INLINE_BUDGET = 9600
 # by the survey behind the unrecognized-wrapper check below — two had been
 # archived as the human's words on 2026-09-16). Plumbing, like the CI
 # monitor's events.
-_PLUMBING_BLOCK_RE = re.compile(
-    r"<(system-reminder|task-notification|ci-monitor-event|wake)"
-    r"(?:\s[^>]*)?>.*?</\1>\s*",
-    re.DOTALL,
-)
-# One pass over both wrappers, so delivery order holds across them; the
-# conditional picks each wrapper's close (see above for agent-message's)
-_DELIVERY_RE = re.compile(
-    r"<(?:(?P<cross>cross-session-message)|agent-message)(?P<attrs>(?:\s[^>]*)?)>"
+#
+# A plumbing block counts only in the shape the harness delivers it: the
+# open tag at the start of a line, the close tag ending one. Until
+# 2026-10-07 any tag pair anywhere was dropped, and a sister's letter that
+# quoted the hook wrapper inline, in backticks, mid-sentence, was archived
+# with the quote cut out ("Plain stdout arrives as ``;", memory bda3136b).
+# Measured the same day over every user entry and queued prompt on this
+# machine (unique texts, forks' copies counted once). In the 126 main
+# transcripts there were 875 blocks: 869 opened the text, 6 opened a line
+# after another block, and every one closed at the end of the text or of a
+# line. In the 240 subagent transcripts there were 692: 526 opened the
+# text, 166 opened a line after a harness preamble, and again every one
+# closed at a line's end. One match anywhere opened mid-line or sat inside
+# a letter: that letter. A mention mid-line is speech.
+#
+# On the open tag's own line no close may appear unless it ends that line
+# (PR #387 review): a lazy body alone would run past a pair closed
+# mid-line ("<system-reminder>x</system-reminder> is what it printed") to
+# a later real block's close and drop the human's words in between. Past
+# that first line the body stays lazy, so a real block whose body quotes
+# its own close mid-line still ends at its real close.
+#
+# And a letter's body is the letter's words. The harness puts plumbing
+# beside a delivery, never inside one (none of the measured blocks sat in a
+# letter's body), so the scan is one pass that takes the leftmost block
+# first: a reminder wrapping a letter is dropped whole, letter and all, as
+# harness echo, while a block quoted inside a letter, even on lines of its
+# own, stays in the letter. One pass also keeps delivery order across the
+# two letter wrappers; the conditional picks each wrapper's close (see
+# above for agent-message's).
+_SPLIT_RE = re.compile(
+    r"(?:^<(?P<plumbing>system-reminder|task-notification|ci-monitor-event|wake)"
+    r"(?:\s[^>]*)?>(?:(?!</(?P=plumbing)>)[^\n])*(?:\n.*?)?</(?P=plumbing)>(?=\r?\n|\Z)"
+    r"|<(?:(?P<cross>cross-session-message)|agent-message)(?P<attrs>(?:\s[^>]*)?)>"
     r"(?P<body>.*?)"
-    r"(?(cross)</cross-session-message>|\r?\n</agent-message>)\s*",
-    re.DOTALL,
+    r"(?(cross)</cross-session-message>|\r?\n</agent-message>))\s*",
+    re.DOTALL | re.MULTILINE,
 )
 SUBAGENT_HANDBACK_FRAME = "[Subagent hand-back]"
 _HANDBACK_FRAME_RE = re.compile(r"^" + re.escape(SUBAGENT_HANDBACK_FRAME), re.MULTILINE)
@@ -245,16 +270,17 @@ def unmeasured_agent_letters(prompt: str):
 
 def is_subagent_task_id(sender) -> bool:
     """Whether an <agent-message> `from=` is one of this session's own
-    subagents (issue #379 — see the note above _PLUMBING_BLOCK_RE)."""
+    subagents (issue #379 — see the note above _SPLIT_RE)."""
     return bool(sender) and bool(_SUBAGENT_TASK_ID_RE.fullmatch(sender))
 
 
 def _split(prompt: str):
-    without_plumbing = _PLUMBING_BLOCK_RE.sub("", prompt)
     peer_messages = []
     unmeasured = []
 
     def _capture(match):
+        if match.group("plumbing"):
+            return ""
         agent_message = not match.group("cross")
         body = match.group("body")
         attributes = match.group("attrs") or ""
@@ -279,7 +305,7 @@ def _split(prompt: str):
                 unmeasured.append(sender_session or "")
         return ""
 
-    remaining = _DELIVERY_RE.sub(_capture, without_plumbing)
+    remaining = _SPLIT_RE.sub(_capture, prompt)
     return remaining.strip(), peer_messages, unmeasured
 
 
