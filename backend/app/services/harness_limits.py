@@ -25,7 +25,11 @@ re-measurement is a constant edit that test_harness_limits checks.
   the hooks count them (hook_util.output_chars).
   Re-measure: scan <config dir>/projects/*/*.jsonl for "attachment" rows
   with a hook stdout, and compare len(stdout) against whether the row's
-  content is a <persisted-output> notice.
+  content is a <persisted-output> notice. The row's attachment content
+  stays as the harness made it even where the arrive-whole mod rewrote
+  the row (issue #384); what reached the model is the row's separate
+  `rendered` field, so the recipe still measures the line, and a check of
+  what arrived reads `rendered`.
 - TOOL RESULT (Bash, MCP): persisted above about 50 KB in UTF-8 bytes
   (48,365 landed; 51,286 persisted); an MCP result above ~25k tokens by
   the harness's counter is refused outright ("exceeds maximum allowed

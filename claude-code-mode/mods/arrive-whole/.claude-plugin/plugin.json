@@ -1,0 +1,5 @@
+{
+  "name": "here-i-am-arrive-whole",
+  "version": "0.1.0",
+  "description": "Here I Am: the entity's identity block, notes index, reflections and retrieved memories arrive in context whole instead of behind spill files (issue #384). A function-hooks mod; pairs with HIM_ARRIVE_WHOLE=1 for the hooks."
+}

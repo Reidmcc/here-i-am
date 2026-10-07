@@ -243,6 +243,11 @@ def main() -> None:
     # session is never overwritten
     name = "retrieval-" + time.strftime("%H%M%S")
     path = hook_util.spill(context, session_id, name)
+    if hook_util.arrive_whole_enabled():
+        # Issue #384: the output exactly as the fit above would have printed
+        # it, for the arrive-whole mod; the marker goes last in the tail,
+        # which the fit below measures
+        tail = [*tail, hook_util.whole_marker("\n\n".join([context, *tail]), session_id, name)]
     items = [
         item for item in (body.get("context_items") or [])
         if isinstance(item, dict) and item.get("text") and item.get("summary")

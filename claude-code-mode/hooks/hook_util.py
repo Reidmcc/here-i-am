@@ -41,6 +41,7 @@ Environment:
 """
 import collections
 import glob
+import hashlib
 import json
 import os
 import re
@@ -436,14 +437,55 @@ def describe_size(text: str) -> str:
     return f"{len(text.encode('utf-8')) / 1024:.0f} KB"
 
 
-def spill(text: str, session_id: str, name: str) -> str:
-    """Write text to a per-session file and return its absolute path."""
+def _spill_dir() -> str:
     directory = os.path.join(tempfile.gettempdir(), "here-i-am-sessions")
     os.makedirs(directory, exist_ok=True)
-    path = os.path.join(directory, f"{session_id}-{name}.md")
+    return directory
+
+
+def spill(text: str, session_id: str, name: str) -> str:
+    """Write text to a per-session file and return its absolute path."""
+    path = os.path.join(_spill_dir(), f"{session_id}-{name}.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
     return os.path.abspath(path)
+
+
+# Arrive whole (issue #384): the hooks still fit their stdout to the line
+# and point at what didn't fit — that stays the path whenever the mod is
+# absent — and, when HIM_ARRIVE_WHOLE is set, they also file the block
+# exactly as it would have printed with no budget and end their output with
+# one marker line naming that file and its hash. The arrive-whole mod
+# (claude-code-mode/mods/arrive-whole) puts the file in place of the row before
+# the row is stored, which is past the harness's line: the line is applied
+# to hook stdout before the row exists, and nothing applies it after
+# (measured on 2.1.288). The marker is also the loud failure: it says that
+# seeing it means the mod didn't act.
+WHOLE_MARKER = "[HERE I AM WHOLE]"
+
+
+def arrive_whole_enabled() -> bool:
+    return bool(os.environ.get("HIM_ARRIVE_WHOLE"))
+
+
+def whole_marker(text: str, session_id: str, name: str) -> str:
+    """
+    File `text` — the hook's output as it would print unbudgeted — and
+    return the marker line the mod looks for. Written as UTF-8 bytes with
+    bare newlines, and hashed as written, so the mod can check it read
+    exactly this block (a later firing of the same name replaces the file,
+    which the hash catches).
+    """
+    data = text.encode("utf-8")
+    path = os.path.abspath(os.path.join(_spill_dir(), f"{session_id}-{name}-whole.md"))
+    with open(path, "wb") as f:
+        f.write(data)
+    return (
+        f"{WHOLE_MARKER} {path} sha256={hashlib.sha256(data).hexdigest()}\n"
+        "That file is this block unbudgeted; the arrive-whole mod puts it in "
+        "place of this one before you see it, so seeing this line means the "
+        "mod didn't, and the pointers above stand."
+    )
 
 
 READ_TOOL_ADVICE = (

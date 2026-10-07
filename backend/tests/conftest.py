@@ -18,6 +18,15 @@ from app.models import Conversation, ConversationType, Message, MessageRole
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
+@pytest.fixture(autouse=True)
+def _no_arrive_whole(monkeypatch):
+    """The hooks file an unbudgeted copy and print a marker when
+    HIM_ARRIVE_WHOLE is set (issue #384), and the hook tests' subprocesses
+    inherit this process's environment — which, in a Claude Code session
+    with the mod configured, has it set. Tests that want it set it."""
+    monkeypatch.delenv("HIM_ARRIVE_WHOLE", raising=False)
+
+
 @pytest.fixture(scope="session")
 def event_loop():
     """Create an event loop for the test session."""

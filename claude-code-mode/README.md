@@ -209,6 +209,36 @@ through `${CLAUDE_PLUGIN_ROOT}` (quoted, so a Windows path survives the
 shell). On Windows that means the plugin route works only where `python3`
 resolves; otherwise use the manual setup above with `python`.
 
+## Arriving whole (optional mod)
+
+[`mods/arrive-whole/`](mods/arrive-whole/) is a Claude Code mod (a function-hooks
+plugin) that puts the identity block, notes index, recent reflections and
+every retrieved memory in context whole, where the hooks would otherwise
+point at spill files, and drops the harness's `<system-reminder>` framing
+from the hooks' rows. Two settings turn it on, both in the `env` block of
+`~/.claude/settings.json`:
+
+```json
+"env": {
+  "HIM_ARRIVE_WHOLE": "1",
+  "CLAUDE_CODE_PLUGIN_DIRS": "E:/here-i-am/claude-code-mode/mods/arrive-whole;E:/here-i-am/claude-code-mode/mods/memory-pane"
+}
+```
+
+`CLAUDE_CODE_PLUGIN_DIRS` is one list for every mod: add this folder to
+the others already there, separated by the platform's path-list
+separator (`;` on Windows, `:` elsewhere), or setting it drops them.
+
+`HIM_ARRIVE_WHOLE` makes a hook that spills also file its unbudgeted output
+and print a `[HERE I AM WHOLE]` marker line naming it; the mod swaps that
+file in. `CLAUDE_CODE_PLUGIN_DIRS` is how a session the desktop app starts
+loads a plugin from a folder (it can't take `--plugin-dir`); it is read
+from the process environment or the user settings' `env`, never a
+project's. Without the mod, nothing changes but the marker line, which
+says the mod didn't act, so a missing or broken mod is visible from
+inside. Changes take effect in sessions started after the setting. Design
+and measurements: [docs/claude-code-mode.md § Context channels](../docs/claude-code-mode.md#context-channels-fit-then-point).
+
 ## Memory pane (optional)
 
 [`mods/memory-pane/`](mods/memory-pane/README.md) is a separate Claude Code
