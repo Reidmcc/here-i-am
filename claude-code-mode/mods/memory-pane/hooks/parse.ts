@@ -6,13 +6,20 @@
 // visible through the entry's raw view, and an unparsed [MEMORY] header is
 // reported as a problem rather than dropped.
 
-import type { Entry, MemoryCard, MemoryWhere, SpillFile } from '../types'
+import type { Entry, MemoryCard, MemoryWhere, ReadSpan, SpillFile } from '../types'
 
 // [MEMORY <id> from <created_at> - <role label> - via <origin>]
 // (memory_context.build_memory_message). The role label can hold " - " in a
-// multi-entity room, so the origin is anchored at the end instead.
-const BLOCK = /\[MEMORY ([0-9a-f]{6,}) from (\S+) - (.+?) - (via [^\]\r\n]+)\]\r?\n([\s\S]*?)\r?\n?\[\/MEMORY\]/g
-const HEADER = /\[MEMORY [0-9a-f]{6,} from /g
+// multi-entity room, so the origin is anchored at the end instead. The close
+// counts only in the shape the backend writes it, alone at the start of its
+// line: a memory that quotes the marker mid-line (a94e68cc does) is not cut.
+const BLOCK = /\[MEMORY ([0-9a-f]{6,}) from (\S+) - (.+?) - (via [^\]\r\n]+)\]\r?\n([\s\S]*?)\r?\n\[\/MEMORY\][ \t]*(?=\r?\n|$)/g
+// A header where the backend writes one: at the start of a line (in a
+// wrapped row, right after the harness's "hook success: " prefix)
+const HEADER = /(?:^|hook success: )\[MEMORY ([0-9a-f]{6,}) from /gm
+// In a parsed memory's own text, a header or close at a line start means the
+// block's edges may be wrong (a memory quoting a whole block)
+const EDGE_IN_TEXT = /^(?:\[MEMORY [0-9a-f]{6,} from |\[\/MEMORY\][ \t]*$)/m
 
 // - <id> (<date> - <role label> - via <origin>): <first line>
 // (claude_code_mode.render_retrieval_summary_line)
@@ -58,19 +65,39 @@ function splitMarks(body: string): { marks: string[]; text: string } {
   return { marks, text: lines.join('\n') }
 }
 
-/** Every whole [MEMORY] block in `text`, in order. */
+function newlines(text: string): number {
+  let count = 0
+  for (const char of text) if (char === '\n') count += 1
+  return count
+}
+
+/**
+ * Every whole [MEMORY] block in `text`, in order. From a file, each card
+ * also carries its line span there, so a Read of part of the file can be
+ * told from a Read of this memory.
+ */
 export function parseBlocks(text: string, where: MemoryWhere, file?: string): MemoryCard[] {
   const cards: MemoryCard[] = []
   for (const m of text.matchAll(BLOCK)) {
     const { marks, text: body } = splitMarks(g(m, 5))
-    cards.push({ id: g(m, 1), date: g(m, 2), from: g(m, 3), via: g(m, 4), marks, text: body, where, ...(file ? { file } : {}) })
+    const card: MemoryCard = { id: g(m, 1), date: g(m, 2), from: g(m, 3), via: g(m, 4), marks, text: body, where }
+    if (file !== undefined) {
+      const first = newlines(text.slice(0, m.index ?? 0)) + 1
+      Object.assign(card, { file, lines: [first, first + newlines(m[0])] })
+    }
+    cards.push(card)
   }
   return cards
 }
 
+/** The ids of the [MEMORY] headers `text` holds, whole blocks or not. */
+export function headerIds(text: string): string[] {
+  return [...text.matchAll(HEADER)].map(m => g(m, 1))
+}
+
 /** How many [MEMORY] headers `text` holds, whole blocks or not. */
 export function countHeaders(text: string): number {
-  return [...text.matchAll(HEADER)].length
+  return headerIds(text).length
 }
 
 export function parseSummaries(text: string): MemoryCard[] {
@@ -136,7 +163,8 @@ export function isOurs(text: string): boolean {
 /**
  * The cards for one hook row: whole blocks in the row are `context`; a
  * summary line stands for a memory whose text is in a file (filled in later
- * from `fileText`); a block found only in a file is `disk`.
+ * from `fileText`); a block whose header the harness's preview cut after is
+ * `cut`; a block found only in a file is `disk`.
  */
 export function cardsFor(rowText: string, fileTexts: { path: string; text: string }[]): {
   memories: MemoryCard[]
@@ -146,12 +174,14 @@ export function cardsFor(rowText: string, fileTexts: { path: string; text: strin
   const memories: MemoryCard[] = parseBlocks(rowText, 'context')
   const byId = new Map(memories.map(card => [card.id, card]))
 
-  const inRow = countHeaders(rowText)
+  const inRow = headerIds(rowText)
   // A harness preview cuts the row mid-block, so a header without its close
-  // is expected there; anywhere else it means the parser missed a shape
+  // is expected there (that memory's opening reached context); anywhere else
+  // it means the parser missed a shape
   const isPreview = rowText.includes('<persisted-output>')
-  if (inRow > memories.length && !isPreview) {
-    problems.push(`${inRow - memories.length} [MEMORY] header(s) in this row didn't parse; the raw view has them`)
+  const opened = new Set(isPreview ? inRow.filter(id => !byId.has(id)) : [])
+  if (inRow.length > memories.length && !isPreview) {
+    problems.push(`${inRow.length - memories.length} [MEMORY] header(s) in this row didn't parse; the raw view has them`)
   }
 
   for (const summary of parseSummaries(rowText)) {
@@ -164,15 +194,68 @@ export function cardsFor(rowText: string, fileTexts: { path: string; text: strin
     for (const card of parseBlocks(text, 'disk', path)) {
       const known = byId.get(card.id)
       if (known === undefined) {
+        if (opened.has(card.id)) card.where = 'cut'
         byId.set(card.id, card)
         memories.push(card)
       } else if (known.where === 'summary') {
         // The summary line was what reached context; the words are the file's
-        Object.assign(known, { text: card.text, marks: card.marks, date: card.date, file: path })
+        Object.assign(known, { text: card.text, marks: card.marks, date: card.date, file: path, lines: card.lines })
       }
     }
   }
+
+  for (const card of memories) {
+    if (EDGE_IN_TEXT.test(card.text)) {
+      problems.push(`${card.id}'s text holds a [MEMORY] header or close at a line start, so its edges may be wrong; the raw view has the row`)
+    }
+  }
   return { memories, problems }
+}
+
+/**
+ * The span a Read showed, from its structured result (`file.startLine`,
+ * `numLines`, `totalLines`): a Read with `offset`/`limit`, or one the
+ * harness cut at its token cap, shows part of the file. Undefined for a
+ * subagent's Read (its words entered the subagent's context, not the
+ * entity's), a refused or failed Read, and a non-text one.
+ */
+export function readSpanOf(agentId: string | undefined, result: unknown, at: number): ReadSpan | undefined {
+  if (agentId !== undefined) return undefined
+  const file = (result as { type?: unknown; file?: Record<string, unknown> } | undefined)?.type === 'text'
+    ? (result as { file: Record<string, unknown> }).file
+    : undefined
+  const from = file?.['startLine']
+  const count = file?.['numLines']
+  const total = file?.['totalLines']
+  if (typeof from !== 'number' || typeof count !== 'number' || typeof total !== 'number') return undefined
+  return { from, to: Math.min(total, from + Math.max(count, 1) - 1), total, at }
+}
+
+/**
+ * How much of a memory's lines the Reads covered: `read` (all of them,
+ * `at` being when the last needed Read landed), `partly`, or `unread`. With
+ * no span known, the whole file must have been covered.
+ */
+export function coverage(lines: [number, number] | undefined, reads: readonly ReadSpan[]): {
+  state: 'read' | 'partly' | 'unread'
+  at?: number
+} {
+  const total = reads[0]?.total ?? 0
+  const [first, last] = lines ?? [1, Math.max(total, 1)]
+  const seen = new Array<boolean>(last - first + 1).fill(false)
+  let left = seen.length
+  let touched = false
+  for (const span of [...reads].sort((a, b) => a.at - b.at)) {
+    for (let line = Math.max(span.from, first); line <= Math.min(span.to, last); line += 1) {
+      touched = true
+      if (!seen[line - first]) {
+        seen[line - first] = true
+        left -= 1
+      }
+    }
+    if (left === 0) return { state: 'read', at: span.at }
+  }
+  return { state: touched ? 'partly' : 'unread' }
 }
 
 /** Arguments as the pane shows them: the caller's id is the same on every call. */

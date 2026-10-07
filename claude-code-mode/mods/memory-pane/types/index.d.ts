@@ -3,9 +3,14 @@
  * - `context`: its whole [MEMORY] block was in the row that entered context
  * - `summary`: only its summary line was in context; the text shown is from
  *   the spill file the row named (in context only if that file was Read)
+ * - `cut`: its header and opening were in context, the harness's preview of
+ *   an oversized row ending inside it; the rest is in the persisted file
  * - `disk`: nothing of it was in context; it is only in a file the row named
  */
-export type MemoryWhere = 'context' | 'summary' | 'disk'
+export type MemoryWhere = 'context' | 'summary' | 'cut' | 'disk'
+
+/** One Read of a spill file by the entity: its lines `from`–`to` of `total`. */
+export type ReadSpan = { from: number; to: number; total: number; at: number }
 
 export type MemoryCard = {
   /** The id prefix exactly as printed in the header. */
@@ -22,6 +27,8 @@ export type MemoryCard = {
   where: MemoryWhere
   /** The file the full text came from, when it wasn't in context whole. */
   file?: string
+  /** The block's first and last line in `file`, 1-based, as Read counts them. */
+  lines?: [number, number]
 }
 
 /** A file a hook row pointed at instead of putting its content in context. */
@@ -30,8 +37,8 @@ export type SpillFile = {
   /** `hook`: our hooks' spill; `harness`: the harness's persist line. */
   kind: 'hook' | 'harness'
   size?: string
-  /** Epoch ms of the first successful Read of it by the entity, if any. */
-  readAt?: number
+  /** The main conversation's Reads of it (a subagent's put nothing in view). */
+  reads?: ReadSpan[]
 }
 
 export type ToolEntry = {

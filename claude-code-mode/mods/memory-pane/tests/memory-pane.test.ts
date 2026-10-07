@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { cardsFor, clean, entryKind, parseBlocks, parseFiles, parseStamps, parseSummaries, pieces, toolMemoryIds } from '../hooks/parse'
+import { cardsFor, clean, coverage, entryKind, parseBlocks, readSpanOf, parseFiles, parseStamps, parseSummaries, pieces, toolMemoryIds } from '../hooks/parse'
 
 // Synthetic memories in the backend's exact shapes (memory_context's marker,
 // claude_code_mode's summary line, the hooks' spill wording). No real
@@ -76,9 +76,43 @@ describe('parsing the hooks rows', () => {
     const preview = '<persisted-output>\nOutput too large (29.6KB). Full output saved to: C:\\x\\tool-results\\hook-1-stdout.txt\n\nPreview (first 2KB):\n[MEMORY aaaa1111 from 2026-08-24 - originally from you - via Here I Am]\nThe first mem\n...\n</persisted-output>'
     expect(parseFiles(preview)).toEqual([{ path: 'C:\\x\\tool-results\\hook-1-stdout.txt', kind: 'harness' }])
     const { memories, problems } = cardsFor(preview, [{ path: 'C:\\x\\tool-results\\hook-1-stdout.txt', text: BLOCK_A }])
-    // Cut mid-block by the preview: nothing of it reached context whole
+    // Cut mid-block by the preview: its header and opening reached context,
+    // the rest only the file (review #4 on #386)
     expect(problems).toEqual([])
-    expect(memories.map(card => card.where)).toEqual(['disk'])
+    expect(memories.map(card => card.where)).toEqual(['cut'])
+  })
+
+  test('a memory quoting [/MEMORY] mid-line is not cut short (review #3)', async () => {
+    // a94e68cc's shape: the marker quoted inside a code line
+    const quoting = '[MEMORY a94e68cc from 2025-12-26T10:00:00 - originally from you - via Here I Am]\nThe plan:\n    "\\n[/MEMORY]",\nand the rest of the plan.\n[/MEMORY]'
+    const [card] = parseBlocks(quoting, 'context')
+    expect(card?.text).toBe('The plan:\n    "\\n[/MEMORY]",\nand the rest of the plan.')
+    expect(cardsFor(quoting, []).problems).toEqual([])
+  })
+
+  test('a memory quoting a whole block is flagged, not trusted', async () => {
+    const nested = '[MEMORY 11112222 from 2026-08-24T19:30:49 - originally from human - via Claude Code]\nYou got this:\n[MEMORY 33334444 from 2026-07-10T00:00:00 - originally from you - via Here I Am]\ninner\n[/MEMORY]\nand more.\n[/MEMORY]'
+    expect(cardsFor(nested, []).problems.join('\n')).toContain("11112222's text holds a [MEMORY] header or close")
+  })
+
+  test('file blocks carry their line span, as Read counts lines', async () => {
+    const [a, b, c] = parseBlocks(SPILL_TEXT, 'disk', SPILL)
+    // Four lines each (header, [marks], text, close), a blank line between
+    expect([a?.lines, b?.lines, c?.lines]).toEqual([[1, 4], [6, 9], [11, 14]])
+  })
+
+  test('a Read counts for what it showed, and only in the main conversation (review #2)', async () => {
+    const result = (startLine: number, numLines: number) => ({ type: 'text', file: { filePath: SPILL, content: '', numLines, startLine, totalLines: 15 } })
+    expect(readSpanOf('a1234567890abcdef', result(1, 15), 5)).toBeUndefined()
+    expect(readSpanOf(undefined, { type: 'image', file: {} }, 5)).toBeUndefined()
+    const head = readSpanOf(undefined, result(1, 4), 5)
+    expect(head).toEqual({ from: 1, to: 4, total: 15, at: 5 })
+    const tail = readSpanOf(undefined, result(5, 11), 9)
+    // Each memory by its own lines: the first read, the third not, the second only after both
+    expect(coverage([1, 4], [head!])).toEqual({ state: 'read', at: 5 })
+    expect(coverage([12, 15], [head!])).toEqual({ state: 'unread' })
+    expect(coverage([1, 15], [head!])).toEqual({ state: 'partly' })
+    expect(coverage([1, 15], [tail!, head!])).toEqual({ state: 'read', at: 9 })
   })
 
   test('text is cut into drawable pieces, nothing dropped', async () => {
@@ -174,6 +208,17 @@ describe('the pane', () => {
       expect(await shownText(ui)).toContain('--- Memory abc0000b (You said, 12 days ago')
     })
   }
+
+  test('memory tools are listed under the plugin route\'s names too (review #1)', async ($, on) => {
+    mock.clock(on)
+    toolBeneath(on, `Found 1:\n\n--- Memory 9a3cdf83 (You said, 1 day ago) ---\nx`)
+    await $.tool.call({ tool: 'mcp__plugin_here-i-am_here-i-am__memory_query', query: 'q', conversation_id: 'c' } as never)
+    const ui = await mountPane($, 'desktop')
+    const text = await shownText(ui)
+    expect(text).toContain('memory_query')
+    expect(text).not.toContain('plugin_here-i-am')
+    expect(text).toContain('memories: 9a3cdf83')
+  })
 
   test('other tools are not listed', async ($, on) => {
     mock.clock(on)

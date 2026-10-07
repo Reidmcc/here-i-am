@@ -13,14 +13,21 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Entry, MemoryCard, SpillFile, ToolEntry } from '../types'
+import type { Entry, MemoryCard, ReadSpan, SpillFile, ToolEntry } from '../types'
 import {
-  argsText, cardsFor, clip, clock, entryKind, isOurs, normPath, parseFiles, parseStamps, pieces, toolMemoryIds,
+  argsText, cardsFor, clip, clock, coverage, entryKind, isOurs, normPath, parseFiles, parseStamps, pieces,
+  readSpanOf, toolMemoryIds,
 } from './parse'
 
 const PANE = 'memory'
 const TITLE = 'Memory'
-const MEMORY_TOOL = /^mcp__here-i-am__memory_/
+// The memory tools as a manual `claude mcp add here-i-am` names them, and as
+// the claude-code-mode plugin's own .mcp.json does (plugin here-i-am, server
+// here-i-am: the harness's mcp__plugin_<plugin>_<server>__ rule)
+const MEMORY_TOOL = /^mcp__(?:plugin_here-i-am_)?here-i-am__memory_/
+const SERVER_PREFIX = /^mcp__(?:plugin_here-i-am_)?here-i-am__/
+// The person's opened cards, kept to the newest this many keys
+const MAX_OPENED = 200
 const MAX_ENTRIES = 30
 // A memory_read page renders within 44,800 bytes (harness_limits.READ_PAGE_MAX_BYTES),
 // so one result is kept whole up to here
@@ -123,16 +130,25 @@ async function settleTool($: Api, id: string, change: Partial<ToolEntry>): Promi
   )
 }
 
-async function markRead($: Api, path: string, at: number): Promise<void> {
+async function addRead($: Api, path: string, span: ReadSpan): Promise<void> {
   const target = normPath(path)
   const list = await read($, entries)
-  if (!list.some(entry => entry.files.some(file => normPath(file.path) === target && file.readAt === undefined))) return
+  if (!list.some(entry => entry.files.some(file => normPath(file.path) === target))) return
   await update($, entries, current =>
     current.map(entry => ({
       ...entry,
-      files: entry.files.map(file => (normPath(file.path) === target && file.readAt === undefined ? { ...file, readAt: at } : file)),
+      files: entry.files.map(file => (normPath(file.path) === target ? { ...file, reads: [...(file.reads ?? []), span] } : file)),
     })),
   )
+}
+
+function readsLabel(file: SpillFile): string {
+  const reads = file.reads ?? []
+  if (reads.length === 0) return 'not read'
+  return reads.map(span =>
+    span.from === 1 && span.to >= span.total
+      ? `read whole at ${clock(span.at)}`
+      : `lines ${span.from}–${span.to} of ${span.total} read at ${clock(span.at)}`).join('; ')
 }
 
 const KIND_LABEL: Record<Entry['kind'], string> = {
@@ -146,11 +162,18 @@ const KIND_LABEL: Record<Entry['kind'], string> = {
 function whereLabel(card: MemoryCard, files: SpillFile[]): string {
   if (card.where === 'context') return 'in context, whole'
   const file = card.file === undefined ? undefined : files.find(one => normPath(one.path) === normPath(card.file!))
-  const readNote = file?.readAt !== undefined ? `file read at ${clock(file.readAt)}` : 'file NOT read'
+  // Read only when the Reads covered this memory's own lines in the file
+  const covered = coverage(card.lines, file?.reads ?? [])
+  const readNote = covered.state === 'read'
+    ? `its lines read at ${clock(covered.at ?? 0)}`
+    : covered.state === 'partly' ? 'its lines only PARTLY read' : 'file NOT read'
   if (card.where === 'summary') {
     return card.file === undefined
       ? 'summary line only in context; full text unavailable'
       : `summary line in context; full text in a file, ${readNote}`
+  }
+  if (card.where === 'cut') {
+    return `opening in context (the harness's 2 KB preview ends inside it); the rest in a file, ${readNote}`
   }
   return `not in context; in a file, ${readNote}`
 }
@@ -232,7 +255,7 @@ export const register: Register = on => {
     const id = e.tool_use_id
     try {
       await attachTool($, {
-        id, tool: String(e.tool).replace(/^mcp__here-i-am__/, ''), args: argsText(e as Record<string, unknown>),
+        id, tool: String(e.tool).replace(SERVER_PREFIX, ''), args: argsText(e as Record<string, unknown>),
         at: await $.clock.now(), status: 'running', ids: [],
         ...(e.agentId !== undefined ? { agentId: e.agentId } : {}),
       })
@@ -256,11 +279,15 @@ export const register: Register = on => {
     return ran
   })
 
-  // A spill file the entity opened: its text is in context from then on
+  // A spill file the entity opened: the lines that Read showed are in its
+  // context from then on (the main conversation's Reads only)
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
     const ran = await next(e)
     try {
-      if (ran.deny === undefined && ran.isError !== true) await markRead($, String(e.file_path), await $.clock.now())
+      const span = ran.deny === undefined && ran.isError !== true
+        ? readSpanOf(e.agentId, ran.result, await $.clock.now())
+        : undefined
+      if (span !== undefined) await addRead($, String(e.file_path), span)
     } catch {
       // Read-tracking is the pane's; the Read already happened
     }
@@ -275,7 +302,8 @@ export const register: Register = on => {
     const latest = list[list.length - 1]
 
     const toggle = (key: string) => () =>
-      update($, opened, current => (current.includes(key) ? current.filter(one => one !== key) : [...current, key]))
+      update($, opened, current =>
+        current.includes(key) ? current.filter(one => one !== key) : [...current, key].slice(-MAX_OPENED))
 
     // Collapsed, the one line is the newest entry's summary; open, that
     // summary heads its own section below
@@ -343,7 +371,7 @@ export const register: Register = on => {
               {entry.stamps.map(stamp => <Text dimColor wrap="wrap">{clip(stamp, 1000)}</Text>)}
               {entry.files.map(file => (
                 <Text dimColor wrap="wrap">
-                  file{file.kind === 'harness' ? ' (harness persisted)' : ''}{file.size ? ` ${file.size}` : ''}: {file.path} · {file.readAt !== undefined ? `read at ${clock(file.readAt)}` : 'not read'}
+                  file{file.kind === 'harness' ? ' (harness persisted)' : ''}{file.size ? ` ${file.size}` : ''}: {file.path} · {readsLabel(file)}
                 </Text>
               ))}
               {entry.memories.map(memory => card(entry, memory))}
