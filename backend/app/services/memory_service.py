@@ -361,6 +361,13 @@ def created_before(created_at_value: Any, cutoff: datetime) -> bool:
     return parsed < cutoff
 
 
+# Pinecone's integrated-inference upsert_records accepts at most 96 records
+# per request ("Batch size exceeds 96", HTTP 400); stay under it. Delete by id
+# takes at most 1000 ids per request.
+UPSERT_BATCH_SIZE = 50
+DELETE_BATCH_SIZE = 1000
+
+
 async def run_pinecone(fn, *args, **kwargs):
     """
     Run a blocking Pinecone SDK call off the event loop.

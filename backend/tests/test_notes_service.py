@@ -1121,3 +1121,169 @@ class TestNotesVectorSync:
 
         assert summary["indexed"] == 0
         assert "Pinecone not configured" in summary["errors"]
+
+
+class _FakeNotesIndex:
+    """A Pinecone index stand-in recording what vectorize/remove send it.
+
+    Holds ids in a set, enforces the real per-request caps (96 upsert
+    records, 1000 delete ids) by raising like the server does, and can be
+    told to fail the Nth upsert call or every listing.
+    """
+
+    def __init__(self, existing_ids=(), fail_upsert_call=None, fail_listing=False):
+        self.ids = set(existing_ids)
+        self.upsert_sizes = []
+        self.delete_sizes = []
+        self.fail_upsert_call = fail_upsert_call
+        self.fail_listing = fail_listing
+
+    def upsert_records(self, namespace, records):
+        self.upsert_sizes.append(len(records))
+        if len(records) > 96:
+            raise RuntimeError("Batch size exceeds 96")
+        if self.fail_upsert_call == len(self.upsert_sizes):
+            raise RuntimeError("simulated upsert failure")
+        self.ids.update(r["_id"] for r in records)
+
+    def list_paginated(self, namespace, limit, prefix, pagination_token=None):
+        from types import SimpleNamespace
+
+        if self.fail_listing:
+            raise RuntimeError("simulated listing failure")
+        matching = sorted(i for i in self.ids if i.startswith(prefix))
+        start = int(pagination_token or 0)
+        page = matching[start : start + limit]
+        more = start + limit < len(matching)
+        return SimpleNamespace(
+            vectors=[SimpleNamespace(id=i) for i in page],
+            pagination=SimpleNamespace(next=str(start + limit)) if more else None,
+        )
+
+    def delete(self, ids, namespace):
+        self.delete_sizes.append(len(ids))
+        if len(ids) > 1000:
+            raise RuntimeError("too many ids")
+        self.ids.difference_update(ids)
+
+
+class TestNotesVectorizeBatching:
+    """Large notes vectorize in batches under Pinecone's 96-record cap, and a
+    failure never leaves a note without vectors or with its hash recorded."""
+
+    CHUNKS = 200
+
+    @staticmethod
+    def _note(chunks):
+        # 1500-char paragraphs: two never fit in one 2000-char chunk, so each
+        # paragraph is exactly one chunk
+        return "\n\n".join(f"{i:04d}" + "x" * 1496 for i in range(chunks))
+
+    @staticmethod
+    def _ids(count, start=0):
+        return {f"note:private:big.md:{i}" for i in range(start, count)}
+
+    @pytest.fixture
+    def service_with(self, monkeypatch):
+        from app.services.notes_vector_service import NotesVectorService
+
+        def make(index):
+            service = NotesVectorService()
+            monkeypatch.setattr(service, "_target_indexes", lambda label, shared: [index])
+            return service
+
+        return make
+
+    def test_fixture_note_has_the_intended_chunk_count(self):
+        from app.services.notes_vector_service import chunk_note_content
+
+        assert len(chunk_note_content(self._note(self.CHUNKS))) == self.CHUNKS
+
+    @pytest.mark.asyncio
+    async def test_no_upsert_call_exceeds_the_batch_size(self, service_with):
+        from app.services.memory_service import UPSERT_BATCH_SIZE
+
+        index = _FakeNotesIndex()
+        service = service_with(index)
+
+        ok = await service.vectorize_note("TestEntity", "big.md", self._note(self.CHUNKS))
+
+        assert ok is True
+        assert UPSERT_BATCH_SIZE < 96
+        assert max(index.upsert_sizes) <= UPSERT_BATCH_SIZE
+        assert sum(index.upsert_sizes) == self.CHUNKS
+        assert index.ids == self._ids(self.CHUNKS)
+        assert ("private:TestEntity", "big.md") in service._synced_hashes
+
+    @pytest.mark.asyncio
+    async def test_failure_midway_keeps_old_vectors_and_leaves_hash_unrecorded(
+        self, service_with
+    ):
+        # The note was indexed before at 300 chunks; the rewrite fails on its
+        # second batch
+        index = _FakeNotesIndex(existing_ids=self._ids(300), fail_upsert_call=2)
+        service = service_with(index)
+
+        ok = await service.vectorize_note("TestEntity", "big.md", self._note(self.CHUNKS))
+
+        assert ok is False
+        assert index.delete_sizes == []  # nothing pruned before the upsert finished
+        assert index.ids == self._ids(300)  # still searchable
+        assert ("private:TestEntity", "big.md") not in service._synced_hashes
+
+    @pytest.mark.asyncio
+    async def test_prune_removes_only_chunks_past_the_new_end(self, service_with):
+        index = _FakeNotesIndex(existing_ids=self._ids(300))
+        service = service_with(index)
+
+        ok = await service.vectorize_note("TestEntity", "big.md", self._note(self.CHUNKS))
+
+        assert ok is True
+        assert index.ids == self._ids(self.CHUNKS)
+
+    @pytest.mark.asyncio
+    async def test_fallback_delete_reaches_past_64_and_past_the_known_count(
+        self, service_with
+    ):
+        from app.services.memory_service import DELETE_BATCH_SIZE
+
+        # Listing fails; the file was last written at 1500 chunks
+        index = _FakeNotesIndex(existing_ids=self._ids(1500), fail_listing=True)
+        service = service_with(index)
+        service._chunk_counts[("private:TestEntity", "big.md")] = 1500
+
+        ok = await service.vectorize_note("TestEntity", "big.md", self._note(self.CHUNKS))
+
+        assert ok is True
+        assert index.ids == self._ids(self.CHUNKS)
+        assert max(index.delete_sizes) <= DELETE_BATCH_SIZE
+
+    @pytest.mark.asyncio
+    async def test_fallback_delete_without_a_known_count_uses_the_generous_bound(
+        self, service_with
+    ):
+        # After a restart nothing is known; the bound still covers a 156-chunk note
+        index = _FakeNotesIndex(existing_ids=self._ids(156), fail_listing=True)
+        service = service_with(index)
+
+        removed = await service.remove_note_vectors("TestEntity", "big.md")
+
+        assert removed is True
+        assert index.ids == set()
+
+    @pytest.mark.asyncio
+    async def test_failed_removal_stays_tracked_for_retry(self, service_with):
+        index = _FakeNotesIndex(existing_ids=self._ids(10))
+        service = service_with(index)
+        key = ("private:TestEntity", "big.md")
+        service._synced_hashes[key] = "old-hash"
+
+        def failing_delete(ids, namespace):
+            raise RuntimeError("simulated delete failure")
+
+        index.delete = failing_delete
+
+        removed = await service.remove_note_vectors("TestEntity", "big.md")
+
+        assert removed is False
+        assert key in service._synced_hashes
