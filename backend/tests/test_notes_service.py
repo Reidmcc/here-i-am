@@ -1287,3 +1287,48 @@ class TestNotesVectorizeBatching:
 
         assert removed is False
         assert key in service._synced_hashes
+
+    @pytest.mark.asyncio
+    async def test_failed_prune_after_a_good_upsert_leaves_hash_unrecorded(
+        self, service_with
+    ):
+        index = _FakeNotesIndex(existing_ids=self._ids(300))
+        service = service_with(index)
+        key = ("private:TestEntity", "big.md")
+        service._chunk_counts[key] = 300
+
+        def failing_delete(ids, namespace):
+            raise RuntimeError("simulated delete failure")
+
+        index.delete = failing_delete
+
+        ok = await service.vectorize_note("TestEntity", "big.md", self._note(self.CHUNKS))
+
+        assert ok is False
+        assert key not in service._synced_hashes
+        # Chunks 200..299 may still be there; the next fallback must reach them
+        assert service._chunk_counts[key] == 300
+
+    @pytest.mark.asyncio
+    async def test_shared_note_failing_in_one_of_two_indexes_is_not_done(
+        self, monkeypatch
+    ):
+        from app.services.notes_vector_service import NotesVectorService
+
+        good = _FakeNotesIndex()
+        bad = _FakeNotesIndex(fail_upsert_call=1)
+        service = NotesVectorService()
+        # Both orders: a "last index decides" bug gets through only when the
+        # failing index comes first, an "any index" bug only when it's second
+        for order in ([bad, good], [good, bad]):
+            bad.upsert_sizes.clear()
+            monkeypatch.setattr(
+                service, "_target_indexes", lambda label, shared, o=order: o
+            )
+
+            ok = await service.vectorize_note(
+                "TestEntity", "big.md", self._note(self.CHUNKS), shared=True
+            )
+
+            assert ok is False
+            assert ("shared", "big.md") not in service._synced_hashes
