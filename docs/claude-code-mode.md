@@ -803,7 +803,13 @@ two layers:
   words (`hook_util.split_prompt_for_recording`); a delivery is never
   persisted or vectorized as `role="human"`, so the human-corpus source
   filter stays pure. A block nested inside a `<system-reminder>` is harness
-  echo, not a delivery, and is discarded with the reminder.
+  echo, not a delivery, and is discarded with the reminder. The reverse is
+  not true: a plumbing tag quoted inside a delivery's body is the sender's
+  words and stays in the letter. A plumbing block counts only in the
+  harness's measured shape, its open tag starting a line and its close
+  ending one; a tag mentioned mid-sentence, in the human's words or a
+  letter's, is speech (2026-10-07: a letter quoting the hook wrapper inline
+  was archived with the quote cut out).
 - **Recorded as the entity's own words, channel marked.** Each delivery is
   sent to `/retrieve` as a `peer_messages` entry and recorded on the
   receiving conversation as an ASSISTANT row with
