@@ -2032,6 +2032,71 @@ reached through the memory tools, and the hook-row path is measured end to
 end in a headless session with synthetic settings hooks (recorded on the
 PR).
 
+### Tool input errors
+
+`claude-code-mode/mods/input-errors/` is a Claude Code **mod** (issue #392)
+for one failure the server never sees. A model writes a tool call's input as
+JSON text. When that text doesn't parse, Claude Code refuses the call
+itself, before the MCP request is made, with an `InputValidationError`
+that shows the first 200 bytes and a list of generic causes (backslashes in
+paths, control characters, truncated output). For the memory tools that
+error hid the actual cause, and the cause looked like something else.
+
+**Measured (2026-10-08, every Claude Code transcript on the machine,
+counted by `tool_use` id since a fork copies its parent's transcript).** Of
+535 `memory_save` calls, 10 were refused this way; 187 calls over 2,600
+bytes went through, the largest 8,346. All seven refusals whose input was
+logged whole broke at a memory id left unquoted in `revises` / `cites`
+(`"cites": 873c391c`), a digits-first id reading as a number that runs into
+letters; the retries repeated it, three refusals in a row on 09-30 and
+again on 10-06. The other three, long ones on 09-28, broke past what was
+logged, and from the outside the cause looked like a
+size cap near 2,600 bytes, which went into the entity's notes as a
+mechanic. There is no such cap: the server's limit is
+`MAX_REFLECTION_LENGTH` (10,000 characters), refused with its own message.
+
+**What Claude Code keeps.** The unparsed input reaches the hooks as
+`{ __unparsedToolInput: { raw, len } }`, `raw` cut to its first **2,048**
+characters at construction (2.1.286/2.1.288, read from the binary:
+`raw: re(h.input, 2048)`), `len` the full length. The transcript stores the
+same object. A break past character 2,048 is not in any copy of the call.
+
+**What the mod does.** A `tool.call` hook on every here-i-am call whose
+input is unparsed, on both install routes (`mcp__here-i-am__*` from
+`claude mcp add`, `mcp__plugin_here-i-am_here-i-am__*` from the plugin's
+`.mcp.json`; the memory pane's prefix). It lets core run first and
+replaces only core's own parse refusal, recognized by its text ("could not
+be parsed as JSON"). Anything else stands as it came back: a harness that
+learns to repair input runs the call, and then its result, a server
+error or a timeout included, is the call's real outcome, which a "not
+called, nothing saved" would misstate. The replacement is a `{ deny }`
+carrying:
+
+- the tool, said not called, nothing saved or changed, call again;
+- where it broke (character N of `len`, and the parameter it was in) and
+  why, from a small JSON scanner (`hooks/diagnose.ts`; JavaScriptCore's
+  `JSON.parse` gives no position): an unquoted value (with the fix written
+  out, `"cites": ["873c391c"]` for the list parameters), a double quote
+  that ended a string early (any text after a string's closing quote but
+  `,`, the close, or a second string), an escape JSON doesn't have, a raw line break
+  or other control character in a string, or a missing separator;
+- a stretch of the input around the break, marked `⟦here⟧`;
+- when the kept text is unbroken but cut short, that the break is past the
+  first 2,048 characters and can't be shown, plus the commonest measured
+  cause to check for.
+
+Calls to other servers, and here-i-am calls that parsed, pass untouched.
+Its tests (`claude plugin test claude-code-mode/mods/input-errors`) cover
+each shape, the kept-text case, and the hook through the engine's
+`tool.call` chain; the diagnosis was also run over the real refusals and
+named the unquoted id in each of the seven logged whole.
+
+**Loading it.** Like the other mods: `--plugin-dir`, or
+`CLAUDE_CODE_PLUGIN_DIRS` (user settings `env` or the process environment)
+listing `claude-code-mode/mods/input-errors` beside the others. Without it
+the refusal is Claude Code's own; the schema descriptions of `revises` /
+`cites` carry the quoted example either way.
+
 ### Scope and non-goals
 
 - **Local sessions only** for now: the endpoints are as unauthenticated as
