@@ -1,0 +1,5 @@
+{
+  "name": "here-i-am-input-errors",
+  "version": "0.1.0",
+  "description": "Here I Am: when a here-i-am tool call's input is not valid JSON, says where it broke and why (an unquoted memory id, a stray quote, a bad escape) instead of Claude Code's first-200-bytes error (issue #392)."
+}

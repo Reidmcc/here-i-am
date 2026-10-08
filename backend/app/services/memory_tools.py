@@ -2485,7 +2485,8 @@ MEMORY_SAVE_SCHEMA = {
                 "Ids of your own earlier memories this reflection corrects, "
                 "supersedes, or marks outdated: your reflections, or things you said. "
                 "Not the human's words (cite those instead). "
-                f"At most {MAX_LINK_TARGETS}."
+                f"At most {MAX_LINK_TARGETS}. A list of quoted strings, even for one id: "
+                '["a1b2c3d4"].'
             ),
         },
         "cites": {
@@ -2495,7 +2496,8 @@ MEMORY_SAVE_SCHEMA = {
                 "Ids of the memories this reflection is based on: anything in your "
                 "experience, the human's words included. Shown as a sources line "
                 "(ids, dates, who spoke) wherever the reflection surfaces. "
-                f"At most {MAX_LINK_TARGETS}."
+                f"At most {MAX_LINK_TARGETS}. A list of quoted strings, even for one id: "
+                '["a1b2c3d4"].'
             ),
         },
         "include_released": {
