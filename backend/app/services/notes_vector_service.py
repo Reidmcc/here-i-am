@@ -425,17 +425,25 @@ class NotesVectorService:
                 summary["errors"].append(f"{label_prefix}/{filename}: vectorization failed")
 
     @staticmethod
-    def _files_on_disk(labels: List[str], shared: bool) -> Optional[Set[str]]:
+    def _files_on_disk(labels: List[str], shared: bool) -> Set[str]:
         """
         Filenames the notes listing shows for these entities' private folders
-        (union), or for the shared folder. None if any listing failed: then
-        a file's absence is unknown, and nothing may be pruned on it.
+        (union), or for the shared folder. Raises if a file's absence can't
+        be known, so nothing is pruned on it: a listing failed, or the notes
+        base folder itself is missing — list_notes reads a missing folder as
+        an empty one, which is true of an entity that has no notes yet but
+        not of a base path that didn't resolve (the relative default started
+        from another cwd, an unmounted drive), where it would read as every
+        note deleted.
         """
+        base = notes_service.base_dir
+        if not base.is_dir():
+            raise RuntimeError(f"notes folder {base} not found")
         files: Set[str] = set()
         for label in [""] if shared else labels:
             listing = notes_service.list_notes(label, shared=shared)
             if not listing.get("success"):
-                return None
+                raise RuntimeError(f"listing note files failed: {listing.get('error')}")
             files.update(f["filename"] for f in listing["files"])
         return files
 
@@ -460,6 +468,8 @@ class NotesVectorService:
         # Per orphaned file: True while every chunk found so far was deleted.
         # A shared note counts once however many indexes held it.
         removed: Dict[Tuple[str, str], bool] = {}
+        # Per orphaned file: its keys in the sync's in-memory maps
+        tracked: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
         for index_name, labels in owners.items():
             index = memory_service.get_index(index_name)
             if index is None:
@@ -478,11 +488,10 @@ class NotesVectorService:
                 # Disk is read AFTER the ids are listed: a note created in
                 # between is on disk by then and kept, so chunks a concurrent
                 # sync has just written are never taken for orphans
-                on_disk = self._files_on_disk(labels, shared)
-                if on_disk is None:
-                    summary["errors"].append(
-                        f"{scope}: listing note files failed, orphans not pruned"
-                    )
+                try:
+                    on_disk = self._files_on_disk(labels, shared)
+                except Exception as e:
+                    summary["errors"].append(f"{scope}: {e}; orphans not pruned")
                     continue
 
                 orphans: Dict[str, List[str]] = {}
@@ -510,6 +519,25 @@ class NotesVectorService:
                     key = (scope, filename)
                     landed = all(vid in deleted for vid in vids)
                     removed[key] = removed.get(key, True) and landed
+                    tracked[key] = (
+                        [("shared", filename)] if shared
+                        else [(self._scope_key(label, False), filename) for label in labels]
+                    )
+
+        # The sync's record of a pruned file must not say its chunks are in
+        # place: a file missing only at the disk read (a delete-then-write
+        # save, a note recreated under the same name) would otherwise count
+        # as unchanged forever. Fully pruned: forget it, and the next sync
+        # vectorizes it if it's back. Not fully: a hash no content matches,
+        # so the sync re-vectorizes it if it's back and retries the removal
+        # if it's still gone.
+        for key, landed in removed.items():
+            for sync_key in tracked[key]:
+                if landed:
+                    self._synced_hashes.pop(sync_key, None)
+                    self._chunk_counts.pop(sync_key, None)
+                else:
+                    self._synced_hashes[sync_key] = ""
 
         summary["removed"] += sum(removed.values())
 

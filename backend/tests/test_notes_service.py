@@ -1556,6 +1556,89 @@ class TestNotesReindexPrunesOrphans:
         assert "note:private:new.md:0" in index.ids
 
     @pytest.mark.asyncio
+    async def test_missing_notes_folder_is_not_read_as_every_note_deleted(
+        self, world, monkeypatch
+    ):
+        # list_notes reads a missing folder as an empty one; a base path that
+        # didn't resolve must not empty notes_search
+        service, indexes, root, _ = world
+        monkeypatch.setattr(notes_service, "_base_dir", root / "not-mounted")
+        ids = {"note:private:index.md:0", "note:shared:rules.md:0", "note:shared:rules.md:1"}
+        indexes["index-a"].ids.update(ids)
+
+        summary = await service.reindex_all()
+
+        assert summary["removed"] == 0
+        assert indexes["index-a"].ids == ids
+        assert any("not found" in e and "orphans not pruned" in e for e in summary["errors"])
+
+    @staticmethod
+    def _hide_during_prune_listing(monkeypatch, index, path):
+        """Delete path when the prune lists private ids (after the reindex
+        vectorized it, before the prune reads the disk): a delete-then-write
+        save caught mid-way. Returns the text to put back."""
+        text = path.read_text(encoding="utf-8")
+        real_listing = index.list_paginated
+
+        def listing(namespace, limit, prefix, pagination_token=None):
+            if prefix == "note:private:" and path.exists():
+                path.unlink()
+            return real_listing(namespace, limit, prefix, pagination_token)
+
+        monkeypatch.setattr(index, "list_paginated", listing)
+        return text
+
+    @pytest.mark.asyncio
+    async def test_file_back_after_its_chunks_were_pruned_is_revectorized(
+        self, world, monkeypatch
+    ):
+        service, indexes, root, _ = world
+        index = indexes["index-a"]
+        path = root / "Ada" / "note.md"
+        self._write(root, "Ada", "note.md")
+        text = self._hide_during_prune_listing(monkeypatch, index, path)
+
+        summary = await service.reindex_all()
+        assert summary["removed"] == 1 and index.ids == set()
+
+        path.write_text(text, encoding="utf-8")  # the save completes
+        summary = await service.sync_entity_notes("Ada")
+
+        assert summary["indexed"] == 1
+        assert index.ids == {"note:private:note.md:0"}
+
+    @pytest.mark.parametrize("file_comes_back", [True, False])
+    @pytest.mark.asyncio
+    async def test_failed_prune_leaves_the_sync_something_to_retry(
+        self, world, monkeypatch, file_comes_back
+    ):
+        service, indexes, root, _ = world
+        index = indexes["index-a"]
+        path = root / "Ada" / "note.md"
+        self._write(root, "Ada", "note.md")
+        text = self._hide_during_prune_listing(monkeypatch, index, path)
+        real_delete = index.delete
+        monkeypatch.setattr(index, "delete", self._refuse_deletes)
+
+        summary = await service.reindex_all()
+        assert summary["removed"] == 0
+        assert index.ids == {"note:private:note.md:0"}
+
+        monkeypatch.setattr(index, "delete", real_delete)
+        if file_comes_back:
+            path.write_text(text, encoding="utf-8")
+        summary = await service.sync_entity_notes("Ada")
+
+        if file_comes_back:
+            # re-vectorized, not counted unchanged on the stale hash
+            assert summary["indexed"] == 1 and summary["unchanged"] == 0
+            assert index.ids == {"note:private:note.md:0"}
+        else:
+            # still tracked, so the sync retries the removal
+            assert summary["removed"] == 1
+            assert index.ids == set()
+
+    @pytest.mark.asyncio
     async def test_route_reports_removed(self, monkeypatch):
         import app.routes.notes as notes_routes
 
