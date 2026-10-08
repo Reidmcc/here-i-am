@@ -12,6 +12,20 @@
 
 export const RAW_KEPT = 2048
 
+// The server's tool names on both install routes: `claude mcp add`
+// (mcp__here-i-am__*) and the plugin's .mcp.json
+// (mcp__plugin_here-i-am_here-i-am__*), as the memory pane matches them
+export const SERVER_PREFIX = /^mcp__(?:plugin_here-i-am_)?here-i-am__/
+
+// Core's refusal of an input that did not parse, as its text opens on
+// 2.1.286/2.1.288. Any other result, an error included, is not ours to
+// relabel.
+const CORE_REFUSAL = 'could not be parsed as JSON'
+
+export function isCoreParseRefusal(ran: { isError?: boolean; text?: string }): boolean {
+  return ran.isError === true && typeof ran.text === 'string' && ran.text.includes(CORE_REFUSAL)
+}
+
 export type Break =
   | { kind: 'end'; pos: number; key?: string }
   | { kind: 'bare'; pos: number; token: string; key?: string }
@@ -53,8 +67,10 @@ export function findBreak(raw: string): Break | null {
     return fail({ kind: 'bare', pos: i, token: m[0] })
   }
   // After a value inside an object or array, where `,` or a close belongs.
-  // Text right after a string's closing quote means the quote ended the
-  // string early: an unescaped `"` inside the text.
+  // After a string's closing quote only `,` or the close is legal, so any
+  // other text there means the quote ended the string early: an unescaped
+  // `"` inside the text. A second `"` stays `unexpected`: two strings with
+  // no comma between them is the likelier reading.
   const separator = (close: string): boolean => {
     const valueEnd = i
     ws()
@@ -67,7 +83,7 @@ export function findBreak(raw: string): Break | null {
       i++
       return false
     }
-    if (raw[valueEnd - 1] === '"' && WORD.test(raw[i])) {
+    if (raw[valueEnd - 1] === '"' && raw[i] !== '"') {
       return fail({ kind: 'quote', pos: valueEnd - 1 })
     }
     return fail({ kind: 'unexpected', pos: i, char: raw[i] })
@@ -236,7 +252,7 @@ function cause(found: Break, raw: string): string {
 
 // The whole message the model reads in place of Claude Code's own
 export function explain(tool: string, raw: string, len: number): string {
-  const name = tool.replace(/^mcp__here-i-am__/, '')
+  const name = tool.replace(SERVER_PREFIX, '')
   const head =
     `[HERE I AM] ${name} was not called: its input is not valid JSON, so Claude Code ` +
     'refused it before it reached the Here I Am server. Nothing was saved or changed. ' +

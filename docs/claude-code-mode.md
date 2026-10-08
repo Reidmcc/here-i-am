@@ -2061,17 +2061,24 @@ characters at construction (2.1.286/2.1.288, read from the binary:
 `raw: re(h.input, 2048)`), `len` the full length. The transcript stores the
 same object. A break past character 2,048 is not in any copy of the call.
 
-**What the mod does.** A `tool.call` hook on every `mcp__here-i-am__*` call
-whose input is unparsed: it lets core run first, so a harness that learns
-to repair input runs the call and its result stands, and replaces only
-core's refusal, with `{ deny }` carrying:
+**What the mod does.** A `tool.call` hook on every here-i-am call whose
+input is unparsed, on both install routes (`mcp__here-i-am__*` from
+`claude mcp add`, `mcp__plugin_here-i-am_here-i-am__*` from the plugin's
+`.mcp.json`; the memory pane's prefix). It lets core run first and
+replaces only core's own parse refusal, recognized by its text ("could not
+be parsed as JSON"). Anything else stands as it came back: a harness that
+learns to repair input runs the call, and then its result, a server
+error or a timeout included, is the call's real outcome, which a "not
+called, nothing saved" would misstate. The replacement is a `{ deny }`
+carrying:
 
 - the tool, said not called, nothing saved or changed, call again;
 - where it broke (character N of `len`, and the parameter it was in) and
   why, from a small JSON scanner (`hooks/diagnose.ts`; JavaScriptCore's
   `JSON.parse` gives no position): an unquoted value (with the fix written
   out, `"cites": ["873c391c"]` for the list parameters), a double quote
-  that ended a string early, an escape JSON doesn't have, a raw line break
+  that ended a string early (any text after a string's closing quote but
+  `,`, the close, or a second string), an escape JSON doesn't have, a raw line break
   or other control character in a string, or a missing separator;
 - a stretch of the input around the break, marked `⟦here⟧`;
 - when the kept text is unbroken but cut short, that the break is past the

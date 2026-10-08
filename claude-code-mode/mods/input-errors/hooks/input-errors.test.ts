@@ -27,6 +27,20 @@ describe('findBreak', () => {
     expect(findBreak(raw)).toEqual({ kind: 'quote', pos: raw.indexOf('"hi') , key: 'content' })
   })
 
+  test('finds a stray quote whatever follows it, non-ASCII and brackets included', () => {
+    for (const raw of [
+      '{"content": "the hook said "[HERE I AM] hi" ok"}',
+      '{"content": "sie sagte "über" ok"}',
+      '{"content": "the line "…and then" ok"}',
+    ]) {
+      expect(findBreak(raw)).toEqual({ kind: 'quote', pos: raw.indexOf('"', 13), key: 'content' })
+    }
+  })
+
+  test('reads two strings with no comma between them as a missing comma', () => {
+    expect(findBreak('{"a": "x" "b": "y"}')).toMatchObject({ kind: 'unexpected', char: '"' })
+  })
+
   test('finds a bad escape and a raw line break', () => {
     const escape = '{"content": "C:\\Users\\me"}'
     expect(findBreak(escape)).toEqual({ kind: 'escape', pos: escape.indexOf('\\U'), key: 'content' })
@@ -90,12 +104,16 @@ describe('explain', () => {
 })
 
 describe('the hook', () => {
+  const SERVER_ERROR = "Error: Nothing was saved. cites: No memory found with ID '873c391c'"
+
   // Core beneath the mod: refuses an unparsed input as Claude Code does,
-  // and records whether any call reached it
-  function core(on: any, seen: string[], repaired = false) {
+  // or (repaired) runs it and answers as the server would; records every
+  // call that reached it
+  function core(on: any, seen: string[], repaired?: 'ok' | 'server-error') {
     on('tool.call', async (_$: any, e: any) => {
       seen.push(e.tool)
       if (e.__unparsedToolInput && !repaired) return { isError: true, result: CORE_REFUSAL, text: CORE_REFUSAL }
+      if (repaired === 'server-error') return { isError: true, result: SERVER_ERROR, text: SERVER_ERROR }
       return { result: 'Saved reflection as memory abcd1234.', text: 'Saved reflection as memory abcd1234.' }
     })
   }
@@ -109,11 +127,29 @@ describe('the hook', () => {
     expect(text).toContain('`873c391c` is not in quotes')
   })
 
+  test("acts on the plugin route's tool names too, and names the tool bare", async ($, on) => {
+    const seen: string[] = []
+    core(on, seen)
+    const tool = 'mcp__plugin_here-i-am_here-i-am__memory_save'
+    const ran: any = await $.tool.call({ tool, __unparsedToolInput: { raw: BARE_CITES, len: BARE_CITES.length } } as any)
+    const text = ran.deny ?? ran.text
+    expect(text.startsWith('[HERE I AM] memory_save was not called')).toBe(true)
+    expect(text).toContain('`873c391c` is not in quotes')
+  })
+
   test('leaves a repaired call\'s result alone', async ($, on) => {
     const seen: string[] = []
-    core(on, seen, true)
+    core(on, seen, 'ok')
     const ran: any = await $.tool.call({ tool: SAVE, __unparsedToolInput: { raw: BARE_CITES, len: BARE_CITES.length } } as any)
     expect(ran.text).toBe('Saved reflection as memory abcd1234.')
+  })
+
+  test("leaves a repaired call's error alone: only core's parse refusal is replaced", async ($, on) => {
+    const seen: string[] = []
+    core(on, seen, 'server-error')
+    const ran: any = await $.tool.call({ tool: SAVE, __unparsedToolInput: { raw: BARE_CITES, len: BARE_CITES.length } } as any)
+    expect(ran.deny).toBe(undefined)
+    expect(ran.text).toBe(SERVER_ERROR)
   })
 
   test('leaves other servers\' calls and parsed calls alone', async ($, on) => {
