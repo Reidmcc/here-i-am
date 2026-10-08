@@ -1585,9 +1585,12 @@ files the native notes tools use:
   file that taught this was a 259 KB note (156 chunks) whose one-call
   upsert was refused on every sync after a restart, with its old chunks
   already deleted (PR #389). The hash map is in-memory: a backend restart means one full
-  (idempotent) re-vectorization on the next sync, and deletions made while
-  the backend was down are caught only by a manual
-  `POST /api/notes/reindex`.
+  (idempotent) re-vectorization on the next sync. The sync removes only
+  files it has tracked since the backend started, so a note deleted while
+  the backend was down, or before the first sync after a restart, keeps
+  its chunks in `notes_search` until a manual `POST /api/notes/reindex`,
+  which lists every note id in each entity's index and deletes those whose
+  file is no longer on disk (reported as `removed`).
 - Native-side correctness is unaffected in the meantime: `notes_read`
   falls back to disk content on any hash mismatch, and the per-conversation
   notes seed is frozen anyway.
