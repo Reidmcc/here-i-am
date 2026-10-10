@@ -176,7 +176,6 @@ Measured 2026-09-16 on this Claude Code build:
 | tool result (Bash, MCP) | ~50 KB (51,200 bytes) | persisted, 2 KB preview inline |
 | MCP tool result | ~25k tokens by the harness's counter (2.84 chars/token) | refused outright |
 | the `Read` tool | 25k tokens per page | a partial view with offset paging; nothing persisted, nothing lost |
-| the context itself | the auto-compact window less 33,000 tokens (~967k at 1M, ~467k at 500k; measured 2026-09-24) | compacted to a summary (see "Compaction survival") |
 
 The hook-stdout line was bracketed from 1,531 real hook outputs (9,997
 characters landed, 10,009 were persisted): the hooks' earlier 18 KB budget
@@ -1205,14 +1204,9 @@ backward read arrived (issue #351).
   harness-window resolution, `HIM_COMPACT_LINE`, and `/log-assistant`'s
   `compact_window` / `compact_reserve`): none of it served anything else.
   The researcher sees context fullness in the Claude Code UI; nothing
-  reports it to the entity. The line itself stays measured in
-  `services/harness_limits.py` as a record (the window less 33,000 — an
-  output reserve of min(max output, 20,000), then a 13,000-token buffer,
-  read from the 2.1.280 binary and confirmed against every recorded auto
-  compaction); the compaction mod sizes the talk it returns from the
-  engine's own figure. The practice that replaces the countdown is in the
-  rooms, not the code: a room with work in flight keeps its notes current
-  as it goes.
+  reports it to the entity. The practice that replaces the countdown is
+  in the rooms, not the code: a room with work in flight keeps its notes
+  current as it goes.
 - **Post-compaction re-injection.** `SessionStart` fires with
   `source: "compact"` right after compaction, and its stdout is injected;
   the backend answers with `build_post_compact_context`: a reorientation
