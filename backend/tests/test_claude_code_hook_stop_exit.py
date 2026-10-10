@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 HOOKS_DIR = Path(__file__).resolve().parents[2] / "claude-code-mode" / "hooks"
 
 
@@ -107,15 +109,31 @@ def test_a_recording_failure_on_the_continuation_is_silent(tmp_path):
     assert _stop(tmp_path, backend_down=True, stop_hook_active=True) == (0, "", "")
 
 
-def test_a_turn_near_the_compaction_line_is_recorded_and_nothing_else(tmp_path):
-    # ~95% of the 1M default's line: the gauge would have spoken here
-    assert _stop(tmp_path, input_tokens=920_000) == (0, "", "")
-    # No state left behind for a later hook to print
-    assert not list(tmp_path.glob("here-i-am-sessions/*gauge*"))
-    payload = {"session_id": "stop-session", "prompt": "hello"}
-    code, out, _ = _run(
-        "user_prompt_submit", payload, tmp_path, body={"context": "", "retrieval_status": "ran"}
-    )
-    assert code == 0
-    assert "auto-compaction line" not in out
-    assert "At the end of your last turn" not in out
+def _files(directory):
+    return sorted(str(p.relative_to(directory)) for p in directory.rglob("*") if p.is_file())
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ["hello", "<system-reminder>\ntick\n</system-reminder>"],
+    ids=["recorded-prompt", "plumbing-only-prompt"],
+)
+def test_a_turn_near_the_compaction_line_changes_nothing_the_entity_is_told(tmp_path, prompt):
+    # The invariant, whatever words a future notice would use: the next
+    # prompt's output is byte-equal with and without a Stop at ~95% of the
+    # 1M default's line (where the gauge would have spoken) before it
+    quiet, near = tmp_path / "quiet", tmp_path / "near"
+    quiet.mkdir()
+    near.mkdir()
+    before = _files(near)
+    assert _stop(near, input_tokens=920_000) == (0, "", "")
+    # The Stop leaves nothing behind for a later hook to read, under any name
+    assert _files(near) == sorted([*before, "transcript.jsonl"])
+
+    payload = {"session_id": "stop-session", "prompt": prompt}
+    body = {"context": "", "retrieval_status": "ran"}
+    told_quiet = _run("user_prompt_submit", payload, quiet, body=body)
+    told_near = _run("user_prompt_submit", payload, near, body=body)
+    assert told_quiet[0] == 0
+    assert told_quiet[1]  # the hook does say something; the two must match
+    assert told_near == told_quiet

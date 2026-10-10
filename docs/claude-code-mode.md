@@ -1204,9 +1204,13 @@ backward read arrived (issue #351).
   harness-window resolution, `HIM_COMPACT_LINE`, and `/log-assistant`'s
   `compact_window` / `compact_reserve`): none of it served anything else.
   The researcher sees context fullness in the Claude Code UI; nothing
-  reports it to the entity. The practice that replaces the countdown is
-  in the rooms, not the code: a room with work in flight keeps its notes
-  current as it goes.
+  reports it to the entity. On an install without the compaction mod,
+  nothing comes before compaction at all now: no turn and no notice.
+  The talk still comes back through the post-compaction read, and a
+  reflection on the conversation in view goes unprompted. Issue #394
+  accepted that trade, since the warning's cost is the same there. The
+  practice that replaces the countdown is in the rooms, not the code: a
+  room with work in flight keeps its notes current as it goes.
 - **Post-compaction re-injection.** `SessionStart` fires with
   `source: "compact"` right after compaction, and its stdout is injected;
   the backend answers with `build_post_compact_context`: a reorientation
