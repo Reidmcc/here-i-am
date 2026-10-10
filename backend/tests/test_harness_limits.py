@@ -62,14 +62,6 @@ class TestTheLimitsHoldTogether:
             line = hl.auto_compact_line(window)
             assert line - 3_000 <= earliest <= line <= latest
 
-    def test_hooks_compact_fallbacks_match_the_backend(self):
-        source = (HOOKS_DIR / "hook_util.py").read_text(encoding="utf-8")
-        window = re.search(r"^DEFAULT_COMPACT_WINDOW = (\d+)$", source, re.MULTILINE)
-        reserve = re.search(r"^DEFAULT_COMPACT_RESERVE = (\d+)$", source, re.MULTILINE)
-        assert window and reserve, "hook_util's compaction fallbacks not found"
-        assert int(window.group(1)) == hl.AUTO_COMPACT_DEFAULT_WINDOW_TOKENS
-        assert int(reserve.group(1)) == hl.AUTO_COMPACT_RESERVE_TOKENS
-
     def test_read_tool_is_the_wider_channel(self):
         # A spill file over the tool-result persist line still lands whole
         # through the Read tool (in pages past its cap, never persisted), so

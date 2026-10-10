@@ -120,8 +120,7 @@ def retrieval_body(items: list, **extra) -> dict:
 
 
 def spill_files(tmp_path) -> list:
-    # Spills are .md; the context gauge keeps its per-session record
-    # (.json) in the same directory, and a compact SessionStart writes one
+    # Spills are .md; other per-session state may share the directory
     return sorted(p.name for p in (tmp_path / "here-i-am-sessions").glob("*.md"))
 
 

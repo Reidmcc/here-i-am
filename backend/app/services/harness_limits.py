@@ -46,7 +46,10 @@ re-measurement is a constant edit that test_harness_limits checks.
 
 One more line bounds the context itself rather than a channel into it:
 
-- AUTO-COMPACTION (issue #365): fires at the auto-compact WINDOW minus
+- AUTO-COMPACTION (measured for issue #365's context gauge; issue #394
+  removed the gauge, and nothing in this codebase computes the line now —
+  the compaction mod reads the engine's own — so this is the record of
+  where it is, kept with its recipe): fires at the auto-compact WINDOW minus
   min(max output tokens, 20,000) minus a 13,000-token buffer — read from
   the Claude Code 2.1.280 binary (2026-09-24): the window is, first found,
   CLAUDE_CODE_AUTO_COMPACT_WINDOW (an integer, clamped to [100k, 1M]),
@@ -54,8 +57,7 @@ One more line bounds the context itself rather than a channel into it:
   absent), the server-pushed `autoCompactWindowsCache[<model>]` in the
   global config, a server clientdata slot, an experiment flag, and the
   model default — never above the model's own context size, and none at
-  all when auto-compaction is off (hook_util has the details a hook can
-  act on);
+  all when auto-compaction is off;
   the effective window subtracts the output reserve, and the compact
   level starts 13,000 under that. Every current model's max output is
   over 20,000, so the line is the window less 33,000. Confirmed against

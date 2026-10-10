@@ -1984,7 +1984,10 @@ class TestMemoryProvenance:
         assert "memory_read call that reads it back" in context
         # The whole turn is recorded since #364, not just the closing message
         assert "everything recorded from each turn" in context
-        assert "the hooks tell you when context is getting full" in context
+        # The context gauge is gone (issue #394): the block promises no
+        # warning, and names the turn the compaction mod gives instead
+        assert "context is getting full" not in context
+        assert "a turn of your own at the compaction itself" in context
 
 
 class TestRetrievalSummary:

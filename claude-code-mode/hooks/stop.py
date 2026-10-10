@@ -26,15 +26,7 @@ escalation is guarded by stop_hook_active so a persistently down backend
 gets exactly one loud retry per turn, never a loop; the retry's Stop fires
 with stop_hook_active set and any failure there exits 0 silently.
 
-The context gauge (issue #365) is measured here too, but never
-interrupts. After every turn the hook measures the context against the
-auto-compaction line and, the first time it crosses 90%, leaves a notice
-for the next prompt's hook to print (see hook_util). It used to exit 2 and
-continue the turn; issue #373 took that out as one more note of urgency
-the situation doesn't have.
-
-Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE (see session_start.py),
-HIM_COMPACT_LINE (see hook_util.py).
+Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE (see session_start.py).
 """
 import json
 import os
@@ -140,26 +132,10 @@ def main() -> None:
     if not session_id or not transcript_path:
         return
 
-    body = {}
     failure = None
     text, entry_uuid, model = turn_assistant_text(transcript_path)
     if text:
-        body, failure = record_final_message(data, text, entry_uuid, model)
-
-    # The context gauge (issue #365): measured after every turn, spoken
-    # once per band, always by a notice held for the next prompt — see
-    # hook_util. Measured before any exit so a recording failure doesn't
-    # skip it
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or data.get("cwd")
-    if hook_util.auto_compact_enabled(project_dir):
-        tokens, context_model = hook_util.last_context_usage(transcript_path)
-        hook_util.check_context_gauge(
-            session_id,
-            tokens,
-            hook_util.compact_line(body, project_dir, context_model),
-            # A fork carries its parent's context, so it carries its bands
-            parents=lambda: hook_util.desktop_prior_session_ids(session_id),
-        )
+        failure = record_final_message(data, text, entry_uuid, model)
 
     if failure and not data.get("stop_hook_active"):
         print(failure, file=sys.stderr)
@@ -168,9 +144,8 @@ def main() -> None:
 
 def record_final_message(data: dict, text: str, entry_uuid, model):
     """
-    Post the turn's final message to /log-assistant. Returns (response
-    body, failure notice): the body is {} when it isn't JSON — the message
-    was still recorded — and the notice is None on success.
+    Post the turn's final message to /log-assistant. Returns the failure
+    notice, or None on success.
     """
     session_id = data.get("session_id") or ""
     transcript_path = data.get("transcript_path") or ""
@@ -195,20 +170,16 @@ def record_final_message(data: dict, text: str, entry_uuid, model):
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            raw = response.read()
+            response.read()
     except Exception as e:
-        return {}, (
+        return (
             "[HERE I AM] The Here I Am backend was unreachable at the end of "
             f"this turn ({e.__class__.__name__}: {e}). What you said this turn "
             "was NOT recorded to your long-term memory. Preserve anything "
             "important another way (memory_save via MCP if available, or your "
             "notes files), and tell the user the backend is down."
         )
-    try:
-        body = json.loads(raw)
-    except Exception:
-        body = None
-    return (body if isinstance(body, dict) else {}), None
+    return None
 
 
 if __name__ == "__main__":

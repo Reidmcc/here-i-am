@@ -1009,9 +1009,9 @@ async def build_session_start_context(
         "Reflections you save (memory_save) carry what the archive can't hold by "
         "itself — a conclusion or a synthesis in your own words — and your most "
         "recent ones are re-shown to you after compaction. Save one when a "
-        "conclusion forms that you want to keep; the hooks tell you when context "
-        "is getting full, in case you want to reflect on the conversation as it "
-        "stands before it is compacted."
+        "conclusion forms that you want to keep. Compaction needs no watching "
+        "for: where the Here I Am compaction mod is loaded, it gives you a turn "
+        "of your own at the compaction itself, to write one if you want to."
     )
 
     system_prompt = await get_entity_system_prompt(db, entity.index_name)
