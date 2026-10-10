@@ -52,10 +52,6 @@ either count is nonzero the stamp carries both — on the matched: 0 line,
 or as one line after a printed block ("matched: 3 new (2 in-context
 reflections skipped; in-context verbatim held 0 slots)").
 
-The context gauge's notice (issue #365) is printed here too: when the
-last turn's Stop saw the context cross the band, it left a line for this
-prompt (see hook_util and stop.py).
-
 Fail-soft, loudly: a failure still exits 0 with the prompt going through
 unmodified (never exits 2 — that would block the prompt), but prints a
 one-line [HERE I AM] notice: an unrecorded prompt and a skipped retrieval
@@ -124,14 +120,10 @@ def main() -> None:
     wrapper = hook_util.unrecognized_wrapper(prompt)
     if not session_id:
         return
-    # The context gauge's notice (issue #365): the band the last turn's
-    # Stop crossed, held for this prompt. Printed on every path below —
-    # it is about the context, not about this prompt's recording
-    gauge = hook_util.take_held_gauge_notice(session_id)
     if not prompt and not peer_messages and not wakeup:
         # Pure harness plumbing: nothing to record, and the backend is not
         # called — which is exactly the silence that must stamp itself
-        print("\n\n".join(part for part in (plumbing_only_stamp(), gauge) if part))
+        print(plumbing_only_stamp())
         return
 
     # The hook names the rows it is asking the backend to write, so that
@@ -190,8 +182,6 @@ def main() -> None:
                     [peer["message_id"] for peer in peer_messages],
                 )
             )
-        if gauge:
-            print(f"\n{gauge}")
         return
 
     # Mailbox flag: reflections saved by other sessions since this
@@ -218,7 +208,7 @@ def main() -> None:
     tail = [
         part
         for part in (
-            adopted, unrecognized, *unmeasured, gauge, mailbox,
+            adopted, unrecognized, *unmeasured, mailbox,
             *hook_util.rooms_output_lines(body), reminder,
         )
         if part

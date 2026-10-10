@@ -35,11 +35,7 @@ from app.database import get_db
 from app.models import Message, MessageRole
 from app.services import claude_code_mcp, compact_talk, memory_tools
 from app.services import claude_code_mode as cc
-from app.services.harness_limits import (
-    AUTO_COMPACT_DEFAULT_WINDOW_TOKENS,
-    AUTO_COMPACT_RESERVE_TOKENS,
-    HOOK_INLINE_BUDGET_CHARS,
-)
+from app.services.harness_limits import HOOK_INLINE_BUDGET_CHARS
 from app.services.memory_service import memory_service
 from app.services.notes_vector_service import notes_vector_service
 
@@ -94,6 +90,10 @@ class SessionStartRequest(BaseModel):
     # entry uuids from the transcript tail (which are Message row ids).
     prior_session_ids: List[str] = []
     transcript_message_ids: List[str] = []
+    # Whether the hook sees the compaction mod loaded (issue #394 review):
+    # the identity block then names the turn it gives at compaction. An
+    # older hook sends nothing, which reads as not loaded
+    compact_talk_mod: bool = False
 
 
 class BulkPart(BaseModel):
@@ -269,13 +269,6 @@ class LogAssistantResponse(BaseModel):
     conversation_id: str
     message_id: Optional[str]
     deduplicated: bool
-    # The context gauge (issue #365): the Stop hook measures the turn's
-    # prompt size against the auto-compaction line, which it computes as
-    # window − reserve. The window here is the default; the hook prefers
-    # the one the harness is actually configured with (its environment and
-    # settings files), which only the hook can see
-    compact_window: int = AUTO_COMPACT_DEFAULT_WINDOW_TOKENS
-    compact_reserve: int = AUTO_COMPACT_RESERVE_TOKENS
 
 
 class SessionEndRequest(BaseModel):
@@ -368,7 +361,7 @@ async def session_start(
     if fresh:
         conversation_id = cc.conversation_id_for_session(data.session_id)
         context, bulk_parts = await cc.build_session_start_context(
-            db, conversation_id, entity
+            db, conversation_id, entity, compact_talk_mod=data.compact_talk_mod
         )
     else:
         conversation_id = str(conversation.id)

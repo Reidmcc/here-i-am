@@ -1984,7 +1984,28 @@ class TestMemoryProvenance:
         assert "memory_read call that reads it back" in context
         # The whole turn is recorded since #364, not just the closing message
         assert "everything recorded from each turn" in context
-        assert "the hooks tell you when context is getting full" in context
+        # The context gauge is gone (issue #394): the block promises no
+        # warning. With no word from the hook that the compaction mod is
+        # loaded it promises no turn either, only what is true either way
+        assert "context is getting full" not in context
+        assert cc.COMPACTION_NO_WATCH_SENTENCE in context
+        assert "a turn of your own at the compaction itself" not in context
+        assert "compaction mod" not in context
+
+    async def test_session_start_names_the_compaction_turn_when_the_mod_is_loaded(
+        self, async_client
+    ):
+        """Where the hook sees the compaction mod loaded, the block says
+        plainly that a turn comes at the compaction, with no "where the
+        mod is loaded" left for the entity to wonder about (#394 review)."""
+        started = await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": str(uuid.uuid4()), "compact_talk_mod": True},
+        )
+        context = started.json()["context"]
+        assert cc.COMPACTION_TURN_SENTENCE in context
+        assert "where the Here I Am compaction mod is loaded" not in context
+        assert "context is getting full" not in context
 
 
 class TestRetrievalSummary:
