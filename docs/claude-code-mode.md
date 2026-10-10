@@ -1178,7 +1178,16 @@ backward read arrived (issue #351).
   mod can, by giving it a turn (below). The session-start identity block
   says what compaction takes and what it leaves, that a reflection is
   saved when a conclusion forms, and that compaction needs no watching
-  for: where the mod is loaded, it gives a turn at the compaction itself.
+  for. Where the mod is loaded it also says, plainly, that a turn comes at
+  the compaction itself. The entity can't check whether the mod is
+  loaded, so the SessionStart hook does (`compact_talk_mod`: a folder in
+  `CLAUDE_CODE_PLUGIN_DIRS` whose `.claude-plugin/plugin.json` names
+  `here-i-am-compact-talk`). Where it can't see the mod (`--plugin-dir`, a
+  dev-mods folder, an older hook), the block says only that compaction
+  needs no watching for, which is true either way, and the turn arrives
+  explaining itself. A hedged "where the mod is loaded" in the block
+  would have left the entity a question it can't answer (issue #394's
+  review).
   The post-compaction block does not repeat the nudge: the summary is a
   caption, and the pre-compaction talk comes back verbatim (below), so
   there is nothing to save *from the summary*.
@@ -1551,7 +1560,8 @@ conversation on first contact; `/session-start` and `/session-end` never do
 (lazy registration — see "Conversations"):
 
 - `POST /session-start` `{session_id, entity?, cwd?, source?,
-  transcript_path?, sessions?, prior_session_ids?, transcript_message_ids?}`
+  transcript_path?, sessions?, prior_session_ids?, transcript_message_ids?,
+  compact_talk_mod?}`
   → `{conversation_id, entity_id, entity_label, created, context,
   bulk_context, rooms_notice, rooms_error, git_identity}` — full context when `created`
   (no conversation recorded for this session yet; `conversation_id` is

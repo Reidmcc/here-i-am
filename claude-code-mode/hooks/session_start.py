@@ -65,6 +65,9 @@ def main() -> None:
         # liveness signal, and the snapshot of sibling sessions lets this
         # firing refresh their rows too
         "sessions": sessions,
+        # Whether the compaction mod is loaded, so the identity block can say
+        # plainly what compaction is like here (see hook_util)
+        "compact_talk_mod": hook_util.compact_talk_mod_loaded(),
         # Fork adoption (issue #357): if the desktop app forked this session
         # under a new id, these resolve it to the conversation it continues
         **hook_util.lineage_hints(

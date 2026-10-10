@@ -90,6 +90,10 @@ class SessionStartRequest(BaseModel):
     # entry uuids from the transcript tail (which are Message row ids).
     prior_session_ids: List[str] = []
     transcript_message_ids: List[str] = []
+    # Whether the hook sees the compaction mod loaded (issue #394 review):
+    # the identity block then names the turn it gives at compaction. An
+    # older hook sends nothing, which reads as not loaded
+    compact_talk_mod: bool = False
 
 
 class BulkPart(BaseModel):
@@ -357,7 +361,7 @@ async def session_start(
     if fresh:
         conversation_id = cc.conversation_id_for_session(data.session_id)
         context, bulk_parts = await cc.build_session_start_context(
-            db, conversation_id, entity
+            db, conversation_id, entity, compact_talk_mod=data.compact_talk_mod
         )
     else:
         conversation_id = str(conversation.id)

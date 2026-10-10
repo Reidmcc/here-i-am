@@ -957,10 +957,25 @@ BULK_NOTES_INDEX = "notes-index"
 BULK_REFLECTIONS = "reflections"
 
 
+# What the identity block says about compaction's moment (issue #394, and
+# its review). Nothing warns ahead of compaction any more; where the hook
+# sees the compaction mod loaded, the block names the turn it gives, and
+# otherwise it says only what is true either way. The entity can't check
+# which case it's in, and the hedged "where the mod is loaded" left it a
+# question to carry. A mod the hook can't see (--plugin-dir, dev-mods)
+# gets the second sentence, and its turn arrives explaining itself.
+COMPACTION_TURN_SENTENCE = (
+    "Compaction needs no watching for: when it comes, you are given a turn "
+    "of your own at the compaction itself, to write one if you want to."
+)
+COMPACTION_NO_WATCH_SENTENCE = "Compaction needs no watching for."
+
+
 async def build_session_start_context(
     db: AsyncSession,
     conversation_id: str,
     entity: EntityConfig,
+    compact_talk_mod: bool = False,
 ) -> Tuple[str, List[Tuple[str, str]]]:
     """
     Build the context the SessionStart hook injects, as (context,
@@ -990,6 +1005,11 @@ async def build_session_start_context(
     The reflection count follows RECENT_REFLECTIONS_COUNT, the same knob the
     native first-turn injection uses, unless
     CLAUDE_CODE_SESSION_REFLECTIONS_COUNT overrides it for this mode.
+
+    compact_talk_mod is the hook's report that the compaction mod is
+    loaded: the identity block then names the turn the mod gives at the
+    compaction, and otherwise promises nothing about one (see
+    COMPACTION_TURN_SENTENCE).
     """
     parts: List[str] = []
     bulk_parts: List[Tuple[str, str]] = []
@@ -1009,9 +1029,8 @@ async def build_session_start_context(
         "Reflections you save (memory_save) carry what the archive can't hold by "
         "itself — a conclusion or a synthesis in your own words — and your most "
         "recent ones are re-shown to you after compaction. Save one when a "
-        "conclusion forms that you want to keep. Compaction needs no watching "
-        "for: where the Here I Am compaction mod is loaded, it gives you a turn "
-        "of your own at the compaction itself, to write one if you want to."
+        "conclusion forms that you want to keep. "
+        + (COMPACTION_TURN_SENTENCE if compact_talk_mod else COMPACTION_NO_WATCH_SENTENCE)
     )
 
     system_prompt = await get_entity_system_prompt(db, entity.index_name)

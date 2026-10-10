@@ -1436,3 +1436,49 @@ def never_reached_backend(error: Exception) -> bool:
         if isinstance(candidate, (ConnectionRefusedError, socket.gaierror)):
             return True
     return False
+
+
+# --- Whether the compaction mod is loaded (issue #394 review)
+#
+# The identity block tells the entity what compaction is like. Where the
+# compaction mod (claude-code-mode/mods/compact-talk, issue #383) is loaded
+# it gives the entity a turn at the compaction itself, and the block can
+# say so plainly; where it isn't, the block says only that compaction needs
+# no watching for, which is true either way. The entity can't check which
+# case it's in, so the hook does: a mod loads from a folder named in
+# CLAUDE_CODE_PLUGIN_DIRS (the path list a desktop-started session uses;
+# the settings' `env` value reaches the hook's environment), and the
+# folder's manifest names the plugin. A mod loaded another way
+# (--plugin-dir, a dev-mods folder) reads as not loaded: the block then
+# promises nothing, and the turn arrives explaining itself.
+
+COMPACT_TALK_PLUGIN_NAME = "here-i-am-compact-talk"
+PLUGIN_DIRS_ENV = "CLAUDE_CODE_PLUGIN_DIRS"
+
+
+def plugin_names_in_dirs(value) -> set:
+    """The plugin names declared by the folders in a CLAUDE_CODE_PLUGIN_DIRS
+    value (the platform's path-list separator, `;` on Windows), read from
+    each folder's .claude-plugin/plugin.json. Unreadable folders count for
+    nothing."""
+    names = set()
+    for folder in str(value or "").split(os.pathsep):
+        folder = folder.strip().strip('"')
+        if not folder:
+            continue
+        try:
+            path = os.path.join(folder, ".claude-plugin", "plugin.json")
+            with open(path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except Exception:
+            continue
+        name = manifest.get("name") if isinstance(manifest, dict) else None
+        if isinstance(name, str) and name.strip():
+            names.add(name.strip())
+    return names
+
+
+def compact_talk_mod_loaded() -> bool:
+    """Whether this session loads the compaction mod, as far as the hook
+    can see (see above)."""
+    return COMPACT_TALK_PLUGIN_NAME in plugin_names_in_dirs(os.environ.get(PLUGIN_DIRS_ENV))
