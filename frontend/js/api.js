@@ -568,24 +568,16 @@ class ApiClient {
      * @param {Object} callbacks - Event callbacks (same as sendMessageStream)
      * @returns {Promise<void>}
      */
-    // TTS
+    // TTS (ElevenLabs, through the backend)
     async getTTSStatus() {
         return this.request('/tts/status');
     }
 
-    async textToSpeech(text, voiceId = null, styletts2Params = null) {
+    async textToSpeech(text, voiceId = null) {
         const url = `${API_BASE}/tts/speak`;
         const body = { text };
         if (voiceId) {
             body.voice_id = voiceId;
-        }
-        // Add StyleTTS 2 parameters if provided
-        if (styletts2Params) {
-            if (styletts2Params.alpha !== undefined) body.alpha = styletts2Params.alpha;
-            if (styletts2Params.beta !== undefined) body.beta = styletts2Params.beta;
-            if (styletts2Params.diffusion_steps !== undefined) body.diffusion_steps = styletts2Params.diffusion_steps;
-            if (styletts2Params.embedding_scale !== undefined) body.embedding_scale = styletts2Params.embedding_scale;
-            if (styletts2Params.speed !== undefined) body.speed = styletts2Params.speed;
         }
 
         const response = await fetch(url, {
@@ -608,82 +600,97 @@ class ApiClient {
         return this.request('/tts/voices');
     }
 
-    async cloneVoice(audioFile, label, description = '', options = {}) {
-        const url = `${API_BASE}/tts/voices/clone`;
+    // Local voice servers (issue #399). The browser on the machine that runs
+    // them calls them directly at the URLs saved in this browser; the
+    // backend never sees voice audio. No credentials are sent.
+    async _localVoiceRequest(baseUrl, path, { method = 'GET', body = null, timeoutMs = 120000 } = {}) {
+        const options = { method, signal: AbortSignal.timeout(timeoutMs) };
+        if (body instanceof FormData) {
+            options.body = body;
+        } else if (body !== null) {
+            options.headers = { 'Content-Type': 'application/json' };
+            options.body = JSON.stringify(body);
+        }
+
+        const response = await fetch(`${String(baseUrl).replace(/\/+$/, '')}${path}`, options);
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+            throw new Error(this._formatErrorDetail(error.detail, response.status));
+        }
+
+        return response;
+    }
+
+    async localVoiceHealth(baseUrl) {
+        const response = await this._localVoiceRequest(baseUrl, '/health', { timeoutMs: 3000 });
+        return response.json();
+    }
+
+    async localListVoices(baseUrl) {
+        const response = await this._localVoiceRequest(baseUrl, '/voices', { timeoutMs: 10000 });
+        return response.json();
+    }
+
+    /**
+     * Synthesize speech on a local TTS server.
+     * @param {string} baseUrl - The server's base URL
+     * @param {Object} body - { text, voice_id?, ...setting overrides }
+     * @returns {Promise<Blob>} WAV audio
+     */
+    async localSpeak(baseUrl, body) {
+        const response = await this._localVoiceRequest(baseUrl, '/speak', { method: 'POST', body });
+        return response.blob();
+    }
+
+    async localCloneVoice(baseUrl, audioFile, label, description = '', options = {}) {
         const formData = new FormData();
         formData.append('audio_file', audioFile);
         formData.append('label', label);
         formData.append('description', description);
-
-        // Add voice synthesis parameters with defaults
-        formData.append('temperature', options.temperature ?? 0.75);
-        formData.append('length_penalty', options.length_penalty ?? 1.0);
-        formData.append('repetition_penalty', options.repetition_penalty ?? 5.0);
-        formData.append('speed', options.speed ?? 1.0);
-
-        const response = await fetch(url, {
-            method: 'POST',
-            body: formData,
-        });
-
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(this._formatErrorDetail(error.detail, response.status));
+        for (const [name, value] of Object.entries(options)) {
+            if (value !== null && value !== undefined) {
+                formData.append(name, value);
+            }
         }
-
+        const response = await this._localVoiceRequest(baseUrl, '/voices', { method: 'POST', body: formData });
         return response.json();
     }
 
-    async updateVoice(voiceId, updates) {
-        return this.request(`/tts/voices/${voiceId}`, {
+    async localUpdateVoice(baseUrl, voiceId, updates) {
+        const response = await this._localVoiceRequest(baseUrl, `/voices/${encodeURIComponent(voiceId)}`, {
             method: 'PUT',
             body: updates,
         });
+        return response.json();
     }
 
-    async deleteTTSVoice(voiceId) {
-        return this.request(`/tts/voices/${voiceId}`, {
+    async localDeleteVoice(baseUrl, voiceId) {
+        const response = await this._localVoiceRequest(baseUrl, `/voices/${encodeURIComponent(voiceId)}`, {
             method: 'DELETE',
         });
-    }
-
-    async getXTTSHealth() {
-        return this.request('/tts/xtts/health');
-    }
-
-    // STT (Speech-to-Text)
-    async getSTTStatus() {
-        return this.request('/stt/status');
+        return response.json();
     }
 
     /**
-     * Transcribe audio to text using Whisper.
+     * Transcribe audio on the local Whisper server.
+     * @param {string} baseUrl - The Whisper server's base URL
      * @param {Blob} audioBlob - Audio blob to transcribe
      * @param {string} language - Optional language code (auto-detect if not specified)
      * @returns {Promise<Object>} Transcription result with text, language, duration
      */
-    async transcribeAudio(audioBlob, language = null) {
-        const url = `${API_BASE}/stt/transcribe`;
+    async localTranscribe(baseUrl, audioBlob, language = null) {
         const formData = new FormData();
-        
+
         // Determine filename based on MIME type
         const ext = audioBlob.type.includes('webm') ? 'webm' : 'wav';
         formData.append('audio_file', audioBlob, `recording.${ext}`);
-        
+
         if (language) {
             formData.append('language', language);
         }
 
-        const response = await fetch(url, {
-            method: 'POST',
-            body: formData,
-        });
-
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(this._formatErrorDetail(error.detail, response.status));
-        }
-
+        const response = await this._localVoiceRequest(baseUrl, '/transcribe', { method: 'POST', body: formData });
         return response.json();
     }
 

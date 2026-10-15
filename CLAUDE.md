@@ -6,7 +6,7 @@
 - **Frontend:** Vanilla ES6 modules, no build step. Orchestrator `frontend/js/app-modular.js` wires modules in `frontend/js/modules/`.
 - **Vector store:** Pinecone with integrated inference (`llama-text-embed-v2`, dim=1024). Optional — guard with `if memory_service.pinecone:`.
 - **LLM providers:** Anthropic, OpenAI, Google, MiniMax (Anthropic-compatible API, routed through `AnthropicService` with separate client). The anthropic SDK is unpinned above `0.40`; 1.x runs on the `httpx2` fork and rejects `httpx` objects (`Timeout`, clients) at construction, so anything handed to an Anthropic client is built from the SDK's own re-exports (`anthropic.Timeout`), never from `httpx` directly.
-- **Optional local servers** (separate FastAPI processes): XTTS (8020), StyleTTS 2 (8021), Whisper STT (8030).
+- **Optional local voice servers** (separate FastAPI processes on the desktop): XTTS (8020), StyleTTS 2 (8021), Whisper STT (8030). The browser calls them directly on localhost; the backend has no proxy to them (issue #399) and proxies only ElevenLabs, whose key is server-side.
 
 ## Run
 
@@ -47,7 +47,7 @@ backend/app/
 ├── config.py              # Pydantic Settings — single source of truth for env knobs
 ├── main.py                # FastAPI app, router includes, lifespan, presets endpoint
 ├── models/                # SQLAlchemy: conversation, message, conversation_entity, conversation_memory_link, memory_link
-├── routes/                # chat, conversations, memories, entities, messages, tts, stt, github, claude_code
+├── routes/                # chat, conversations, memories, entities, messages, tts (ElevenLabs only), github, claude_code
 └── services/
     ├── session_manager.py         # Orchestrator. process_message_stream has the agentic tool loop.
     ├── conversation_session.py    # Session dataclasses (in-memory, lost on restart)
@@ -70,7 +70,7 @@ backend/app/
     ├── moltbook_*                 # AI social network (optional)
     ├── attachment_service.py      # Image/text/PDF/DOCX handling
     ├── cache_service.py           # TTL caches (token counts 1h, search 60s, content 5m)
-    └── tts_service.py / xtts_service.py / styletts2_service.py / whisper_service.py
+    └── tts_service.py             # ElevenLabs only; local voice servers are the browser's to call
 ```
 
 `backend/app/services/__init__.py` instantiates singletons and registers tools at module load.
@@ -181,8 +181,8 @@ Everything lives in `backend/app/config.py` (`Settings`). Highlights:
 - `ANTHROPIC_API_KEY` is the only strictly required key. `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `MINIMAX_API_KEY` enable their providers.
 - `GITHUB_REPOS` — JSON array of `{owner, repo, label, token, protected_branches?, capabilities?, local_clone_path?, ...}`.
 - Default-on flags: `TOOLS_ENABLED`, `NOTES_ENABLED`, `ATTACHMENTS_ENABLED`, `MEMORY_ROLE_BALANCE_ENABLED`.
-- Default-off flags: `GITHUB_TOOLS_ENABLED`, `CODEBASE_NAVIGATOR_ENABLED`, `MOLTBOOK_ENABLED`, `XTTS_ENABLED`, `STYLETTS2_ENABLED`, `WHISPER_ENABLED`, `CLAUDE_CODE_MODE_ENABLED`.
-- TTS priority when multiple are enabled: StyleTTS 2 > XTTS > ElevenLabs.
+- Default-off flags: `GITHUB_TOOLS_ENABLED`, `CODEBASE_NAVIGATOR_ENABLED`, `MOLTBOOK_ENABLED`, `CLAUDE_CODE_MODE_ENABLED`. The backend's voice settings (`XTTS_ENABLED`, `STYLETTS2_ENABLED`, `WHISPER_ENABLED`, their `*_API_URL`s, `DICTATION_MODE`) are gone; startup warns when an environment or `.env` still sets one (`config.find_retired_voice_env_vars`).
+- TTS priority is decided in the browser: local StyleTTS 2 > local XTTS > ElevenLabs.
 - Token budget: `context_token_limit=175000` (conversation history; retrieved memories are part of the history).
 - `DEFAULT_THINKING_EFFORT` (default `high`) — reasoning depth for models that expose one, used when an entity has no override. See "Thinking effort" below.
 - Default models: `claude-sonnet-4-5-20250929`, `gpt-5.1`, `gemini-2.5-flash`, `MiniMax-M2.5`. Model names are passed straight to provider APIs, so new models work without code changes.
