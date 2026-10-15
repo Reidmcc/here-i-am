@@ -921,14 +921,17 @@ async def log_assistant(
             deduplicated=False,
         )
 
-    if data.message_uuid:
+    # Canonical when it is a UUID, as /recorded reads ids back; anything
+    # else is kept as given, as before (PR #406 review)
+    row_id = _valid_uuid(data.message_uuid) or data.message_uuid
+    if row_id:
         result = await db.execute(
-            select(Message.id).where(Message.id == data.message_uuid)
+            select(Message.id).where(Message.id == row_id)
         )
         if result.scalar_one_or_none() is not None:
             return LogAssistantResponse(
                 conversation_id=str(conversation.id),
-                message_id=data.message_uuid,
+                message_id=row_id,
                 deduplicated=True,
             )
 
@@ -938,7 +941,7 @@ async def log_assistant(
         entity,
         role=MessageRole.ASSISTANT,
         content=content,
-        message_id=data.message_uuid,
+        message_id=row_id,
         token_count=cc.safe_token_count(content),
         model=(data.model or "").strip()[:100] or None,
     )

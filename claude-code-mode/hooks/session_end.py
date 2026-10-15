@@ -21,6 +21,7 @@ import hook_util
 def main() -> None:
     if os.environ.get("HIM_DISABLE"):
         return
+    hook_util.start_hook_clock("SessionEnd")
     try:
         data = json.load(sys.stdin)
     except Exception:

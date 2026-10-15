@@ -39,6 +39,27 @@ export const FALLBACK_BUDGET = 30000
 export const TALK_TIMEOUT_MS = 90_000
 export const QUESTION_TIMEOUT_MS = 10_000
 
+// The opening the Stop hook knows the appended talk by, so it is never
+// read as a turn boundary (hook_util.COMPACT_TALK_MARKER; a test pins the
+// two together)
+export const TALK_MARKER = '[HERE I AM — THE TALK BEFORE THE BOUNDARY]'
+
+// Appended in place of the talk in the one order the cancel can't close
+// (PR #406 review): the talk call and its cancel both failed, so the
+// backend may have recorded the delivery and the block above may say the
+// talk is below. The entity reads the block, not the transcript's dim
+// lines, so the correction goes where it reads. True in every branch it is
+// appended in. The read is isolated because the block links the rows it
+// believed delivered, and a default-scope read would show them as pointers.
+export const MISSING_TALK_NOTE = [
+  TALK_MARKER,
+  'The talk did not arrive. If the post-compaction block above says the talk is right below it, ' +
+    'that is not so this time: the compaction mod could not fetch it from the backend, nor cancel ' +
+    'the delivery the block may have taken. The talk is all still in your archive. Read it back with ' +
+    'memory_read(direction="backward", to=<the compaction\'s time>, in_conversation=<this ' +
+    'conversation\'s id>, scope="isolated"), since the block may have counted those rows as in view.',
+].join('\n')
+
 // "2026-10-07 21:43 UTC": the forked turn has no clock of its own, and the
 // last timestamp in view can be hours old
 export function utcStamp(ms: number): string {
@@ -112,6 +133,7 @@ export const register: Register = (on) => {
     // say the talk is below while nothing is appended
     const chosenId = crypto.randomUUID()
     let asked = false
+    let cancelFailed = false
     try {
       let pre: PreCompaction
       try {
@@ -158,13 +180,26 @@ export const register: Register = (on) => {
         try {
           await post('compact-talk/cancel', { delivery_id: chosenId }, QUESTION_TIMEOUT_MS)
         } catch (cancelErr) {
-          await $.ui.log(`here-i-am-compact-talk: could not cancel the delivery either (${String(cancelErr)}); if the backend recorded it, the post-compaction block may say the talk is below when nothing is appended`)
+          cancelFailed = true
+          await $.ui.log(`here-i-am-compact-talk: could not cancel the delivery either (${String(cancelErr)}); will ask after the compaction whether the block took it`)
         }
       }
       await $.ui.log(`here-i-am-compact-talk: ${String(err)}; nothing appended, the post-compaction block names the read as before`)
     }
 
     const result = await next(e)
+    if (cancelFailed && 'messages' in result && result.messages) {
+      // The block may have taken a delivery the mod never got: ask, and say
+      // so where the entity reads unless the backend says it didn't
+      let taken: unknown
+      try {
+        taken = (await post('compact-talk/taken', { delivery_id: chosenId }, QUESTION_TIMEOUT_MS)).taken
+      } catch (err) {
+        await $.ui.log(`here-i-am-compact-talk: could not ask whether the block took the delivery (${String(err)}); appending a note that the talk did not arrive`)
+      }
+      if (taken === false) return result
+      return { ...result, messages: [...result.messages, { role: 'user' as const, text: MISSING_TALK_NOTE, toolUses: [] }] }
+    }
     if (talk === undefined || deliveryId === undefined || !('messages' in result) || !result.messages) return result
 
     // Append only what the block said is below. If the backend can't say

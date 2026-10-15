@@ -52,6 +52,7 @@ import json
 import os
 import re
 import socket
+import ssl
 import sys
 import tempfile
 import threading
@@ -447,6 +448,40 @@ def read_hook_input():
 CONNECT_TIMEOUT = 4.0  # seconds; one SYN retransmit fits (3 s on Windows)
 RETRY_PAUSE = 1.0
 
+# The hook's own clock (PR #406 review). The request arithmetic below is
+# an upper bound on the requests alone, but a hook does its own work before
+# it sends anything, and that work grows with the session: Stop reads the
+# transcript twice (turn_assistant_text, lineage_hints), measured at 6.4 s
+# together on a 529 MB transcript, linear in its size. So each hook starts
+# a clock on its hooks.json budget (start_hook_clock), and every request
+# is clamped to what is left of it, less FINISH_MARGIN for printing the
+# notice and exiting: a hook ends inside its budget by construction, not
+# by the size of the transcript it happened to read. The process start is
+# taken at import, which is the hooks' first statement.
+_PROCESS_STARTED = time.monotonic()
+HOOK_BUDGETS = {"SessionStart": 40, "UserPromptSubmit": 60, "Stop": 60, "SessionEnd": 5}
+FINISH_MARGIN = 2.0
+_hook_deadline: Optional[float] = None
+
+
+def start_hook_clock(event: str) -> None:
+    """Bound this hook's backend requests by its hooks.json budget
+    (HOOK_BUDGETS, held equal to hooks.json by a test). A hand-written
+    settings copy with a smaller timeout is not seen: keep it equal."""
+    global _hook_deadline
+    budget = HOOK_BUDGETS[event]
+    _hook_deadline = _PROCESS_STARTED + budget - min(FINISH_MARGIN, 0.2 * budget)
+
+
+def _time_left() -> Optional[float]:
+    """Seconds left on the hook's clock, None when no clock was started."""
+    return None if _hook_deadline is None else _hook_deadline - time.monotonic()
+
+
+def _within_clock(seconds: float) -> float:
+    left = _time_left()
+    return seconds if left is None else max(0.0, min(seconds, left))
+
 
 @dataclass(frozen=True)
 class RequestTimeouts:
@@ -484,6 +519,15 @@ TIMEOUTS_BY_HOOK = {
 }
 
 
+# Connect failures a second try can't change: nothing is listening, or the
+# certificate doesn't verify (a retry only doubles the wait)
+FINAL_CONNECT_ERRORS = (ConnectionRefusedError, ssl.SSLCertVerificationError)
+
+# Statuses a proxy in front of the backend answers with (`tailscale serve`
+# would be one) while the app behind it may still be working
+GATEWAY_STATUSES = frozenset({502, 503, 504})
+
+
 class BackendUnreachable(OSError):
     """No connection to the backend was made, so no byte of the request
     was sent: it provably never reached the server. `cause` is the last
@@ -517,7 +561,7 @@ def _connect_first(address, timeout=None, source_address=None):
             if source_address:
                 sock.bind(source_address)
             sock.connect(sockaddr)
-        except OSError as e:
+        except Exception as e:
             if sock is not None:
                 sock.close()
             with lock:
@@ -600,8 +644,11 @@ class _Attempt:
         """(status, reason, headers, body), or raises: BackendUnreachable
         only for a failure before anything was sent."""
         started = time.monotonic()
+        connect_wait = _within_clock(self.timeouts.connect)
+        if connect_wait <= 0:
+            raise BackendUnreachable("no time left in the hook's budget to connect")
         threading.Thread(target=self._run, daemon=True).start()
-        self.settled.wait(self.timeouts.connect)
+        self.settled.wait(connect_wait)
         with self.lock:
             if not self.sent:
                 self.abandoned = True
@@ -609,11 +656,12 @@ class _Attempt:
             if self.error is not None:
                 raise BackendUnreachable(describe_error(self.error), self.error)
             raise BackendUnreachable(
-                f"no connection to {self.parts.netloc} within {self.timeouts.connect:g} s"
+                f"no connection to {self.parts.netloc} within {connect_wait:g} s"
             )
         self.connect_seconds = time.monotonic() - started
-        if not self.done.wait(self.timeouts.read):
-            raise TimeoutError(f"the backend did not answer within {self.timeouts.read:g} s")
+        read_wait = _within_clock(self.timeouts.read)
+        if not self.done.wait(read_wait):
+            raise TimeoutError(f"the backend did not answer within {read_wait:.3g} s")
         if self.error is not None:
             raise self.error
         return self.result
@@ -682,7 +730,12 @@ def post_backend(path: str, payload: dict, timeout: Union[RequestTimeouts, float
                 status, reason, headers, data = attempt.run()
                 break
             except BackendUnreachable as e:
-                if attempts >= timeouts.attempts or isinstance(e.cause, ConnectionRefusedError):
+                left = _time_left()
+                if (
+                    attempts >= timeouts.attempts
+                    or isinstance(e.cause, FINAL_CONNECT_ERRORS)
+                    or (left is not None and left <= RETRY_PAUSE)
+                ):
                     outcome = "unreachable"
                     raise
                 time.sleep(RETRY_PAUSE)
@@ -691,7 +744,12 @@ def post_backend(path: str, payload: dict, timeout: Union[RequestTimeouts, float
                 raise
         if status >= 400:
             outcome = f"http {status}"
-            raise urllib.error.HTTPError(url, status, reason, dict(headers), None)
+            # The body's start explains the status (a 401's detail, once
+            # #396 lands), so it rides in the message the notice quotes
+            detail = data.decode("utf-8", "replace").strip()[:300]
+            raise urllib.error.HTTPError(
+                url, status, f"{reason}: {detail}" if detail else reason, dict(headers), None
+            )
         outcome = "ok"
         return json.loads(data.decode("utf-8"))
     finally:
@@ -1745,6 +1803,27 @@ def never_reached_backend(error: Exception) -> bool:
         if isinstance(candidate, (ConnectionRefusedError, socket.gaierror)):
             return True
     return False
+
+
+def request_may_still_be_running(error: Exception) -> bool:
+    """
+    Whether the server may still be working on a request that failed on
+    the hook's side (PR #406 review): then a /recorded check that finds a
+    row missing only means not YET, since the server doesn't stop when the
+    client gives up (measured: a 0.5 s read deadline against a handler that
+    recorded the row 1.5 s in). False for a request that never reached the
+    server, and for one the server answered (an error status from the app,
+    a body that wasn't JSON): its handler is over, so what /recorded finds
+    is final. True for a read deadline, a dropped connection, or a
+    gateway's status (GATEWAY_STATUSES).
+    """
+    if never_reached_backend(error):
+        return False
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in GATEWAY_STATUSES
+    if isinstance(error, ValueError):
+        return False
+    return True
 
 
 # --- Whether the compaction mod is loaded (issue #394 review)

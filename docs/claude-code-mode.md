@@ -1022,6 +1022,18 @@ exits 0 silently; missing → exit 2, "NOT recorded"; the check failed, or
 the turn had no well-formed id to ask about → exit 2, "UNCONFIRMED". Only
 the recording failure ever exits 2.
 
+**Missing is final only once the server is done** (PR #406 review). The
+server doesn't stop when the hook gives up: measured, a 0.5 s read
+deadline against a handler that recorded the row at 1.5 s, and the row was
+there 2 s later. On the real routes the slow part can come before the
+commit (`/log-assistant` resolves the session first, and a late-adoption
+merge awaits Pinecone inside that). So after a read deadline, a dropped
+connection, or a gateway's 502/503/504, a row found missing is reported as
+UNCONFIRMED ("not in your long-term memory as of a check just after, and
+the request may still land"), in both hooks, while a missing row after the
+app's own error status is still NOT recorded
+(`hook_util.request_may_still_be_running`). Stop exits 2 either way.
+
 **Deadlines, for a backend across a network** (issue #400). On localhost a
 server that is down refuses at once; across a network (the cloud VM) a
 host that is down drops packets, and a request would wait out its whole
@@ -1032,7 +1044,8 @@ timeout before saying anything. So every hook request goes through
   nothing has been sent yet, so a failure here never reached the backend.
   It is retried once after a 1 s pause, except a refusal, which means
   nothing is listening (uvicorn's reloader keeps the socket bound across a
-  hot reload, so a reload queues connections instead of refusing them).
+  hot reload, so a reload queues connections instead of refusing them),
+  and a certificate that doesn't verify, which a retry can't change.
 - *read* (sending the request and reading the whole response, one
   deadline, not per socket operation): the server may have done its work,
   so it is never retried — `/retrieve` commits rows and then memory links
@@ -1051,6 +1064,17 @@ its `hooks.json` budget with a margin; the budgets rose to fit (SessionStart
 40 s, UserPromptSubmit and Stop 60 s), which changes nothing on a healthy
 localhost. SessionEnd gets one short try (1.5 s + 2 s, inside its 5 s) and
 stays silent.
+
+That arithmetic bounds the requests, not the hook: a hook works before it
+sends anything, and the work grows with the session. Stop reads the
+transcript twice (`turn_assistant_text`, `lineage_hints`), measured at
+6.4 s together on a 529 MB transcript (PR #406 review), linear in its size.
+So each hook starts a clock on its budget (`hook_util.start_hook_clock`,
+from the process start, `HOOK_BUDGETS` held equal to `hooks.json` by a
+test), and every connect and read is clamped to what is left of it less a
+finish margin (2 s; 1 s for SessionEnd). A hook ends inside its budget
+however long its transcript. An error status's message carries the first
+300 characters of the body, so a refusal's detail reaches the notice.
 
 A name's addresses are raced, not tried in turn. Windows resolves
 `localhost` to `::1` first and spends 2 s on it when the server listens on
@@ -1461,8 +1485,17 @@ backward read arrived (issue #351).
   engine's compaction runs. A cancel drops a recorded delivery with that
   id and tombstones the id, so a request still in flight that lands
   afterwards records nothing: either order ends with no delivery and the
-  old block. A cancel that fails too is said in the transcript, naming
-  the one case left: the block may say the talk is below when it isn't.
+  old block. When the cancel fails too (a network that drops both), the
+  block may have taken the delivery and said the talk is below. The
+  entity reads the block, not the transcript's dim lines, so after the
+  engine's compaction the mod asks `/taken` about the id it chose, and
+  unless the answer is a definite no it appends a short note in place of
+  the talk (opening with the talk's marker, so the Stop hook never reads
+  it as a turn boundary): the talk did not arrive, and
+  `memory_read(direction="backward", ..., scope="isolated")` brings it
+  back. The read is isolated because the block links the rows it believed
+  delivered, and a default-scope read would show them as pointers. That
+  note is true in every branch it is appended in (PR #406 review).
   Every failure in the mod is also said as a dim `here-i-am-compact-talk:`
   line in the transcript (`$.ui.log`). A failed fork still fetches the
   talk; the header says the turn did not happen and why, the engine's

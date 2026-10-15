@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { DECLINE, FALLBACK_BUDGET, QUESTION_TIMEOUT_MS, TALK_TIMEOUT_MS, readReply, talkBudget, utcStamp } from './register.ts'
+import { DECLINE, FALLBACK_BUDGET, MISSING_TALK_NOTE, QUESTION_TIMEOUT_MS, TALK_MARKER, TALK_TIMEOUT_MS, readReply, talkBudget, utcStamp } from './register.ts'
 
 const SUMMARY = { role: 'user' as const, text: 'This session is being continued...', toolUses: [] }
 const OLD = { role: 'assistant' as const, text: 'the talk before', toolUses: [] }
@@ -23,7 +23,8 @@ type Opts = {
   // What /compact-talk/cancel fails with, if it fails
   cancelStatus?: number
   // Calls (by the path's last segment) whose fetch never answers, and the
-  // timer waits (ms) that elapse; every other timer never fires
+  // timer waits (ms) that elapse, each once, in the order the timers are
+  // set; every other timer never fires
   hang?: string[]
   elapse?: number[]
   // Called as the engine's own compaction runs
@@ -59,8 +60,13 @@ function engine(on: any, opts: Opts): Seen {
     const body = taken ? { taken: 'taken' in opts ? opts.taken : true } : cancel ? { dropped: true } : (opts.backend ?? DELIVERED)
     return { value: { status, ok: status < 400, headers: {}, text: JSON.stringify(body) } }
   })
-  on('clock.after', async (_$: any, e: any) =>
-    (opts.elapse ?? []).includes(e.ms) ? { value: undefined } : new Promise(() => {}))
+  const elapsing = [...(opts.elapse ?? [])]
+  on('clock.after', async (_$: any, e: any) => {
+    const at = elapsing.indexOf(e.ms)
+    if (at < 0) return new Promise(() => {})
+    elapsing.splice(at, 1)
+    return { value: undefined }
+  })
   on('ui.log', async (_$: any, e: any) => { seen.logs.push(JSON.stringify(e)); return { value: undefined } })
   on('session.compact', async () => {
     opts.onCompact?.()
@@ -154,11 +160,32 @@ describe('the talk', () => {
     expect(seen.logs.join('\n')).toContain(`did not answer /compact-talk within ${TALK_TIMEOUT_MS / 1000} s`)
   })
 
-  test('a cancel that fails too is said, with what it may mean', async ($, on) => {
+  test('a cancel that fails too, with the block having taken it, appends the note where the entity reads', async ($, on) => {
     const seen = engine(on, { hang: ['compact-talk', 'cancel'], elapse: [TALK_TIMEOUT_MS, QUESTION_TIMEOUT_MS] })
     const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
-    expect(result.messages.length).toBe(1)
     expect(seen.logs.join('\n')).toContain('could not cancel the delivery either')
+    // Asked about the id it chose, after the engine compacted
+    const last = seen.posts[seen.posts.length - 1]
+    expect(String(last.url).endsWith('/compact-talk/taken')).toBe(true)
+    expect(last.delivery_id).toBe(seen.posts[0].delivery_id)
+    expect(result.messages.length).toBe(2)
+    expect(result.messages[1]).toEqual({ role: 'user', text: MISSING_TALK_NOTE, toolUses: [] })
+    expect(MISSING_TALK_NOTE.startsWith(TALK_MARKER)).toBe(true)
+  })
+
+  test('a cancel that fails too, with the block not having taken it, appends nothing', async ($, on) => {
+    const seen = engine(on, { hang: ['compact-talk', 'cancel'], elapse: [TALK_TIMEOUT_MS, QUESTION_TIMEOUT_MS], taken: false })
+    const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(result.messages.length).toBe(1)
+    expect(seen.posts.map((p) => String(p.url).split('/').pop())).toEqual(['compact-talk', 'cancel', 'taken'])
+  })
+
+  test('a cancel that fails too, and a question that fails, appends the note', async ($, on) => {
+    const seen = engine(on, { hang: ['compact-talk', 'cancel'], elapse: [TALK_TIMEOUT_MS, QUESTION_TIMEOUT_MS], takenStatus: 503 })
+    const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(result.messages.length).toBe(2)
+    expect(result.messages[1].text).toBe(MISSING_TALK_NOTE)
+    expect(seen.logs.join('\n')).toContain('could not ask whether the block took the delivery')
   })
 
   test('a question that never answers is given up on, and the talk appended', async ($, on) => {

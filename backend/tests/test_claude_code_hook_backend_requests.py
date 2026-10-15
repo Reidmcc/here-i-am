@@ -57,6 +57,13 @@ class Backend:
                     self.send_response(500)
                     self.end_headers()
                     return
+                if backend.mode == "unauthorized":
+                    detail = json.dumps({"detail": "this token is revoked"}).encode("utf-8")
+                    self.send_response(401)
+                    self.send_header("Content-Length", str(len(detail)))
+                    self.end_headers()
+                    self.wfile.write(detail)
+                    return
                 reply = json.dumps({"ok": True, "echo": body}).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -310,3 +317,106 @@ def test_a_name_whose_addresses_all_fail_reports_the_refusal(monkeypatch):
     with pytest.raises(hook_util.BackendUnreachable) as caught:
         hook_util.post_backend("/x", {}, timeout=PATIENT)
     assert isinstance(caught.value.cause, ConnectionRefusedError)
+
+
+# --- review of PR #406
+
+
+@pytest.fixture
+def hook_clock(monkeypatch):
+    """Set the hook's deadline `seconds` from now, as start_hook_clock
+    would after the hook's own work had used the rest."""
+
+    def set_left(seconds):
+        monkeypatch.setattr(hook_util, "_hook_deadline", time.monotonic() + seconds)
+
+    yield set_left
+
+
+def test_the_hooks_clock_cuts_a_read_short(backend, hook_clock):
+    # A long transcript read leaves less than the request's own deadline
+    backend("slow")
+    hook_clock(0.4)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        hook_util.post_backend("/x", {}, timeout=hook_util.RequestTimeouts(read=30, connect=0.3))
+    assert time.monotonic() - started < 0.8
+
+
+def test_no_time_left_sends_nothing(backend, hook_clock):
+    server = backend()
+    hook_clock(-1)
+    with pytest.raises(hook_util.BackendUnreachable) as caught:
+        hook_util.post_backend("/x", {}, timeout=FAST)
+    assert "no time left" in str(caught.value)
+    assert hook_util.never_reached_backend(caught.value)
+    assert server.requests == []
+
+
+def test_no_retry_when_the_clock_cannot_fit_one(backend, monkeypatch, hook_clock):
+    backend()
+    tried = []
+
+    def hanging_connect(self):
+        tried.append(1)
+        time.sleep(5)
+
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", hanging_connect)
+    monkeypatch.setattr(hook_util, "RETRY_PAUSE", 0.5)
+    hook_clock(0.6)
+    with pytest.raises(hook_util.BackendUnreachable):
+        hook_util.post_backend("/x", {}, timeout=FAST)
+    assert len(tried) == 1
+
+
+def test_start_hook_clock_uses_the_hooks_budget(monkeypatch):
+    monkeypatch.setattr(hook_util, "_PROCESS_STARTED", 100.0)
+    monkeypatch.setattr(hook_util, "_hook_deadline", None)
+    hook_util.start_hook_clock("Stop")
+    assert hook_util._hook_deadline == 100.0 + 60 - hook_util.FINISH_MARGIN
+    hook_util.start_hook_clock("SessionEnd")
+    assert hook_util._hook_deadline == 100.0 + 5 - 1.0
+
+
+def test_a_certificate_that_does_not_verify_is_not_retried(backend, monkeypatch):
+    import ssl
+
+    backend()
+    tried = []
+
+    def bad_certificate(self):
+        tried.append(1)
+        raise ssl.SSLCertVerificationError("certificate verify failed: self-signed certificate")
+
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", bad_certificate)
+    with pytest.raises(hook_util.BackendUnreachable) as caught:
+        hook_util.post_backend("/x", {}, timeout=FAST)
+    assert len(tried) == 1
+    assert "certificate verify failed" in str(caught.value)
+
+
+def test_an_error_status_carries_the_start_of_its_body(backend):
+    # Once #396 lands, a 401's detail is what explains it
+    backend("unauthorized")
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        hook_util.post_backend("/x", {}, timeout=FAST)
+    assert caught.value.code == 401
+    assert "this token is revoked" in hook_util.describe_error(caught.value)
+
+
+@pytest.mark.parametrize(
+    "error, still_running",
+    [
+        (hook_util.BackendUnreachable("x"), False),
+        (urllib.error.HTTPError("u", 500, "Internal Server Error", {}, None), False),
+        (urllib.error.HTTPError("u", 401, "Unauthorized", {}, None), False),
+        (urllib.error.HTTPError("u", 502, "Bad Gateway", {}, None), True),
+        (urllib.error.HTTPError("u", 504, "Gateway Timeout", {}, None), True),
+        (json.JSONDecodeError("x", "doc", 0), False),
+        (TimeoutError("x"), True),
+        (ConnectionResetError("x"), True),
+        (http.client.RemoteDisconnected("x"), True),
+    ],
+)
+def test_which_failures_may_still_be_running(error, still_running):
+    assert hook_util.request_may_still_be_running(error) is still_running

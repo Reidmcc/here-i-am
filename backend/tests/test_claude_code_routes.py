@@ -1452,6 +1452,31 @@ class TestRecordingVerification:
         )
         assert other.json() == {"recorded": [], "missing": [landed]}
 
+    async def test_a_turn_row_id_reads_back_however_it_was_spelled(self, async_client):
+        """/log-assistant stores the id canonically, as /recorded asks for
+        it, so Stop's check finds a row sent in another spelling (PR #406
+        review)."""
+        session_id = str(uuid.uuid4())
+        row = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/retrieve", json={"session_id": session_id, "prompt": "hello"}
+        )
+        logged = await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={"session_id": session_id, "content": "a reply", "message_uuid": row.upper()},
+        )
+        assert logged.json()["message_id"] == row
+        response = await async_client.post(
+            "/api/claude-code/recorded",
+            json={"session_id": session_id, "message_ids": [row]},
+        )
+        assert response.json() == {"recorded": [row], "missing": []}
+        again = await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={"session_id": session_id, "content": "a reply", "message_uuid": row.upper()},
+        )
+        assert again.json()["deduplicated"] is True
+
     async def test_recorded_tolerates_garbage_ids(self, async_client):
         response = await async_client.post(
             "/api/claude-code/recorded",

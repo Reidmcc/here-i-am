@@ -58,3 +58,20 @@ def test_the_worst_case_counts_every_attempt_and_pause():
 def test_a_check_after_a_failure_is_tried_once():
     # A backend that just failed to answer is not one to wait on twice
     assert hook_util.RECORDED_TIMEOUTS.attempts == 1
+
+
+def test_the_hooks_clock_uses_the_same_budgets():
+    # start_hook_clock bounds every request by these; they must be the
+    # budgets the harness enforces
+    assert hook_util.HOOK_BUDGETS == _budgets()
+
+
+def test_every_hook_starts_its_clock():
+    for script, event in (
+        ("session_start.py", "SessionStart"),
+        ("user_prompt_submit.py", "UserPromptSubmit"),
+        ("stop.py", "Stop"),
+        ("session_end.py", "SessionEnd"),
+    ):
+        source = (HOOKS_DIR / script).read_text(encoding="utf-8")
+        assert f'hook_util.start_hook_clock("{event}")' in source, script

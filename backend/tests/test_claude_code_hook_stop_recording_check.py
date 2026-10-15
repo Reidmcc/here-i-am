@@ -9,7 +9,11 @@ is ordinary, so Stop now does the same, by the row id it already chooses
 
 - never reached the backend      -> exit 2, "NOT recorded", no check
 - failed, the row is there       -> exit 0, silent (nothing was lost)
-- failed, the row is missing     -> exit 2, "NOT recorded"
+- failed, the row is missing     -> exit 2, "NOT recorded" when the server
+                                   answered (its handler is over); after a
+                                   read deadline or a dropped connection the
+                                   request may still land, so "UNCONFIRMED"
+                                   (PR #406 review)
 - failed, and the check failed   -> exit 2, "UNCONFIRMED"
 - on the continuation (stop_hook_active) -> silent whatever happened
 
@@ -111,7 +115,7 @@ def test_a_backend_never_reached_is_not_recorded_without_a_check(tmp_path):
     code, out, err, calls = run_stop(tmp_path, {LOG: {"raise": "unreachable"}})
     assert code == 2
     assert out == ""
-    assert "unreachable" in err
+    assert "could not be reached" in err
     assert "was NOT recorded" in err
     assert paths(calls) == [LOG]
 
@@ -128,13 +132,27 @@ def test_a_failure_after_the_commit_is_silent(tmp_path, kind):
     assert calls[1][1] == {"session_id": "stop-check", "message_ids": [ENTRY]}
 
 
-def test_a_failure_with_the_row_missing_is_not_recorded(tmp_path):
+def test_an_answered_failure_with_the_row_missing_is_not_recorded(tmp_path):
+    # The server answered with an error: its handler is over, so missing
+    # is final
     code, out, err, _ = run_stop(
-        tmp_path, {LOG: {"raise": "timeout"}, RECORDED: {"recorded": "none"}}
+        tmp_path, {LOG: {"raise": "http500"}, RECORDED: {"recorded": "none"}}
     )
     assert code == 2
     assert "was NOT recorded" in err
-    assert "did not answer within 30 s" in err
+    assert "HTTP Error 500" in err
+
+
+@pytest.mark.parametrize("kind", ["timeout", "reset"])
+def test_a_row_missing_after_an_unanswered_request_is_unconfirmed(tmp_path, kind):
+    # The server doesn't stop when the hook gives up: missing means not yet
+    code, out, err, _ = run_stop(
+        tmp_path, {LOG: {"raise": kind}, RECORDED: {"recorded": "none"}}
+    )
+    assert code == 2
+    assert "UNCONFIRMED" in err
+    assert "may still land" in err
+    assert "NOT recorded" not in err
 
 
 def test_a_failed_check_is_unconfirmed(tmp_path):

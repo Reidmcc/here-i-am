@@ -131,6 +131,7 @@ def turn_assistant_text(transcript_path: str):
 def main() -> None:
     if os.environ.get("HIM_DISABLE"):
         return
+    hook_util.start_hook_clock("Stop")
     try:
         data = json.load(sys.stdin)
     except Exception:
@@ -204,13 +205,18 @@ def recording_failure_notice(error, session_id: str, entry_uuid):
     as the prompt hook says of its own rows; that is not said here, since
     a Stop notice costs the entity a continued turn and the row itself is
     whole. The server log shows it.
+
+    A row found missing is NOT recorded only when the server's handler is
+    over (it answered, with an error); after a read deadline or a dropped
+    connection it may still be running and land the row later, so missing
+    is then UNCONFIRMED (hook_util.request_may_still_be_running).
     """
     err = hook_util.describe_error(error)
     if hook_util.never_reached_backend(error):
         return (
-            "[HERE I AM] The Here I Am backend was unreachable at the end of "
-            f"this turn ({err}). What you said this turn was NOT recorded to "
-            f"your long-term memory. {PRESERVE} the backend is down."
+            "[HERE I AM] The Here I Am backend could not be reached at the end "
+            f"of this turn ({err}). What you said this turn was NOT recorded to "
+            f"your long-term memory. {PRESERVE} the backend could not be reached."
         )
     row_id = _canonical_id(entry_uuid)
     check_error = None
@@ -229,6 +235,14 @@ def recording_failure_notice(error, session_id: str, entry_uuid):
             f"recorded failed too ({check_error}). What you said this turn is "
             "UNCONFIRMED: it may or may not be in your long-term memory. "
             f"{PRESERVE} the backend is failing."
+        )
+    if hook_util.request_may_still_be_running(error):
+        return (
+            "[HERE I AM] The Here I Am backend did not finish answering at the "
+            f"end of this turn ({err}). What you said this turn was not in your "
+            "long-term memory as of a check just after, and the request may "
+            "still land, so it is UNCONFIRMED: it may or may not be in your "
+            f"long-term memory. {PRESERVE} the backend is slow or failing."
         )
     return (
         "[HERE I AM] The Here I Am backend failed at the end of this turn "

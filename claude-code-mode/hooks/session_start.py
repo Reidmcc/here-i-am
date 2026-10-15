@@ -38,6 +38,7 @@ import hook_util
 def main() -> None:
     if os.environ.get("HIM_DISABLE"):
         return
+    hook_util.start_hook_clock("SessionStart")
     data = hook_util.read_hook_input()
     if data is None:
         hook_util.fail_loud(

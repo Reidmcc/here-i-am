@@ -84,6 +84,7 @@ import hook_util
 def main() -> None:
     if os.environ.get("HIM_DISABLE"):
         return
+    hook_util.start_hook_clock("UserPromptSubmit")
     data = hook_util.read_hook_input()
     if data is None:
         hook_util.fail_loud(
@@ -335,8 +336,26 @@ def recording_failure_notice(error, session_id, human_id, peer_ids) -> str:
         )
     landed = [label for mid, label in labels.items() if mid in recorded]
     lost = [label for mid, label in labels.items() if mid not in recorded]
+    # Missing is final only once the server's handler is over; after a read
+    # deadline or a dropped connection it may still land (PR #406 review)
+    pending = hook_util.request_may_still_be_running(error)
+    if not landed and pending:
+        return (
+            f"The Here I Am backend did not finish answering this prompt ({err}). "
+            f"This turn's input ({what}) was not in your long-term memory as of "
+            "a check just after, and the request may still land, so its "
+            "recording is UNCONFIRMED: it may or may not be in your long-term "
+            f"memory. No memory retrieval ran; {MEMORY_QUERY_HINT}"
+        )
     if not landed:
         return f"The Here I Am backend failed for this prompt ({err}). {not_recorded}"
+    if lost and pending:
+        return (
+            f"The Here I Am backend did not finish answering this prompt ({err}). "
+            f"Recorded to your long-term memory: {' and '.join(landed)}. Not yet "
+            f"recorded as of a check just after, and may still land: "
+            f"{' and '.join(lost)}. No memory retrieval ran; {MEMORY_QUERY_HINT}"
+        )
     if not lost:
         return (
             f"The Here I Am backend failed for this prompt after recording it ({err}). "
