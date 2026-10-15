@@ -989,7 +989,7 @@ every tick of a loop.
 
 **A failure notice must not be false either.** `/retrieve` commits the
 turn's rows before it runs retrieval, so a 500 (a peer row failing, Pinecone
-failing during vectorization) or the hook's own 30s timeout can arrive
+failing during vectorization) or the hook's own read deadline can arrive
 after the words are already in the archive — and the old notice, "NOT
 recorded", was then misinformation of exactly the kind the notices exist
 to prevent. So the hook chooses the row ids itself (`message_id` on the
@@ -1008,10 +1008,59 @@ them exist before saying anything (`recording_failure_notice`):
 - the check itself failed → *"... is UNCONFIRMED: it may or may not be in
   your long-term memory"* — the one honest answer, never a guess either way.
 
-Only a request that provably never reached the backend (connection
-refused, name resolution — `hook_util.never_reached_backend`) is reported
-as unrecorded without the check. `/recorded` is SQL only, creates nothing,
-and scopes the ids to the session's conversation.
+Only a request that provably never reached the backend (no connection
+made: refused, the name unresolved, or no connection within the connect
+deadline — `hook_util.never_reached_backend`) is reported as unrecorded
+without the check. `/recorded` is SQL only, creates nothing, and scopes
+the ids to the session's conversation.
+
+**The Stop hook checks the same way** (issue #400). It chooses its row id
+too (the turn's last text entry's uuid, `message_uuid`), so a failed
+`/log-assistant` that may have landed is checked against `/recorded`
+before it says anything: the row is there → nothing was lost, and the hook
+exits 0 silently; missing → exit 2, "NOT recorded"; the check failed, or
+the turn had no well-formed id to ask about → exit 2, "UNCONFIRMED". Only
+the recording failure ever exits 2.
+
+**Deadlines, for a backend across a network** (issue #400). On localhost a
+server that is down refuses at once; across a network (the cloud VM) a
+host that is down drops packets, and a request would wait out its whole
+timeout before saying anything. So every hook request goes through
+`hook_util.post_backend`, which keeps two deadlines:
+
+- *connect* (name resolution, TCP, the TLS handshake; 4 s, provisional):
+  nothing has been sent yet, so a failure here never reached the backend.
+  It is retried once after a 1 s pause, except a refusal, which means
+  nothing is listening (uvicorn's reloader keeps the socket bound across a
+  hot reload, so a reload queues connections instead of refusing them).
+- *read* (sending the request and reading the whole response, one
+  deadline, not per socket operation): the server may have done its work,
+  so it is never retried — `/retrieve` commits rows and then memory links
+  before it answers, and a retry would report the first attempt's
+  memories as already in context (issue #403).
+
+Neither deadline comes from the socket alone (a socket timeout doesn't
+bound name resolution, and `http.client`'s applies per operation), so each
+attempt runs in a daemon thread the hook waits on; the request is sent
+only under a lock that an abandoned connect holds shut, so an attempt
+given up on can never send it afterwards. The deadlines live in one place
+(`hook_util.RequestTimeouts`, `TIMEOUTS_BY_HOOK`), and
+`tests/test_claude_code_hook_budgets.py` holds each hook's worst case —
+every connect attempt, the pause, the read, the `/recorded` check — under
+its `hooks.json` budget with a margin; the budgets rose to fit (SessionStart
+40 s, UserPromptSubmit and Stop 60 s), which changes nothing on a healthy
+localhost. SessionEnd gets one short try (1.5 s + 2 s, inside its 5 s) and
+stays silent.
+
+A name's addresses are raced, not tried in turn. Windows resolves
+`localhost` to `::1` first and spends 2 s on it when the server listens on
+IPv4 only, as uvicorn does by default: every hook request paid 2.03 s
+before connecting (measured 2026-10-15 with `HIM_BACKEND_URL=
+http://localhost:8000`; 0.015 s raced). The hooks never use an HTTP proxy
+(`urllib` honored `HTTP_PROXY`): the backend is private. Set
+`HIM_HOOK_TIMING_LOG` to a file path to get one JSON line per request
+(path, outcome, attempts, connect and total milliseconds), which is how
+the VM's numbers get chosen.
 
 ### Rooms registry
 
@@ -1397,6 +1446,23 @@ backward read arrived (issue #351).
   would otherwise answer "not taken" and lose it; under hot reload any
   backend edit restarts it). So a restart costs at most a duplicate: the
   old block and the talk both.
+
+  **A failed fetch is not proof nothing was delivered** (issue #400).
+  `$.http.fetch` takes no timeout, and a `$` call in flight doesn't count
+  against a hook's budget, so the mod races each call against
+  `$.clock.after` (90 s for the talk, 10 s for the two questions);
+  without that a backend that stopped answering would hold the compaction
+  open as long as the network stack waits. But a request given up on, or
+  answered with an error, may still have recorded its delivery, and the
+  block would then say the talk is below while the mod, holding no talk,
+  appends nothing. So the mod chooses the delivery id itself
+  (`crypto.randomUUID`, sent as `delivery_id`) and, on any failure of the
+  talk call, cancels it by name (`POST /compact-talk/cancel`) before the
+  engine's compaction runs. A cancel drops a recorded delivery with that
+  id and tombstones the id, so a request still in flight that lands
+  afterwards records nothing: either order ends with no delivery and the
+  old block. A cancel that fails too is said in the transcript, naming
+  the one case left: the block may say the talk is below when it isn't.
   Every failure in the mod is also said as a dim `here-i-am-compact-talk:`
   line in the transcript (`$.ui.log`). A failed fork still fetches the
   talk; the header says the turn did not happen and why, the engine's

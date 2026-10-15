@@ -162,7 +162,9 @@ def main() -> None:
         ),
     }
     try:
-        body = hook_util.post_backend("/api/claude-code/retrieve", payload, timeout=30)
+        body = hook_util.post_backend(
+            "/api/claude-code/retrieve", payload, timeout=hook_util.RETRIEVE_TIMEOUTS
+        )
     except Exception as e:
         if not prompt and not peer_messages:
             # Wakeup tick: nothing was going to be recorded, so the loss is
@@ -322,12 +324,7 @@ def recording_failure_notice(error, session_id, human_id, peer_ids) -> str:
     if hook_util.never_reached_backend(error):
         return f"The Here I Am backend was unreachable for this prompt ({err}). {not_recorded}"
     try:
-        check = hook_util.post_backend(
-            "/api/claude-code/recorded",
-            {"session_id": session_id, "message_ids": list(labels)},
-            timeout=5,
-        )
-        recorded = {str(mid) for mid in (check.get("recorded") or [])}
+        recorded = hook_util.recorded_message_ids(session_id, list(labels))
     except Exception as check_error:
         return (
             f"The Here I Am backend failed for this prompt ({err}), and the "

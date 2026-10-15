@@ -4357,6 +4357,62 @@ class TestCompactTalk:
         assert await taken() is True
         assert await taken() is None  # answered once; then it is not known
 
+    async def test_the_mod_chooses_the_delivery_id(self, async_client):
+        """So it can cancel a delivery whose answer it never got (#400)."""
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        chosen = str(uuid.uuid4())
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk",
+            json={"session_id": session_id, "delivery_id": chosen},
+        )).json()
+        assert body["delivery_id"] == chosen
+        malformed = (await async_client.post(
+            "/api/claude-code/compact-talk",
+            json={"session_id": session_id, "delivery_id": "not-an-id"},
+        )).json()
+        assert str(uuid.UUID(malformed["delivery_id"])) == malformed["delivery_id"]
+
+    async def test_a_cancelled_delivery_is_not_taken(self, async_client):
+        """The mod's fetch failed after the backend recorded the delivery
+        (a read timeout across a network): the block must not say the talk
+        is below, since the mod has nothing to append (#400)."""
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        chosen = str(uuid.uuid4())
+        await async_client.post(
+            "/api/claude-code/compact-talk",
+            json={"session_id": session_id, "delivery_id": chosen},
+        )
+        cancelled = (await async_client.post(
+            "/api/claude-code/compact-talk/cancel", json={"delivery_id": chosen}
+        )).json()
+        assert cancelled == {"dropped": True}
+        context = await self._compact(async_client, session_id)
+        assert "Read the talk with memory_read" in context
+        assert (await async_client.post(
+            "/api/claude-code/compact-talk/taken", json={"delivery_id": chosen}
+        )).json()["taken"] is False
+
+    async def test_a_delivery_cancelled_before_it_lands_is_never_recorded(self, async_client):
+        """The cancel can overtake the request it cancels, which is still
+        rendering: the id is refused when it arrives (#400)."""
+        session_id = str(uuid.uuid4())
+        await self._record(async_client, session_id, [("a prompt", "a reply")])
+        chosen = str(uuid.uuid4())
+        cancelled = (await async_client.post(
+            "/api/claude-code/compact-talk/cancel", json={"delivery_id": chosen}
+        )).json()
+        assert cancelled == {"dropped": False}
+        body = (await async_client.post(
+            "/api/claude-code/compact-talk",
+            json={"session_id": session_id, "delivery_id": chosen},
+        )).json()
+        assert body["available"] is False
+        assert "cancelled" in body["reason"]
+        context = await self._compact(async_client, session_id)
+        assert "Read the talk with memory_read" in context
+
     async def test_a_delivery_the_block_never_took_is_not_taken(self, async_client):
         """A late adoption between the two calls moves the session to its
         parent; the block takes nothing, so the mod must append nothing."""

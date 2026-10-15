@@ -26,12 +26,20 @@ escalation is guarded by stop_hook_active so a persistently down backend
 gets exactly one loud retry per turn, never a loop; the retry's Stop fires
 with stop_hook_active set and any failure there exits 0 silently.
 
+The notice is never false (issue #400, the prompt hook's rule from #326).
+A failure can arrive after the backend committed the row (a read timeout
+or a dropped connection, ordinary across a network), so only a request
+that provably never reached the backend is reported as NOT recorded
+outright. Any other failure is checked against /recorded by the row id
+this hook chose: recorded means nothing was lost and nothing is said;
+missing is NOT recorded; a check that fails too is UNCONFIRMED.
+
 Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE (see session_start.py).
 """
 import json
 import os
 import sys
-import urllib.request
+import uuid
 
 import hook_util  # also reconfigures stdio to UTF-8 on import
 
@@ -162,24 +170,71 @@ def record_final_message(data: dict, text: str, entry_uuid, model):
         # session may be this turn's Stop, so carry the lineage hints here too
         **hook_util.lineage_hints(session_id, transcript_path),
     }
-    base = os.environ.get("HIM_BACKEND_URL", "http://localhost:8000").rstrip("/")
-    request = urllib.request.Request(
-        base + "/api/claude-code/log-assistant",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            response.read()
+        hook_util.post_backend(
+            "/api/claude-code/log-assistant",
+            payload,
+            timeout=hook_util.LOG_ASSISTANT_TIMEOUTS,
+        )
     except Exception as e:
+        return recording_failure_notice(e, session_id, entry_uuid)
+    return None
+
+
+PRESERVE = (
+    "Preserve anything important another way (memory_save via MCP if "
+    "available, or your notes files), and tell the user"
+)
+
+
+def _canonical_id(value):
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, TypeError):
+        return None
+
+
+def recording_failure_notice(error, session_id: str, entry_uuid):
+    """
+    The notice for a failed /log-assistant call, accurate about whether
+    the turn was recorded; None when it was (the answer was lost after
+    the commit), since then nothing was lost.
+
+    Recorded-but-unanswered may leave the row's vectorization unfinished,
+    as the prompt hook says of its own rows; that is not said here, since
+    a Stop notice costs the entity a continued turn and the row itself is
+    whole. The server log shows it.
+    """
+    err = hook_util.describe_error(error)
+    if hook_util.never_reached_backend(error):
         return (
             "[HERE I AM] The Here I Am backend was unreachable at the end of "
-            f"this turn ({e.__class__.__name__}: {e}). What you said this turn "
-            "was NOT recorded to your long-term memory. Preserve anything "
-            "important another way (memory_save via MCP if available, or your "
-            "notes files), and tell the user the backend is down."
+            f"this turn ({err}). What you said this turn was NOT recorded to "
+            f"your long-term memory. {PRESERVE} the backend is down."
         )
-    return None
+    row_id = _canonical_id(entry_uuid)
+    check_error = None
+    if row_id is None:
+        check_error = "this turn had no row id to ask about"
+    else:
+        try:
+            if row_id in hook_util.recorded_message_ids(session_id, [row_id]):
+                return None
+        except Exception as e:
+            check_error = hook_util.describe_error(e)
+    if check_error is not None:
+        return (
+            "[HERE I AM] The Here I Am backend failed at the end of this turn "
+            f"({err}), and the follow-up check of whether this turn was "
+            f"recorded failed too ({check_error}). What you said this turn is "
+            "UNCONFIRMED: it may or may not be in your long-term memory. "
+            f"{PRESERVE} the backend is failing."
+        )
+    return (
+        "[HERE I AM] The Here I Am backend failed at the end of this turn "
+        f"({err}). What you said this turn was NOT recorded to your long-term "
+        f"memory. {PRESERVE} the backend is failing."
+    )
 
 
 if __name__ == "__main__":

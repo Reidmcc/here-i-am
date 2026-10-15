@@ -29,6 +29,16 @@ export const TALK_SHARE = 0.2
 // When the window can't be read: small enough for a 200k window
 export const FALLBACK_BUDGET = 30000
 
+// How long the mod waits for each backend call (issue #400). $.http.fetch
+// takes no timeout, and a `$` call in flight doesn't count against a
+// hook's budget, so without a deadline a backend that stops answering
+// (across a network: a host that drops packets instead of refusing) would
+// hold the compaction open as long as the network stack waits. The talk
+// call saves a reflection and renders up to a fifth of the window; the
+// other two are one dictionary lookup each.
+export const TALK_TIMEOUT_MS = 90_000
+export const QUESTION_TIMEOUT_MS = 10_000
+
 // "2026-10-07 21:43 UTC": the forked turn has no clock of its own, and the
 // last timestamp in view can be hours old
 export function utcStamp(ms: number): string {
@@ -74,11 +84,21 @@ export const register: Register = (on) => {
     if (await $.env.get('HIM_DISABLE')) return next(e)
 
     const backend = ((await $.env.get('HIM_BACKEND_URL')) || 'http://localhost:8000').replace(/\/+$/, '')
-    const post = async (path: string, payload: object): Promise<Record<string, unknown>> => {
-      const response = await $.http.fetch(`${backend}/api/claude-code/${path}`, {
+    const post = async (path: string, payload: object, timeoutMs: number): Promise<Record<string, unknown>> => {
+      const fetching = $.http.fetch(`${backend}/api/claude-code/${path}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
+      })
+      // The fetch can't be aborted, only stopped waiting for: whatever it
+      // comes to after the deadline is dropped
+      const response = await new Promise<Awaited<typeof fetching>>((resolve, reject) => {
+        const timer = $.clock.after(timeoutMs, () =>
+          reject(new Error(`the backend did not answer /${path} within ${timeoutMs / 1000} s`)))
+        fetching.then(
+          (value) => { timer.cancel(); resolve(value) },
+          (err) => { timer.cancel(); reject(err) },
+        )
       })
       if (!response.ok) throw new Error(`the backend answered ${response.status}: ${response.text.slice(0, 300)}`)
       return JSON.parse(response.text) as Record<string, unknown>
@@ -86,6 +106,12 @@ export const register: Register = (on) => {
 
     let talk: string | undefined
     let deliveryId: string | undefined
+    // Chosen here, so a delivery whose answer never arrives can be
+    // cancelled by name (issue #400): a failed fetch is not proof the
+    // backend did nothing, and a delivery it recorded would have the block
+    // say the talk is below while nothing is appended
+    const chosenId = crypto.randomUUID()
+    let asked = false
     try {
       let pre: PreCompaction
       try {
@@ -107,12 +133,15 @@ export const register: Register = (on) => {
       }
 
       const entity = await $.env.get('HIM_ENTITY')
+      const sessionId = await $.session.id()
+      asked = true
       const body = await post('compact-talk', {
-        session_id: await $.session.id(),
+        session_id: sessionId,
         entity: entity || undefined,
         budget_tokens: budget ?? FALLBACK_BUDGET,
+        delivery_id: chosenId,
         ...pre,
-      })
+      }, TALK_TIMEOUT_MS)
       if (body.reflection_error) {
         await $.ui.log(`here-i-am-compact-talk: the reflection from the turn before compaction was not saved: ${body.reflection_error}`)
       }
@@ -123,6 +152,15 @@ export const register: Register = (on) => {
         await $.ui.log(`here-i-am-compact-talk: no talk to put back (${body.reason ?? 'no reason given'}); the post-compaction block names the read as before`)
       }
     } catch (err) {
+      talk = deliveryId = undefined
+      if (asked) {
+        // Before the engine's compaction, where the block would take it
+        try {
+          await post('compact-talk/cancel', { delivery_id: chosenId }, QUESTION_TIMEOUT_MS)
+        } catch (cancelErr) {
+          await $.ui.log(`here-i-am-compact-talk: could not cancel the delivery either (${String(cancelErr)}); if the backend recorded it, the post-compaction block may say the talk is below when nothing is appended`)
+        }
+      }
       await $.ui.log(`here-i-am-compact-talk: ${String(err)}; nothing appended, the post-compaction block names the read as before`)
     }
 
@@ -134,7 +172,7 @@ export const register: Register = (on) => {
     // itself fails, append anyway: a block that took the talk without it
     // would be a loss, one that didn't only a duplicate.
     try {
-      const { taken } = await post('compact-talk/taken', { delivery_id: deliveryId })
+      const { taken } = await post('compact-talk/taken', { delivery_id: deliveryId }, QUESTION_TIMEOUT_MS)
       if (taken === false) {
         await $.ui.log('here-i-am-compact-talk: the post-compaction block did not take the talk (the session may have moved to its parent conversation); nothing appended, the block names the read')
         return result

@@ -79,7 +79,8 @@ def main() -> None:
     }
     try:
         body = hook_util.post_backend(
-            "/api/claude-code/session-start", payload, timeout=20
+            "/api/claude-code/session-start", payload,
+            timeout=hook_util.SESSION_START_TIMEOUTS,
         )
     except Exception as e:
         hook_util.fail_loud(
