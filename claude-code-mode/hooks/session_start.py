@@ -38,6 +38,7 @@ import hook_util
 def main() -> None:
     if os.environ.get("HIM_DISABLE"):
         return
+    hook_util.start_hook_clock("SessionStart")
     data = hook_util.read_hook_input()
     if data is None:
         hook_util.fail_loud(
@@ -79,7 +80,8 @@ def main() -> None:
     }
     try:
         body = hook_util.post_backend(
-            "/api/claude-code/session-start", payload, timeout=20
+            "/api/claude-code/session-start", payload,
+            timeout=hook_util.SESSION_START_TIMEOUTS,
         )
     except Exception as e:
         hook_util.fail_loud(
