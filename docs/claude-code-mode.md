@@ -1518,6 +1518,47 @@ files the native notes tools use:
 - Native-side correctness is unaffected in the meantime: `notes_read`
   falls back to disk content on any hash mismatch, and the per-conversation
   notes seed is frozen anyway.
+
+#### One tree, wherever the sessions run (issue #397)
+
+The server reads the notes from its own disk (the index injection, the
+rooms registry, the native tools, and the per-prompt sync, which reads
+every file), so the notes live beside the server. A session on another
+machine reaches **that one copy** over a mount: there is never a second
+copy kept in sync, because two copies of `index.md` diverge in silence,
+and any tool that reconciles them does it by merging.
+
+- **`HIM_NOTES_ROOT`** (hook side) is this machine's path to the server's
+  notes tree. The SessionStart hook sends it made absolute, with
+  `os.name`, and `notes_dirs_for_session` joins the entity's and the
+  shared directory names under it in the client's flavor (`ntpath` /
+  `posixpath`, whatever the server runs). The `[YOUR NOTES]` line then
+  names those paths and says the notes live on the server, one copy for
+  every room on every machine. Unset, the server's own paths stand and
+  the line is byte for byte what it was before #397: the session runs
+  beside the server.
+- **The check.** With a context block (startup, compact; a resume's
+  transcript already carries both), the response's `notes_check` carries
+  the private directory as the line names it and the sha256 of the
+  server's `index.md` **bytes** (`None` when there is no index yet). The
+  hook hashes the file there and, on any difference or a failed read,
+  prints one loud line (`hook_util.notes_check_lines`) after the context,
+  ahead of the other trailer lines: a mount that fell through to an old
+  local folder, a stale copy, or a wrong or missing root would otherwise
+  be read and edited as if it were the notes. It runs without a root too,
+  so a session on another machine that was never given one is caught by
+  the server's path not existing there. A pass prints nothing. The one
+  innocent mismatch is another room saving `index.md` between the two
+  reads; the line says so, and the next session start checks again.
+- **Project folders.** Claude Code keeps per-project state in the project
+  folder's `.claude\` (settings, and a `scheduled_tasks.lock` that names
+  its holder by PID, which only means something on one machine). So only
+  one machine's rooms use the shared notes root as their project folder;
+  every other machine's rooms run from a local folder of their own, with
+  their own `.claude\settings.local.json`, and reach the notes at the mount.
+
+The mount, the network it rides on, and the cutover are deployment, not
+code; issue #397 has the plan and the measurements still to make.
 - **Provenance labels:** every retrieved memory is labeled with the
   experience it was formed in — `via Here I Am` (native conversation) or
   `via Claude Code` — in `[MEMORY]` markers and `memory_query` output alike.

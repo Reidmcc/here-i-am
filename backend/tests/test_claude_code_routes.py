@@ -7,6 +7,7 @@ recording, identity/reflection context, idempotency, entity resolution, the
 feature gate, and the native-chat guard.
 """
 import asyncio
+import hashlib
 import uuid
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -969,6 +970,100 @@ class TestSessionStartNotes:
         body = response.json()
         assert "[YOUR NOTES]" not in body["context"]
         assert "[NOTES INDEX" not in body["bulk_context"]
+        assert body["notes_check"] is None
+
+
+class TestNotesRoot:
+    """Issue #397: one notes tree beside the server, reached from other
+    machines over a mount. The hook names this machine's path to it
+    (HIM_NOTES_ROOT); the block then names those paths, and the response
+    carries what the hook needs to check they are the server's copy."""
+
+    async def test_without_a_root_the_block_is_unchanged(self, async_client, notes_dir):
+        response = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        body = response.json()
+        entity_dir = (notes_dir / "Test Entity").resolve()
+        shared_dir = (notes_dir / "shared").resolve()
+        # Byte for byte the pre-#397 sentence: an install with the server
+        # beside its sessions sees no change
+        assert (
+            f"[YOUR NOTES] Your persistent notes live on this machine — private: "
+            f"{entity_dir} — shared with other entities: {shared_dir}. They are "
+            "the same files the native Here I Am experience uses; read and edit "
+            "them directly with your file tools (the semantic notes index is "
+            "kept in sync automatically)."
+        ) in body["context"]
+        assert body["notes_check"] == {
+            "entity_dir": str(entity_dir),
+            "index_sha256": hashlib.sha256(
+                (entity_dir / "index.md").read_bytes()
+            ).hexdigest(),
+        }
+
+    async def test_windows_root_names_the_mount_paths(self, async_client, notes_dir):
+        response = await async_client.post(
+            "/api/claude-code/session-start",
+            json={
+                "session_id": str(uuid.uuid4()),
+                "notes_root": "E:\\here-i-am-notes",
+                "path_flavor": "nt",
+            },
+        )
+        body = response.json()
+        assert (
+            "private: E:\\here-i-am-notes\\Test Entity — shared with other "
+            "entities: E:\\here-i-am-notes\\shared."
+        ) in body["context"]
+        assert "live on the Here I Am server, one copy for every room" in body["context"]
+        assert "on this machine" not in body["context"]
+        # The server's own paths don't leak into a client's block
+        assert str(notes_dir.resolve()) not in body["context"]
+        assert body["notes_check"]["entity_dir"] == "E:\\here-i-am-notes\\Test Entity"
+
+    async def test_posix_root_joins_with_slashes(self, async_client, notes_dir):
+        response = await async_client.post(
+            "/api/claude-code/session-start",
+            json={
+                "session_id": str(uuid.uuid4()),
+                "notes_root": "/mnt/him-notes",
+                "path_flavor": "posix",
+            },
+        )
+        body = response.json()
+        assert "private: /mnt/him-notes/Test Entity — shared" in body["context"]
+        assert "/mnt/him-notes/shared." in body["context"]
+        assert body["notes_check"]["entity_dir"] == "/mnt/him-notes/Test Entity"
+
+    async def test_no_index_yet_sends_no_hash(self, async_client, notes_dir):
+        (notes_dir / "Test Entity" / "index.md").unlink()
+        response = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        assert response.json()["notes_check"]["index_sha256"] is None
+
+    async def test_compact_names_the_root_and_a_resume_checks_nothing(
+        self, async_client, notes_dir
+    ):
+        session_id = str(uuid.uuid4())
+        root = {"notes_root": "/mnt/him-notes", "path_flavor": "posix"}
+        compacted = await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": session_id, "source": "compact", **root},
+        )
+        body = compacted.json()
+        assert body["created"] is False
+        assert "private: /mnt/him-notes/Test Entity" in body["context"]
+        assert body["notes_check"]["entity_dir"] == "/mnt/him-notes/Test Entity"
+
+        resumed = await async_client.post(
+            "/api/claude-code/session-start",
+            json={"session_id": session_id, "source": "resume", **root},
+        )
+        # A resume's transcript already carries the block (and its check)
+        assert resumed.json()["context"] == ""
+        assert resumed.json()["notes_check"] is None
 
 
 class TestPostCompact:

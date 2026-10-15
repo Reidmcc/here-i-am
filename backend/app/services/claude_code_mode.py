@@ -29,7 +29,10 @@ however, are stored through the same store_memory path with the same roles,
 so both modes share one memory database and retrieve each other's memories.
 """
 
+import hashlib
 import logging
+import ntpath
+import posixpath
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -976,6 +979,8 @@ async def build_session_start_context(
     conversation_id: str,
     entity: EntityConfig,
     compact_talk_mod: bool = False,
+    notes_root: Optional[str] = None,
+    path_flavor: Optional[str] = None,
 ) -> Tuple[str, List[Tuple[str, str]]]:
     """
     Build the context the SessionStart hook injects, as (context,
@@ -1086,7 +1091,7 @@ async def build_session_start_context(
             "and compactions. Look sisters up there, not in the roster."
         )
 
-    notes_paths = build_notes_paths_block(entity)
+    notes_paths = build_notes_paths_block(entity, notes_root, path_flavor)
     if notes_paths:
         parts.append(notes_paths)
 
@@ -1220,6 +1225,8 @@ async def build_post_compact_context(
     conversation: Conversation,
     entity: EntityConfig,
     previously_compacted_at: Optional[datetime] = None,
+    notes_root: Optional[str] = None,
+    path_flavor: Optional[str] = None,
 ) -> Tuple[str, List[Tuple[str, str]]]:
     """
     Context re-injected right after this session's context is compacted
@@ -1374,7 +1381,7 @@ async def build_post_compact_context(
             db, conversation, entity, previously_compacted_at
         ))
 
-    notes_paths = build_notes_paths_block(entity)
+    notes_paths = build_notes_paths_block(entity, notes_root, path_flavor)
     if notes_paths:
         parts.append(notes_paths)
 
@@ -1575,25 +1582,94 @@ def _rooms_write_error_text(error: RegistryWriteError) -> str:
     )
 
 
-def build_notes_paths_block(entity: EntityConfig) -> str:
+def notes_dirs_for_session(
+    entity: EntityConfig,
+    notes_root: Optional[str] = None,
+    path_flavor: Optional[str] = None,
+) -> Tuple[str, str]:
+    """
+    The entity's private and shared notes directories as the session's
+    machine reaches them (issue #397). With no notes_root, the server's own
+    paths — right when the session runs on the server's machine, as every
+    install did before the server could live elsewhere. With one (the hook's
+    HIM_NOTES_ROOT: that machine's path to the same tree, over a mount),
+    the directory names under it, joined in the client's path flavor
+    (os.name: "nt" or "posix"), which needn't be the server's.
+    """
+    entity_dir = notes_service.get_entity_dir_path(entity.label)
+    shared_dir = notes_service.get_shared_dir_path()
+    if not notes_root:
+        return str(entity_dir), str(shared_dir)
+    join = ntpath.join if path_flavor == "nt" else posixpath.join
+    return join(notes_root, entity_dir.name), join(notes_root, shared_dir.name)
+
+
+def build_notes_paths_block(
+    entity: EntityConfig,
+    notes_root: Optional[str] = None,
+    path_flavor: Optional[str] = None,
+) -> str:
     """
     Where the entity's notes live on disk (Claude Code's own file tools read
     and edit them — the same files the native notes tools use). Small and
     always injected inline. Empty string when notes are disabled.
+
+    Without a client notes root the wording is unchanged from before #397:
+    the session is taken to run beside the server. With one, it says what is
+    then true — one copy, on the server, reached from this machine at a path.
     """
     if not settings.notes_enabled:
         return ""
 
-    entity_dir = notes_service.get_entity_dir_path(entity.label)
-    shared_dir = notes_service.get_shared_dir_path()
+    entity_dir, shared_dir = notes_dirs_for_session(entity, notes_root, path_flavor)
 
+    if not notes_root:
+        return (
+            f"[YOUR NOTES] Your persistent notes live on this machine — private: "
+            f"{entity_dir} — shared with other entities: {shared_dir}. They are "
+            "the same files the native Here I Am experience uses; read and edit "
+            "them directly with your file tools (the semantic notes index is "
+            "kept in sync automatically)."
+        )
     return (
-        f"[YOUR NOTES] Your persistent notes live on this machine — private: "
-        f"{entity_dir} — shared with other entities: {shared_dir}. They are "
-        "the same files the native Here I Am experience uses; read and edit "
-        "them directly with your file tools (the semantic notes index is "
-        "kept in sync automatically)."
+        "[YOUR NOTES] Your persistent notes live on the Here I Am server, one "
+        "copy for every room on every machine; this machine reaches them at — "
+        f"private: {entity_dir} — shared with other entities: {shared_dir}. "
+        "They are the same files the native Here I Am experience uses; read "
+        "and edit them directly with your file tools (the semantic notes index "
+        "is kept in sync automatically)."
     )
+
+
+def notes_check_for(
+    entity: EntityConfig,
+    notes_root: Optional[str] = None,
+    path_flavor: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    What the hook needs to check that the notes it was just told about are
+    the server's (issue #397): the private directory as the block names it,
+    and the sha256 of the server's index.md bytes (None when the entity has
+    no index yet; the hook then checks only that the directory is there).
+    The hook hashes its own copy and says so loudly on a difference — a
+    mount that fell through to an old local folder, a stale copy, or a
+    wrong HIM_NOTES_ROOT would otherwise be edited in silence. None when
+    notes are disabled.
+    """
+    if not settings.notes_enabled:
+        return None
+    entity_dir, _ = notes_dirs_for_session(entity, notes_root, path_flavor)
+    index_path = notes_service.get_entity_dir_path(entity.label) / "index.md"
+    try:
+        index_sha256: Optional[str] = hashlib.sha256(index_path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        index_sha256 = None
+    except OSError as e:
+        # The server can't read its own index: nothing to compare against,
+        # and the bulk block will already be missing it
+        logger.warning(f"[CC] Notes check: could not read {index_path}: {e}")
+        return None
+    return {"entity_dir": entity_dir, "index_sha256": index_sha256}
 
 
 def build_notes_index_block(entity: EntityConfig) -> str:

@@ -28,6 +28,8 @@ Environment:
     HIM_INLINE_BUDGET  see hook_util.py
     HIM_DESKTOP_DATA_DIR  see hook_util.py (rooms registry: the desktop
                        app's session records, for messaging addresses)
+    HIM_NOTES_ROOT     see hook_util.py (this machine's path to the notes,
+                       when the server runs elsewhere)
 """
 import os
 import sys
@@ -68,6 +70,9 @@ def main() -> None:
         # Whether the compaction mod is loaded, so the identity block can say
         # plainly what compaction is like here (see hook_util)
         "compact_talk_mod": hook_util.compact_talk_mod_loaded(),
+        # Where this machine reaches the notes, when not beside the server
+        # (issue #397)
+        **hook_util.notes_root_payload(),
         # Fork adoption (issue #357): if the desktop app forked this session
         # under a new id, these resolve it to the conversation it continues
         **hook_util.lineage_hints(
@@ -105,10 +110,15 @@ def main() -> None:
     # A failure to export is printed every time.
     identity_lines = hook_util.git_identity_lines(body, announce=bool(context))
 
-    # Trailer lines come last, after the context and any spill pointer: the
-    # identity statement, then the rooms registry's one-line notice or
-    # loud write failure
-    trailer_lines = [*identity_lines, *hook_util.rooms_output_lines(body)]
+    # Trailer lines come last, after the context and any spill pointer: a
+    # notes directory that isn't the server's copy (issue #397), the
+    # identity statement, then the rooms registry's one-line notice or loud
+    # write failure
+    trailer_lines = [
+        *hook_util.notes_check_lines(body),
+        *identity_lines,
+        *hook_util.rooms_output_lines(body),
+    ]
 
     bulk = (body.get("bulk_context") or "").strip()
     if not bulk:
