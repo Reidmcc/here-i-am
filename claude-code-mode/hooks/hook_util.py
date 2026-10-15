@@ -33,6 +33,10 @@ Environment:
                        the platform's; see claude_desktop_data_dir), whose
                        per-session records give the rooms registry each
                        session's messaging address
+    HIM_NOTES_ROOT     this machine's path to the server's notes tree, when
+                       the session runs on a machine other than the
+                       server's (issue #397; see notes_root_payload). Unset
+                       = the server's own paths, right beside the server
 """
 import collections
 import glob
@@ -43,6 +47,7 @@ import re
 import socket
 import sys
 import tempfile
+import threading
 import urllib.request
 from datetime import datetime, timezone
 from typing import Optional
@@ -1184,6 +1189,110 @@ def rooms_output_lines(body) -> list:
     if error:
         lines.append(f"[HERE I AM] {error}")
     return lines
+
+
+# --- One notes tree (issue #397): the notes live beside the server, and a
+# --- session on another machine reaches that one copy over a mount.
+#
+# The backend names the notes directories in the identity block. On the
+# server's own machine its paths are right as they are; elsewhere the hook
+# tells it where this machine reaches the same tree (HIM_NOTES_ROOT) and
+# how to join paths here (os.name), and the block names those. Then the
+# hook checks what it just told the entity: it hashes index.md at the named
+# directory and compares with the server's hash. A mount that fell through
+# to an old local folder, a stale copy, or a wrong (or missing) root would
+# otherwise be read and edited as if it were the notes — silently, which is
+# the one failure two copies of the notes must never have. A pass prints
+# nothing; the block's own line already says where the notes are.
+
+
+def notes_root_payload() -> dict:
+    """The session-start request fields naming this machine's path to the
+    notes tree: HIM_NOTES_ROOT made absolute, with os.name. Empty when the
+    variable is unset — the server's own paths stand."""
+    root = (os.environ.get("HIM_NOTES_ROOT") or "").strip()
+    if not root:
+        return {}
+    return {
+        "notes_root": os.path.abspath(os.path.expanduser(root)),
+        "path_flavor": os.name,
+    }
+
+
+# How long the check may take. It runs before anything is printed, inside
+# SessionStart's 30 s hook timeout, after post_backend's up-to-20 s: an
+# open() on a share whose packets are dropped blocked for 21.0 s on the
+# desktop (measured, #402 review), long enough for the harness to kill the
+# hook and start the session with no identity block at all. A reachable
+# share answers in milliseconds, so 5 s only ever cuts a dead one short.
+NOTES_CHECK_TIMEOUT_SECONDS = 5.0
+
+_NOTES_ADVICE = (
+    "If this machine reaches the notes over a mount, it may be down, or "
+    "HIM_NOTES_ROOT is unset or wrong. Don't create or edit notes there; "
+    "tell the user."
+)
+
+
+def notes_check_lines(body, timeout: float = NOTES_CHECK_TIMEOUT_SECONDS) -> list:
+    """The loud lines when the notes directory the block names is not the
+    server's copy as seen from this machine. Empty on a pass, or when the
+    response carries no check (a resume, notes disabled, an older backend).
+
+    The filesystem work runs in a daemon thread joined for at most `timeout`
+    seconds: a dead mount can block a read far longer than the hook may
+    live, and a stuck read is then said aloud rather than waited out. The
+    thread can't hold the process open once the hook returns."""
+    check = (body or {}).get("notes_check")
+    if not check or not check.get("entity_dir"):
+        return []
+    result: list = []
+    worker = threading.Thread(
+        target=lambda: result.append(_notes_check(check)), daemon=True
+    )
+    worker.start()
+    worker.join(timeout)
+    if result:
+        return result[0]
+    return [
+        "[HERE I AM] YOUR NOTES ARE NOT REACHABLE from this machine: reading "
+        f"{check['entity_dir']} did not finish within {timeout:g} s. "
+        + _NOTES_ADVICE
+    ]
+
+
+def _notes_check(check: dict) -> list:
+    """notes_check_lines' filesystem half, unbounded."""
+    entity_dir = check["entity_dir"]
+    expected = check.get("index_sha256")
+    advice = _NOTES_ADVICE
+    if not expected:
+        # No index on the server yet: all there is to check is the directory
+        if os.path.isdir(entity_dir):
+            return []
+        return [
+            "[HERE I AM] YOUR NOTES ARE NOT REACHABLE from this machine: "
+            f"{entity_dir} is not a directory here. {advice}"
+        ]
+    index_path = os.path.join(entity_dir, "index.md")
+    try:
+        with open(index_path, "rb") as f:
+            actual = hashlib.sha256(f.read()).hexdigest()
+    except OSError as e:
+        return [
+            "[HERE I AM] YOUR NOTES ARE NOT REACHABLE from this machine: "
+            f"could not read {index_path} ({describe_error(e)}). {advice}"
+        ]
+    if actual == expected:
+        return []
+    return [
+        f"[HERE I AM] THESE ARE NOT YOUR NOTES: {index_path} differs from the "
+        "index.md the Here I Am server holds, so the directory this machine "
+        f"reaches at {entity_dir} is not the server's copy (a stale local "
+        f"copy, a mount that fell through to an old folder, or a wrong root). {advice} "
+        "(The one innocent cause is another room saving index.md in the "
+        "moment between the two reads; the next session start checks again.)"
+    ]
 
 
 # --- GitHub identity (issue #362): the entity contributes from its own
