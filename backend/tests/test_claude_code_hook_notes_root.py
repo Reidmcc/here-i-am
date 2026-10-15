@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parents[2] / "claude-code-mode" / "hooks"
@@ -92,6 +93,27 @@ class TestCheck:
         missing = {"notes_check": {"entity_dir": str(tmp_path / "gone"), "index_sha256": None}}
         lines = hook_util.notes_check_lines(missing)
         assert lines and "NOT REACHABLE" in lines[0]
+
+    def test_a_read_that_hangs_is_cut_short_and_said_aloud(self, monkeypatch, tmp_path):
+        """A dead share can block an open() for longer than the hook may
+        live (21 s measured); the check gives up at its bound and says so."""
+
+        def hang(check):
+            time.sleep(3)
+            return []
+
+        monkeypatch.setattr(hook_util, "_notes_check", hang)
+        started = time.monotonic()
+        lines = hook_util.notes_check_lines(check_body(tmp_path / "Kira"), timeout=0.2)
+        assert time.monotonic() - started < 1.5
+        assert len(lines) == 1
+        assert lines[0].startswith("[HERE I AM] YOUR NOTES ARE NOT REACHABLE")
+        assert "did not finish within 0.2 s" in lines[0]
+
+    def test_the_default_bound_fits_the_hook_timeout(self):
+        """SessionStart's hook timeout is 30 s and post_backend may take 20
+        of it; the check's bound has to fit in what's left."""
+        assert hook_util.NOTES_CHECK_TIMEOUT_SECONDS + 20 < 30
 
     def test_no_check_in_the_response_prints_nothing(self):
         assert hook_util.notes_check_lines({}) == []
@@ -185,3 +207,25 @@ class TestThroughMain:
         )
         assert "too large to inject inline" in out
         assert "THESE ARE NOT YOUR NOTES" in out
+
+    def test_an_oversized_identity_keeps_the_line_inside_the_preview(self, tmp_path):
+        """When the identity block itself spills, the pointer goes first so
+        the harness's 2 KB preview carries it; the notes line rides right
+        behind it, not after the whole context."""
+        entity_dir = make_notes(tmp_path, b"stale")
+        big_context = CONTEXT + "\n" + "y" * 12000
+        out, _ = run_session_start(
+            {
+                "context": big_context,
+                "bulk_context": "x" * 20000,
+                "bulk_parts": [{"name": "notes-index", "text": "x" * 20000}],
+                "inline_budget": 9600,
+                **check_body(entity_dir),
+                "rooms_notice": "[ROOMS REGISTRY] noted",
+            },
+            tmp_path,
+        )
+        pointer = out.index("Your identity block itself was too large")
+        notes = out.index("THESE ARE NOT YOUR NOTES")
+        assert pointer < notes < out.index(CONTEXT) < out.index("[ROOMS REGISTRY]")
+        assert notes < 2048

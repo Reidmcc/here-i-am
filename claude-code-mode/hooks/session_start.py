@@ -113,9 +113,11 @@ def main() -> None:
     # Trailer lines come last, after the context and any spill pointer: a
     # notes directory that isn't the server's copy (issue #397), the
     # identity statement, then the rooms registry's one-line notice or loud
-    # write failure
+    # write failure. The notes lines are kept apart too, for the one branch
+    # that has to move them up (an over-budget identity block, below)
+    notes_lines = hook_util.notes_check_lines(body)
     trailer_lines = [
-        *hook_util.notes_check_lines(body),
+        *notes_lines,
         *identity_lines,
         *hook_util.rooms_output_lines(body),
     ]
@@ -179,7 +181,10 @@ def main() -> None:
             f"({hook_util.describe_size(context)})\nRead it first. "
             + pointer
         )
-        output = [part for part in (pointer, context, *trailer_lines) if part]
+        # The notes lines ride right behind the pointer, inside the
+        # harness's 2 KB preview, rather than after the whole context
+        later = [line for line in trailer_lines if line not in notes_lines]
+        output = [part for part in (pointer, *notes_lines, context, *later) if part]
     print("\n\n".join(output))
 
 

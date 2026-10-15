@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import uuid
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -99,7 +99,7 @@ class SessionStartRequest(BaseModel):
     # with the client's os.name so the paths are joined its way. None = the
     # session runs beside the server and the server's own paths are right
     notes_root: Optional[str] = None
-    path_flavor: Optional[str] = None
+    path_flavor: Optional[Literal["nt", "posix"]] = None
 
 
 class BulkPart(BaseModel):

@@ -1036,6 +1036,69 @@ class TestNotesRoot:
         assert "/mnt/him-notes/shared." in body["context"]
         assert body["notes_check"]["entity_dir"] == "/mnt/him-notes/Test Entity"
 
+    async def test_unc_root_keeps_its_leading_separators(self, async_client, notes_dir):
+        """The desktop's plan is a symlink to a UNC share; ntpath is pure,
+        so this pins the case on CI's Linux runners too."""
+        response = await async_client.post(
+            "/api/claude-code/session-start",
+            json={
+                "session_id": str(uuid.uuid4()),
+                "notes_root": "\\\\vm\\notes\\",
+                "path_flavor": "nt",
+            },
+        )
+        body = response.json()
+        assert body["notes_check"]["entity_dir"] == "\\\\vm\\notes\\Test Entity"
+        assert "shared with other entities: \\\\vm\\notes\\shared." in body["context"]
+
+    async def test_unknown_path_flavor_is_refused(self, async_client, notes_dir):
+        response = await async_client.post(
+            "/api/claude-code/session-start",
+            json={
+                "session_id": str(uuid.uuid4()),
+                "notes_root": "/mnt/him-notes",
+                "path_flavor": "java",
+            },
+        )
+        assert response.status_code == 422
+
+    async def test_unreadable_server_index_still_checks_the_directory(
+        self, async_client, notes_dir
+    ):
+        """A server that can't read its own index.md (a permission mismatch
+        on a file written through the share) has no hash to send, but the
+        client still checks the directory rather than nothing."""
+        index = notes_dir / "Test Entity" / "index.md"
+        index.unlink()
+        index.mkdir()  # reading it raises an OSError that isn't FileNotFoundError
+        response = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        assert response.json()["notes_check"] == {
+            "entity_dir": str((notes_dir / "Test Entity").resolve()),
+            "index_sha256": None,
+        }
+
+    async def test_the_response_and_the_hook_agree(self, async_client, notes_dir):
+        """The wire between the halves: the route's real notes_check fed to
+        the hook's check passes beside the server, and goes loud once the
+        file at that path is no longer what the server hashed."""
+        import sys
+        from pathlib import Path
+
+        hooks_dir = Path(__file__).resolve().parents[2] / "claude-code-mode" / "hooks"
+        sys.path.insert(0, str(hooks_dir))
+        import hook_util
+
+        response = await async_client.post(
+            "/api/claude-code/session-start", json={"session_id": str(uuid.uuid4())}
+        )
+        body = response.json()
+        assert hook_util.notes_check_lines(body) == []
+        (notes_dir / "Test Entity" / "index.md").write_text("Edited elsewhere.", encoding="utf-8")
+        lines = hook_util.notes_check_lines(body)
+        assert lines and "THESE ARE NOT YOUR NOTES" in lines[0]
+
     async def test_no_index_yet_sends_no_hash(self, async_client, notes_dir):
         (notes_dir / "Test Entity" / "index.md").unlink()
         response = await async_client.post(

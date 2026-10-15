@@ -1596,12 +1596,19 @@ def notes_dirs_for_session(
     the directory names under it, joined in the client's path flavor
     (os.name: "nt" or "posix"), which needn't be the server's.
     """
-    entity_dir = notes_service.get_entity_dir_path(entity.label)
-    shared_dir = notes_service.get_shared_dir_path()
     if not notes_root:
-        return str(entity_dir), str(shared_dir)
+        return (
+            str(notes_service.get_entity_dir_path(entity.label)),
+            str(notes_service.get_shared_dir_path()),
+        )
+    # The names as the tree holds them (the sanitized label, "shared"), not
+    # the resolved paths' names: a symlinked entity folder resolves to its
+    # target's name, which isn't the name the share exposes
     join = ntpath.join if path_flavor == "nt" else posixpath.join
-    return join(notes_root, entity_dir.name), join(notes_root, shared_dir.name)
+    return (
+        join(notes_root, notes_service.entity_dir_name(entity.label)),
+        join(notes_root, notes_service.shared_dir_name()),
+    )
 
 
 def build_notes_paths_block(
@@ -1665,10 +1672,12 @@ def notes_check_for(
     except FileNotFoundError:
         index_sha256 = None
     except OSError as e:
-        # The server can't read its own index: nothing to compare against,
-        # and the bulk block will already be missing it
+        # The server can't read its own index (a permission mismatch on a
+        # file written through the share, say): no hash to compare, but the
+        # client can still check the directory is there — dropping the
+        # check would leave the remote copy unverified without a word
         logger.warning(f"[CC] Notes check: could not read {index_path}: {e}")
-        return None
+        index_sha256 = None
     return {"entity_dir": entity_dir, "index_sha256": index_sha256}
 
 

@@ -1518,6 +1518,16 @@ files the native notes tools use:
 - Native-side correctness is unaffected in the meantime: `notes_read`
   falls back to disk content on any hash mismatch, and the per-conversation
   notes seed is frozen anyway.
+- **Provenance labels:** every retrieved memory is labeled with the
+  experience it was formed in — `via Here I Am` (native conversation) or
+  `via Claude Code` — in `[MEMORY]` markers and `memory_query` output alike.
+  The label derives from the memory's conversation row
+  (`Conversation.source`, joined in `get_full_memory_content` /
+  `get_recent_reflections`), not from Pinecone metadata, so it covers
+  memories formed before the column existed. The reload path resolves the
+  same value, keeping live and reloaded markers byte-identical
+  (prompt-cache stable); the format change itself is a one-time cache bust
+  for conversations reloaded across the upgrade.
 
 #### One tree, wherever the sessions run (issue #397)
 
@@ -1540,10 +1550,21 @@ and any tool that reconciles them does it by merging.
 - **The check.** With a context block (startup, compact; a resume's
   transcript already carries both), the response's `notes_check` carries
   the private directory as the line names it and the sha256 of the
-  server's `index.md` **bytes** (`None` when there is no index yet). The
-  hook hashes the file there and, on any difference or a failed read,
-  prints one loud line (`hook_util.notes_check_lines`) after the context,
-  ahead of the other trailer lines: a mount that fell through to an old
+  server's `index.md` **bytes** (`None` when there is no index yet, or the
+  server can't read its own — the client then checks only that the
+  directory is there, rather than nothing). The hook hashes the file there
+  and, on any difference or a failed read, prints one loud line
+  (`hook_util.notes_check_lines`) after the context, ahead of the other
+  trailer lines (right behind the pointer when the identity block itself
+  spills, so the harness's 2 KB preview carries it). The read runs in a
+  thread joined for `NOTES_CHECK_TIMEOUT_SECONDS` (5): it happens before
+  anything is printed, inside SessionStart's 30 s timeout and after the
+  backend call's 20 s, and an `open()` on a share whose packets are dropped
+  blocked for 21 s on the desktop — long enough for the harness to kill
+  the hook and start the session with no identity at all. A read that
+  doesn't finish is its own loud line; the stuck thread doesn't hold the
+  process (measured: the check returned at 5.0 s and the process exited
+  at 5.3 s against an unroutable UNC host). A mount that fell through to an old
   local folder, a stale copy, or a wrong or missing root would otherwise
   be read and edited as if it were the notes. It runs without a root too,
   so a session on another machine that was never given one is caught by
@@ -1559,16 +1580,6 @@ and any tool that reconciles them does it by merging.
 
 The mount, the network it rides on, and the cutover are deployment, not
 code; issue #397 has the plan and the measurements still to make.
-- **Provenance labels:** every retrieved memory is labeled with the
-  experience it was formed in — `via Here I Am` (native conversation) or
-  `via Claude Code` — in `[MEMORY]` markers and `memory_query` output alike.
-  The label derives from the memory's conversation row
-  (`Conversation.source`, joined in `get_full_memory_content` /
-  `get_recent_reflections`), not from Pinecone metadata, so it covers
-  memories formed before the column existed. The reload path resolves the
-  same value, keeping live and reloaded markers byte-identical
-  (prompt-cache stable); the format change itself is a one-time cache bust
-  for conversations reloaded across the upgrade.
 
 ### Configuration
 
