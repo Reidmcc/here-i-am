@@ -22,11 +22,12 @@ Usage:
 The server will:
     1. Download the Whisper model on first run (~3GB for large-v3)
     2. Start a FastAPI server on port 8030 (default)
-    3. Accept transcription requests from the main Here I Am application
+    3. Accept transcription requests from the Here I Am app in this machine's browser
 
-Once running, configure the main app with:
-    WHISPER_ENABLED=true
-    WHISPER_API_URL=http://localhost:8030
+It listens on 127.0.0.1 only. In the browser on this machine, turn on
+Settings > "Use voice servers on this machine". If the app is served from
+another origin (a cloud VM), add it with --allow-origin. See
+docs/local-services.md.
 """
 
 import os

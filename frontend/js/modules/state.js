@@ -7,6 +7,16 @@
  * Application state store
  * This is a simple state object that modules can read from and write to
  */
+// Per-browser local voice server settings (issue #399)
+export const LOCAL_VOICE_KEY = 'local_voice_settings';
+export const LOCAL_VOICE_DEFAULTS = Object.freeze({
+    enabled: false,
+    styletts2Url: 'http://localhost:8021',
+    xttsUrl: 'http://localhost:8020',
+    whisperUrl: 'http://localhost:8030',
+    dictationMode: 'auto',
+});
+
 export const state = {
     // Current conversation
     currentConversationId: null,
@@ -83,6 +93,11 @@ export const state = {
     ttsVoices: [],
     selectedVoiceId: null,
     localTtsServerHealthy: false,
+    // Base URL of the local TTS server in use, when ttsProvider is local
+    localTtsUrl: null,
+    // The local voice servers, per browser (issue #399): only the browser
+    // on the machine that runs them turns this on.
+    localVoice: { ...LOCAL_VOICE_DEFAULTS },
     audioCache: new Map(),
     currentAudio: null,
     currentSpeakingBtn: null,
@@ -249,6 +264,39 @@ export function getValidSavedEntityModel(entity) {
         m => m.id === savedModel && m.provider === provider
     );
     return isValid ? savedModel : null;
+}
+
+/**
+ * Load this browser's local voice server settings from localStorage
+ */
+export function loadLocalVoiceSettings() {
+    state.localVoice = { ...LOCAL_VOICE_DEFAULTS };
+    try {
+        const saved = JSON.parse(localStorage.getItem(LOCAL_VOICE_KEY) || 'null');
+        if (saved && typeof saved === 'object') {
+            for (const key of Object.keys(LOCAL_VOICE_DEFAULTS)) {
+                if (typeof saved[key] === typeof LOCAL_VOICE_DEFAULTS[key]) {
+                    state.localVoice[key] = saved[key];
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('Failed to load local voice settings:', e);
+    }
+    return state.localVoice;
+}
+
+/**
+ * Save this browser's local voice server settings to localStorage
+ * @param {Object} settings - Fields of state.localVoice to change
+ */
+export function saveLocalVoiceSettings(settings) {
+    state.localVoice = { ...state.localVoice, ...settings };
+    try {
+        localStorage.setItem(LOCAL_VOICE_KEY, JSON.stringify(state.localVoice));
+    } catch (e) {
+        console.warn('Failed to save local voice settings:', e);
+    }
 }
 
 /**

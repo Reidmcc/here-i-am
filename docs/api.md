@@ -74,20 +74,13 @@ Called by Claude Code lifecycle hooks, not the frontend. Gated by
 - `PUT /api/messages/{id}` — edit human message content
 - `DELETE /api/messages/{id}` — delete message (and paired response)
 
-## Text-to-Speech
-- `POST /api/tts/speak` — convert text to speech (MP3 for ElevenLabs, WAV for XTTS/StyleTTS2)
-- `POST /api/tts/speak/stream` — stream text-to-speech audio
-- `GET /api/tts/status` — check TTS configuration status
-- `GET /api/tts/voices` — list available voices
-- `GET /api/tts/voices/{id}` — get specific voice details
-- `POST /api/tts/voices/clone` — clone voice from audio sample (XTTS/StyleTTS2 only)
-- `PUT /api/tts/voices/{id}` — update voice settings (XTTS/StyleTTS2 only)
-- `DELETE /api/tts/voices/{id}` — delete cloned voice (XTTS/StyleTTS2 only)
-- `GET /api/tts/xtts/health` — check XTTS server health
-- `GET /api/tts/styletts2/health` — check StyleTTS 2 server health
+## Text-to-Speech (ElevenLabs)
+- `POST /api/tts/speak` — convert text to speech (`audio/mpeg`)
+- `POST /api/tts/speak/stream` — stream text-to-speech audio (`audio/mpeg`)
+- `GET /api/tts/status` — `{configured, provider ("elevenlabs" or "none"), voices, default_voice_id, model_id}`
+- `GET /api/tts/voices` — list the configured ElevenLabs voices
 
-## Speech-to-Text
-- `POST /api/stt/transcribe` — transcribe audio file to text
+The backend proxies only ElevenLabs (its API key is server-side). The local voice servers — XTTS, StyleTTS 2, and Whisper speech-to-text, with their voice libraries — are called by the browser directly and serve their own endpoints (issue #399); see [local-services.md](local-services.md). There is no `/api/stt`.
 
 ## GitHub
 - `GET /api/github/repos` — list configured repositories (tokens excluded)
