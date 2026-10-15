@@ -1753,9 +1753,14 @@ entity is on GitHub (the author name and email) is the server's to say,
 but `gh_config_dir` names a directory on the machine the session runs on,
 and each machine holds its own login. A server path means nothing to a
 session on another machine. So the hook takes the directory from
-`HIM_GH_CONFIG_DIR` in its own environment when that is set (`~`
-expanded), and falls back to the server's `gh_config_dir`, which is right
-only where the server and the sessions share a machine. The variable only
+`HIM_GH_CONFIG_DIR` in its own environment when that is set, and falls
+back to the server's `gh_config_dir`, which is right only where the
+server and the sessions share a machine. The value is made absolute (`~`
+and environment variables expanded, a relative path taken from the
+hook's working directory), because gh would resolve a relative
+`GH_CONFIG_DIR` against each Bash command's working directory, which
+moves during a session, and the hook's check would test a different
+directory from the one gh reads. The variable only
 relocates a login the server says the entity has: with no identity in
 the response it does nothing, so a variable set for one entity can't put
 another entity's sessions on that account. Only the hook reads it, so
@@ -1790,7 +1795,10 @@ included: it names the directory and where the path came from
 (`HIM_GH_CONFIG_DIR` or the server), says `gh` and `git push` will fail
 until someone runs `gh auth login` into it, and asks the entity to tell
 the user. The `[GIT IDENTITY]` line then speaks only for the author, if
-one is configured. Before #398 this case was silent: the line still said
+one is configured. An author-only identity (no gh directory from either
+side) is a legitimate configuration and gets no notice, but its line says
+that `gh` and `git push` use the machine's own login, not the entity's
+account, rather than going quiet about them. Before #398 this case was silent: the line still said
 the session acts as the entity's account. A `github.com` entry whose
 login the hook's small YAML reader can't make out (a layout it doesn't
 know, or a file it can't open) is not treated as missing: the line says
@@ -1832,10 +1840,14 @@ blocks the human too.
 3. Add the fields to the entity's `PINECONE_INDEXES` entry and restart
    the backend. The email must be one the account has verified — its
    `<id>+<login>@users.noreply.github.com` address keeps a personal
-   address out of the public log. Where the sessions run on a machine
-   other than the server's, leave `gh_config_dir` off the server and set
-   `HIM_GH_CONFIG_DIR` on each machine to its own directory from step 2
-   (see "A new machine").
+   address out of the public log. Keep `gh_config_dir` on the server in
+   every setup, set to the directory on the server's own machine: it is
+   what says the entity has a login. Each other machine that runs the
+   entity's sessions sets `HIM_GH_CONFIG_DIR` to its own directory from
+   step 2 (see "A new machine"). A machine that forgets the variable then
+   gets the server's path, which doesn't exist there, and the loud notice
+   below. Leaving `gh_config_dir` off the server instead would make that
+   machine's `gh` and `git push` act as its own login, often the human's.
 4. Optionally the `main` ruleset above.
 
 **Limits.** The desktop app's own "create PR" button, the PowerShell
@@ -2088,17 +2100,18 @@ the README, then set:
 | `HIM_ENTITY` | The entity's index name or label (unset: the server's default entity). |
 | `HIM_TOKEN` | *Coming with #396.* This machine's own token for the entity, revocable without touching the other machines. |
 | `HIM_NOTES_ROOT` | *Coming with #397.* Where this machine mounts the notes. |
-| `HIM_GH_CONFIG_DIR` | This machine's gh config directory for the entity's GitHub account (see "GitHub identity"). Leave it unset only where the server's `gh_config_dir` is a path on this machine. |
+| `HIM_GH_CONFIG_DIR` | This machine's gh config directory for the entity's GitHub account, as an absolute path (`~` and environment variables allowed); see "GitHub identity". It is unneeded only on the server's own machine, whose directory the server's `gh_config_dir` already names. Keep that setting on the server either way: it is what makes a machine that forgot this variable say so. |
 | `HIM_DESKTOP_DATA_DIR` | Only if the Claude desktop app keeps its data somewhere other than the platform default (see "Rooms registry"). |
 
 Then, once per machine, sign the entity's GitHub account into that
 directory with the command in "GitHub identity", setup step 2, with
 `GH_CONFIG_DIR` set to the `HIM_GH_CONFIG_DIR` value. Each machine holds
 its own token for the account, so one machine's login can be revoked
-without the others. If this step is skipped, the first session says so:
-the SessionStart hook prints a `[HERE I AM]` notice naming the directory,
-on every firing, and `gh` and `git push` fail rather than act as the
-human.
+without the others. If this step or the variable is skipped, the first
+session says so: the SessionStart hook prints a `[HERE I AM]` notice
+naming the directory it looked in, on every firing, and `gh` and `git
+push` fail rather than act as the human. That holds as long as the
+server keeps its `gh_config_dir` (see "GitHub identity", setup step 3).
 
 ## Phasing
 

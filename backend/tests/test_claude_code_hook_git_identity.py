@@ -262,7 +262,54 @@ class TestMachineGhConfigDir:
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
         monkeypatch.setenv("HIM_GH_CONFIG_DIR", "~/gh-kira")
         identity = hook_util.apply_machine_gh_config_dir(FULL)
-        assert os.path.normpath(identity["gh_config_dir"]) == str(tmp_path / "gh-kira")
+        assert identity["gh_config_dir"] == str(tmp_path / "gh-kira")
+
+    def test_environment_variables_are_expanded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HIM_TEST_GH_ROOT", str(tmp_path))
+        monkeypatch.setenv("HIM_GH_CONFIG_DIR", "$HIM_TEST_GH_ROOT/gh-kira")
+        identity = hook_util.apply_machine_gh_config_dir(FULL)
+        assert identity["gh_config_dir"] == str(tmp_path / "gh-kira")
+
+    def test_relative_dir_is_made_absolute(self, tmp_path, monkeypatch):
+        """gh resolves a relative GH_CONFIG_DIR against each Bash command's
+        working directory, which moves; the hook checks against its own.
+        One absolute path keeps the check and the use on the same
+        directory (#404 review)."""
+        monkeypatch.chdir(tmp_path)
+        gh_login(tmp_path / "gh-kira")
+        monkeypatch.setenv("HIM_GH_CONFIG_DIR", "gh-kira")
+        env_file = tmp_path / "env.sh"
+        monkeypatch.setenv("CLAUDE_ENV_FILE", str(env_file))
+        identity = hook_util.apply_machine_gh_config_dir(FULL)
+        assert identity["gh_config_dir"] == str(tmp_path / "gh-kira")
+        hook_util.git_identity_lines({"git_identity": FULL})
+        assert f"export GH_CONFIG_DIR='{tmp_path / 'gh-kira'}'" in env_file.read_text(encoding="utf-8")
+
+
+class TestAuthorOnly:
+    def test_author_only_line_says_gh_is_the_machines(self, tmp_path, monkeypatch):
+        """An author-only identity is a legitimate config, so no alarm —
+        but with no gh directory, gh and git push are whatever login the
+        machine holds, often the human's, and the line says so instead of
+        going quiet about gh (#404 review)."""
+        env_file = tmp_path / "env.sh"
+        monkeypatch.setenv("CLAUDE_ENV_FILE", str(env_file))
+        identity = {"author_name": "Kira", "author_email": "kira@example.com", "gh_config_dir": None}
+        lines = hook_util.git_identity_lines({"git_identity": identity})
+        assert len(lines) == 1
+        assert lines[0].startswith("[GIT IDENTITY]")
+        assert "authored as Kira <kira@example.com>" in lines[0]
+        assert "gh and git push use this machine's own GitHub login, not your account" in lines[0]
+        written = env_file.read_text(encoding="utf-8")
+        assert "GH_CONFIG_DIR" not in written
+        assert "GIT_CONFIG_COUNT" not in written
+        assert hook_util.git_identity_lines({"git_identity": identity}, announce=False) == []
+
+    def test_missing_login_line_does_not_add_the_machine_clause(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLAUDE_ENV_FILE", str(tmp_path / "env.sh"))
+        identity = dict(FULL, gh_config_dir=str(tmp_path / "missing"))
+        statement = hook_util.git_identity_lines({"git_identity": identity})[0]
+        assert "machine's own GitHub login" not in statement
 
 
 class TestMissingLogin:
@@ -566,16 +613,25 @@ class TestGhAccount:
             ('"github.com":\n    user: Kira-here-i-am\n', "Kira-here-i-am"),
             ("github.com:\n    user: Kira-here-i-am", "Kira-here-i-am"),
             (HOSTS_YML, "Kira-here-i-am"),
+            # Two accounts logged in (gh auth login run twice): the active
+            # one is the top-level user, never a key of the users map
+            (
+                "github.com:\n    users:\n        Reidmcc:\n            oauth_token: a\n"
+                "        Kira-here-i-am:\n            oauth_token: b\n"
+                "    git_protocol: https\n    user: Kira-here-i-am\n",
+                "Kira-here-i-am",
+            ),
             ("", None),
         ],
     )
     def test_reads_login_from_hosts_yml(self, tmp_path, text, expected):
         (tmp_path / "hosts.yml").write_text(text, encoding="utf-8")
-        assert hook_util.gh_account_in_config_dir(str(tmp_path)) == expected
+        state, detail = hook_util.gh_login_state(str(tmp_path))
+        assert (detail if state == "ok" else None) == expected
 
-    def test_missing_dir_or_file_is_none(self, tmp_path):
-        assert hook_util.gh_account_in_config_dir(None) is None
-        assert hook_util.gh_account_in_config_dir(str(tmp_path / "nope")) is None
+    def test_missing_dir_or_file_is_missing(self, tmp_path):
+        assert hook_util.gh_login_state(None)[0] == "missing"
+        assert hook_util.gh_login_state(str(tmp_path / "nope"))[0] == "missing"
 
     @pytest.mark.parametrize(
         "text, state",

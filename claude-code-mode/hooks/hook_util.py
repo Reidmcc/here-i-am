@@ -1349,9 +1349,15 @@ _IDENTITY_FIELDS = ("author_name", "author_email", "gh_config_dir")
 
 
 def machine_gh_config_dir() -> Optional[str]:
-    """HIM_GH_CONFIG_DIR, `~` expanded, or None when unset or blank."""
+    """HIM_GH_CONFIG_DIR as an absolute path (`~` and environment
+    variables expanded), or None when unset or blank. Made absolute here
+    because the hook checks the login against its own working directory,
+    while gh resolves an exported relative path against each Bash
+    command's, which moves during a session: one path for both."""
     value = _optional_str(os.environ.get("HIM_GH_CONFIG_DIR"))
-    return os.path.expanduser(value) if value else None
+    if not value:
+        return None
+    return os.path.abspath(os.path.expandvars(os.path.expanduser(value)))
 
 
 def apply_machine_gh_config_dir(identity) -> dict:
@@ -1407,13 +1413,6 @@ def gh_login_state(gh_dir: Optional[str]) -> tuple:
     if _GH_HOST_ENTRY.search(text):
         return ("unconfirmed", f"the github.com entry in {path} names no login this hook can read")
     return ("missing", f"{path} has no github.com login")
-
-
-def gh_account_in_config_dir(gh_dir: Optional[str]) -> Optional[str]:
-    """The login gh's hosts.yml in that directory names for github.com, or
-    None."""
-    state, detail = gh_login_state(gh_dir)
-    return detail if state == "ok" else None
 
 
 def git_identity_lines(body, announce: bool = True) -> list:
@@ -1494,6 +1493,11 @@ def git_identity_lines(body, announce: bool = True) -> list:
         parts.append(
             f"gh (issues, pull requests, comments, reviews) and git push act as {whose}"
         )
+    elif not gh_dir and parts:
+        # An author-only identity is a legitimate config, so no alarm; but
+        # the line mustn't read as if gh were the entity's too — here it is
+        # whatever login this machine holds, often the human's (#404 review)
+        parts.append("gh and git push use this machine's own GitHub login, not your account")
     if not parts:
         return notices
     return [
