@@ -378,27 +378,6 @@ class XTTSService:
             if response.status_code != 200:
                 error_detail = response.text
                 logger.error(f"XTTS API error: {response.status_code} - {error_detail}")
-
-                # Try alternative endpoint format (some XTTS servers use different APIs)
-                alt_url = f"{self.api_url}/tts"
-                try:
-                    alt_response = await client.post(
-                        alt_url,
-                        json={
-                            "text": text,
-                            "speaker_wav": speaker_wav,
-                            "language": lang,
-                            "temperature": temperature,
-                            "length_penalty": length_penalty,
-                            "repetition_penalty": repetition_penalty,
-                            "speed": speed,
-                        }
-                    )
-                    if alt_response.status_code == 200:
-                        return alt_response.content
-                except Exception:
-                    pass
-
                 raise ValueError(f"XTTS API error: {response.status_code}")
 
             return response.content

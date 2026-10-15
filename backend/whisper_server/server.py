@@ -88,8 +88,9 @@ if sys.platform == "win32":
 
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from voice_common.origin_guard import install_origin_guard, set_allowed_origins_env
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -102,14 +103,9 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Only the Here I Am app's own pages may call this server from a browser
+# (issue #399); see voice_common/origin_guard.py.
+install_origin_guard(app)
 
 # Global model instance
 _whisper_model = None
@@ -349,18 +345,25 @@ def main():
     import uvicorn
     
     parser = argparse.ArgumentParser(description="Whisper STT Server")
-    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to (keep the default: no authentication)")
+    parser.add_argument(
+        "--allow-origin", action="append", default=[], metavar="ORIGIN",
+        help="An origin whose pages may call this server, besides the local app "
+             "(http://localhost:8000). Repeatable.",
+    )
     parser.add_argument("--port", type=int, default=8030, help="Port to bind to")
     parser.add_argument("--model", default="large-v3", help="Whisper model to use")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
     
     args = parser.parse_args()
-    
+    origins = set_allowed_origins_env(args.allow_origin)
+
     global _model_name
     _model_name = args.model
     
     logger.info(f"Starting Whisper STT Server on {args.host}:{args.port}")
     logger.info(f"Using model: {_model_name}")
+    logger.info(f"Pages allowed to call it: {', '.join(origins)}")
     
     uvicorn.run(
         "whisper_server.server:app",

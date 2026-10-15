@@ -4,6 +4,21 @@ Setup and configuration for the optional text-to-speech and speech-to-text servi
 
 When multiple TTS options are enabled, priority is StyleTTS 2 > XTTS > ElevenLabs.
 
+## Who can reach the voice servers
+
+The voice servers have no authentication, so they are fenced two ways (issue #399):
+
+- **They listen on `127.0.0.1` only** (`--host` defaults to it). Other machines can't reach them. Don't pass `--host 0.0.0.0`.
+- **Only the app's own pages may call them from a browser.** A request carrying an `Origin` header must name an allowed origin or it is refused with a 403 before any route runs. CORS alone wouldn't be enough, because a file-upload POST from any website reaches the server without a preflight. The default allowed origins are the app on this machine (`http://localhost:8000`, `http://127.0.0.1:8000`). When the app is served from somewhere else, add its origin on each server:
+
+  ```bash
+  python run_xtts.py --allow-origin https://<host>.<tailnet>.ts.net
+  ```
+
+  `--allow-origin` is repeatable. The list can also be set with `VOICE_ALLOWED_ORIGINS` (comma-separated), which replaces the defaults. Requests with no `Origin` (curl, scripts on this machine) pass.
+
+The servers take speaker audio as an upload only. No endpoint accepts a file path on the server's own disk.
+
 ## Environment Variables
 
 **Text-to-Speech:**
