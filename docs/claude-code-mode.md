@@ -1529,6 +1529,58 @@ files the native notes tools use:
   (prompt-cache stable); the format change itself is a one-time cache bust
   for conversations reloaded across the upgrade.
 
+#### One tree, wherever the sessions run (issue #397)
+
+The server reads the notes from its own disk (the index injection, the
+rooms registry, the native tools, and the per-prompt sync, which reads
+every file), so the notes live beside the server. A session on another
+machine reaches **that one copy** over a mount: there is never a second
+copy kept in sync, because two copies of `index.md` diverge in silence,
+and any tool that reconciles them does it by merging.
+
+- **`HIM_NOTES_ROOT`** (hook side) is this machine's path to the server's
+  notes tree. The SessionStart hook sends it made absolute, with
+  `os.name`, and `notes_dirs_for_session` joins the entity's and the
+  shared directory names under it in the client's flavor (`ntpath` /
+  `posixpath`, whatever the server runs). The `[YOUR NOTES]` line then
+  names those paths and says the notes live on the server, one copy for
+  every room on every machine. Unset, the server's own paths stand and
+  the line is byte for byte what it was before #397: the session runs
+  beside the server.
+- **The check.** With a context block (startup, compact; a resume's
+  transcript already carries both), the response's `notes_check` carries
+  the private directory as the line names it and the sha256 of the
+  server's `index.md` **bytes** (`None` when there is no index yet, or the
+  server can't read its own — the client then checks only that the
+  directory is there, rather than nothing). The hook hashes the file there
+  and, on any difference or a failed read, prints one loud line
+  (`hook_util.notes_check_lines`) after the context, ahead of the other
+  trailer lines (right behind the pointer when the identity block itself
+  spills, so the harness's 2 KB preview carries it). The read runs in a
+  thread joined for `NOTES_CHECK_TIMEOUT_SECONDS` (5): it happens before
+  anything is printed, inside SessionStart's 30 s timeout and after the
+  backend call's 20 s, and an `open()` on a share whose packets are dropped
+  blocked for 21 s on the desktop — long enough for the harness to kill
+  the hook and start the session with no identity at all. A read that
+  doesn't finish is its own loud line; the stuck thread doesn't hold the
+  process (measured: the check returned at 5.0 s and the process exited
+  at 5.3 s against an unroutable UNC host). A mount that fell through to an old
+  local folder, a stale copy, or a wrong or missing root would otherwise
+  be read and edited as if it were the notes. It runs without a root too,
+  so a session on another machine that was never given one is caught by
+  the server's path not existing there. A pass prints nothing. The one
+  innocent mismatch is another room saving `index.md` between the two
+  reads; the line says so, and the next session start checks again.
+- **Project folders.** Claude Code keeps per-project state in the project
+  folder's `.claude\` (settings, and a `scheduled_tasks.lock` that names
+  its holder by PID, which only means something on one machine). So only
+  one machine's rooms use the shared notes root as their project folder;
+  every other machine's rooms run from a local folder of their own, with
+  their own `.claude\settings.local.json`, and reach the notes at the mount.
+
+The mount, the network it rides on, and the cutover are deployment, not
+code; issue #397 has the plan and the measurements still to make.
+
 ### Configuration
 
 | Setting | Default | Meaning |
