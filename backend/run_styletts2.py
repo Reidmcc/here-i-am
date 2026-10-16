@@ -21,11 +21,12 @@ Usage:
 The server will:
     1. Download the StyleTTS 2 model on first run
     2. Start a FastAPI server on port 8021 (default)
-    3. Accept TTS requests from the main Here I Am application
+    3. Accept TTS requests from the Here I Am app in this machine's browser
 
-Once running, configure the main app with:
-    STYLETTS2_ENABLED=true
-    STYLETTS2_API_URL=http://localhost:8021
+It listens on 127.0.0.1 only. In the browser on this machine, turn on
+Settings > "Use voice servers on this machine". If the app is served from
+another origin (a cloud VM), add it with --allow-origin. See
+docs/local-services.md.
 """
 
 import os

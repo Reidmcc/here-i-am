@@ -28,6 +28,8 @@ Environment:
     HIM_INLINE_BUDGET  see hook_util.py
     HIM_DESKTOP_DATA_DIR  see hook_util.py (rooms registry: the desktop
                        app's session records, for messaging addresses)
+    HIM_NOTES_ROOT     see hook_util.py (this machine's path to the notes,
+                       when the server runs elsewhere)
 """
 import os
 import sys
@@ -38,6 +40,7 @@ import hook_util
 def main() -> None:
     if os.environ.get("HIM_DISABLE"):
         return
+    hook_util.start_hook_clock("SessionStart")
     data = hook_util.read_hook_input()
     if data is None:
         hook_util.fail_loud(
@@ -68,6 +71,9 @@ def main() -> None:
         # Whether the compaction mod is loaded, so the identity block can say
         # plainly what compaction is like here (see hook_util)
         "compact_talk_mod": hook_util.compact_talk_mod_loaded(),
+        # Where this machine reaches the notes, when not beside the server
+        # (issue #397)
+        **hook_util.notes_root_payload(),
         # Fork adoption (issue #357): if the desktop app forked this session
         # under a new id, these resolve it to the conversation it continues
         **hook_util.lineage_hints(
@@ -79,7 +85,8 @@ def main() -> None:
     }
     try:
         body = hook_util.post_backend(
-            "/api/claude-code/session-start", payload, timeout=20
+            "/api/claude-code/session-start", payload,
+            timeout=hook_util.SESSION_START_TIMEOUTS,
         )
     except Exception as e:
         hook_util.fail_loud(
@@ -105,10 +112,17 @@ def main() -> None:
     # A failure to export is printed every time.
     identity_lines = hook_util.git_identity_lines(body, announce=bool(context))
 
-    # Trailer lines come last, after the context and any spill pointer: the
-    # identity statement, then the rooms registry's one-line notice or
-    # loud write failure
-    trailer_lines = [*identity_lines, *hook_util.rooms_output_lines(body)]
+    # Trailer lines come last, after the context and any spill pointer: a
+    # notes directory that isn't the server's copy (issue #397), the
+    # identity statement, then the rooms registry's one-line notice or loud
+    # write failure. The notes lines are kept apart too, for the one branch
+    # that has to move them up (an over-budget identity block, below)
+    notes_lines = hook_util.notes_check_lines(body)
+    trailer_lines = [
+        *notes_lines,
+        *identity_lines,
+        *hook_util.rooms_output_lines(body),
+    ]
 
     bulk = (body.get("bulk_context") or "").strip()
     if not bulk:
@@ -169,7 +183,10 @@ def main() -> None:
             f"({hook_util.describe_size(context)})\nRead it first. "
             + pointer
         )
-        output = [part for part in (pointer, context, *trailer_lines) if part]
+        # The notes lines ride right behind the pointer, inside the
+        # harness's 2 KB preview, rather than after the whole context
+        later = [line for line in trailer_lines if line not in notes_lines]
+        output = [part for part in (pointer, *notes_lines, context, *later) if part]
     print("\n\n".join(output))
 
 

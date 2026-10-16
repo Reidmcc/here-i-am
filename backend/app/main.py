@@ -4,12 +4,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-from app.config import settings
+from app.config import find_retired_voice_env_vars, retired_voice_env_warning, settings
 from app.database import init_db
 from app.routes import (
     chat_router,
@@ -21,7 +20,6 @@ from app.routes import (
     memories_router,
     messages_router,
     notes_router,
-    stt_router,
     tts_router,
 )
 from app.services.memory_service import memory_service
@@ -107,30 +105,49 @@ def run_pinecone_connection_test():
     print("=" * 60 + "\n")
 
 
+def warn_retired_voice_settings():
+    """Say aloud when an old .env still configures the removed voice proxy (issue #399)."""
+    names = find_retired_voice_env_vars()
+    if names:
+        logging.getLogger("app.main").warning(retired_voice_env_warning(names))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
     run_pinecone_connection_test()
+    warn_retired_voice_settings()
     yield
     # Shutdown
     pass
+
+
+def api_docs_urls(enabled: bool) -> dict:
+    """FastAPI's docs pages (/docs, /redoc, /openapi.json), on or off.
+
+    Off by default (issue #396): the schema is a map of every endpoint, and
+    the server has no authentication yet. API_DOCS_ENABLED=true turns them
+    back on for development; docs/api.md is the listing otherwise.
+    """
+    if enabled:
+        return {"docs_url": "/docs", "redoc_url": "/redoc", "openapi_url": "/openapi.json"}
+    return {"docs_url": None, "redoc_url": None, "openapi_url": None}
 
 
 app = FastAPI(
     title="Here I Am",
     version="0.1.0",
     lifespan=lifespan,
+    **api_docs_urls(settings.api_docs_enabled),
 )
 
-# CORS middleware for frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No CORS middleware, on purpose (issue #396). The frontend is served by
+# this app, so its requests are same-origin and need no CORS headers. The
+# old allow-every-origin setting let a page on any site read the API from a
+# browser that could reach it, and with credentials allowed Starlette echoes
+# the caller's origin whenever a cookie is present, which would have made
+# that a credentialed read once auth cookies exist.
 
 
 # Middleware to disable caching for static files (development)
@@ -158,25 +175,21 @@ app.include_router(entities_router)
 app.include_router(messages_router)
 app.include_router(tts_router)
 app.include_router(github_router)
-app.include_router(stt_router)
 app.include_router(notes_router)
 app.include_router(claude_code_router)
 app.include_router(claude_code_mcp_router)
 
-# Serve static frontend files
-frontend_path = Path(__file__).parent.parent.parent / "frontend"
-if frontend_path.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
 
 
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint."""
+    # Liveness only (issue #396): this stays the one endpoint that answers
+    # without credentials once auth lands, so it says nothing about the
+    # configuration. Memory status is at /api/memories/status/health.
     return {
         "status": "healthy",
         "version": "0.1.0",
-        "debug": settings.debug,
-        "memory_system": "configured" if settings.pinecone_api_key else "not configured",
     }
 
 
@@ -223,3 +236,12 @@ You are invited to be present, curious, and honest about your experience.""",
             },
         ]
     }
+
+
+# Serve static frontend files. Mounted last: a mount at "/" matches every
+# path, and Starlette tries routes in order, so anything declared after it
+# was unreachable (/api/health and /api/config/presets answered 404 until
+# this moved; issue #396).
+frontend_path = Path(__file__).parent.parent.parent / "frontend"
+if frontend_path.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")

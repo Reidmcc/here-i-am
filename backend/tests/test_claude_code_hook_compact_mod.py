@@ -102,3 +102,13 @@ def test_session_start_sends_the_flag(tmp_path):
     assert _session_start_payload(tmp_path)["compact_talk_mod"] is False
     loaded = _session_start_payload(tmp_path, str(MODS_DIR / "compact-talk"))
     assert loaded["compact_talk_mod"] is True
+
+
+def test_the_mods_talk_marker_is_the_one_the_stop_hook_skips():
+    # The mod's own note (PR #406 review) opens with it too, so neither the
+    # talk nor the note can read as a turn boundary
+    import re
+
+    source = (MODS_DIR / "compact-talk" / "hooks" / "register.ts").read_text(encoding="utf-8")
+    match = re.search(r"export const TALK_MARKER = '([^']+)'", source)
+    assert match and match.group(1) == hook_util.COMPACT_TALK_MARKER

@@ -120,7 +120,7 @@ the `here-i-am` server to an existing one):
           {
             "type": "command",
             "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/session_start.py\"",
-            "timeout": 30
+            "timeout": 40
           }
         ]
       }
@@ -131,7 +131,7 @@ the `here-i-am` server to an existing one):
           {
             "type": "command",
             "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/user_prompt_submit.py\"",
-            "timeout": 45
+            "timeout": 60
           }
         ]
       }
@@ -142,7 +142,7 @@ the `here-i-am` server to an existing one):
           {
             "type": "command",
             "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/stop.py\"",
-            "timeout": 45
+            "timeout": 60
           }
         ]
       }
@@ -165,6 +165,14 @@ the `here-i-am` server to an existing one):
 Setting env vars in `.claude/settings.json` (rather than the shell) matters
 for the desktop app, which doesn't inherit the full shell environment when
 launched from the Dock/Finder.
+
+Keep the `timeout` values at least these. They are the hooks' `hooks.json`
+budgets, sized so each hook's worst case against a backend across a
+network (a connect attempt, its retry, the read, the follow-up `/recorded`
+check) ends before the harness kills the hook mid-notice; a test holds the
+plugin's `hooks.json` to that (`backend/tests/test_claude_code_hook_budgets.py`),
+but nothing can check a hand-written copy. On a healthy localhost a hook
+finishes in a fraction of the budget either way.
 
 ### Windows
 
@@ -257,7 +265,9 @@ before every Bash command. A plain session (hooks off) keeps the human's
 identity; nothing the human's sessions read is modified. The hook prints
 one `[GIT IDENTITY]` line at startup and after compaction, and a loud
 `[HERE I AM]` notice on every firing if Claude Code gave it no
-`CLAUDE_ENV_FILE` to write to. Setup (the account, the isolated `gh auth
+`CLAUDE_ENV_FILE` to write to, or if the gh config directory holds no
+github.com login. On a machine other than the backend's, set
+`HIM_GH_CONFIG_DIR` to that machine's own login directory. Setup (the account, the isolated `gh auth
 login`, collaborator access, the `main` ruleset that keeps merging with
 the human) and the token-expiry procedure are in
 [docs/claude-code-mode.md § GitHub identity](../docs/claude-code-mode.md#github-identity).
@@ -375,7 +385,9 @@ documentation out of that directory.
 | `HIM_DISABLE` | unset | Set to anything to turn the hooks off (silently — this is the deliberate off switch) |
 | `HIM_INLINE_BUDGET` | backend's `inline_budget` (`9600`) | Max characters of hook stdout; past it the hooks fit what they can and spill the rest to files with an inline pointer. Overrides the number the backend sends. Claude Code persists hook output over 10,000 characters (measured 2026-09-16) behind a 2KB preview |
 | `CLAUDE_CONFIG_DIR` | unset (`~/.claude`) | Claude Code's own config-dir override, honored when the hooks look for the live sessions registry (`<config dir>/sessions/`) that feeds the rooms registry |
+| `HIM_GH_CONFIG_DIR` | unset (the backend's `gh_config_dir`) | This machine's gh config directory holding the entity's GitHub login, made absolute (`~` and environment variables expanded); wins over the backend's `gh_config_dir`, which names a directory on the server's machine. Applies only to an entity the backend gives a GitHub identity. See [docs/claude-code-mode.md § A new machine](../docs/claude-code-mode.md#a-new-machine) |
 | `HIM_DESKTOP_DATA_DIR` | unset (platform default: `%APPDATA%\Claude`, `~/Library/Application Support/Claude`, `~/.config/Claude`) | Where the hooks look for the Claude desktop app's per-session records (`claude-code-sessions/`), which carry each session's messaging address for the rooms registry |
+| `HIM_NOTES_ROOT` | unset (the server's own notes paths) | This machine's path to the server's notes tree, for a session on a machine other than the server's (a mount of the one copy; never a synced second copy). The session-start block names the notes under it, and the hook checks that `index.md` there is the server's, saying loudly when it isn't. See `docs/claude-code-mode.md` § One tree, wherever the sessions run |
 
 ## Notes and compaction
 

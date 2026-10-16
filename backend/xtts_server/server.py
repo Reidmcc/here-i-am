@@ -19,9 +19,11 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from pydantic import BaseModel
+
+from voice_common.origin_guard import install_origin_guard
+from voice_common.voice_library import Param, VoiceLibrary
+from voice_common.voice_routes import make_voice_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -34,14 +36,9 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Only the Here I Am app's own pages may call this server from a browser
+# (issue #399); see voice_common/origin_guard.py.
+install_origin_guard(app)
 
 # Global model instance
 _tts_model = None
@@ -285,28 +282,6 @@ async def cache_stats():
     return {
         "cache_size": len(_speaker_latent_cache),
         "cached_speakers": list(_speaker_latent_cache.keys()),
-    }
-
-
-@app.post("/cache/preload")
-async def preload_cache(
-    speaker_paths: str = Form(..., description="Comma-separated list of speaker file paths"),
-):
-    """
-    Pre-load speaker latents for the given speaker files.
-
-    This speeds up subsequent TTS requests for these voices.
-    """
-    paths = [p.strip() for p in speaker_paths.split(",") if p.strip()]
-    if not paths:
-        raise HTTPException(status_code=400, detail="No speaker paths provided")
-
-    loaded = preload_speaker_latents(paths)
-    return {
-        "message": f"Pre-loaded {loaded} of {len(paths)} speakers",
-        "loaded": loaded,
-        "requested": len(paths),
-        "cache_size": len(_speaker_latent_cache),
     }
 
 
@@ -645,93 +620,44 @@ async def tts_to_audio(
                 pass
 
 
-class TTSRequest(BaseModel):
-    """JSON request body for TTS endpoint."""
-    text: str
-    speaker_wav: str
-    language: str = "en"
+# =============================================================================
+# The voice library (issue #399): the browser manages voices and speaks here
+# directly, by voice_id, instead of going through the backend.
+# =============================================================================
+
+XTTS_PARAMS = {
+    "temperature": Param(0.75, 0.0, 1.0),
+    "length_penalty": Param(1.0, 0.1, 10.0),
+    "repetition_penalty": Param(5.0, 0.1, 20.0),
+    "speed": Param(1.0, 0.1, 3.0),
+}
+
+voice_library = VoiceLibrary(os.environ.get("XTTS_VOICES_DIR", "./xtts_voices"), "xtts", XTTS_PARAMS)
 
 
-async def _tts_with_path(text: str, speaker_wav: str, language: str) -> Response:
+def _speak(text: str, voice: Optional[dict], overrides: Dict[str, float]) -> bytes:
+    """Synthesize with a library voice, or the default speaker when none is chosen.
+
+    The voice's saved settings are kept for the UI but not passed to the
+    model: synthesis has always used the model's own defaults.
     """
-    Internal TTS function using a speaker file path.
-
-    Speaker latents are cached for maximum performance with server-side voices.
-    """
-    if not text or not text.strip():
-        raise HTTPException(status_code=400, detail="Text is required")
-
-    speaker_path = Path(speaker_wav)
-    if not speaker_path.exists():
-        raise HTTPException(status_code=400, detail=f"Speaker file not found: {speaker_wav}")
-
-    try:
-        # Generate speech using cached speaker latents
-        logger.info(f"Generating speech for {len(text)} chars, language={language}")
-        start_time = time.time()
-        audio_bytes = synthesize_with_cached_latents(
-            text=text,
-            speaker_wav_path=str(speaker_path),
-            language=language,
-        )
-        elapsed = time.time() - start_time
-
-        logger.info(f"Generated {len(audio_bytes)} bytes of audio in {elapsed:.2f} seconds")
-
-        return Response(
-            content=audio_bytes,
-            media_type="audio/wav",
-            headers={"Content-Disposition": "inline"},
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"TTS generation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}") from e
+    if voice is not None:
+        speaker = voice_library.sample_path(voice)
+        if speaker is None:
+            raise ValueError(
+                f"Sample for voice '{voice.get('label')}' not found in {voice_library.voices_dir}"
+            )
+    else:
+        default = os.environ.get("XTTS_DEFAULT_SPEAKER", "")
+        if not default or not os.path.isfile(default):
+            raise ValueError("No voice sample configured. Please clone a voice first.")
+        speaker = Path(default)
+    language = os.environ.get("XTTS_LANGUAGE", "en")
+    logger.info(f"Generating speech for {len(text)} chars, language={language}")
+    return synthesize_with_cached_latents(text=text, speaker_wav_path=str(speaker), language=language)
 
 
-@app.post("/tts")
-async def tts_json(request: TTSRequest):
-    """
-    TTS endpoint accepting JSON body with speaker_wav as a file path.
-
-    This endpoint is for when the speaker file is already on the server.
-    Speaker latents are cached for maximum performance with server-side voices.
-    """
-    return await _tts_with_path(request.text, request.speaker_wav, request.language)
-
-
-@app.post("/tts_form")
-async def tts_form(
-    text: str = Form(...),
-    speaker_wav: str = Form(..., description="Path to speaker WAV file"),
-    language: str = Form("en"),
-):
-    """
-    TTS endpoint accepting Form data with speaker_wav as a file path.
-
-    This endpoint is for when the speaker file is already on the server.
-    Speaker latents are cached for maximum performance with server-side voices.
-    """
-    return await _tts_with_path(text, speaker_wav, language)
-
-
-@app.post("/tts_stream")
-async def tts_stream(
-    text: str = Form(...),
-    language: str = Form("en"),
-    speaker_wav: UploadFile = File(...),
-):
-    """
-    Stream TTS audio (currently just returns full audio, streaming TBD).
-
-    Note: True streaming requires chunked synthesis which XTTS supports
-    but requires more complex implementation.
-    """
-    # For now, just return the full audio
-    # True streaming would require chunked synthesis
-    return await tts_to_audio(text=text, language=language, speaker_wav=speaker_wav)
+app.include_router(make_voice_router(voice_library, _speak, speak_params={}))
 
 
 def create_app() -> FastAPI:
@@ -741,4 +667,4 @@ def create_app() -> FastAPI:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8020)
+    uvicorn.run(app, host="127.0.0.1", port=8020)

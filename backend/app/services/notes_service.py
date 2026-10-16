@@ -127,6 +127,15 @@ class NotesService:
             return None
         return candidate
     
+    def entity_dir_name(self, entity_label: str) -> str:
+        """The entity's notes folder name as the tree holds it (the
+        sanitized label), for naming it under another machine's mount."""
+        return self._get_entity_dir(entity_label).name
+
+    def shared_dir_name(self) -> str:
+        """The shared notes folder name as the tree holds it."""
+        return self._get_shared_dir().name
+
     def get_entity_dir_path(self, entity_label: str) -> Path:
         """Absolute path of an entity's private notes directory (for telling
         a Claude Code session where its notes live on disk)."""

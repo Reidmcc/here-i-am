@@ -31,6 +31,16 @@ appended. Each new call discards whatever an earlier compaction left
 behind (discard_delivery), so a compaction that failed after fetching
 can't lend its delivery to the next one.
 
+A fetch that fails is not proof the backend did nothing (issue #400):
+over a network the mod's request can time out, or its connection drop,
+after render_talk recorded the delivery, and the block would then say the
+talk is below while the mod, holding no talk, appends nothing. So the mod
+chooses the delivery id itself and, on any failure, cancels it before the
+engine's compaction runs (cancel_delivery). A cancel drops a recorded
+delivery with that id and tombstones the id, so a request still in flight
+that lands after the cancel records nothing: either order ends with no
+delivery.
+
 What is put back is the archive itself (memory_read's own row format,
 UTC stamps), so it is the talk and nothing else: prompts, turns, letters,
 reflections; never tool traffic, never thinking. It is never recorded
@@ -102,6 +112,8 @@ _deliveries: Dict[str, TalkDelivery] = {}
 # took, each with when
 _issued: Dict[str, datetime] = {}
 _taken: Dict[str, datetime] = {}
+# Delivery ids the mod cancelled, with when (cancel_delivery)
+_cancelled: Dict[str, datetime] = {}
 
 # What was_taken answers
 TAKEN = True
@@ -109,9 +121,49 @@ NOT_TAKEN = False
 UNKNOWN = None
 
 
-def record_delivery(conversation_id: str, delivery: TalkDelivery) -> None:
+def _expire(table: Dict[str, datetime], now: datetime) -> None:
+    for key, at in list(table.items()):
+        if now - at > DELIVERY_TTL:
+            del table[key]
+
+
+def record_delivery(conversation_id: str, delivery: TalkDelivery) -> bool:
+    """Record a delivery for the block to take. False, recording nothing,
+    when the mod already cancelled its id (the request outlived the mod's
+    wait for it)."""
+    _expire(_cancelled, datetime.utcnow())
+    if delivery.id in _cancelled:
+        logger.info(
+            f"[CC] Compact talk for {conversation_id}: delivery {delivery.id} "
+            "was cancelled before it was recorded; not recorded"
+        )
+        return False
     _deliveries[str(conversation_id)] = delivery
     _issued[delivery.id] = delivery.at
+    return True
+
+
+def is_cancelled(delivery_id: Optional[str]) -> bool:
+    return bool(delivery_id) and str(delivery_id) in _cancelled
+
+
+def cancel_delivery(delivery_id: str, now: Optional[datetime] = None) -> bool:
+    """The mod gave up on the request that would hand out this delivery:
+    drop it if it was recorded, and refuse it if it arrives later. True
+    when a recorded delivery was dropped."""
+    now = now or datetime.utcnow()
+    delivery_id = str(delivery_id)
+    _expire(_cancelled, now)
+    _cancelled[delivery_id] = now
+    for conversation_id, delivery in list(_deliveries.items()):
+        if delivery.id == delivery_id:
+            del _deliveries[conversation_id]
+            logger.info(
+                f"[CC] Compact talk for {conversation_id}: delivery {delivery_id} "
+                "cancelled by the mod; dropped"
+            )
+            return True
+    return False
 
 
 def mark_taken(delivery: TalkDelivery, now: Optional[datetime] = None) -> None:
@@ -137,9 +189,7 @@ def was_taken(delivery_id: str, now: Optional[datetime] = None) -> Optional[bool
     so the mod appends (a duplicate at worst, never a loss)."""
     now = now or datetime.utcnow()
     for table in (_issued, _taken):
-        for key, at in list(table.items()):
-            if now - at > DELIVERY_TTL:
-                del table[key]
+        _expire(table, now)
     delivery_id = str(delivery_id)
     if delivery_id not in _issued:
         return UNKNOWN
@@ -211,6 +261,7 @@ async def render_talk(
     budget_tokens: int,
     pre_compaction: str = "",
     now: Optional[datetime] = None,
+    delivery_id: Optional[str] = None,
 ) -> RenderedTalk:
     """
     This conversation's own rows, newest first back to `budget_tokens`
@@ -219,9 +270,11 @@ async def render_talk(
     full: none is in context yet — this is what fills the context back up
     — so nothing renders as a pointer, and nothing is linked or tracked
     here (the post-compact block links what it confirms, after the
-    boundary's stamp). Records the delivery for the block.
+    boundary's stamp). Records the delivery for the block, under
+    `delivery_id` when the mod chose one.
 
-    Returns text "" and no delivery when the conversation has no rows.
+    Returns text "" and no delivery when the conversation has no rows, or
+    when the mod cancelled `delivery_id` before it could be recorded.
     """
     entity_id = conversation.entity_id
     page = await memory_service.read_messages_in_span(
@@ -288,8 +341,10 @@ async def render_talk(
         total=total,
         next_cursor=page["next_cursor"],
         at=now or datetime.utcnow(),
+        **({"id": delivery_id} if delivery_id else {}),
     )
-    record_delivery(str(conversation.id), delivery)
+    if not record_delivery(str(conversation.id), delivery):
+        return RenderedTalk(text="", delivery=None)
     logger.info(
         f"[CC] Compact talk for {conversation.id}: {shown} of {total} rows, "
         f"~{memory_tools.rendered_tokens(text)} tokens"
