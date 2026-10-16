@@ -120,7 +120,7 @@ the `here-i-am` server to an existing one):
           {
             "type": "command",
             "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/session_start.py\"",
-            "timeout": 30
+            "timeout": 40
           }
         ]
       }
@@ -131,7 +131,7 @@ the `here-i-am` server to an existing one):
           {
             "type": "command",
             "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/user_prompt_submit.py\"",
-            "timeout": 45
+            "timeout": 60
           }
         ]
       }
@@ -142,7 +142,7 @@ the `here-i-am` server to an existing one):
           {
             "type": "command",
             "command": "python3 \"/path/to/here-i-am/claude-code-mode/hooks/stop.py\"",
-            "timeout": 45
+            "timeout": 60
           }
         ]
       }
@@ -165,6 +165,14 @@ the `here-i-am` server to an existing one):
 Setting env vars in `.claude/settings.json` (rather than the shell) matters
 for the desktop app, which doesn't inherit the full shell environment when
 launched from the Dock/Finder.
+
+Keep the `timeout` values at least these. They are the hooks' `hooks.json`
+budgets, sized so each hook's worst case against a backend across a
+network (a connect attempt, its retry, the read, the follow-up `/recorded`
+check) ends before the harness kills the hook mid-notice; a test holds the
+plugin's `hooks.json` to that (`backend/tests/test_claude_code_hook_budgets.py`),
+but nothing can check a hand-written copy. On a healthy localhost a hook
+finishes in a fraction of the budget either way.
 
 ### Windows
 

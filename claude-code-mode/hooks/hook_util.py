@@ -24,7 +24,17 @@ Two jobs the individual hook scripts delegate here:
   files and the Read tool (a shell cat of a file over 50 KB is a tool
   result, and goes to disk the same way).
 
+- **Reach the backend within a deadline.** Every request goes through
+  post_backend, which keeps a short connect deadline apart from the read
+  deadline, so a backend across a network that stops answering fails in
+  seconds, and which says whether a failed request could have reached the
+  server at all (see "Talking to the backend" below).
+
 Environment:
+    HIM_HOOK_TIMING_LOG  a file path; when set, every backend request
+                       appends one JSON line (path, outcome, attempts,
+                       connect and total milliseconds), the measurement
+                       the timeouts are chosen from (issue #400)
     HIM_INLINE_BUDGET  max CHARACTERS of hook stdout (default 9600, 4%
                        under the measured 10,000-character line; the
                        backend sends the same number as inline_budget in
@@ -41,16 +51,21 @@ Environment:
 import collections
 import glob
 import hashlib
+import http.client
 import json
 import os
 import re
 import socket
+import ssl
 import sys
 import tempfile
 import threading
-import urllib.request
+import time
+import urllib.error
+import urllib.parse
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Union
 
 # Claude Code speaks UTF-8 on every hook stream: the input payload arrives
 # as UTF-8 JSON on stdin, and stdout/stderr are decoded as UTF-8 when
@@ -386,19 +401,367 @@ def read_hook_input():
         return None
 
 
-def post_backend(path: str, payload: dict, timeout: int):
+# --- Talking to the backend (issue #400)
+#
+# The hooks were written for a backend on localhost, where a server that
+# is down refuses the connection at once. Across a network (the cloud VM,
+# #396/#397) a host that is down or unreachable drops packets instead, and
+# a request waits out its whole timeout before failing: every prompt would
+# sit 30 s before saying "unreachable". So a request has two deadlines:
+#
+# - CONNECT: resolving the name, the TCP connect, and the TLS handshake
+#   for https. No byte of the request has been sent yet, so a failure here
+#   provably never reached the backend. It is retried once after a short
+#   pause (a dropped packet, a reset mid-handshake), and when the retry
+#   fails too it is raised as BackendUnreachable, which
+#   never_reached_backend recognizes: the hooks say "NOT recorded" without
+#   a check, which over a network would only hang again. A refusal is not
+#   retried: it means nothing is listening, which a second ask won't
+#   change (uvicorn's reloader keeps the socket bound while it restarts a
+#   worker, so a hot reload queues connections rather than refusing them).
+#
+# The name's addresses are raced, not tried in turn (_connect_first).
+# Windows resolves "localhost" to ::1 first and takes 2 s to give up on a
+# port nothing listens on there (it retries the SYN after the reset), so
+# with the backend on 127.0.0.1 every request spent 2.03 s on ::1 before
+# it connected (measured 2026-10-15, HIM_BACKEND_URL=http://localhost:8000;
+# 127.0.0.1 directly: under a millisecond). A tailnet name resolves to an
+# IPv4 and an IPv6 address too.
+# - READ: sending the request and reading the whole response, as ONE
+#   deadline. A failure here may have landed after the server did its
+#   work (/retrieve commits rows, then memory links, before it answers,
+#   issue #403), so it is never retried; the hooks that record ask
+#   /recorded what landed.
+#
+# Neither deadline can be had from the socket alone: a socket timeout does
+# not bound name resolution, and http.client applies its timeout to each
+# socket operation, so a response that trickles in could outlast it many
+# times over. Each attempt runs in a daemon thread that the caller waits
+# on; the request is sent only under a lock that an abandoned connect
+# phase holds shut, so an attempt given up on before it sent anything can
+# never send it later. An abandoned read's thread dies with the hook.
+#
+# Each hook's worst case (TIMEOUTS_BY_HOOK) fits its hooks.json budget
+# with a margin; tests/test_claude_code_hook_budgets.py holds that. The
+# connect deadline is provisional until the VM's round trips are measured
+# (HIM_HOOK_TIMING_LOG); on localhost a connect takes about a millisecond.
+#
+# The hooks go to HIM_BACKEND_URL directly, never through an HTTP proxy
+# (urllib honored HTTP_PROXY): the backend is private by design.
+
+CONNECT_TIMEOUT = 4.0  # seconds; one SYN retransmit fits (3 s on Windows)
+RETRY_PAUSE = 1.0
+
+# The hook's own clock (PR #406 review). The request arithmetic below is
+# an upper bound on the requests alone, but a hook does its own work before
+# it sends anything, and that work grows with the session: Stop reads the
+# transcript twice (turn_assistant_text, lineage_hints), measured at 6.4 s
+# together on a 529 MB transcript, linear in its size. So each hook starts
+# a clock on its hooks.json budget (start_hook_clock), and every request
+# is clamped to what is left of it, less FINISH_MARGIN for printing the
+# notice and exiting: a hook ends inside its budget by construction, not
+# by the size of the transcript it happened to read. The process start is
+# taken at import, which is the hooks' first statement.
+_PROCESS_STARTED = time.monotonic()
+HOOK_BUDGETS = {"SessionStart": 40, "UserPromptSubmit": 60, "Stop": 60, "SessionEnd": 5}
+FINISH_MARGIN = 2.0
+_hook_deadline: Optional[float] = None
+
+
+def start_hook_clock(event: str) -> None:
+    """Bound this hook's backend requests by its hooks.json budget
+    (HOOK_BUDGETS, held equal to hooks.json by a test). A hand-written
+    settings copy with a smaller timeout is not seen: keep it equal."""
+    global _hook_deadline
+    budget = HOOK_BUDGETS[event]
+    _hook_deadline = _PROCESS_STARTED + budget - min(FINISH_MARGIN, 0.2 * budget)
+
+
+def _time_left() -> Optional[float]:
+    """Seconds left on the hook's clock, None when no clock was started."""
+    return None if _hook_deadline is None else _hook_deadline - time.monotonic()
+
+
+def _within_clock(seconds: float) -> float:
+    left = _time_left()
+    return seconds if left is None else max(0.0, min(seconds, left))
+
+
+@dataclass(frozen=True)
+class RequestTimeouts:
+    """The deadlines of one backend request, in seconds."""
+    read: float
+    connect: float = CONNECT_TIMEOUT
+    # Connect attempts; a read failure is never retried
+    attempts: int = 2
+
+    def worst_case(self) -> float:
+        """The longest the request can take: every connect attempt but the
+        last ran out, the last connected at its deadline, and the read ran
+        out."""
+        return self.attempts * self.connect + (self.attempts - 1) * RETRY_PAUSE + self.read
+
+
+SESSION_START_TIMEOUTS = RequestTimeouts(read=20)
+RETRIEVE_TIMEOUTS = RequestTimeouts(read=30)
+LOG_ASSISTANT_TIMEOUTS = RequestTimeouts(read=30)
+# The follow-up check after a failure: one attempt, since a backend that
+# just failed to answer is not one to wait on twice
+RECORDED_TIMEOUTS = RequestTimeouts(read=5, attempts=1)
+# SessionEnd runs under a 5 s budget and is a best-effort final notes-sync
+# trigger (every recorded prompt already starts one), so it gets one short
+# try and stays silent
+SESSION_END_TIMEOUTS = RequestTimeouts(read=2, connect=1.5, attempts=1)
+
+# The requests each hook can make in its worst case, by hooks.json event
+# name; the fit test sums them against that event's budget
+TIMEOUTS_BY_HOOK = {
+    "SessionStart": (SESSION_START_TIMEOUTS,),
+    "UserPromptSubmit": (RETRIEVE_TIMEOUTS, RECORDED_TIMEOUTS),
+    "Stop": (LOG_ASSISTANT_TIMEOUTS, RECORDED_TIMEOUTS),
+    "SessionEnd": (SESSION_END_TIMEOUTS,),
+}
+
+
+# Connect failures a second try can't change: nothing is listening, or the
+# certificate doesn't verify (a retry only doubles the wait)
+FINAL_CONNECT_ERRORS = (ConnectionRefusedError, ssl.SSLCertVerificationError)
+
+# Statuses a proxy in front of the backend answers with (`tailscale serve`
+# would be one) while the app behind it may still be working
+GATEWAY_STATUSES = frozenset({502, 503, 504})
+
+
+class BackendUnreachable(OSError):
+    """No connection to the backend was made, so no byte of the request
+    was sent: it provably never reached the server. `cause` is the last
+    attempt's error, None when the attempt ran out of time."""
+
+    def __init__(self, message: str, cause: Optional[BaseException] = None):
+        super().__init__(message)
+        self.cause = cause
+
+
+def _connect_first(address, timeout=None, source_address=None):
+    """socket.create_connection, with the name's addresses raced instead
+    of tried in turn: the first to connect is returned and the others
+    closed. Raises the first refusal if every address failed and one
+    refused (it is the informative error), else the first error."""
+    host, port = address
+    infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    if len(infos) <= 1:
+        return socket.create_connection(address, timeout, source_address)
+    lock = threading.Lock()
+    outcomes = []
+    finished = threading.Event()
+    state = {"winner": None}
+
+    def attempt(info):
+        family, kind, proto, _, sockaddr = info
+        sock = None
+        try:
+            sock = socket.socket(family, kind, proto)
+            sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+        except Exception as e:
+            if sock is not None:
+                sock.close()
+            with lock:
+                outcomes.append(e)
+                if len(outcomes) == len(infos):
+                    finished.set()
+            return
+        with lock:
+            if state["winner"] is None:
+                state["winner"] = sock
+                finished.set()
+                return
+        sock.close()  # lost the race
+
+    for info in infos:
+        threading.Thread(target=attempt, args=(info,), daemon=True).start()
+    finished.wait()  # each attempt is bounded by the socket timeout
+    with lock:
+        if state["winner"] is not None:
+            return state["winner"]
+        refused = [e for e in outcomes if isinstance(e, ConnectionRefusedError)]
+        raise (refused or outcomes)[0]
+
+
+class _Attempt:
+    """One connect, send and read, run in a daemon thread (see above)."""
+
+    def __init__(self, url: str, body: bytes, headers: dict, timeouts: RequestTimeouts):
+        self.parts = urllib.parse.urlsplit(url)
+        self.body = body
+        self.headers = headers
+        self.timeouts = timeouts
+        self.lock = threading.Lock()
+        # Set once the connect phase is over, either way
+        self.settled = threading.Event()
+        self.done = threading.Event()
+        self.abandoned = False
+        self.sent = False
+        self.connect_seconds: Optional[float] = None
+        self.result = None
+        self.error: Optional[BaseException] = None
+
+    def _run(self) -> None:
+        conn = None
+        try:
+            connection = (
+                http.client.HTTPSConnection
+                if self.parts.scheme == "https"
+                else http.client.HTTPConnection
+            )
+            conn = connection(self.parts.hostname, self.parts.port, timeout=self.timeouts.connect)
+            # http.client's own seam for opening the socket; the TLS
+            # handshake of an https connection follows it inside connect()
+            conn._create_connection = _connect_first
+            conn.connect()
+            with self.lock:
+                if self.abandoned:
+                    return
+                self.sent = True
+            self.settled.set()
+            conn.sock.settimeout(self.timeouts.read)
+            target = self.parts.path or "/"
+            if self.parts.query:
+                target += "?" + self.parts.query
+            conn.request("POST", target, body=self.body, headers=self.headers)
+            response = conn.getresponse()
+            self.result = (response.status, response.reason, response.getheaders(), response.read())
+        except BaseException as e:  # handed to the caller, whatever it is
+            self.error = e
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self.done.set()
+            self.settled.set()
+
+    def run(self):
+        """(status, reason, headers, body), or raises: BackendUnreachable
+        only for a failure before anything was sent."""
+        started = time.monotonic()
+        connect_wait = _within_clock(self.timeouts.connect)
+        if connect_wait <= 0:
+            raise BackendUnreachable("no time left in the hook's budget to connect")
+        threading.Thread(target=self._run, daemon=True).start()
+        self.settled.wait(connect_wait)
+        with self.lock:
+            if not self.sent:
+                self.abandoned = True
+        if not self.sent:
+            if self.error is not None:
+                raise BackendUnreachable(describe_error(self.error), self.error)
+            raise BackendUnreachable(
+                f"no connection to {self.parts.netloc} within {connect_wait:g} s"
+            )
+        self.connect_seconds = time.monotonic() - started
+        read_wait = _within_clock(self.timeouts.read)
+        if not self.done.wait(read_wait):
+            raise TimeoutError(f"the backend did not answer within {read_wait:.3g} s")
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def _log_timing(path: str, outcome: str, attempts: int, connect_seconds, total_seconds) -> None:
+    """One JSON line per request to HIM_HOOK_TIMING_LOG, when it is set."""
+    target = os.environ.get("HIM_HOOK_TIMING_LOG")
+    if not target:
+        return
+    try:
+        line = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "path": path,
+            "outcome": outcome,
+            "attempts": attempts,
+            "connect_ms": None if connect_seconds is None else round(connect_seconds * 1000, 1),
+            "total_ms": round(total_seconds * 1000, 1),
+        }
+        with open(target, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line) + "\n")
+    except Exception:
+        pass
+
+
+def recorded_message_ids(session_id: str, message_ids: list) -> set:
+    """Which of these row ids the backend has for this session
+    (/recorded): the check a recording hook makes after a failure that
+    may have landed, before it says anything (issues #326, #400). Raises
+    when the check itself fails; the caller says UNCONFIRMED."""
+    check = post_backend(
+        "/api/claude-code/recorded",
+        {"session_id": session_id, "message_ids": list(message_ids)},
+        timeout=RECORDED_TIMEOUTS,
+    )
+    return {str(mid) for mid in (check.get("recorded") or [])}
+
+
+def backend_headers() -> dict:
+    """The headers of every backend request: the one place a header is
+    added, so every hook sends it."""
+    return {"Content-Type": "application/json"}
+
+
+def post_backend(path: str, payload: dict, timeout: Union[RequestTimeouts, float]):
     """POST to the Here I Am backend, returning the parsed JSON response.
 
-    Raises on any failure (unreachable, HTTP error, bad JSON) — callers
-    decide how loudly to report it."""
+    `timeout` is the request's RequestTimeouts (a bare number is a read
+    deadline with the default connect). Raises on any failure:
+    BackendUnreachable when nothing was sent, TimeoutError when the answer
+    didn't come in time, urllib.error.HTTPError for an error status,
+    ValueError for a body that isn't JSON, or the connection's own error.
+    Callers decide how loudly to report it; never_reached_backend says
+    which failures can't have reached the server."""
+    timeouts = timeout if isinstance(timeout, RequestTimeouts) else RequestTimeouts(read=float(timeout))
     base = os.environ.get("HIM_BACKEND_URL", "http://localhost:8000").rstrip("/")
-    request = urllib.request.Request(
-        base + path,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.load(response)
+    url = base + path
+    body = json.dumps(payload).encode("utf-8")
+    started = time.monotonic()
+    attempts, attempt, outcome = 0, None, "error"
+    try:
+        while True:
+            attempts += 1
+            attempt = _Attempt(url, body, backend_headers(), timeouts)
+            try:
+                status, reason, headers, data = attempt.run()
+                break
+            except BackendUnreachable as e:
+                left = _time_left()
+                if (
+                    attempts >= timeouts.attempts
+                    or isinstance(e.cause, FINAL_CONNECT_ERRORS)
+                    or (left is not None and left <= RETRY_PAUSE)
+                ):
+                    outcome = "unreachable"
+                    raise
+                time.sleep(RETRY_PAUSE)
+            except TimeoutError:
+                outcome = "timeout"
+                raise
+        if status >= 400:
+            outcome = f"http {status}"
+            # The body's start explains the status (a 401's detail, once
+            # #396 lands), so it rides in the message the notice quotes
+            detail = data.decode("utf-8", "replace").strip()[:300]
+            raise urllib.error.HTTPError(
+                url, status, f"{reason}: {detail}" if detail else reason, dict(headers), None
+            )
+        outcome = "ok"
+        return json.loads(data.decode("utf-8"))
+    finally:
+        _log_timing(
+            path, outcome, attempts,
+            attempt.connect_seconds if attempt is not None else None,
+            time.monotonic() - started,
+        )
 
 
 def inline_budget(body: Optional[dict] = None) -> int:
@@ -1627,17 +1990,41 @@ def describe_error(error: Exception) -> str:
 
 def never_reached_backend(error: Exception) -> bool:
     """
-    Whether a failed request provably never reached the backend — the
-    connection was refused or the host didn't resolve — as opposed to a
-    failure that may have landed after the server did work (an HTTP error,
-    a timeout, a dropped connection). Only the first kind lets a hook say
-    "NOT recorded" without checking.
+    Whether a failed request provably never reached the backend — no
+    connection was made (BackendUnreachable: refused, unresolved, or out
+    of time before anything was sent) — as opposed to a failure that may
+    have landed after the server did work (an HTTP error, a read timeout,
+    a dropped connection). Only the first kind lets a hook say "NOT
+    recorded" without checking.
     """
+    if isinstance(error, BackendUnreachable):
+        return True
     reason = getattr(error, "reason", None)
     for candidate in (error, reason):
         if isinstance(candidate, (ConnectionRefusedError, socket.gaierror)):
             return True
     return False
+
+
+def request_may_still_be_running(error: Exception) -> bool:
+    """
+    Whether the server may still be working on a request that failed on
+    the hook's side (PR #406 review): then a /recorded check that finds a
+    row missing only means not YET, since the server doesn't stop when the
+    client gives up (measured: a 0.5 s read deadline against a handler that
+    recorded the row 1.5 s in). False for a request that never reached the
+    server, and for one the server answered (an error status from the app,
+    a body that wasn't JSON): its handler is over, so what /recorded finds
+    is final. True for a read deadline, a dropped connection, or a
+    gateway's status (GATEWAY_STATUSES).
+    """
+    if never_reached_backend(error):
+        return False
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in GATEWAY_STATUSES
+    if isinstance(error, ValueError):
+        return False
+    return True
 
 
 # --- Whether the compaction mod is loaded (issue #394 review)

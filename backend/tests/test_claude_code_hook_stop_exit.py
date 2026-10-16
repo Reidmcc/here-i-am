@@ -47,20 +47,14 @@ def _run(script, stdin_payload, tmp_path, body=None, backend_down=False):
     """Run a hook script as a subprocess with the backend stubbed; returns
     (exit code, stdout, stderr)."""
     body = body if body is not None else {}
-    stub_body = "raise OSError('backend down')" if backend_down else f"return FakeResponse({json.dumps(body)!r})"
+    stub_body = (
+        "raise hook_util.BackendUnreachable('backend down')" if backend_down else f"return {body!r}"
+    )
     code = (
-        "import io, json, sys, urllib.request\n"
+        "import io, json, sys\n"
         "import hook_util\n"
-        "class FakeResponse:\n"
-        "    def __init__(self, text): self.text = text\n"
-        "    def read(self): return self.text.encode('utf-8')\n"
-        "    def __enter__(self): return self\n"
-        "    def __exit__(self, *a): return False\n"
-        "def urlopen(request, timeout=30):\n"
-        f"    {stub_body}\n"
-        "urllib.request.urlopen = urlopen\n"
         "def post_backend(path, payload, timeout=30):\n"
-        f"    return {body!r}\n"
+        f"    {stub_body}\n"
         "hook_util.post_backend = post_backend\n"
         "hook_util.desktop_sessions_index = lambda *a, **k: {}\n"
         "hook_util.live_sessions_snapshot = lambda *a, **k: []\n"
