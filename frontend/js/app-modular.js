@@ -4,7 +4,7 @@
  */
 
 // Import modules
-import { state, resetMemoryState, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName, loadEnterInsertsNewline, loadMessageInputHeight, saveMessageInputHeight, getValidSavedEntityModel, LEGACY_ENTITY_PROMPTS_KEY } from './modules/state.js';
+import { state, resetMemoryState, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName, loadEnterInsertsNewline, loadLocalVoiceSettings, loadMessageInputHeight, saveMessageInputHeight, getValidSavedEntityModel, LEGACY_ENTITY_PROMPTS_KEY } from './modules/state.js';
 import { setToastContainer, escapeHtml } from './modules/utils.js';
 import { loadTheme, getCurrentTheme } from './modules/theme.js';
 import { setElements as setModalElements, showModal, hideModal, closeActiveModal, closeAllDropdowns } from './modules/modals.js';
@@ -110,7 +110,8 @@ import {
     updateThinkingEffortControlState,
     updateTemperatureRange,
     updateModelIndicator,
-    initializeSettingsUI
+    initializeSettingsUI,
+    updateLocalVoiceOptionsVisibility
 } from './modules/settings.js';
 import {
     setElements as setImportExportElements,
@@ -215,6 +216,15 @@ class App {
             enterInsertsNewlineCheckbox: document.getElementById('enter-inserts-newline'),
             voiceSelect: document.getElementById('voice-select'),
             voiceSelectGroup: document.getElementById('voice-select-group'),
+
+            // This browser's local voice servers (issue #399)
+            localVoiceEnabled: document.getElementById('local-voice-enabled'),
+            localVoiceOptions: document.getElementById('local-voice-options'),
+            localVoiceStyletts2Url: document.getElementById('local-voice-styletts2-url'),
+            localVoiceXttsUrl: document.getElementById('local-voice-xtts-url'),
+            localVoiceWhisperUrl: document.getElementById('local-voice-whisper-url'),
+            localDictationMode: document.getElementById('local-dictation-mode'),
+            localVoiceStatus: document.getElementById('local-voice-status'),
 
             // TTS provider info
             ttsProviderGroup: document.getElementById('tts-provider-group'),
@@ -484,6 +494,7 @@ class App {
             updateThinkingEffortControlState();
         });
         this.elements.presetSelect?.addEventListener('change', (e) => loadPreset(e.target.value));
+        this.elements.localVoiceEnabled?.addEventListener('change', () => updateLocalVoiceOptionsVisibility());
 
         // Memories modal
         document.getElementById('close-memories')?.addEventListener('click', () => hideModal('memoriesModal'));
@@ -609,7 +620,8 @@ class App {
         // localStorage up to the backend (now the source of truth).
         await this.migrateLegacyEntityPrompts();
 
-        // Check TTS status
+        // Check TTS status (this browser's local voice servers first)
+        loadLocalVoiceSettings();
         await checkTTSStatus();
 
         // Check STT status

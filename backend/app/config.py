@@ -1,7 +1,9 @@
 import json
+import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Mapping, Optional
 
+from dotenv import dotenv_values
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -26,80 +28,6 @@ class VoiceConfig:
             "label": self.label,
             "description": self.description,
             "provider": self.provider,
-        }
-
-
-class XTTSVoiceConfig:
-    """Configuration for an XTTS cloned voice."""
-    def __init__(
-        self,
-        voice_id: str,
-        label: str,
-        description: str = "",
-        sample_path: str = "",
-        temperature: float = 0.75,
-        length_penalty: float = 1.0,
-        repetition_penalty: float = 5.0,
-        speed: float = 1.0,
-    ):
-        self.voice_id = voice_id
-        self.label = label
-        self.description = description
-        self.sample_path = sample_path
-        # XTTS synthesis parameters
-        self.temperature = temperature
-        self.length_penalty = length_penalty
-        self.repetition_penalty = repetition_penalty
-        self.speed = speed
-
-    def to_dict(self):
-        return {
-            "voice_id": self.voice_id,
-            "label": self.label,
-            "description": self.description,
-            "sample_path": self.sample_path,
-            "provider": "xtts",
-            "temperature": self.temperature,
-            "length_penalty": self.length_penalty,
-            "repetition_penalty": self.repetition_penalty,
-            "speed": self.speed,
-        }
-
-
-class StyleTTS2VoiceConfig:
-    """Configuration for a StyleTTS 2 cloned voice."""
-    def __init__(
-        self,
-        voice_id: str,
-        label: str,
-        description: str = "",
-        sample_path: str = "",
-        alpha: float = 0.3,
-        beta: float = 0.7,
-        diffusion_steps: int = 10,
-        embedding_scale: float = 1.0,
-    ):
-        self.voice_id = voice_id
-        self.label = label
-        self.description = description
-        self.sample_path = sample_path
-        # StyleTTS 2 synthesis parameters
-        self.alpha = alpha  # Timbre parameter (0-1), higher = more diverse
-        self.beta = beta    # Prosody parameter (0-1), higher = more diverse
-        self.diffusion_steps = diffusion_steps  # Quality vs speed tradeoff
-        self.embedding_scale = embedding_scale  # Classifier free guidance
-
-    def to_dict(self):
-        return {
-            "voice_id": self.voice_id,
-            "label": self.label,
-            "description": self.description,
-            "sample_path": self.sample_path,
-            "provider": "styletts2",
-            "alpha": self.alpha,
-            "beta": self.beta,
-            "diffusion_steps": self.diffusion_steps,
-            "embedding_scale": self.embedding_scale,
         }
 
 
@@ -216,43 +144,6 @@ class Settings(BaseSettings):
     # Multiple voices (JSON array of objects with voice_id, label, description)
     # Example: '[{"voice_id": "21m00Tcm4TlvDq8ikWAM", "label": "Rachel", "description": "Calm female voice"}]'
     elevenlabs_voices: str = ""
-
-    # XTTS Local TTS settings
-    # Set XTTS_ENABLED=true to use local XTTS v2 instead of ElevenLabs
-    xtts_enabled: bool = False
-    # URL of the XTTS API server (xtts-api-server or similar)
-    xtts_api_url: str = "http://localhost:8020"
-    # Default speaker wav file path or speaker name for XTTS
-    xtts_default_speaker: str = ""
-    # Language for XTTS synthesis
-    xtts_language: str = "en"
-    # Directory to store cloned voice samples
-    xtts_voices_dir: str = "./xtts_voices"
-
-    # StyleTTS 2 Local TTS settings
-    # Set STYLETTS2_ENABLED=true to use local StyleTTS 2 for TTS
-    # StyleTTS 2 takes priority over XTTS and ElevenLabs if enabled
-    styletts2_enabled: bool = False
-    # URL of the StyleTTS 2 API server
-    styletts2_api_url: str = "http://localhost:8021"
-    # Default speaker wav file path for StyleTTS 2
-    styletts2_default_speaker: str = ""
-    # Directory to store cloned voice samples
-    styletts2_voices_dir: str = "./styletts2_voices"
-    # Phonemizer backend: "gruut" (MIT licensed, no system deps) or "espeak" (requires espeak-ng)
-    styletts2_phonemizer: str = "gruut"
-
-    # Whisper STT (Speech-to-Text) settings
-    # Set WHISPER_ENABLED=true to use local Whisper for speech-to-text
-    whisper_enabled: bool = False
-    # URL of the Whisper STT server
-    whisper_api_url: str = "http://localhost:8030"
-    # Default model (large-v3, distil-large-v3, medium, small, base, tiny)
-    whisper_model: str = "large-v3"
-    # Dictation mode: "whisper" (local server), "browser" (Web Speech API), or "auto"
-    # "auto" uses Whisper if enabled and server is healthy, falls back to browser
-    # This setting determines which mode the frontend starts in
-    dictation_mode: str = "auto"
 
     # Anthropic client timeouts (seconds)
     # Connecting should fail fast. The read timeout is per-chunk, not per
@@ -699,17 +590,10 @@ class Settings(BaseSettings):
 
     def get_tts_provider(self) -> str:
         """
-        Get the current TTS provider.
-
-        Returns "styletts2" if StyleTTS 2 is enabled (highest priority),
-        "xtts" if XTTS is enabled, "elevenlabs" if ElevenLabs API key is set,
-        or "none" if no TTS is configured.
+        The backend's TTS provider: "elevenlabs" if its API key is set, else
+        "none". The local voice servers are the browser's to call (issue #399).
         """
-        if self.styletts2_enabled:
-            return "styletts2"
-        elif self.xtts_enabled:
-            return "xtts"
-        elif self.elevenlabs_api_key:
+        if self.elevenlabs_api_key:
             return "elevenlabs"
         return "none"
 
@@ -746,3 +630,53 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# Settings for the local voice servers that the backend used to proxy. The
+# browser on the machine running those servers now calls them directly
+# (issue #399), so these do nothing here; Settings ignores them (extra =
+# "ignore"), and the startup warning below says so instead of letting an old
+# .env fail silently.
+RETIRED_VOICE_ENV_VARS = (
+    "XTTS_ENABLED",
+    "STYLETTS2_ENABLED",
+    "WHISPER_ENABLED",
+    "DICTATION_MODE",
+    "XTTS_API_URL",
+    "STYLETTS2_API_URL",
+    "WHISPER_API_URL",
+)
+
+
+def find_retired_voice_env_vars(
+    environ: Optional[Mapping[str, str]] = None,
+    env_file: Optional[str] = None,
+) -> List[str]:
+    """
+    The retired voice settings present in the environment or the .env file.
+
+    Reads the same sources Settings does: the process environment and
+    Settings' env_file (resolved against the working directory, as
+    pydantic-settings does), matching names case-insensitively, as Settings
+    does. Returns them in RETIRED_VOICE_ENV_VARS order.
+    """
+    if environ is None:
+        environ = os.environ
+    if env_file is None:
+        env_file = Settings.Config.env_file
+    names = {key.upper() for key in environ}
+    if env_file and Path(env_file).is_file():
+        names.update(key.upper() for key in dotenv_values(env_file))
+    return [name for name in RETIRED_VOICE_ENV_VARS if name in names]
+
+
+def retired_voice_env_warning(names: List[str]) -> str:
+    """The startup warning for retired voice settings found in the environment."""
+    return (
+        f"{', '.join(names)} no longer {'does' if len(names) == 1 else 'do'} anything: "
+        "the backend no longer talks to "
+        "the local voice servers (XTTS, StyleTTS 2, Whisper). The browser on the "
+        "machine running them calls them directly, configured in the app's "
+        "Settings (issue #399); see docs/local-services.md. Remove these from "
+        "the backend's environment/.env."
+    )

@@ -24,6 +24,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
 from voice_common.origin_guard import install_origin_guard
+from voice_common.voice_library import Param, VoiceLibrary
+from voice_common.voice_routes import make_voice_router
 
 # =============================================================================
 # Phonemizer Abstraction
@@ -1122,33 +1124,49 @@ async def tts_to_audio(
                 pass
 
 
-@app.post("/tts_stream")
-async def tts_stream(
-    text: str = Form(...),
-    speaker_wav: UploadFile = File(...),
-    alpha: str = Form("0.3"),
-    beta: str = Form("0.7"),
-    diffusion_steps: str = Form("10"),
-    embedding_scale: str = Form("1.0"),
-    speed: str = Form("1.0"),
-):
-    """
-    Stream TTS audio (currently just returns full audio, streaming TBD).
+# =============================================================================
+# The voice library (issue #399): the browser manages voices and speaks here
+# directly, by voice_id, instead of going through the backend.
+# =============================================================================
 
-    Note: True streaming requires chunked synthesis which StyleTTS 2 supports
-    but requires more complex implementation.
-    """
-    # For now, just return the full audio
-    # True streaming would require chunked synthesis
-    return await tts_to_audio(
-        text=text,
-        speaker_wav=speaker_wav,
-        alpha=alpha,
-        beta=beta,
-        diffusion_steps=diffusion_steps,
-        embedding_scale=embedding_scale,
-        speed=speed,
+STYLETTS2_PARAMS = {
+    "alpha": Param(0.3, 0.0, 1.0),
+    "beta": Param(0.7, 0.0, 1.0),
+    "diffusion_steps": Param(10, 1, 50, integer=True),
+    "embedding_scale": Param(1.0, 0.0, 10.0),
+}
+# /speak also takes a speed, which isn't saved with a voice.
+SPEAK_PARAMS = {**STYLETTS2_PARAMS, "speed": Param(1.0, 0.5, 2.0)}
+
+voice_library = VoiceLibrary(
+    os.environ.get("STYLETTS2_VOICES_DIR", "./styletts2_voices"), "styletts2", STYLETTS2_PARAMS
+)
+
+
+def _speak(text: str, voice: Optional[dict], overrides: Dict[str, float]) -> bytes:
+    """Settings: override > the voice's saved setting > default. With no voice
+    chosen: the default speaker sample if one is configured, else the
+    pre-trained LJSpeech voice."""
+    settings = voice_library.settings_for(voice, overrides)
+    speed = overrides.get("speed", SPEAK_PARAMS["speed"].default)
+    if voice is not None:
+        speaker = voice_library.sample_path(voice)
+        if speaker is None:
+            raise ValueError(
+                f"Sample for voice '{voice.get('label')}' not found in {voice_library.voices_dir}"
+            )
+    else:
+        default = os.environ.get("STYLETTS2_DEFAULT_SPEAKER", "")
+        speaker = Path(default) if default and os.path.isfile(default) else None
+    logger.info(f"Generating speech for {len(text)} chars, {settings}, speed={speed}")
+    if speaker is None:
+        return synthesize_default_voice(text=text, speed=speed, **settings)
+    return synthesize_with_cached_embeddings(
+        text=text, speaker_wav_path=str(speaker), speed=speed, **settings
     )
+
+
+app.include_router(make_voice_router(voice_library, _speak, speak_params=SPEAK_PARAMS))
 
 
 def create_app() -> FastAPI:

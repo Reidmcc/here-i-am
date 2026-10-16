@@ -170,3 +170,9 @@ def test_no_endpoint_takes_a_path_on_the_servers_disk(server):
     routes = _routes(f"{server}/server.py")
     assert not routes & {"/tts", "/tts_form", "/cache/preload"}
     assert "/tts_to_audio" in routes
+
+
+@pytest.mark.parametrize("server", ["xtts_server", "styletts2_server"])
+def test_tts_server_serves_its_voice_library(server):
+    """The browser manages voices and speaks through these (voice_routes.py)."""
+    assert "app.include_router(make_voice_router(voice_library, _speak," in _source(f"{server}/server.py")
