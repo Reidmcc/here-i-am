@@ -1,8 +1,8 @@
 # API Reference
 
-Interactive API documentation is served when the app is running:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+FastAPI's interactive pages (Swagger UI at `/docs`, ReDoc at `/redoc`, the schema at `/openapi.json`) are off by default, since the server has no authentication yet (issue #396). Set `API_DOCS_ENABLED=true` to serve them.
+
+The server listens on `127.0.0.1:8000` by default. `HIM_HOST` changes the interface (`0.0.0.0` for all of them), and `HIM_RELOAD=false` turns off restart-on-change.
 
 The listing below covers the REST endpoints by resource.
 
@@ -40,8 +40,9 @@ Called by Claude Code lifecycle hooks, not the frontend. Gated by
 - `POST /api/claude-code/retrieve` — record a user prompt (registering the session's conversation on first contact) and run automatic memory retrieval; returns the memory context block plus `retrieval_status` (`ran` / `skipped` / `unconfigured` / `failed`, with `already_in_context` — in-context verbatim matches that held a top-k slot — `in_context_reflections_skipped` — in-context reflections dropped from the pool before the cut, so they held no slot (issue #328) — and `retrieval_error`) so the hook can stamp an empty result instead of staying silent. `peer_messages` carries inter-session messages (deliveries from sibling sessions over the desktop app's session-management MCP; each entry is `{content, sender?, sender_session?, message_id?}`, `sender` being the wrapper's `name=` / `from-name=` attribute and `sender_session` its `from=`, the sender's messaging address), recorded as the entity's own words with the sending session marked (`Message.sibling_session`, vectorized `role="sibling"`); `sender_session` is not stored on the row but confirms the sender's rooms-registry address (issue #339). `sessions` refreshes the rooms registry as on session-start (`rooms_notice` names any roster rename revealed); each entry may carry `desktop_session_id` / `desktop_title` from the desktop app's session record. `message_id` (top-level and per peer message) is the hook's chosen row id: honored when a well-formed UUID, and an existing row under it is reused, so a retried call never records twice
 - `POST /api/claude-code/recorded` — `{session_id, message_ids}` → `{recorded, missing}`: which of the ids exist as rows of the session's conversation. The hook's verification step after a failed `/retrieve`, so its notice says "recorded, then failed" or "not recorded" from the database rather than inferring either from the error. SQL only; creates nothing
 - `POST /api/claude-code/log-assistant` — record everything the entity said in a turn as one message — the text between tool calls and the closing message, `[…]` where tool calls fell (issue #364; idempotent on `message_uuid`, the turn's last text entry's uuid; optional `model` = the transcript entry's producing model, stored on the row). Takes the fork-adoption lineage hints and can adopt on them, including late (issue #359) — its own stdout never reaches the entity, so it corrects the rooms registry itself and leaves the one-line notice for the next `/retrieve` to return as `adoption_notice`
-- `POST /api/claude-code/compact-talk` — the compaction mod's call on its way down a compaction (issue #383): `{session_id, entity?, pre_compaction?, reflection?, pre_compaction_detail?, budget_tokens?}` → `{available, conversation_id, text, shown, total, reflection_id, reflection_error, reason, delivery_id}`. `pre_compaction` is what the entity's turn before the compaction came to (`saved` with `reflection`, saved through `memory_save`'s own validation; `declined`; `failed` with `pre_compaction_detail`, bounded to 400 characters in the header). A reflection with no conversation yet opens the session's conversation to hold it; one that can't be saved comes back as `reflection_error`, never dropped. `text` is the conversation's talk, newest first back to `budget_tokens` (the mod sends a fifth of the session's auto-compaction line; `CLAUDE_CODE_COMPACT_TALK_TOKENS`, 200,000, is the ceiling and the default; floored at 1,000), in `memory_read`'s row format, shown oldest first under `[HERE I AM — THE TALK BEFORE THE BOUNDARY]`. Discards any earlier unused delivery for the conversation, then records this one in memory, so the `session-start` (source `compact`) that runs inside the same compaction says the talk is below instead of naming the read. Otherwise creates no conversation: `available=false` with a `reason` when the session has none, it belongs to another entity, or it has no talk yet
+- `POST /api/claude-code/compact-talk` — the compaction mod's call on its way down a compaction (issue #383): `{session_id, entity?, pre_compaction?, reflection?, pre_compaction_detail?, budget_tokens?, delivery_id?}` → `{available, conversation_id, text, shown, total, reflection_id, reflection_error, reason, delivery_id}`. `pre_compaction` is what the entity's turn before the compaction came to (`saved` with `reflection`, saved through `memory_save`'s own validation; `declined`; `failed` with `pre_compaction_detail`, bounded to 400 characters in the header). A reflection with no conversation yet opens the session's conversation to hold it; one that can't be saved comes back as `reflection_error`, never dropped. `text` is the conversation's talk, newest first back to `budget_tokens` (the mod sends a fifth of the session's auto-compaction line; `CLAUDE_CODE_COMPACT_TALK_TOKENS`, 200,000, is the ceiling and the default; floored at 1,000), in `memory_read`'s row format, shown oldest first under `[HERE I AM — THE TALK BEFORE THE BOUNDARY]`. Discards any earlier unused delivery for the conversation, then records this one in memory, so the `session-start` (source `compact`) that runs inside the same compaction says the talk is below instead of naming the read. Otherwise creates no conversation: `available=false` with a `reason` when the session has none, it belongs to another entity, it has no talk yet, or the mod already cancelled `delivery_id`. `delivery_id` is the mod's own choice of id for the delivery (issue #400), honored when a well-formed UUID; otherwise the server chooses one
 - `POST /api/claude-code/compact-talk/taken` — `{delivery_id}` → `{taken}`: whether the post-compact block took that delivery (and so said the talk is below). The mod's second call, after the engine's compaction returns. `false` means the block didn't, and the mod appends nothing; `null` means this backend process never issued the id (it restarted since the fetch), and the mod appends, a duplicate at worst. A `true` is answered once
+- `POST /api/claude-code/compact-talk/cancel` — `{delivery_id}` → `{dropped}`: the mod's call when its `/compact-talk` request failed on its side (a timeout, a dropped connection, an error status), made before the engine's compaction runs. Drops a recorded delivery with that id (`dropped`) and refuses the id from then on, so a request still in flight records nothing when it lands; either order leaves the post-compact block naming the read (issue #400)
 - `POST /api/claude-code/session-end` — session ended; re-indexes the entity's notes into the semantic mirror (background)
 - `POST /mcp` — MCP streamable-HTTP endpoint (stateless JSON-RPC) exposing the entity's memory tools (`memory_query`, `memory_save`, `memory_mark`, `memory_release`) and the rooms registry tools (`declare_room`, `retire_room`) to Claude Code sessions
 
@@ -74,20 +75,13 @@ Called by Claude Code lifecycle hooks, not the frontend. Gated by
 - `PUT /api/messages/{id}` — edit human message content
 - `DELETE /api/messages/{id}` — delete message (and paired response)
 
-## Text-to-Speech
-- `POST /api/tts/speak` — convert text to speech (MP3 for ElevenLabs, WAV for XTTS/StyleTTS2)
-- `POST /api/tts/speak/stream` — stream text-to-speech audio
-- `GET /api/tts/status` — check TTS configuration status
-- `GET /api/tts/voices` — list available voices
-- `GET /api/tts/voices/{id}` — get specific voice details
-- `POST /api/tts/voices/clone` — clone voice from audio sample (XTTS/StyleTTS2 only)
-- `PUT /api/tts/voices/{id}` — update voice settings (XTTS/StyleTTS2 only)
-- `DELETE /api/tts/voices/{id}` — delete cloned voice (XTTS/StyleTTS2 only)
-- `GET /api/tts/xtts/health` — check XTTS server health
-- `GET /api/tts/styletts2/health` — check StyleTTS 2 server health
+## Text-to-Speech (ElevenLabs)
+- `POST /api/tts/speak` — convert text to speech (`audio/mpeg`)
+- `POST /api/tts/speak/stream` — stream text-to-speech audio (`audio/mpeg`)
+- `GET /api/tts/status` — `{configured, provider ("elevenlabs" or "none"), voices, default_voice_id, model_id}`
+- `GET /api/tts/voices` — list the configured ElevenLabs voices
 
-## Speech-to-Text
-- `POST /api/stt/transcribe` — transcribe audio file to text
+The backend proxies only ElevenLabs (its API key is server-side). The local voice servers — XTTS, StyleTTS 2, and Whisper speech-to-text, with their voice libraries — are called by the browser directly and serve their own endpoints (issue #399); see [local-services.md](local-services.md). There is no `/api/stt`.
 
 ## GitHub
 - `GET /api/github/repos` — list configured repositories (tokens excluded)

@@ -544,11 +544,6 @@ describe('ApiClient', () => {
             expect(global.fetch).toHaveBeenCalledWith('/api/tts/voices', expect.any(Object));
         });
 
-        it('getSTTStatus should call /stt/status', async () => {
-            await api.getSTTStatus();
-            expect(global.fetch).toHaveBeenCalledWith('/api/stt/status', expect.any(Object));
-        });
-
         it('listGitHubRepos should call /github/repos', async () => {
             await api.listGitHubRepos();
             expect(global.fetch).toHaveBeenCalledWith('/api/github/repos', expect.any(Object));
@@ -658,17 +653,16 @@ describe('ApiClient', () => {
             expect(body.voice_id).toBe('voice-1');
         });
 
-        it('should include StyleTTS2 params when provided', async () => {
+        it('should send only the text and voice to the backend', async () => {
             global.fetch = vi.fn().mockResolvedValue({
                 ok: true,
                 blob: () => Promise.resolve(new Blob()),
             });
 
-            await api.textToSpeech('Hello', null, { alpha: 0.5, beta: 0.8 });
+            await api.textToSpeech('Hello', 'v1');
 
-            const body = JSON.parse(global.fetch.mock.calls[0][1].body);
-            expect(body.alpha).toBe(0.5);
-            expect(body.beta).toBe(0.8);
+            expect(global.fetch.mock.calls[0][0]).toBe('/api/tts/speak');
+            expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({ text: 'Hello', voice_id: 'v1' });
         });
 
         it('should throw on non-ok response', async () => {
@@ -808,6 +802,75 @@ describe('ApiClient', () => {
             expect(callbacks.onStart).toHaveBeenCalledWith({ total: 5 });
             expect(callbacks.onProgress).toHaveBeenCalledWith({ current: 1 });
             expect(callbacks.onDone).toHaveBeenCalledWith({ imported: 5 });
+        });
+    });
+
+    describe('local voice servers (issue #399)', () => {
+        const URL_BASE = 'http://localhost:8021';
+
+        it('localSpeak posts JSON straight to the server, trailing slash dropped', async () => {
+            global.fetch = vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob(['wav'])) });
+
+            await api.localSpeak(`${URL_BASE}/`, { text: 'Hi', voice_id: 'v1', alpha: 0.4 });
+
+            const [url, options] = global.fetch.mock.calls[0];
+            expect(url).toBe(`${URL_BASE}/speak`);
+            expect(options.method).toBe('POST');
+            expect(options.headers['Content-Type']).toBe('application/json');
+            expect(JSON.parse(options.body)).toEqual({ text: 'Hi', voice_id: 'v1', alpha: 0.4 });
+            expect(options.credentials).toBeUndefined();
+        });
+
+        it('localCloneVoice uploads the sample and its settings as a form', async () => {
+            global.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ success: true }) });
+            const file = new Blob(['RIFF'], { type: 'audio/wav' });
+
+            await api.localCloneVoice(URL_BASE, file, 'Ada', 'desc', { temperature: 0.6, speed: null });
+
+            const [url, options] = global.fetch.mock.calls[0];
+            expect(url).toBe(`${URL_BASE}/voices`);
+            expect(options.body).toBeInstanceOf(FormData);
+            expect(options.body.get('label')).toBe('Ada');
+            expect(options.body.get('temperature')).toBe('0.6');
+            expect(options.body.has('speed')).toBe(false);
+            expect(options.headers).toBeUndefined();
+        });
+
+        it('localUpdateVoice and localDeleteVoice address the voice by id', async () => {
+            global.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ success: true }) });
+
+            await api.localUpdateVoice(URL_BASE, 'a/b', { label: 'X' });
+            await api.localDeleteVoice(URL_BASE, 'ab12');
+
+            expect(global.fetch.mock.calls[0][0]).toBe(`${URL_BASE}/voices/a%2Fb`);
+            expect(global.fetch.mock.calls[0][1].method).toBe('PUT');
+            expect(global.fetch.mock.calls[1][0]).toBe(`${URL_BASE}/voices/ab12`);
+            expect(global.fetch.mock.calls[1][1].method).toBe('DELETE');
+        });
+
+        it('localTranscribe posts the recording to the Whisper server', async () => {
+            global.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ text: 'hello' }) });
+            // jsdom's FormData refuses this environment's Blob as a file part
+            const appended = [];
+            vi.stubGlobal('FormData', class { append(...args) { appended.push(args); } });
+
+            const result = await api.localTranscribe('http://localhost:8030', new Blob(['x'], { type: 'audio/webm' }));
+            vi.unstubAllGlobals();
+
+            expect(result.text).toBe('hello');
+            expect(global.fetch.mock.calls[0][0]).toBe('http://localhost:8030/transcribe');
+            expect(appended[0][0]).toBe('audio_file');
+            expect(appended[0][2]).toBe('recording.webm');
+        });
+
+        it('a refusal from the server surfaces its detail', async () => {
+            global.fetch = vi.fn().mockResolvedValue({
+                ok: false,
+                status: 403,
+                json: () => Promise.resolve({ detail: 'Origin https://x is not allowed.' }),
+            });
+
+            await expect(api.localListVoices(URL_BASE)).rejects.toThrow('not allowed');
         });
     });
 });

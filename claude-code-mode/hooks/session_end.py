@@ -14,14 +14,14 @@ Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE (see session_start.py).
 import json
 import os
 import sys
-import urllib.request
 
-import hook_util  # noqa: F401 — imported for its UTF-8 stdio reconfigure
+import hook_util
 
 
 def main() -> None:
     if os.environ.get("HIM_DISABLE"):
         return
+    hook_util.start_hook_clock("SessionEnd")
     try:
         data = json.load(sys.stdin)
     except Exception:
@@ -35,17 +35,13 @@ def main() -> None:
         "entity": os.environ.get("HIM_ENTITY") or None,
         "reason": data.get("reason"),
     }
-    base = os.environ.get("HIM_BACKEND_URL", "http://localhost:8000").rstrip("/")
-    request = urllib.request.Request(
-        base + "/api/claude-code/session-end",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
     # SessionEnd hooks run under a tight time budget; the endpoint returns
-    # immediately (the reindex continues server-side), so a short timeout
-    # is enough for the localhost round-trip.
+    # immediately (the reindex continues server-side), so one short try
+    # (hook_util.SESSION_END_TIMEOUTS) is all it gets
     try:
-        urllib.request.urlopen(request, timeout=3).close()
+        hook_util.post_backend(
+            "/api/claude-code/session-end", payload, timeout=hook_util.SESSION_END_TIMEOUTS
+        )
     except Exception:
         return
 

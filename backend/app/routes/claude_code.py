@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import uuid
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -94,6 +94,12 @@ class SessionStartRequest(BaseModel):
     # the identity block then names the turn it gives at compaction. An
     # older hook sends nothing, which reads as not loaded
     compact_talk_mod: bool = False
+    # Where this machine reaches the notes tree (issue #397): the hook's
+    # HIM_NOTES_ROOT, for a session on a machine other than the server's,
+    # with the client's os.name so the paths are joined its way. None = the
+    # session runs beside the server and the server's own paths are right
+    notes_root: Optional[str] = None
+    path_flavor: Optional[Literal["nt", "posix"]] = None
 
 
 class BulkPart(BaseModel):
@@ -119,6 +125,13 @@ class GitIdentity(BaseModel):
     author_name: Optional[str] = None
     author_email: Optional[str] = None
     gh_config_dir: Optional[str] = None
+
+
+class NotesCheck(BaseModel):
+    """The notes directory as the session's machine reaches it, and the
+    server's index.md hash (None = no index yet) to compare against."""
+    entity_dir: str
+    index_sha256: Optional[str] = None
 
 
 class SessionStartResponse(BaseModel):
@@ -155,6 +168,10 @@ class SessionStartResponse(BaseModel):
     # identity and a changed one lands on the next. None = entity has none
     # configured, and the hook removes one an earlier firing exported.
     git_identity: Optional[GitIdentity] = None
+    # Issue #397: with a context block, the notes directory it names and the
+    # sha256 of the server's index.md, so the hook can say loudly when what
+    # this machine reaches at that path is not the server's copy
+    notes_check: Optional[NotesCheck] = None
 
 
 class PeerMessage(BaseModel):
@@ -361,7 +378,8 @@ async def session_start(
     if fresh:
         conversation_id = cc.conversation_id_for_session(data.session_id)
         context, bulk_parts = await cc.build_session_start_context(
-            db, conversation_id, entity, compact_talk_mod=data.compact_talk_mod
+            db, conversation_id, entity, compact_talk_mod=data.compact_talk_mod,
+            notes_root=data.notes_root, path_flavor=data.path_flavor,
         )
     else:
         conversation_id = str(conversation.id)
@@ -376,6 +394,7 @@ async def session_start(
             context, bulk_parts = await cc.build_post_compact_context(
                 db, conversation, entity,
                 previously_compacted_at=previously_compacted_at,
+                notes_root=data.notes_root, path_flavor=data.path_flavor,
             )
             if adoption_text:
                 context = f"{adoption_text}\n\n{context}"
@@ -403,6 +422,13 @@ async def session_start(
     # this backend start)
     _spawn_notes_sync(entity)
 
+    # Only a firing that names the notes (startup, compact) is checked; a
+    # resume's transcript already carries the block, and the check with it
+    notes_check = None
+    if fresh or data.source == "compact":
+        check = cc.notes_check_for(entity, data.notes_root, data.path_flavor)
+        notes_check = NotesCheck(**check) if check else None
+
     return SessionStartResponse(
         conversation_id=conversation_id,
         entity_id=entity.index_name,
@@ -414,6 +440,7 @@ async def session_start(
         rooms_notice=rooms_notice,
         rooms_error=rooms_error,
         git_identity=cc.git_identity_for(entity),
+        notes_check=notes_check,
     )
 
 
@@ -701,6 +728,10 @@ class CompactTalkRequest(BaseModel):
     # The mod's budget for this session, a share of its auto-compaction
     # line; CLAUDE_CODE_COMPACT_TALK_TOKENS is the ceiling and the default
     budget_tokens: Optional[int] = None
+    # The delivery id, chosen by the mod so it can cancel a delivery whose
+    # response it never received (issue #400); a missing or malformed one
+    # gets a server-chosen id, as before
+    delivery_id: Optional[str] = None
 
 
 class CompactTalkResponse(BaseModel):
@@ -728,6 +759,16 @@ class CompactTalkTakenResponse(BaseModel):
     # null: this backend process never handed the delivery out (it
     # restarted since the fetch), so it can't say; the mod appends
     taken: Optional[bool] = None
+
+
+class CompactTalkCancelRequest(BaseModel):
+    delivery_id: str
+
+
+class CompactTalkCancelResponse(BaseModel):
+    # Whether a recorded delivery was dropped; either way the id is
+    # refused from now on
+    dropped: bool = False
 
 
 SAVED_REFLECTION_ID = re.compile(r"Saved reflection as memory ([0-9a-f]{8})")
@@ -801,6 +842,7 @@ async def compact_talk_for_session(
             status, detail = compact_talk.PRE_COMPACTION_FAILED, f"the save was refused ({result})"
             logger.warning(f"[CC] Compact talk: pre-compaction reflection not saved: {result}")
 
+    chosen_id = _valid_uuid(data.delivery_id)
     ceiling = settings.claude_code_compact_talk_tokens
     budget = min(data.budget_tokens, ceiling) if data.budget_tokens else ceiling
     rendered = await compact_talk.render_talk(
@@ -808,6 +850,7 @@ async def compact_talk_for_session(
         conversation,
         budget_tokens=max(1000, budget),
         pre_compaction=compact_talk.pre_compaction_line(status, reflection_id, detail),
+        delivery_id=chosen_id,
     )
     if rendered.delivery is None:
         return CompactTalkResponse(
@@ -815,7 +858,11 @@ async def compact_talk_for_session(
             conversation_id=conversation_id,
             reflection_id=reflection_id,
             reflection_error=reflection_error,
-            reason="this conversation has no recorded talk yet",
+            reason=(
+                "the mod cancelled this delivery before it was recorded"
+                if compact_talk.is_cancelled(chosen_id)
+                else "this conversation has no recorded talk yet"
+            ),
         )
     return CompactTalkResponse(
         available=True,
@@ -839,6 +886,22 @@ async def compact_talk_taken(data: CompactTalkTakenRequest):
     """
     _require_enabled()
     return CompactTalkTakenResponse(taken=compact_talk.was_taken(data.delivery_id))
+
+
+@router.post("/compact-talk/cancel", response_model=CompactTalkCancelResponse)
+async def compact_talk_cancel(data: CompactTalkCancelRequest):
+    """
+    The compaction mod's call when /compact-talk failed on its side (a
+    timeout, a dropped connection, an error status), made before the
+    engine's compaction runs: drop the delivery it chose the id for if it
+    was recorded, and refuse it if the request is still in flight, so the
+    post-compact block can't say the talk is below when the mod never got
+    it to append (issue #400).
+    """
+    _require_enabled()
+    return CompactTalkCancelResponse(dropped=compact_talk.cancel_delivery(
+        _valid_uuid(data.delivery_id) or data.delivery_id
+    ))
 
 
 @router.post("/log-assistant", response_model=LogAssistantResponse)
@@ -885,14 +948,17 @@ async def log_assistant(
             deduplicated=False,
         )
 
-    if data.message_uuid:
+    # Canonical when it is a UUID, as /recorded reads ids back; anything
+    # else is kept as given, as before (PR #406 review)
+    row_id = _valid_uuid(data.message_uuid) or data.message_uuid
+    if row_id:
         result = await db.execute(
-            select(Message.id).where(Message.id == data.message_uuid)
+            select(Message.id).where(Message.id == row_id)
         )
         if result.scalar_one_or_none() is not None:
             return LogAssistantResponse(
                 conversation_id=str(conversation.id),
-                message_id=data.message_uuid,
+                message_id=row_id,
                 deduplicated=True,
             )
 
@@ -902,7 +968,7 @@ async def log_assistant(
         entity,
         role=MessageRole.ASSISTANT,
         content=content,
-        message_id=data.message_uuid,
+        message_id=row_id,
         token_count=cc.safe_token_count(content),
         model=(data.model or "").strip()[:100] or None,
     )

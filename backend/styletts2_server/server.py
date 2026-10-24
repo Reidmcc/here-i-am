@@ -21,9 +21,11 @@ import nltk
 import numpy as np
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from pydantic import BaseModel
+
+from voice_common.origin_guard import install_origin_guard
+from voice_common.voice_library import Param, VoiceLibrary
+from voice_common.voice_routes import make_voice_router
 
 # =============================================================================
 # Phonemizer Abstraction
@@ -169,14 +171,9 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Only the Here I Am app's own pages may call this server from a browser
+# (issue #399); see voice_common/origin_guard.py.
+install_origin_guard(app)
 
 # Global model instances
 _styletts2_model = None
@@ -475,28 +472,6 @@ async def cache_stats():
     return {
         "cache_size": len(_speaker_embedding_cache),
         "cached_speakers": list(_speaker_embedding_cache.keys()),
-    }
-
-
-@app.post("/cache/preload")
-async def preload_cache(
-    speaker_paths: str = Form(..., description="Comma-separated list of speaker file paths"),
-):
-    """
-    Pre-load speaker embeddings for the given speaker files.
-
-    This speeds up subsequent TTS requests for these voices.
-    """
-    paths = [p.strip() for p in speaker_paths.split(",") if p.strip()]
-    if not paths:
-        raise HTTPException(status_code=400, detail="No speaker paths provided")
-
-    loaded = preload_speaker_embeddings(paths)
-    return {
-        "message": f"Pre-loaded {loaded} of {len(paths)} speakers",
-        "loaded": loaded,
-        "requested": len(paths),
-        "cache_size": len(_speaker_embedding_cache),
     }
 
 
@@ -1149,148 +1124,49 @@ async def tts_to_audio(
                 pass
 
 
-class TTSRequest(BaseModel):
-    """JSON request body for TTS endpoint."""
-    text: str
-    speaker_wav: str
-    alpha: float = 0.3
-    beta: float = 0.7
-    diffusion_steps: int = 10
-    embedding_scale: float = 1.0
-    speed: float = 1.0
+# =============================================================================
+# The voice library (issue #399): the browser manages voices and speaks here
+# directly, by voice_id, instead of going through the backend.
+# =============================================================================
+
+STYLETTS2_PARAMS = {
+    "alpha": Param(0.3, 0.0, 1.0),
+    "beta": Param(0.7, 0.0, 1.0),
+    "diffusion_steps": Param(10, 1, 50, integer=True),
+    "embedding_scale": Param(1.0, 0.0, 10.0),
+}
+# /speak also takes a speed, which isn't saved with a voice.
+SPEAK_PARAMS = {**STYLETTS2_PARAMS, "speed": Param(1.0, 0.5, 2.0)}
+
+voice_library = VoiceLibrary(
+    os.environ.get("STYLETTS2_VOICES_DIR", "./styletts2_voices"), "styletts2", STYLETTS2_PARAMS
+)
 
 
-async def _tts_with_path(
-    text: str,
-    speaker_wav: str,
-    alpha: float,
-    beta: float,
-    diffusion_steps: int,
-    embedding_scale: float,
-    speed: float = 1.0,
-) -> Response:
-    """
-    Internal TTS function using a speaker file path.
-
-    Speaker embeddings are cached for maximum performance with server-side voices.
-    """
-    if not text or not text.strip():
-        raise HTTPException(status_code=400, detail="Text is required")
-
-    speaker_path = Path(speaker_wav)
-    if not speaker_path.exists():
-        raise HTTPException(status_code=400, detail=f"Speaker file not found: {speaker_wav}")
-
-    try:
-        # Generate speech using cached speaker embeddings
-        logger.info(f"Generating speech for {len(text)} chars, alpha={alpha}, beta={beta}, speed={speed}")
-        audio_bytes = synthesize_with_cached_embeddings(
-            text=text,
-            speaker_wav_path=str(speaker_path),
-            alpha=alpha,
-            beta=beta,
-            diffusion_steps=diffusion_steps,
-            embedding_scale=embedding_scale,
-            speed=speed,
-        )
-
-        logger.info(f"Generated {len(audio_bytes)} bytes of audio")
-
-        return Response(
-            content=audio_bytes,
-            media_type="audio/wav",
-            headers={"Content-Disposition": "inline"},
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"TTS generation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}") from e
-
-
-@app.post("/tts")
-async def tts_json(request: TTSRequest):
-    """
-    TTS endpoint accepting JSON body with speaker_wav as a file path.
-
-    This endpoint is for when the speaker file is already on the server.
-    Speaker embeddings are cached for maximum performance with server-side voices.
-    """
-    return await _tts_with_path(
-        request.text,
-        request.speaker_wav,
-        request.alpha,
-        request.beta,
-        request.diffusion_steps,
-        request.embedding_scale,
-        request.speed,
+def _speak(text: str, voice: Optional[dict], overrides: Dict[str, float]) -> bytes:
+    """Settings: override > the voice's saved setting > default. With no voice
+    chosen: the default speaker sample if one is configured, else the
+    pre-trained LJSpeech voice."""
+    settings = voice_library.settings_for(voice, overrides)
+    speed = overrides.get("speed", SPEAK_PARAMS["speed"].default)
+    if voice is not None:
+        speaker = voice_library.sample_path(voice)
+        if speaker is None:
+            raise ValueError(
+                f"Sample for voice '{voice.get('label')}' not found in {voice_library.voices_dir}"
+            )
+    else:
+        default = os.environ.get("STYLETTS2_DEFAULT_SPEAKER", "")
+        speaker = Path(default) if default and os.path.isfile(default) else None
+    logger.info(f"Generating speech for {len(text)} chars, {settings}, speed={speed}")
+    if speaker is None:
+        return synthesize_default_voice(text=text, speed=speed, **settings)
+    return synthesize_with_cached_embeddings(
+        text=text, speaker_wav_path=str(speaker), speed=speed, **settings
     )
 
 
-@app.post("/tts_form")
-async def tts_form(
-    text: str = Form(...),
-    speaker_wav: str = Form(..., description="Path to speaker WAV file"),
-    alpha: str = Form("0.3"),
-    beta: str = Form("0.7"),
-    diffusion_steps: str = Form("10"),
-    embedding_scale: str = Form("1.0"),
-    speed: str = Form("1.0"),
-):
-    """
-    TTS endpoint accepting Form data with speaker_wav as a file path.
-
-    This endpoint is for when the speaker file is already on the server.
-    Speaker embeddings are cached for maximum performance with server-side voices.
-    """
-    try:
-        alpha_val = float(alpha)
-        beta_val = float(beta)
-        diffusion_steps_val = int(diffusion_steps)
-        embedding_scale_val = float(embedding_scale)
-        speed_val = float(speed)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}") from e
-
-    return await _tts_with_path(
-        text,
-        speaker_wav,
-        alpha_val,
-        beta_val,
-        diffusion_steps_val,
-        embedding_scale_val,
-        speed_val,
-    )
-
-
-@app.post("/tts_stream")
-async def tts_stream(
-    text: str = Form(...),
-    speaker_wav: UploadFile = File(...),
-    alpha: str = Form("0.3"),
-    beta: str = Form("0.7"),
-    diffusion_steps: str = Form("10"),
-    embedding_scale: str = Form("1.0"),
-    speed: str = Form("1.0"),
-):
-    """
-    Stream TTS audio (currently just returns full audio, streaming TBD).
-
-    Note: True streaming requires chunked synthesis which StyleTTS 2 supports
-    but requires more complex implementation.
-    """
-    # For now, just return the full audio
-    # True streaming would require chunked synthesis
-    return await tts_to_audio(
-        text=text,
-        speaker_wav=speaker_wav,
-        alpha=alpha,
-        beta=beta,
-        diffusion_steps=diffusion_steps,
-        embedding_scale=embedding_scale,
-        speed=speed,
-    )
+app.include_router(make_voice_router(voice_library, _speak, speak_params=SPEAK_PARAMS))
 
 
 def create_app() -> FastAPI:
@@ -1300,4 +1176,4 @@ def create_app() -> FastAPI:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8021)
+    uvicorn.run(app, host="127.0.0.1", port=8021)
