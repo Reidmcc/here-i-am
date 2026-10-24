@@ -21,9 +21,9 @@ import nltk
 import numpy as np
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from pydantic import BaseModel
+
+from voice_common.origin_guard import install_origin_guard
 
 # =============================================================================
 # Phonemizer Abstraction
@@ -169,14 +169,9 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Only the Here I Am app's own pages may call this server from a browser
+# (issue #399); see voice_common/origin_guard.py.
+install_origin_guard(app)
 
 # Global model instances
 _styletts2_model = None
@@ -475,28 +470,6 @@ async def cache_stats():
     return {
         "cache_size": len(_speaker_embedding_cache),
         "cached_speakers": list(_speaker_embedding_cache.keys()),
-    }
-
-
-@app.post("/cache/preload")
-async def preload_cache(
-    speaker_paths: str = Form(..., description="Comma-separated list of speaker file paths"),
-):
-    """
-    Pre-load speaker embeddings for the given speaker files.
-
-    This speeds up subsequent TTS requests for these voices.
-    """
-    paths = [p.strip() for p in speaker_paths.split(",") if p.strip()]
-    if not paths:
-        raise HTTPException(status_code=400, detail="No speaker paths provided")
-
-    loaded = preload_speaker_embeddings(paths)
-    return {
-        "message": f"Pre-loaded {loaded} of {len(paths)} speakers",
-        "loaded": loaded,
-        "requested": len(paths),
-        "cache_size": len(_speaker_embedding_cache),
     }
 
 
@@ -1149,121 +1122,6 @@ async def tts_to_audio(
                 pass
 
 
-class TTSRequest(BaseModel):
-    """JSON request body for TTS endpoint."""
-    text: str
-    speaker_wav: str
-    alpha: float = 0.3
-    beta: float = 0.7
-    diffusion_steps: int = 10
-    embedding_scale: float = 1.0
-    speed: float = 1.0
-
-
-async def _tts_with_path(
-    text: str,
-    speaker_wav: str,
-    alpha: float,
-    beta: float,
-    diffusion_steps: int,
-    embedding_scale: float,
-    speed: float = 1.0,
-) -> Response:
-    """
-    Internal TTS function using a speaker file path.
-
-    Speaker embeddings are cached for maximum performance with server-side voices.
-    """
-    if not text or not text.strip():
-        raise HTTPException(status_code=400, detail="Text is required")
-
-    speaker_path = Path(speaker_wav)
-    if not speaker_path.exists():
-        raise HTTPException(status_code=400, detail=f"Speaker file not found: {speaker_wav}")
-
-    try:
-        # Generate speech using cached speaker embeddings
-        logger.info(f"Generating speech for {len(text)} chars, alpha={alpha}, beta={beta}, speed={speed}")
-        audio_bytes = synthesize_with_cached_embeddings(
-            text=text,
-            speaker_wav_path=str(speaker_path),
-            alpha=alpha,
-            beta=beta,
-            diffusion_steps=diffusion_steps,
-            embedding_scale=embedding_scale,
-            speed=speed,
-        )
-
-        logger.info(f"Generated {len(audio_bytes)} bytes of audio")
-
-        return Response(
-            content=audio_bytes,
-            media_type="audio/wav",
-            headers={"Content-Disposition": "inline"},
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"TTS generation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}") from e
-
-
-@app.post("/tts")
-async def tts_json(request: TTSRequest):
-    """
-    TTS endpoint accepting JSON body with speaker_wav as a file path.
-
-    This endpoint is for when the speaker file is already on the server.
-    Speaker embeddings are cached for maximum performance with server-side voices.
-    """
-    return await _tts_with_path(
-        request.text,
-        request.speaker_wav,
-        request.alpha,
-        request.beta,
-        request.diffusion_steps,
-        request.embedding_scale,
-        request.speed,
-    )
-
-
-@app.post("/tts_form")
-async def tts_form(
-    text: str = Form(...),
-    speaker_wav: str = Form(..., description="Path to speaker WAV file"),
-    alpha: str = Form("0.3"),
-    beta: str = Form("0.7"),
-    diffusion_steps: str = Form("10"),
-    embedding_scale: str = Form("1.0"),
-    speed: str = Form("1.0"),
-):
-    """
-    TTS endpoint accepting Form data with speaker_wav as a file path.
-
-    This endpoint is for when the speaker file is already on the server.
-    Speaker embeddings are cached for maximum performance with server-side voices.
-    """
-    try:
-        alpha_val = float(alpha)
-        beta_val = float(beta)
-        diffusion_steps_val = int(diffusion_steps)
-        embedding_scale_val = float(embedding_scale)
-        speed_val = float(speed)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}") from e
-
-    return await _tts_with_path(
-        text,
-        speaker_wav,
-        alpha_val,
-        beta_val,
-        diffusion_steps_val,
-        embedding_scale_val,
-        speed_val,
-    )
-
-
 @app.post("/tts_stream")
 async def tts_stream(
     text: str = Form(...),
@@ -1300,4 +1158,4 @@ def create_app() -> FastAPI:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8021)
+    uvicorn.run(app, host="127.0.0.1", port=8021)
