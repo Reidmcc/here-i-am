@@ -701,6 +701,10 @@ class CompactTalkRequest(BaseModel):
     # The mod's budget for this session, a share of its auto-compaction
     # line; CLAUDE_CODE_COMPACT_TALK_TOKENS is the ceiling and the default
     budget_tokens: Optional[int] = None
+    # The delivery id, chosen by the mod so it can cancel a delivery whose
+    # response it never received (issue #400); a missing or malformed one
+    # gets a server-chosen id, as before
+    delivery_id: Optional[str] = None
 
 
 class CompactTalkResponse(BaseModel):
@@ -728,6 +732,16 @@ class CompactTalkTakenResponse(BaseModel):
     # null: this backend process never handed the delivery out (it
     # restarted since the fetch), so it can't say; the mod appends
     taken: Optional[bool] = None
+
+
+class CompactTalkCancelRequest(BaseModel):
+    delivery_id: str
+
+
+class CompactTalkCancelResponse(BaseModel):
+    # Whether a recorded delivery was dropped; either way the id is
+    # refused from now on
+    dropped: bool = False
 
 
 SAVED_REFLECTION_ID = re.compile(r"Saved reflection as memory ([0-9a-f]{8})")
@@ -801,6 +815,7 @@ async def compact_talk_for_session(
             status, detail = compact_talk.PRE_COMPACTION_FAILED, f"the save was refused ({result})"
             logger.warning(f"[CC] Compact talk: pre-compaction reflection not saved: {result}")
 
+    chosen_id = _valid_uuid(data.delivery_id)
     ceiling = settings.claude_code_compact_talk_tokens
     budget = min(data.budget_tokens, ceiling) if data.budget_tokens else ceiling
     rendered = await compact_talk.render_talk(
@@ -808,6 +823,7 @@ async def compact_talk_for_session(
         conversation,
         budget_tokens=max(1000, budget),
         pre_compaction=compact_talk.pre_compaction_line(status, reflection_id, detail),
+        delivery_id=chosen_id,
     )
     if rendered.delivery is None:
         return CompactTalkResponse(
@@ -815,7 +831,11 @@ async def compact_talk_for_session(
             conversation_id=conversation_id,
             reflection_id=reflection_id,
             reflection_error=reflection_error,
-            reason="this conversation has no recorded talk yet",
+            reason=(
+                "the mod cancelled this delivery before it was recorded"
+                if compact_talk.is_cancelled(chosen_id)
+                else "this conversation has no recorded talk yet"
+            ),
         )
     return CompactTalkResponse(
         available=True,
@@ -839,6 +859,22 @@ async def compact_talk_taken(data: CompactTalkTakenRequest):
     """
     _require_enabled()
     return CompactTalkTakenResponse(taken=compact_talk.was_taken(data.delivery_id))
+
+
+@router.post("/compact-talk/cancel", response_model=CompactTalkCancelResponse)
+async def compact_talk_cancel(data: CompactTalkCancelRequest):
+    """
+    The compaction mod's call when /compact-talk failed on its side (a
+    timeout, a dropped connection, an error status), made before the
+    engine's compaction runs: drop the delivery it chose the id for if it
+    was recorded, and refuse it if the request is still in flight, so the
+    post-compact block can't say the talk is below when the mod never got
+    it to append (issue #400).
+    """
+    _require_enabled()
+    return CompactTalkCancelResponse(dropped=compact_talk.cancel_delivery(
+        _valid_uuid(data.delivery_id) or data.delivery_id
+    ))
 
 
 @router.post("/log-assistant", response_model=LogAssistantResponse)
@@ -885,14 +921,17 @@ async def log_assistant(
             deduplicated=False,
         )
 
-    if data.message_uuid:
+    # Canonical when it is a UUID, as /recorded reads ids back; anything
+    # else is kept as given, as before (PR #406 review)
+    row_id = _valid_uuid(data.message_uuid) or data.message_uuid
+    if row_id:
         result = await db.execute(
-            select(Message.id).where(Message.id == data.message_uuid)
+            select(Message.id).where(Message.id == row_id)
         )
         if result.scalar_one_or_none() is not None:
             return LogAssistantResponse(
                 conversation_id=str(conversation.id),
-                message_id=data.message_uuid,
+                message_id=row_id,
                 deduplicated=True,
             )
 
@@ -902,7 +941,7 @@ async def log_assistant(
         entity,
         role=MessageRole.ASSISTANT,
         content=content,
-        message_id=data.message_uuid,
+        message_id=row_id,
         token_count=cc.safe_token_count(content),
         model=(data.model or "").strip()[:100] or None,
     )
