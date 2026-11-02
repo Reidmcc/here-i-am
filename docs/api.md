@@ -1,8 +1,8 @@
 # API Reference
 
-Interactive API documentation is served when the app is running:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+FastAPI's interactive pages (Swagger UI at `/docs`, ReDoc at `/redoc`, the schema at `/openapi.json`) are off by default, since the server has no authentication yet (issue #396). Set `API_DOCS_ENABLED=true` to serve them.
+
+The server listens on `127.0.0.1:8000` by default. `HIM_HOST` changes the interface (`0.0.0.0` for all of them), and `HIM_RELOAD=false` turns off restart-on-change.
 
 The listing below covers the REST endpoints by resource.
 
