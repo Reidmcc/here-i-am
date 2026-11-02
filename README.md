@@ -98,12 +98,12 @@ While Here I Am can be used with no memory features enabled, this is not recomme
 - XTTS v2 (local): GPU-accelerated with voice cloning, 17 languages
 - StyleTTS 2 (local): GPU-accelerated with voice cloning and style transfer (highest priority)
 - Voice cloning from audio samples via UI
-- Streaming audio generation
+- Local voice servers are called by the browser on their own machine, so the backend can run elsewhere
 
 ### Speech-to-Text
 - Whisper (local): GPU-accelerated with punctuation, multiple model sizes
 - Browser Web Speech API: Fallback option
-- Configurable dictation mode: `whisper`, `browser`, or `auto`
+- Dictation mode per browser: Whisper, the browser's own, or Whisper with fallback
 
 ## Quick Start
 
@@ -245,7 +245,7 @@ PINECONE_INDEXES='[
 
 ### Optional Local Voice Services
 
-XTTS v2, StyleTTS 2, and Whisper run as separate local servers providing GPU-accelerated TTS/STT with voice cloning. See [docs/local-services.md](docs/local-services.md) for installation and configuration.
+XTTS v2, StyleTTS 2, and Whisper run as separate local servers providing GPU-accelerated TTS/STT with voice cloning. The browser on the same machine calls them directly (turn on "Use voice servers on this machine" in its Settings); the backend doesn't. See [docs/local-services.md](docs/local-services.md) for installation and configuration.
 
 ### Optional Integrations
 
@@ -339,16 +339,14 @@ here-i-am/
 │   │   │   ├── moltbook_service.py
 │   │   │   ├── moltbook_tools.py
 │   │   │   ├── attachment_service.py
-│   │   │   ├── tts_service.py         # Unified TTS (ElevenLabs/XTTS/StyleTTS2)
-│   │   │   ├── xtts_service.py
-│   │   │   ├── styletts2_service.py
-│   │   │   └── whisper_service.py
+│   │   │   └── tts_service.py         # ElevenLabs TTS (local voice is browser-direct)
 │   │   ├── config.py              # Pydantic settings
 │   │   ├── database.py            # SQLAlchemy async setup
 │   │   └── main.py                # FastAPI app initialization
 │   ├── xtts_server/               # Local XTTS v2 TTS server
 │   ├── styletts2_server/          # Local StyleTTS 2 TTS server
 │   ├── whisper_server/            # Local Whisper STT server
+│   ├── voice_common/              # Shared by the voice servers: origin guard, voice library
 │   ├── tests/                     # Backend unit tests (pytest)
 │   ├── requirements.txt
 │   ├── requirements-xtts.txt

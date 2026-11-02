@@ -235,6 +235,39 @@
                     <p class="form-help">When enabled, Enter and Shift+Enter both add a new line and messages are sent only with the Send button. Prevents accidentally sending incomplete prompts.</p>
                 </div>
 
+                <div class="form-group" id="local-voice-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="local-voice-enabled">
+                        Use voice servers on this machine
+                    </label>
+                    <p class="form-help">Turn this on in the browser on the computer that runs the local voice servers (StyleTTS 2, XTTS, Whisper). This browser then calls them directly. Saved in this browser only.</p>
+                    <div id="local-voice-options" style="display: none;">
+                        <div class="voice-params-grid">
+                            <div class="form-group">
+                                <label for="local-voice-styletts2-url">StyleTTS 2</label>
+                                <input type="text" id="local-voice-styletts2-url" spellcheck="false">
+                            </div>
+                            <div class="form-group">
+                                <label for="local-voice-xtts-url">XTTS</label>
+                                <input type="text" id="local-voice-xtts-url" spellcheck="false">
+                            </div>
+                            <div class="form-group">
+                                <label for="local-voice-whisper-url">Whisper</label>
+                                <input type="text" id="local-voice-whisper-url" spellcheck="false">
+                            </div>
+                            <div class="form-group">
+                                <label for="local-dictation-mode">Dictation</label>
+                                <select id="local-dictation-mode">
+                                    <option value="auto">Whisper, else the browser's own</option>
+                                    <option value="whisper">Whisper only</option>
+                                    <option value="browser">The browser's own only</option>
+                                </select>
+                            </div>
+                        </div>
+                        <p class="form-help" id="local-voice-status"></p>
+                    </div>
+                </div>
+
                 <div class="form-group" id="tts-provider-group" style="display: none;">
                     <label>TTS Provider</label>
                     <div class="tts-provider-info" id="tts-provider-info">

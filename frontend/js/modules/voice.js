@@ -25,42 +25,118 @@ export function setElements(els) {
 // TTS (Text-to-Speech)
 // =========================================================================
 
+// Local TTS servers in priority order (StyleTTS 2 > XTTS > ElevenLabs).
+const LOCAL_TTS_PROVIDERS = [
+    { provider: 'styletts2', urlKey: 'styletts2Url', name: 'StyleTTS 2' },
+    { provider: 'xtts', urlKey: 'xttsUrl', name: 'XTTS' },
+];
+
+// What the last check found at each local voice server, for the settings
+// status line: { name, answering, error? }
+let localVoiceFindings = [];
+
+function isLocalTTS() {
+    return state.ttsProvider === 'xtts' || state.ttsProvider === 'styletts2';
+}
+
 /**
- * Check TTS status and update state
+ * Ask one local voice server whether it is answering.
+ * @returns {Promise<Object>} The server's /health body, or { error }
+ */
+async function probeLocalServer(url) {
+    if (!url) return { error: 'no address set' };
+    try {
+        return await api.localVoiceHealth(url);
+    } catch (error) {
+        return { error: error.message || 'not answering' };
+    }
+}
+
+/**
+ * Check TTS status and update state.
+ *
+ * With local voice on in this browser, the first local TTS server that
+ * answers is used; otherwise ElevenLabs through the backend, if configured.
  */
 export async function checkTTSStatus() {
+    state.ttsEnabled = false;
+    state.ttsProvider = null;
+    state.ttsVoices = [];
+    state.localTtsUrl = null;
+    state.localTtsServerHealthy = false;
+    localVoiceFindings = localVoiceFindings.filter(f => f.name === 'Whisper');
+
     try {
-        const status = await api.getTTSStatus();
-
-        if (status.configured) {
-            state.ttsEnabled = true;
-            state.ttsProvider = status.provider;
-            state.ttsVoices = status.voices || [];
-            state.localTtsServerHealthy = status.server_healthy || false;
-
-            // If local TTS, store the default voice if none selected
-            if (state.ttsProvider === 'xtts' || state.ttsProvider === 'styletts2') {
-                loadSelectedVoiceFromStorage();
-                // Set default if none selected
-                if (!state.selectedVoiceId && state.ttsVoices.length > 0) {
-                    state.selectedVoiceId = state.ttsVoices[0].voice_id;
-                }
-            } else if (state.ttsVoices.length > 0) {
-                // ElevenLabs
-                loadSelectedVoiceFromStorage();
-                if (!state.selectedVoiceId) {
-                    state.selectedVoiceId = state.ttsVoices[0].voice_id;
-                }
+        if (state.localVoice.enabled) {
+            const results = await Promise.all(
+                LOCAL_TTS_PROVIDERS.map(p => probeLocalServer(state.localVoice[p.urlKey]))
+            );
+            LOCAL_TTS_PROVIDERS.forEach((p, i) => {
+                localVoiceFindings.push({
+                    name: p.name,
+                    answering: !results[i].error,
+                    error: results[i].error,
+                });
+            });
+            const index = results.findIndex(r => !r.error);
+            if (index !== -1) {
+                const chosen = LOCAL_TTS_PROVIDERS[index];
+                const url = state.localVoice[chosen.urlKey];
+                const listing = await api.localListVoices(url);
+                state.ttsEnabled = true;
+                state.ttsProvider = chosen.provider;
+                state.ttsVoices = listing.voices || [];
+                state.localTtsUrl = url;
+                state.localTtsServerHealthy = true;
             }
-        } else {
-            state.ttsEnabled = false;
         }
 
-        updateTTSUI();
+        if (!state.ttsEnabled) {
+            const status = await api.getTTSStatus();
+            if (status.configured) {
+                state.ttsEnabled = true;
+                state.ttsProvider = status.provider;
+                state.ttsVoices = status.voices || [];
+            }
+        }
+
+        if (state.ttsEnabled && state.ttsVoices.length > 0) {
+            loadSelectedVoiceFromStorage();
+            const known = state.ttsVoices.some(v => v.voice_id === state.selectedVoiceId);
+            if (!known) {
+                state.selectedVoiceId = state.ttsVoices[0].voice_id;
+            }
+        }
     } catch (error) {
         console.warn('TTS not available:', error);
         state.ttsEnabled = false;
     }
+
+    updateTTSUI();
+    updateLocalVoiceStatus();
+}
+
+/**
+ * Re-check the voice servers after this browser's local voice settings change.
+ */
+export async function refreshVoiceServices() {
+    clearAudioCache();
+    await checkTTSStatus();
+    await checkSTTStatus();
+}
+
+/**
+ * Show what the last checks found at each local voice server.
+ */
+function updateLocalVoiceStatus() {
+    if (!elements.localVoiceStatus) return;
+    if (!state.localVoice.enabled) {
+        elements.localVoiceStatus.textContent = '';
+        return;
+    }
+    elements.localVoiceStatus.textContent = localVoiceFindings
+        .map(f => `${f.name}: ${f.answering ? 'answering' : `not answering (${f.error})`}`)
+        .join(' · ');
 }
 
 /**
@@ -76,22 +152,12 @@ export function updateTTSUI() {
         if (elements.ttsProviderName) {
             if (state.ttsProvider === 'styletts2') {
                 elements.ttsProviderName.textContent = 'StyleTTS 2 (local)';
-                if (state.localTtsServerHealthy) {
-                    elements.ttsProviderStatus.textContent = 'Connected';
-                    elements.ttsProviderStatus.className = 'tts-status connected';
-                } else {
-                    elements.ttsProviderStatus.textContent = 'Server unavailable';
-                    elements.ttsProviderStatus.className = 'tts-status error';
-                }
+                elements.ttsProviderStatus.textContent = 'Connected';
+                elements.ttsProviderStatus.className = 'tts-status connected';
             } else if (state.ttsProvider === 'xtts') {
                 elements.ttsProviderName.textContent = 'XTTS v2 (local)';
-                if (state.localTtsServerHealthy) {
-                    elements.ttsProviderStatus.textContent = 'Connected';
-                    elements.ttsProviderStatus.className = 'tts-status connected';
-                } else {
-                    elements.ttsProviderStatus.textContent = 'Server unavailable';
-                    elements.ttsProviderStatus.className = 'tts-status error';
-                }
+                elements.ttsProviderStatus.textContent = 'Connected';
+                elements.ttsProviderStatus.className = 'tts-status connected';
             } else {
                 elements.ttsProviderName.textContent = 'ElevenLabs';
                 elements.ttsProviderStatus.textContent = 'Connected';
@@ -238,11 +304,18 @@ export async function speakMessage(content, btn, messageId = null) {
         // Strip markdown for cleaner speech
         const textContent = stripMarkdown(content);
 
-        // Get StyleTTS 2 parameters if using StyleTTS 2 provider
-        const styletts2Params = state.ttsProvider === 'styletts2' ? getStyleTTS2Params() : null;
-
-        // Get audio from API with selected voice and parameters
-        const audioBlob = await api.textToSpeech(textContent, state.selectedVoiceId, styletts2Params);
+        let audioBlob;
+        if (isLocalTTS()) {
+            // StyleTTS 2 takes this browser's parameter overrides
+            const body = {
+                text: textContent,
+                voice_id: state.selectedVoiceId,
+                ...(state.ttsProvider === 'styletts2' ? getStyleTTS2Params() : {}),
+            };
+            audioBlob = await api.localSpeak(state.localTtsUrl, body);
+        } else {
+            audioBlob = await api.textToSpeech(textContent, state.selectedVoiceId);
+        }
         const audioUrl = URL.createObjectURL(audioBlob);
 
         // Cache the audio
@@ -442,7 +515,7 @@ export async function createVoiceClone() {
     if (elements.createVoiceCloneBtn) elements.createVoiceCloneBtn.disabled = true;
 
     try {
-        const result = await api.cloneVoice(file, name, description, options);
+        const result = await api.localCloneVoice(state.localTtsUrl, file, name, description, options);
 
         if (result.success) {
             if (elements.voiceCloneStatus) {
@@ -483,7 +556,7 @@ export async function deleteVoice(voiceId) {
     }
 
     try {
-        await api.deleteTTSVoice(voiceId);
+        await api.localDeleteVoice(state.localTtsUrl, voiceId);
         showToast(`Voice "${voiceName}" deleted`, 'success');
         await checkTTSStatus();
     } catch (error) {
@@ -576,7 +649,7 @@ export async function saveVoiceEdit() {
     if (elements.saveVoiceEditBtn) elements.saveVoiceEditBtn.disabled = true;
 
     try {
-        const result = await api.updateVoice(voiceId, updates);
+        const result = await api.localUpdateVoice(state.localTtsUrl, voiceId, updates);
 
         if (result.success) {
             if (elements.voiceEditStatus) {
@@ -608,35 +681,45 @@ export async function saveVoiceEdit() {
 // =========================================================================
 
 /**
- * Check STT status
+ * Check which dictation this browser uses.
+ *
+ * Whisper when local voice is on here, its dictation mode allows it, and the
+ * Whisper server answers with its model loaded; otherwise the browser's own
+ * speech recognition, unless the mode is "Whisper only".
  */
 export async function checkSTTStatus() {
-    try {
-        const status = await api.getSTTStatus();
+    const local = state.localVoice;
+    let mode = 'browser';
+    localVoiceFindings = localVoiceFindings.filter(f => f.name !== 'Whisper');
 
-        if (status.enabled) {
-            state.dictationMode = status.effective_mode;
-
-            if (status.effective_mode === 'whisper') {
-                initWhisperDictation();
-            } else if (status.effective_mode === 'browser') {
-                initBrowserDictation();
-            }
-
-            // Show voice button
-            if (elements.voiceBtn) {
-                elements.voiceBtn.style.display = 'flex';
-            }
-        } else {
-            state.dictationMode = 'none';
-            if (elements.voiceBtn) {
-                elements.voiceBtn.style.display = 'none';
-            }
+    if (local.enabled && local.dictationMode !== 'browser') {
+        const health = await probeLocalServer(local.whisperUrl);
+        const ready = !health.error && health.model_loaded === true;
+        localVoiceFindings.push({
+            name: 'Whisper',
+            answering: ready,
+            error: health.error || (ready ? undefined : 'model still loading'),
+        });
+        if (ready) {
+            mode = 'whisper';
+        } else if (local.dictationMode === 'whisper') {
+            mode = 'none';
         }
-    } catch (error) {
-        console.warn('STT not available:', error);
-        state.dictationMode = 'none';
     }
+
+    state.dictationMode = mode;
+    if (mode === 'whisper') {
+        initWhisperDictation();
+    } else if (mode === 'browser') {
+        initBrowserDictation();
+    }
+
+    // initBrowserDictation drops the mode to 'none' when the browser has no
+    // speech recognition.
+    if (elements.voiceBtn) {
+        elements.voiceBtn.style.display = state.dictationMode === 'none' ? 'none' : 'flex';
+    }
+    updateLocalVoiceStatus();
 }
 
 /**
@@ -798,7 +881,7 @@ async function processWhisperRecording() {
     }
 
     try {
-        const result = await api.transcribeAudio(audioBlob);
+        const result = await api.localTranscribe(state.localVoice.whisperUrl, audioBlob);
 
         if (result.text && elements.messageInput) {
             elements.messageInput.value += result.text;

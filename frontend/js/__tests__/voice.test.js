@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { state } from '../modules/state.js';
+import { state, LOCAL_VOICE_DEFAULTS } from '../modules/state.js';
 import {
     setElements,
     checkTTSStatus,
@@ -30,6 +30,12 @@ describe('Voice Module', () => {
         state.audioCache = new Map();
         state.dictationMode = 'none';
         state.isRecording = false;
+        state.localVoice = { ...LOCAL_VOICE_DEFAULTS };
+        state.localTtsUrl = null;
+        window.api.localVoiceHealth = vi.fn(() => Promise.reject(new Error('Failed to fetch')));
+        window.api.localListVoices = vi.fn(() => Promise.resolve({ voices: [] }));
+        delete window.SpeechRecognition;
+        delete window.webkitSpeechRecognition;
 
         // Create mock audio element
         mockAudioElement = {
@@ -110,23 +116,69 @@ describe('Voice Module', () => {
             expect(state.ttsEnabled).toBe(false);
         });
 
-        it('should store voices from TTS status response', async () => {
-            const voices = [
-                { voice_id: 'voice-1', label: 'Voice 1' },
-                { voice_id: 'voice-2', label: 'Voice 2' },
-            ];
+        it('never probes localhost when local voice is off in this browser', async () => {
+            window.api.getTTSStatus = vi.fn(() => Promise.resolve({ configured: false }));
+
+            await checkTTSStatus();
+
+            expect(window.api.localVoiceHealth).not.toHaveBeenCalled();
+            expect(state.ttsEnabled).toBe(false);
+        });
+
+        it('uses StyleTTS 2 first when both local servers answer', async () => {
+            const voices = [{ voice_id: 'voice-1', label: 'Voice 1', is_cloned: true }];
+            state.localVoice.enabled = true;
+            window.api.localVoiceHealth = vi.fn(() => Promise.resolve({ status: 'healthy' }));
+            window.api.localListVoices = vi.fn(() => Promise.resolve({ provider: 'styletts2', voices }));
+            window.api.getTTSStatus = vi.fn();
+
+            await checkTTSStatus();
+
+            expect(window.api.localListVoices).toHaveBeenCalledWith('http://localhost:8021');
+            expect(state.ttsProvider).toBe('styletts2');
+            expect(state.localTtsUrl).toBe('http://localhost:8021');
+            expect(state.ttsVoices).toEqual(voices);
+            expect(state.localTtsServerHealthy).toBe(true);
+            expect(window.api.getTTSStatus).not.toHaveBeenCalled();
+        });
+
+        it('uses XTTS when only it answers', async () => {
+            state.localVoice.enabled = true;
+            window.api.localVoiceHealth = vi.fn(url => url.endsWith('8020')
+                ? Promise.resolve({ status: 'healthy' })
+                : Promise.reject(new Error('Failed to fetch')));
+
+            await checkTTSStatus();
+
+            expect(state.ttsProvider).toBe('xtts');
+            expect(state.localTtsUrl).toBe('http://localhost:8020');
+        });
+
+        it('falls back to ElevenLabs through the backend when no local server answers', async () => {
+            state.localVoice.enabled = true;
             window.api.getTTSStatus = vi.fn(() => Promise.resolve({
                 configured: true,
-                provider: 'styletts2',
-                voices: voices,
-                server_healthy: true,
+                provider: 'elevenlabs',
+                voices: [{ voice_id: 'el-1', label: 'Rachel' }],
             }));
 
             await checkTTSStatus();
 
-            expect(state.ttsVoices).toEqual(voices);
-            expect(state.ttsProvider).toBe('styletts2');
-            expect(state.localTtsServerHealthy).toBe(true);
+            expect(window.api.localVoiceHealth).toHaveBeenCalledTimes(2);
+            expect(state.ttsProvider).toBe('elevenlabs');
+            expect(state.localTtsUrl).toBeNull();
+        });
+
+        it('replaces a saved voice the server no longer has', async () => {
+            localStorage.setItem('selected_voice_id', 'deleted-voice');
+            state.localVoice.enabled = true;
+            window.api.localVoiceHealth = vi.fn(() => Promise.resolve({ status: 'healthy' }));
+            window.api.localListVoices = vi.fn(() => Promise.resolve({ voices: [{ voice_id: 'v2', label: 'V2' }] }));
+
+            await checkTTSStatus();
+
+            expect(state.selectedVoiceId).toBe('v2');
+            localStorage.removeItem('selected_voice_id');
         });
 
         it('should set default voice when none selected', async () => {
@@ -250,6 +302,31 @@ describe('Voice Module', () => {
             expect(window.api.textToSpeech).toHaveBeenCalled();
         });
 
+        it('speaks through the local server in use, with StyleTTS 2 overrides', async () => {
+            state.ttsProvider = 'styletts2';
+            state.localTtsUrl = 'http://localhost:8021';
+            state.selectedVoiceId = 'v1';
+            window.api.textToSpeech = vi.fn();
+            window.api.localSpeak = vi.fn(() => Promise.resolve(new Blob(['audio'], { type: 'audio/wav' })));
+
+            await speakMessage('Hello world', mockBtn, 'msg-local');
+
+            expect(window.api.textToSpeech).not.toHaveBeenCalled();
+            const [url, body] = window.api.localSpeak.mock.calls[0];
+            expect(url).toBe('http://localhost:8021');
+            expect(body).toMatchObject({ text: 'Hello world', voice_id: 'v1', alpha: 0.3, speed: 1.0 });
+        });
+
+        it('sends XTTS no StyleTTS 2 overrides', async () => {
+            state.ttsProvider = 'xtts';
+            state.localTtsUrl = 'http://localhost:8020';
+            window.api.localSpeak = vi.fn(() => Promise.resolve(new Blob(['audio'], { type: 'audio/wav' })));
+
+            await speakMessage('Hello world', mockBtn, 'msg-xtts');
+
+            expect(Object.keys(window.api.localSpeak.mock.calls[0][1]).sort()).toEqual(['text', 'voice_id']);
+        });
+
         it('should use cached audio if available with same voice', async () => {
             const cachedBlob = new Blob(['audio'], { type: 'audio/wav' });
             const cachedUrl = 'blob:cached-url';
@@ -312,59 +389,69 @@ describe('Voice Module', () => {
     });
 
     describe('checkSTTStatus', () => {
-        it('should call API to get STT status', async () => {
-            window.api.getSTTStatus = vi.fn(() => Promise.resolve({
-                enabled: true,
-                effective_mode: 'whisper',
-            }));
+        function giveBrowserSpeechRecognition() {
+            window.SpeechRecognition = vi.fn(() => ({ start: vi.fn(), stop: vi.fn() }));
+        }
+
+        it('uses the browser\'s own dictation without probing when local voice is off', async () => {
+            giveBrowserSpeechRecognition();
+            mockElements.voiceBtn.style.display = 'none';
 
             await checkSTTStatus();
 
-            expect(window.api.getSTTStatus).toHaveBeenCalled();
+            expect(window.api.localVoiceHealth).not.toHaveBeenCalled();
+            expect(state.dictationMode).toBe('browser');
+            expect(mockElements.voiceBtn.style.display).toBe('flex');
         });
 
-        it('should update dictationMode state when enabled', async () => {
-            window.api.getSTTStatus = vi.fn(() => Promise.resolve({
-                enabled: true,
-                effective_mode: 'whisper',
-            }));
-
-            await checkSTTStatus();
-
-            expect(state.dictationMode).toBe('whisper');
-        });
-
-        it('should set dictationMode to none when STT disabled', async () => {
-            window.api.getSTTStatus = vi.fn(() => Promise.resolve({
-                enabled: false,
-            }));
+        it('hides the button when the browser has no speech recognition', async () => {
+            mockElements.voiceBtn.style.display = 'flex';
 
             await checkSTTStatus();
 
             expect(state.dictationMode).toBe('none');
+            expect(mockElements.voiceBtn.style.display).toBe('none');
         });
 
-        it('should show voice button when STT enabled', async () => {
-            mockElements.voiceBtn.style.display = 'none';
-            window.api.getSTTStatus = vi.fn(() => Promise.resolve({
-                enabled: true,
-                effective_mode: 'browser',
-            }));
+        it('uses Whisper when it answers with its model loaded', async () => {
+            state.localVoice.enabled = true;
+            window.api.localVoiceHealth = vi.fn(() => Promise.resolve({ model_loaded: true }));
 
             await checkSTTStatus();
 
+            expect(window.api.localVoiceHealth).toHaveBeenCalledWith('http://localhost:8030');
+            expect(state.dictationMode).toBe('whisper');
             expect(mockElements.voiceBtn.style.display).toBe('flex');
         });
 
-        it('should hide voice button when STT disabled', async () => {
-            mockElements.voiceBtn.style.display = 'flex';
-            window.api.getSTTStatus = vi.fn(() => Promise.resolve({
-                enabled: false,
-            }));
+        it('falls back to the browser while Whisper\'s model is loading (auto)', async () => {
+            giveBrowserSpeechRecognition();
+            state.localVoice.enabled = true;
+            window.api.localVoiceHealth = vi.fn(() => Promise.resolve({ model_loaded: false }));
 
             await checkSTTStatus();
 
+            expect(state.dictationMode).toBe('browser');
+        });
+
+        it('offers no dictation when Whisper only is chosen and it is down', async () => {
+            giveBrowserSpeechRecognition();
+            state.localVoice = { ...state.localVoice, enabled: true, dictationMode: 'whisper' };
+
+            await checkSTTStatus();
+
+            expect(state.dictationMode).toBe('none');
             expect(mockElements.voiceBtn.style.display).toBe('none');
+        });
+
+        it('never probes Whisper when the browser\'s own dictation is chosen', async () => {
+            giveBrowserSpeechRecognition();
+            state.localVoice = { ...state.localVoice, enabled: true, dictationMode: 'browser' };
+
+            await checkSTTStatus();
+
+            expect(window.api.localVoiceHealth).not.toHaveBeenCalled();
+            expect(state.dictationMode).toBe('browser');
         });
     });
 });

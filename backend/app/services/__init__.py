@@ -24,7 +24,6 @@ from app.services.tool_service import ToolCategory, ToolResult, ToolService, too
 from app.services.tts_service import TTSService, tts_service
 from app.services.vector_rebuild_service import VectorRebuildService, vector_rebuild_service
 from app.services.web_tools import register_web_tools
-from app.services.xtts_service import XTTSService, xtts_service
 
 # Register tools at module load time
 register_web_tools(tool_service)
@@ -48,7 +47,6 @@ __all__ = [
     "CacheService",
     "TTLCache",
     "TTSService",
-    "XTTSService",
     "ToolService",
     "ToolCategory",
     "ToolResult",
@@ -68,7 +66,6 @@ __all__ = [
     "session_manager",
     "cache_service",
     "tts_service",
-    "xtts_service",
     "tool_service",
     "github_service",
     "notes_service",

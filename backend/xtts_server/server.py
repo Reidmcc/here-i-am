@@ -22,6 +22,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
 from voice_common.origin_guard import install_origin_guard
+from voice_common.voice_library import Param, VoiceLibrary
+from voice_common.voice_routes import make_voice_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -618,21 +620,44 @@ async def tts_to_audio(
                 pass
 
 
-@app.post("/tts_stream")
-async def tts_stream(
-    text: str = Form(...),
-    language: str = Form("en"),
-    speaker_wav: UploadFile = File(...),
-):
-    """
-    Stream TTS audio (currently just returns full audio, streaming TBD).
+# =============================================================================
+# The voice library (issue #399): the browser manages voices and speaks here
+# directly, by voice_id, instead of going through the backend.
+# =============================================================================
 
-    Note: True streaming requires chunked synthesis which XTTS supports
-    but requires more complex implementation.
+XTTS_PARAMS = {
+    "temperature": Param(0.75, 0.0, 1.0),
+    "length_penalty": Param(1.0, 0.1, 10.0),
+    "repetition_penalty": Param(5.0, 0.1, 20.0),
+    "speed": Param(1.0, 0.1, 3.0),
+}
+
+voice_library = VoiceLibrary(os.environ.get("XTTS_VOICES_DIR", "./xtts_voices"), "xtts", XTTS_PARAMS)
+
+
+def _speak(text: str, voice: Optional[dict], overrides: Dict[str, float]) -> bytes:
+    """Synthesize with a library voice, or the default speaker when none is chosen.
+
+    The voice's saved settings are kept for the UI but not passed to the
+    model: synthesis has always used the model's own defaults.
     """
-    # For now, just return the full audio
-    # True streaming would require chunked synthesis
-    return await tts_to_audio(text=text, language=language, speaker_wav=speaker_wav)
+    if voice is not None:
+        speaker = voice_library.sample_path(voice)
+        if speaker is None:
+            raise ValueError(
+                f"Sample for voice '{voice.get('label')}' not found in {voice_library.voices_dir}"
+            )
+    else:
+        default = os.environ.get("XTTS_DEFAULT_SPEAKER", "")
+        if not default or not os.path.isfile(default):
+            raise ValueError("No voice sample configured. Please clone a voice first.")
+        speaker = Path(default)
+    language = os.environ.get("XTTS_LANGUAGE", "en")
+    logger.info(f"Generating speech for {len(text)} chars, language={language}")
+    return synthesize_with_cached_latents(text=text, speaker_wav_path=str(speaker), language=language)
+
+
+app.include_router(make_voice_router(voice_library, _speak, speak_params={}))
 
 
 def create_app() -> FastAPI:

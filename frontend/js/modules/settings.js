@@ -3,11 +3,11 @@
  * Handles settings modal, configuration presets, and settings application
  */
 
-import { state, saveEntityModelsToStorage, saveSelectedVoiceToStorage, clearAudioCache, saveResearcherName, saveEnterInsertsNewline } from './state.js';
+import { state, saveEntityModelsToStorage, saveSelectedVoiceToStorage, clearAudioCache, saveResearcherName, saveEnterInsertsNewline, saveLocalVoiceSettings } from './state.js';
 import { showToast } from './utils.js';
 import { hideModal } from './modals.js';
 import { setTheme } from './theme.js';
-import { saveStyleTTS2Settings } from './voice.js';
+import { saveStyleTTS2Settings, refreshVoiceServices } from './voice.js';
 
 // Reference to global API client
 const api = window.api;
@@ -113,6 +113,13 @@ export async function applySettings() {
     // Save StyleTTS 2 parameters if using StyleTTS 2
     if (state.ttsProvider === 'styletts2') {
         saveStyleTTS2Settings();
+    }
+
+    // This browser's local voice servers: re-check them when anything changed
+    const localVoice = readLocalVoiceForm();
+    if (localVoice && Object.keys(localVoice).some(key => localVoice[key] !== state.localVoice[key])) {
+        saveLocalVoiceSettings(localVoice);
+        await refreshVoiceServices();
     }
 
     if (callbacks.updateModelIndicator) {
@@ -435,8 +442,48 @@ export function initializeSettingsUI() {
     if (elements.enterInsertsNewlineCheckbox) {
         elements.enterInsertsNewlineCheckbox.checked = state.settings.enterInsertsNewline === true;
     }
+    fillLocalVoiceForm();
 
     updateTemperatureControlState();
     updateVerbosityControlState();
     updateThinkingEffortControlState();
+}
+
+/**
+ * Show this browser's local voice server settings in the settings form.
+ */
+export function fillLocalVoiceForm() {
+    if (!elements.localVoiceEnabled) return;
+    const local = state.localVoice;
+    elements.localVoiceEnabled.checked = local.enabled;
+    if (elements.localVoiceStyletts2Url) elements.localVoiceStyletts2Url.value = local.styletts2Url;
+    if (elements.localVoiceXttsUrl) elements.localVoiceXttsUrl.value = local.xttsUrl;
+    if (elements.localVoiceWhisperUrl) elements.localVoiceWhisperUrl.value = local.whisperUrl;
+    if (elements.localDictationMode) elements.localDictationMode.value = local.dictationMode;
+    updateLocalVoiceOptionsVisibility();
+}
+
+/**
+ * Show the server addresses only while local voice is on.
+ */
+export function updateLocalVoiceOptionsVisibility() {
+    if (elements.localVoiceOptions && elements.localVoiceEnabled) {
+        elements.localVoiceOptions.style.display = elements.localVoiceEnabled.checked ? 'block' : 'none';
+    }
+}
+
+/**
+ * Read the local voice server settings from the settings form.
+ * @returns {Object|null} Fields of state.localVoice, or null without the form
+ */
+function readLocalVoiceForm() {
+    if (!elements.localVoiceEnabled) return null;
+    const url = (input, fallback) => (input?.value.trim() || fallback).replace(/\/+$/, '');
+    return {
+        enabled: elements.localVoiceEnabled.checked,
+        styletts2Url: url(elements.localVoiceStyletts2Url, state.localVoice.styletts2Url),
+        xttsUrl: url(elements.localVoiceXttsUrl, state.localVoice.xttsUrl),
+        whisperUrl: url(elements.localVoiceWhisperUrl, state.localVoice.whisperUrl),
+        dictationMode: elements.localDictationMode?.value || state.localVoice.dictationMode,
+    };
 }

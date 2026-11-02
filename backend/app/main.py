@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-from app.config import settings
+from app.config import find_retired_voice_env_vars, retired_voice_env_warning, settings
 from app.database import init_db
 from app.routes import (
     chat_router,
@@ -20,7 +20,6 @@ from app.routes import (
     memories_router,
     messages_router,
     notes_router,
-    stt_router,
     tts_router,
 )
 from app.services.memory_service import memory_service
@@ -106,11 +105,19 @@ def run_pinecone_connection_test():
     print("=" * 60 + "\n")
 
 
+def warn_retired_voice_settings():
+    """Say aloud when an old .env still configures the removed voice proxy (issue #399)."""
+    names = find_retired_voice_env_vars()
+    if names:
+        logging.getLogger("app.main").warning(retired_voice_env_warning(names))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
     run_pinecone_connection_test()
+    warn_retired_voice_settings()
     yield
     # Shutdown
     pass
@@ -168,7 +175,6 @@ app.include_router(entities_router)
 app.include_router(messages_router)
 app.include_router(tts_router)
 app.include_router(github_router)
-app.include_router(stt_router)
 app.include_router(notes_router)
 app.include_router(claude_code_router)
 app.include_router(claude_code_mcp_router)
