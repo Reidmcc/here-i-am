@@ -221,3 +221,29 @@ def test_success_path_makes_no_check_call(tmp_path):
         "hello", {RETRIEVE: {"context": "", "retrieval_status": "ran"}}, tmp_path
     )
     assert paths(calls) == [RETRIEVE]
+
+
+# --- a request that may still be running (PR #406 review)
+
+
+def test_a_prompt_missing_after_a_timeout_is_unconfirmed(tmp_path):
+    out, calls = run_hook(
+        "hello",
+        {RETRIEVE: {"raise": "timeout"}, RECORDED: {"recorded": "none"}},
+        tmp_path,
+    )
+    assert paths(calls) == [RETRIEVE, RECORDED]
+    assert "UNCONFIRMED" in out
+    assert "may still land" in out
+    assert "NOT recorded" not in out
+
+
+def test_a_partial_landing_after_a_timeout_says_the_rest_may_still_land(tmp_path):
+    out, _ = run_hook(
+        "hello\n" + LETTER,
+        {RETRIEVE: {"raise": "timeout"}, RECORDED: {"recorded": "first"}},
+        tmp_path,
+    )
+    assert "Recorded to your long-term memory: the prompt" in out
+    assert "may still land: the inter-session message" in out
+    assert "NOT recorded" not in out

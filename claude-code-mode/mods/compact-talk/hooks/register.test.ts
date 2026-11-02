@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { DECLINE, FALLBACK_BUDGET, readReply, talkBudget, utcStamp } from './register.ts'
+import { DECLINE, FALLBACK_BUDGET, MISSING_TALK_NOTE, QUESTION_TIMEOUT_MS, TALK_MARKER, TALK_TIMEOUT_MS, readReply, talkBudget, utcStamp } from './register.ts'
 
 const SUMMARY = { role: 'user' as const, text: 'This session is being continued...', toolUses: [] }
 const OLD = { role: 'assistant' as const, text: 'the talk before', toolUses: [] }
@@ -20,6 +20,15 @@ type Opts = {
   // The context breakdown session.usage reports, or 'throws'
   breakdown?: object | 'throws'
   env?: Record<string, string>
+  // What /compact-talk/cancel fails with, if it fails
+  cancelStatus?: number
+  // Calls (by the path's last segment) whose fetch never answers, and the
+  // timer waits (ms) that elapse, each once, in the order the timers are
+  // set; every other timer never fires
+  hang?: string[]
+  elapse?: number[]
+  // Called as the engine's own compaction runs
+  onCompact?: () => void
 }
 
 // The engine beneath the mod: a fork that answers `reply` (or the result
@@ -43,13 +52,26 @@ function engine(on: any, opts: Opts): Seen {
   })
   on('http.fetch', async (_$: any, e: any) => {
     seen.posts.push({ url: e.url, ...JSON.parse(e.init.body) })
-    const taken = e.url.endsWith('/taken')
-    const status = taken ? (opts.takenStatus ?? 200) : (opts.status ?? 200)
-    const body = taken ? { taken: 'taken' in opts ? opts.taken : true } : (opts.backend ?? DELIVERED)
+    const last = e.url.split('/').pop()
+    if ((opts.hang ?? []).includes(last)) return new Promise(() => {})
+    const taken = last === 'taken'
+    const cancel = last === 'cancel'
+    const status = taken ? (opts.takenStatus ?? 200) : cancel ? (opts.cancelStatus ?? 200) : (opts.status ?? 200)
+    const body = taken ? { taken: 'taken' in opts ? opts.taken : true } : cancel ? { dropped: true } : (opts.backend ?? DELIVERED)
     return { value: { status, ok: status < 400, headers: {}, text: JSON.stringify(body) } }
   })
+  const elapsing = [...(opts.elapse ?? [])]
+  on('clock.after', async (_$: any, e: any) => {
+    const at = elapsing.indexOf(e.ms)
+    if (at < 0) return new Promise(() => {})
+    elapsing.splice(at, 1)
+    return { value: undefined }
+  })
   on('ui.log', async (_$: any, e: any) => { seen.logs.push(JSON.stringify(e)); return { value: undefined } })
-  on('session.compact', async () => ({ messages: [SUMMARY], tokensBefore: 100, tokensAfter: 10 }))
+  on('session.compact', async () => {
+    opts.onCompact?.()
+    return { messages: [SUMMARY], tokensBefore: 100, tokensAfter: 10 }
+  })
   return seen
 }
 
@@ -107,6 +129,70 @@ describe('the talk', () => {
     const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
     expect(result.messages.length).toBe(1)
     expect(seen.logs.join('\n')).toContain('the backend answered 500')
+  })
+
+  test('is asked for under an id the mod chose', async ($, on) => {
+    const seen = engine(on, {})
+    await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(String(seen.posts[0].delivery_id)).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  test('a failed fetch cancels its delivery before the engine compacts', async ($, on) => {
+    // A failure is not proof nothing was recorded (issue #400): the
+    // delivery the mod chose is cancelled by name
+    const compacted: string[] = []
+    const seen: Seen = engine(on, {
+      status: 500,
+      backend: { detail: 'boom' },
+      onCompact: () => compacted.push(seen.posts.map((p) => String(p.url).split('/').pop()).join(',')),
+    })
+    await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(seen.posts[1].url).toBe('http://localhost:8000/api/claude-code/compact-talk/cancel')
+    expect(seen.posts[1].delivery_id).toBe(seen.posts[0].delivery_id)
+    expect(compacted).toEqual(['compact-talk,cancel'])
+  })
+
+  test('a backend that never answers is given up on, cancelled, and said', async ($, on) => {
+    const seen = engine(on, { hang: ['compact-talk'], elapse: [TALK_TIMEOUT_MS] })
+    const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(result.messages.length).toBe(1)
+    expect(seen.posts.map((p) => String(p.url).split('/').pop())).toEqual(['compact-talk', 'cancel'])
+    expect(seen.logs.join('\n')).toContain(`did not answer /compact-talk within ${TALK_TIMEOUT_MS / 1000} s`)
+  })
+
+  test('a cancel that fails too, with the block having taken it, appends the note where the entity reads', async ($, on) => {
+    const seen = engine(on, { hang: ['compact-talk', 'cancel'], elapse: [TALK_TIMEOUT_MS, QUESTION_TIMEOUT_MS] })
+    const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(seen.logs.join('\n')).toContain('could not cancel the delivery either')
+    // Asked about the id it chose, after the engine compacted
+    const last = seen.posts[seen.posts.length - 1]
+    expect(String(last.url).endsWith('/compact-talk/taken')).toBe(true)
+    expect(last.delivery_id).toBe(seen.posts[0].delivery_id)
+    expect(result.messages.length).toBe(2)
+    expect(result.messages[1]).toEqual({ role: 'user', text: MISSING_TALK_NOTE, toolUses: [] })
+    expect(MISSING_TALK_NOTE.startsWith(TALK_MARKER)).toBe(true)
+  })
+
+  test('a cancel that fails too, with the block not having taken it, appends nothing', async ($, on) => {
+    const seen = engine(on, { hang: ['compact-talk', 'cancel'], elapse: [TALK_TIMEOUT_MS, QUESTION_TIMEOUT_MS], taken: false })
+    const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(result.messages.length).toBe(1)
+    expect(seen.posts.map((p) => String(p.url).split('/').pop())).toEqual(['compact-talk', 'cancel', 'taken'])
+  })
+
+  test('a cancel that fails too, and a question that fails, appends the note', async ($, on) => {
+    const seen = engine(on, { hang: ['compact-talk', 'cancel'], elapse: [TALK_TIMEOUT_MS, QUESTION_TIMEOUT_MS], takenStatus: 503 })
+    const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(result.messages.length).toBe(2)
+    expect(result.messages[1].text).toBe(MISSING_TALK_NOTE)
+    expect(seen.logs.join('\n')).toContain('could not ask whether the block took the delivery')
+  })
+
+  test('a question that never answers is given up on, and the talk appended', async ($, on) => {
+    const seen = engine(on, { hang: ['taken'], elapse: [QUESTION_TIMEOUT_MS] })
+    const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(result.messages.length).toBe(2)
+    expect(seen.logs.join('\n')).toContain('could not confirm')
   })
 
   test('is not appended when the block did not take it, and that is said', async ($, on) => {
