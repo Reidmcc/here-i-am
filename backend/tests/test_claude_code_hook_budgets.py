@@ -43,6 +43,8 @@ def test_every_registered_hook_has_its_requests_named():
 def test_the_worst_case_fits_the_budget(event):
     budget = _budgets()[event]
     worst = sum(t.worst_case() for t in hook_util.TIMEOUTS_BY_HOOK[event])
+    # The hook's own bounded work after its requests (the notes check)
+    worst += hook_util.bounded_work_after_requests(event)
     assert worst <= budget - _margin(budget), (
         f"{event}: worst case {worst:g} s does not fit {budget} s with a "
         f"{_margin(budget):g} s margin"
@@ -75,3 +77,15 @@ def test_every_hook_starts_its_clock():
     ):
         source = (HOOKS_DIR / script).read_text(encoding="utf-8")
         assert f'hook_util.start_hook_clock("{event}")' in source, script
+
+
+def test_the_clock_keeps_back_the_notes_check(monkeypatch):
+    # SessionStart's notes check (#397) runs after the request; its time
+    # comes off what the request may use, or the hook would end past its
+    # budget
+    monkeypatch.setattr(hook_util, "_PROCESS_STARTED", 100.0)
+    monkeypatch.setattr(hook_util, "_hook_deadline", None)
+    hook_util.start_hook_clock("SessionStart")
+    assert hook_util._hook_deadline == (
+        100.0 + 40 - hook_util.FINISH_MARGIN - hook_util.NOTES_CHECK_TIMEOUT_SECONDS
+    )

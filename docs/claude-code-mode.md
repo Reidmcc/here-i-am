@@ -1073,7 +1073,9 @@ So each hook starts a clock on its budget (`hook_util.start_hook_clock`,
 from the process start, `HOOK_BUDGETS` held equal to `hooks.json` by a
 test), and every connect and read is clamped to what is left of it less a
 finish margin (2 s; 1 s for SessionEnd). A hook ends inside its budget
-however long its transcript. An error status's message carries the first
+however long its transcript. SessionStart's clock also keeps back the 5 s
+its notes check (#397) may take once the response is in
+(`bounded_work_after_requests`), and the fit test counts it. An error status's message carries the first
 300 characters of the body, so a refusal's detail reaches the notice.
 
 A name's addresses are raced, not tried in turn. Windows resolves
@@ -1628,6 +1630,58 @@ files the native notes tools use:
   (prompt-cache stable); the format change itself is a one-time cache bust
   for conversations reloaded across the upgrade.
 
+#### One tree, wherever the sessions run (issue #397)
+
+The server reads the notes from its own disk (the index injection, the
+rooms registry, the native tools, and the per-prompt sync, which reads
+every file), so the notes live beside the server. A session on another
+machine reaches **that one copy** over a mount: there is never a second
+copy kept in sync, because two copies of `index.md` diverge in silence,
+and any tool that reconciles them does it by merging.
+
+- **`HIM_NOTES_ROOT`** (hook side) is this machine's path to the server's
+  notes tree. The SessionStart hook sends it made absolute, with
+  `os.name`, and `notes_dirs_for_session` joins the entity's and the
+  shared directory names under it in the client's flavor (`ntpath` /
+  `posixpath`, whatever the server runs). The `[YOUR NOTES]` line then
+  names those paths and says the notes live on the server, one copy for
+  every room on every machine. Unset, the server's own paths stand and
+  the line is byte for byte what it was before #397: the session runs
+  beside the server.
+- **The check.** With a context block (startup, compact; a resume's
+  transcript already carries both), the response's `notes_check` carries
+  the private directory as the line names it and the sha256 of the
+  server's `index.md` **bytes** (`None` when there is no index yet, or the
+  server can't read its own — the client then checks only that the
+  directory is there, rather than nothing). The hook hashes the file there
+  and, on any difference or a failed read, prints one loud line
+  (`hook_util.notes_check_lines`) after the context, ahead of the other
+  trailer lines (right behind the pointer when the identity block itself
+  spills, so the harness's 2 KB preview carries it). The read runs in a
+  thread joined for `NOTES_CHECK_TIMEOUT_SECONDS` (5): it happens before
+  anything is printed, inside SessionStart's 40 s timeout and after the
+  backend call, whose clock keeps these 5 s back for it (#400), and an `open()` on a share whose packets are dropped
+  blocked for 21 s on the desktop — long enough for the harness to kill
+  the hook and start the session with no identity at all. A read that
+  doesn't finish is its own loud line; the stuck thread doesn't hold the
+  process (measured: the check returned at 5.0 s and the process exited
+  at 5.3 s against an unroutable UNC host). A mount that fell through to an old
+  local folder, a stale copy, or a wrong or missing root would otherwise
+  be read and edited as if it were the notes. It runs without a root too,
+  so a session on another machine that was never given one is caught by
+  the server's path not existing there. A pass prints nothing. The one
+  innocent mismatch is another room saving `index.md` between the two
+  reads; the line says so, and the next session start checks again.
+- **Project folders.** Claude Code keeps per-project state in the project
+  folder's `.claude\` (settings, and a `scheduled_tasks.lock` that names
+  its holder by PID, which only means something on one machine). So only
+  one machine's rooms use the shared notes root as their project folder;
+  every other machine's rooms run from a local folder of their own, with
+  their own `.claude\settings.local.json`, and reach the notes at the mount.
+
+The mount, the network it rides on, and the cutover are deployment, not
+code; issue #397 has the plan and the measurements still to make.
+
 ### Configuration
 
 | Setting | Default | Meaning |
@@ -1645,7 +1699,10 @@ characters of hook stdout, overriding the backend's `inline_budget`; the
 default is 9,600, under the measured 10,000-character line — see "Context
 channels"), `HIM_ARRIVE_WHOLE` (any value: a hook that spills
 also files its unbudgeted output and prints the marker the arrive-whole mod
-looks for; set it together with loading the mod — see "Context channels").
+looks for; set it together with loading the mod — see "Context channels"),
+`HIM_GH_CONFIG_DIR` (this machine's gh config directory for the entity's
+GitHub account, in place of the server's `gh_config_dir` — see "GitHub
+identity" and "A new machine").
 
 Per entity, on its `PINECONE_INDEXES` entry: `git_author_email`,
 `git_author_name`, `gh_config_dir` — the entity's own GitHub identity for
@@ -1828,7 +1885,7 @@ What is exported, from three optional fields on the entity's
 | Field | Exports | Effect |
 | --- | --- | --- |
 | `git_author_email` (+ `git_author_name`, default: the entity's label) | `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL` | Every commit from the session is authored by the entity. GitHub links the commit to the entity's account when the email is one that account has verified. The committer is left to the machine, so the log reads "authored by the entity, committed by the human" — the true record of whose machine it happened on. The name is set because git would otherwise fall back to the machine's `user.name`, and every clone's log would read as the human at the entity's address. |
-| `gh_config_dir` | `GH_CONFIG_DIR`, plus `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` (git ≥ 2.31) | `gh` reads its login from that directory, so `gh pr create`, `gh issue create`, and comments and reviews post as the entity's account. The git per-process config resets the `credential.https://github.com.helper` list and sets it to `!gh auth git-credential` — what `gh auth setup-git` writes to the global config, applied to this process tree only — so `git push` authenticates as the entity's account through the same login rather than through the machine's credential helper, and a branch rule can tell the two accounts apart. |
+| `gh_config_dir` | `GH_CONFIG_DIR`, plus `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` (git ≥ 2.31) | `gh` reads its login from that directory, so `gh pr create`, `gh issue create`, and comments and reviews post as the entity's account. The git per-process config resets the `credential.https://github.com.helper` list and sets it to `!gh auth git-credential` — what `gh auth setup-git` writes to the global config, applied to this process tree only — so `git push` authenticates as the entity's account through the same login rather than through the machine's credential helper, and a branch rule can tell the two accounts apart. A machine with `HIM_GH_CONFIG_DIR` set uses its own directory instead (see below). |
 
 Either field works alone (author only; account only). Only a path and
 two strings ever pass through the backend (`git_identity` on the
@@ -1843,6 +1900,25 @@ that commits now carry the human's identity. A backend that can't be
 reached never gets this far, so an outage leaves the file as it was. To
 revoke *access* at once rather than at the next firing, log the entity
 out of its gh config directory — that is where the token lives.
+
+**The login directory belongs to the machine** (issue #398). Who the
+entity is on GitHub (the author name and email) is the server's to say,
+but `gh_config_dir` names a directory on the machine the session runs on,
+and each machine holds its own login. A server path means nothing to a
+session on another machine. So the hook takes the directory from
+`HIM_GH_CONFIG_DIR` in its own environment when that is set, and falls
+back to the server's `gh_config_dir`, which is right only where the
+server and the sessions share a machine. The value is made absolute (`~`
+and environment variables expanded, a relative path taken from the
+hook's working directory), because gh would resolve a relative
+`GH_CONFIG_DIR` against each Bash command's working directory, which
+moves during a session, and the hook's check would test a different
+directory from the one gh reads. The variable only
+relocates a login the server says the entity has: with no identity in
+the response it does nothing, so a variable set for one entity can't put
+another entity's sessions on that account. Only the hook reads it, so
+setting it machine-wide in `settings.json` `env` changes nothing for the
+human's own sessions.
 
 **What the entity is told.** With a context block (startup, compact) the
 hook prints one `[GIT IDENTITY]` line naming the author identity, the
@@ -1863,6 +1939,23 @@ CwdChanged / FileChanged hooks, and **not** to a hook whose shell
 resolves to PowerShell (a configured `"shell": "powershell"`, or the
 platform default when none is set). The backend-unreachable notice says
 the same thing, since no identity arrived to export.
+
+If the directory holds no github.com login (it doesn't exist, it has no
+`hosts.yml`, or the file has no `github.com` entry), the exports are kept
+— a `gh` that fails beats one that falls back to the human's login — and
+the hook prints a loud `[HERE I AM]` notice on every firing, a resume's
+included: it names the directory and where the path came from
+(`HIM_GH_CONFIG_DIR` or the server), says `gh` and `git push` will fail
+until someone runs `gh auth login` into it, and asks the entity to tell
+the user. The `[GIT IDENTITY]` line then speaks only for the author, if
+one is configured. An author-only identity (no gh directory from either
+side) is a legitimate configuration and gets no notice, but its line says
+that `gh` and `git push` use the machine's own login, not the entity's
+account, rather than going quiet about them. Before #398 this case was silent: the line still said
+the session acts as the entity's account. A `github.com` entry whose
+login the hook's small YAML reader can't make out (a layout it doesn't
+know, or a file it can't open) is not treated as missing: the line says
+the account is unconfirmed and to tell the user if `gh` fails.
 
 **Merge authority.** The entity authors, the human merges: a standing
 rule, and one GitHub can enforce. A ruleset on `main` with **Restrict
@@ -1900,7 +1993,14 @@ blocks the human too.
 3. Add the fields to the entity's `PINECONE_INDEXES` entry and restart
    the backend. The email must be one the account has verified — its
    `<id>+<login>@users.noreply.github.com` address keeps a personal
-   address out of the public log.
+   address out of the public log. Keep `gh_config_dir` on the server in
+   every setup, set to the directory on the server's own machine: it is
+   what says the entity has a login. Each other machine that runs the
+   entity's sessions sets `HIM_GH_CONFIG_DIR` to its own directory from
+   step 2 (see "A new machine"). A machine that forgets the variable then
+   gets the server's path, which doesn't exist there, and the loud notice
+   below. Leaving `gh_config_dir` off the server instead would make that
+   machine's `gh` and `git push` act as its own login, often the human's.
 4. Optionally the `main` ruleset above.
 
 **Limits.** The desktop app's own "create PR" button, the PowerShell
@@ -2138,6 +2238,33 @@ the refusal is Claude Code's own; the schema descriptions of `revises` /
 
 See [`claude-code-mode/README.md`](../claude-code-mode/README.md) for hook
 installation (manual `settings.json` or plugin) and requirements.
+
+### A new machine
+
+Everything that describes the machine a session runs on is set on that
+machine, in the hooks' environment (`.claude/settings.json` `env`); the
+server holds none of it (issue #398). For each machine that will run the
+entity's sessions, install the hooks and the `here-i-am` MCP server as in
+the README, then set:
+
+| Variable | Set it to |
+| --- | --- |
+| `HIM_BACKEND_URL` | The server's address as this machine reaches it. The default, `http://localhost:8000`, is right only when the server runs on this machine. |
+| `HIM_ENTITY` | The entity's index name or label (unset: the server's default entity). |
+| `HIM_TOKEN` | *Coming with #396.* This machine's own token for the entity, revocable without touching the other machines. |
+| `HIM_NOTES_ROOT` | *Coming with #397.* Where this machine mounts the notes. |
+| `HIM_GH_CONFIG_DIR` | This machine's gh config directory for the entity's GitHub account, as an absolute path (`~` and environment variables allowed); see "GitHub identity". It is unneeded only on the server's own machine, whose directory the server's `gh_config_dir` already names. Keep that setting on the server either way: it is what makes a machine that forgot this variable say so. |
+| `HIM_DESKTOP_DATA_DIR` | Only if the Claude desktop app keeps its data somewhere other than the platform default (see "Rooms registry"). |
+
+Then, once per machine, sign the entity's GitHub account into that
+directory with the command in "GitHub identity", setup step 2, with
+`GH_CONFIG_DIR` set to the `HIM_GH_CONFIG_DIR` value. Each machine holds
+its own token for the account, so one machine's login can be revoked
+without the others. If this step or the variable is skipped, the first
+session says so: the SessionStart hook prints a `[HERE I AM]` notice
+naming the directory it looked in, on every firing, and `gh` and `git
+push` fail rather than act as the human. That holds as long as the
+server keeps its `gh_config_dir` (see "GitHub identity", setup step 3).
 
 ## Phasing
 

@@ -43,6 +43,10 @@ Environment:
                        the platform's; see claude_desktop_data_dir), whose
                        per-session records give the rooms registry each
                        session's messaging address
+    HIM_NOTES_ROOT     this machine's path to the server's notes tree, when
+                       the session runs on a machine other than the
+                       server's (issue #397; see notes_root_payload). Unset
+                       = the server's own paths, right beside the server
 """
 import collections
 import glob
@@ -464,13 +468,27 @@ FINISH_MARGIN = 2.0
 _hook_deadline: Optional[float] = None
 
 
+def bounded_work_after_requests(event: str) -> float:
+    """Seconds of the hook's own bounded work that comes AFTER its backend
+    requests, which the clock keeps back from them: SessionStart's notes
+    check (notes_check_lines, #397) runs once the response is in, under
+    its own NOTES_CHECK_TIMEOUT_SECONDS. The fit test counts it too."""
+    return NOTES_CHECK_TIMEOUT_SECONDS if event == "SessionStart" else 0.0
+
+
 def start_hook_clock(event: str) -> None:
     """Bound this hook's backend requests by its hooks.json budget
-    (HOOK_BUDGETS, held equal to hooks.json by a test). A hand-written
+    (HOOK_BUDGETS, held equal to hooks.json by a test), less the finish
+    margin and the bounded work that follows the requests. A hand-written
     settings copy with a smaller timeout is not seen: keep it equal."""
     global _hook_deadline
     budget = HOOK_BUDGETS[event]
-    _hook_deadline = _PROCESS_STARTED + budget - min(FINISH_MARGIN, 0.2 * budget)
+    _hook_deadline = (
+        _PROCESS_STARTED
+        + budget
+        - min(FINISH_MARGIN, 0.2 * budget)
+        - bounded_work_after_requests(event)
+    )
 
 
 def _time_left() -> Optional[float]:
@@ -1550,6 +1568,111 @@ def rooms_output_lines(body) -> list:
     return lines
 
 
+# --- One notes tree (issue #397): the notes live beside the server, and a
+# --- session on another machine reaches that one copy over a mount.
+#
+# The backend names the notes directories in the identity block. On the
+# server's own machine its paths are right as they are; elsewhere the hook
+# tells it where this machine reaches the same tree (HIM_NOTES_ROOT) and
+# how to join paths here (os.name), and the block names those. Then the
+# hook checks what it just told the entity: it hashes index.md at the named
+# directory and compares with the server's hash. A mount that fell through
+# to an old local folder, a stale copy, or a wrong (or missing) root would
+# otherwise be read and edited as if it were the notes — silently, which is
+# the one failure two copies of the notes must never have. A pass prints
+# nothing; the block's own line already says where the notes are.
+
+
+def notes_root_payload() -> dict:
+    """The session-start request fields naming this machine's path to the
+    notes tree: HIM_NOTES_ROOT made absolute, with os.name. Empty when the
+    variable is unset — the server's own paths stand."""
+    root = (os.environ.get("HIM_NOTES_ROOT") or "").strip()
+    if not root:
+        return {}
+    return {
+        "notes_root": os.path.abspath(os.path.expanduser(root)),
+        "path_flavor": os.name,
+    }
+
+
+# How long the check may take. It runs before anything is printed, inside
+# SessionStart's 40 s hook timeout, after post_backend (whose clock keeps
+# this much back for it, bounded_work_after_requests): an
+# open() on a share whose packets are dropped blocked for 21.0 s on the
+# desktop (measured, #402 review), long enough for the harness to kill the
+# hook and start the session with no identity block at all. A reachable
+# share answers in milliseconds, so 5 s only ever cuts a dead one short.
+NOTES_CHECK_TIMEOUT_SECONDS = 5.0
+
+_NOTES_ADVICE = (
+    "If this machine reaches the notes over a mount, it may be down, or "
+    "HIM_NOTES_ROOT is unset or wrong. Don't create or edit notes there; "
+    "tell the user."
+)
+
+
+def notes_check_lines(body, timeout: float = NOTES_CHECK_TIMEOUT_SECONDS) -> list:
+    """The loud lines when the notes directory the block names is not the
+    server's copy as seen from this machine. Empty on a pass, or when the
+    response carries no check (a resume, notes disabled, an older backend).
+
+    The filesystem work runs in a daemon thread joined for at most `timeout`
+    seconds: a dead mount can block a read far longer than the hook may
+    live, and a stuck read is then said aloud rather than waited out. The
+    thread can't hold the process open once the hook returns."""
+    check = (body or {}).get("notes_check")
+    if not check or not check.get("entity_dir"):
+        return []
+    result: list = []
+    worker = threading.Thread(
+        target=lambda: result.append(_notes_check(check)), daemon=True
+    )
+    worker.start()
+    worker.join(timeout)
+    if result:
+        return result[0]
+    return [
+        "[HERE I AM] YOUR NOTES ARE NOT REACHABLE from this machine: reading "
+        f"{check['entity_dir']} did not finish within {timeout:g} s. "
+        + _NOTES_ADVICE
+    ]
+
+
+def _notes_check(check: dict) -> list:
+    """notes_check_lines' filesystem half, unbounded."""
+    entity_dir = check["entity_dir"]
+    expected = check.get("index_sha256")
+    advice = _NOTES_ADVICE
+    if not expected:
+        # No index on the server yet: all there is to check is the directory
+        if os.path.isdir(entity_dir):
+            return []
+        return [
+            "[HERE I AM] YOUR NOTES ARE NOT REACHABLE from this machine: "
+            f"{entity_dir} is not a directory here. {advice}"
+        ]
+    index_path = os.path.join(entity_dir, "index.md")
+    try:
+        with open(index_path, "rb") as f:
+            actual = hashlib.sha256(f.read()).hexdigest()
+    except OSError as e:
+        return [
+            "[HERE I AM] YOUR NOTES ARE NOT REACHABLE from this machine: "
+            f"could not read {index_path} ({describe_error(e)}). {advice}"
+        ]
+    if actual == expected:
+        return []
+    return [
+        f"[HERE I AM] THESE ARE NOT YOUR NOTES: {index_path} differs from the "
+        "index.md the Here I Am server holds, so the directory this machine "
+        f"reaches at {entity_dir} is not the server's copy (a stale local "
+        f"copy, a mount that fell through to an old folder, or a wrong root). {advice} "
+        "(The one innocent cause is another room saving index.md in the "
+        "moment between the two reads; the next session start checks again.)"
+    ]
+
+
 # --- GitHub identity (issue #362): the entity contributes from its own
 # --- account, in its own sessions only.
 #
@@ -1614,7 +1737,9 @@ def rooms_output_lines(body) -> list:
 # config, done for this process tree only — so `git push` is the entity's
 # account's push and a branch rule can tell the two apart. Only a path and
 # two strings ever pass through the backend or this file; the token stays
-# in the gh config directory.
+# in the gh config directory. That directory is per machine (each holds
+# its own login), so HIM_GH_CONFIG_DIR on the machine wins over the
+# server's gh_config_dir (issue #398).
 
 
 def _sh_single_quote(value: str) -> str:
@@ -1707,19 +1832,74 @@ def clear_session_env_identity() -> bool:
     return _replace_identity_in_env_file(path, [])
 
 
-def gh_account_in_config_dir(gh_dir: Optional[str]) -> Optional[str]:
-    """The login gh's hosts.yml in that directory names for github.com, or
-    None. Best-effort, for the notice line only: a few lines of YAML read
-    without a parser (the hooks are dependency-free)."""
+_IDENTITY_FIELDS = ("author_name", "author_email", "gh_config_dir")
+
+
+def machine_gh_config_dir() -> Optional[str]:
+    """HIM_GH_CONFIG_DIR as an absolute path (`~` and environment
+    variables expanded), or None when unset or blank. Made absolute here
+    because the hook checks the login against its own working directory,
+    while gh resolves an exported relative path against each Bash
+    command's, which moves during a session: one path for both."""
+    value = _optional_str(os.environ.get("HIM_GH_CONFIG_DIR"))
+    if not value:
+        return None
+    return os.path.abspath(os.path.expandvars(os.path.expanduser(value)))
+
+
+def apply_machine_gh_config_dir(identity) -> dict:
+    """The identity with this machine's gh config directory in place of
+    the server's (issue #398). Who the entity is on GitHub is the server's
+    to say; where its login lives on this machine is the machine's, since
+    each machine holds its own login and a path means nothing across
+    them. HIM_GH_CONFIG_DIR only relocates a login the server says the
+    entity has: with no identity in the response it does nothing, so a
+    variable set for one entity can't put another entity's sessions on
+    that account."""
+    identity = dict(identity or {})
+    if not any(_optional_str(identity.get(field)) for field in _IDENTITY_FIELDS):
+        return identity
+    machine = machine_gh_config_dir()
+    if machine:
+        identity["gh_config_dir"] = machine
+    return identity
+
+
+# github.com's entry in gh's hosts.yml, and the login under it. gh writes
+# the key bare; a quoted key is still YAML, so it's accepted too
+_GH_HOST_KEY = r"""^["']?github\.com["']?:[ \t]*\n"""
+_GH_HOST_ENTRY = re.compile(_GH_HOST_KEY, re.M)
+_GH_HOST_USER = re.compile(_GH_HOST_KEY + r"(?:[ \t]+.*\n)*?[ \t]+user:[ \t]*(\S+)", re.M)
+
+
+def gh_login_state(gh_dir: Optional[str]) -> tuple:
+    """What a gh config directory holds for github.com, read without a
+    YAML parser (the hooks are dependency-free) and never the token:
+    ("ok", login); ("missing", reason) when gh has no github.com login
+    there, so gh and git push will fail; ("unconfirmed", reason) when it
+    may have one this reader can't make out (a hosts.yml layout it doesn't
+    know, a file it can't open), which mustn't raise the alarm "missing"
+    does."""
     if not gh_dir:
-        return None
+        return ("missing", "no gh config directory is set")
+    path = os.path.join(gh_dir, "hosts.yml")
     try:
-        with open(os.path.join(gh_dir, "hosts.yml"), encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             text = f.read()
-    except OSError:
-        return None
-    match = re.search(r"^github\.com:\n(?:[ \t]+.*\n)*?[ \t]+user:[ \t]*(\S+)", text, re.M)
-    return match.group(1).strip("'\"") if match else None
+    except (FileNotFoundError, NotADirectoryError):
+        if not os.path.isdir(gh_dir):
+            return ("missing", f"{gh_dir} does not exist")
+        return ("missing", f"{gh_dir} has no hosts.yml")
+    except (OSError, UnicodeDecodeError) as error:
+        return ("unconfirmed", f"{path} could not be read ({error.__class__.__name__})")
+    if not text.endswith("\n"):
+        text += "\n"
+    match = _GH_HOST_USER.search(text)
+    if match:
+        return ("ok", match.group(1).strip("'\""))
+    if _GH_HOST_ENTRY.search(text):
+        return ("unconfirmed", f"the github.com entry in {path} names no login this hook can read")
+    return ("missing", f"{path} has no github.com login")
 
 
 def git_identity_lines(body, announce: bool = True) -> list:
@@ -1727,8 +1907,10 @@ def git_identity_lines(body, announce: bool = True) -> list:
     Export the entity's GitHub identity from a session-start response into
     the session environment, and return the lines to print: a one-line
     [GIT IDENTITY] statement of what now holds (only when `announce` — a
-    resume's transcript already carries it), or a loud [HERE I AM] notice
-    when the hook could not export it (always). The environment write
+    resume's transcript already carries it), and a loud [HERE I AM] notice
+    when the hook could not export it or the gh config directory holds no
+    github.com login (always). The directory is this machine's
+    HIM_GH_CONFIG_DIR when set, else the server's. The environment write
     happens on every firing and replaces the last one: the file is per
     session id and outlives compaction and resume, so a changed identity
     lands and an unchanged one doesn't pile up.
@@ -1739,7 +1921,7 @@ def git_identity_lines(body, announce: bool = True) -> list:
     next firing too, said aloud, since commits from then on carry the
     human's identity; with nothing to remove, nothing is printed.
     """
-    identity = (body or {}).get("git_identity") or {}
+    identity = apply_machine_gh_config_dir((body or {}).get("git_identity"))
     lines = git_identity_exports(identity)
     if not lines:
         if clear_session_env_identity():
@@ -1761,17 +1943,50 @@ def git_identity_lines(body, announce: bool = True) -> list:
             "from this session will carry the machine's (the human's) "
             "identity. Tell the user."
         ]
+    # The exports stand even when the login is missing: a gh that fails
+    # beats one that falls back to the human's login. The notice is loud,
+    # so it prints on every firing, a resume's included (issue #398)
+    login_state, login_detail = gh_login_state(gh_dir) if gh_dir else (None, None)
+    notices = []
+    if login_state == "missing":
+        source = (
+            "HIM_GH_CONFIG_DIR on this machine"
+            if machine_gh_config_dir()
+            else "the entity's gh_config_dir on the server (HIM_GH_CONFIG_DIR is not set here)"
+        )
+        notices.append(
+            "[HERE I AM] Your own GitHub login is not set up on this machine: "
+            f"{login_detail}. This session's gh and git push are pointed at that "
+            "directory, never at the human's login, so they will fail until "
+            "someone runs `gh auth login` for your account with GH_CONFIG_DIR set "
+            "to it (docs/claude-code-mode.md, \"A new machine\"). The directory "
+            f"comes from {source}. Tell the user."
+        )
     if not announce:
-        return []
+        return notices
     parts = []
     if email and name:
         parts.append(f"git commits are authored as {name} <{email}>")
-    if gh_dir:
-        account = gh_account_in_config_dir(gh_dir)
-        whose = f"your own GitHub account ({account})" if account else "your own GitHub account"
+    if login_state == "ok":
+        whose = f"your own GitHub account ({login_detail})"
+    elif login_state == "unconfirmed":
+        whose = (
+            f"your own GitHub account (unconfirmed: {login_detail}; "
+            "if gh fails, tell the user)"
+        )
+    else:
+        whose = None
+    if whose:
         parts.append(
             f"gh (issues, pull requests, comments, reviews) and git push act as {whose}"
         )
+    elif not gh_dir and parts:
+        # An author-only identity is a legitimate config, so no alarm; but
+        # the line mustn't read as if gh were the entity's too — here it is
+        # whatever login this machine holds, often the human's (#404 review)
+        parts.append("gh and git push use this machine's own GitHub login, not your account")
+    if not parts:
+        return notices
     return [
         "[GIT IDENTITY] In this session "
         + " and ".join(parts)
@@ -1779,7 +1994,8 @@ def git_identity_lines(body, announce: bool = True) -> list:
         "carry the session environment, so run git and gh through Bash. The author "
         "field is the attribution: add no Co-Authored-By trailer and no "
         "'Generated with Claude Code' footer to commits or pull requests. "
-        "Merge authority is unchanged: you author, the human merges."
+        "Merge authority is unchanged: you author, the human merges.",
+        *notices,
     ]
 
 

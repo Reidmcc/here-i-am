@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import uuid
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -94,6 +94,12 @@ class SessionStartRequest(BaseModel):
     # the identity block then names the turn it gives at compaction. An
     # older hook sends nothing, which reads as not loaded
     compact_talk_mod: bool = False
+    # Where this machine reaches the notes tree (issue #397): the hook's
+    # HIM_NOTES_ROOT, for a session on a machine other than the server's,
+    # with the client's os.name so the paths are joined its way. None = the
+    # session runs beside the server and the server's own paths are right
+    notes_root: Optional[str] = None
+    path_flavor: Optional[Literal["nt", "posix"]] = None
 
 
 class BulkPart(BaseModel):
@@ -119,6 +125,13 @@ class GitIdentity(BaseModel):
     author_name: Optional[str] = None
     author_email: Optional[str] = None
     gh_config_dir: Optional[str] = None
+
+
+class NotesCheck(BaseModel):
+    """The notes directory as the session's machine reaches it, and the
+    server's index.md hash (None = no index yet) to compare against."""
+    entity_dir: str
+    index_sha256: Optional[str] = None
 
 
 class SessionStartResponse(BaseModel):
@@ -155,6 +168,10 @@ class SessionStartResponse(BaseModel):
     # identity and a changed one lands on the next. None = entity has none
     # configured, and the hook removes one an earlier firing exported.
     git_identity: Optional[GitIdentity] = None
+    # Issue #397: with a context block, the notes directory it names and the
+    # sha256 of the server's index.md, so the hook can say loudly when what
+    # this machine reaches at that path is not the server's copy
+    notes_check: Optional[NotesCheck] = None
 
 
 class PeerMessage(BaseModel):
@@ -361,7 +378,8 @@ async def session_start(
     if fresh:
         conversation_id = cc.conversation_id_for_session(data.session_id)
         context, bulk_parts = await cc.build_session_start_context(
-            db, conversation_id, entity, compact_talk_mod=data.compact_talk_mod
+            db, conversation_id, entity, compact_talk_mod=data.compact_talk_mod,
+            notes_root=data.notes_root, path_flavor=data.path_flavor,
         )
     else:
         conversation_id = str(conversation.id)
@@ -376,6 +394,7 @@ async def session_start(
             context, bulk_parts = await cc.build_post_compact_context(
                 db, conversation, entity,
                 previously_compacted_at=previously_compacted_at,
+                notes_root=data.notes_root, path_flavor=data.path_flavor,
             )
             if adoption_text:
                 context = f"{adoption_text}\n\n{context}"
@@ -403,6 +422,13 @@ async def session_start(
     # this backend start)
     _spawn_notes_sync(entity)
 
+    # Only a firing that names the notes (startup, compact) is checked; a
+    # resume's transcript already carries the block, and the check with it
+    notes_check = None
+    if fresh or data.source == "compact":
+        check = cc.notes_check_for(entity, data.notes_root, data.path_flavor)
+        notes_check = NotesCheck(**check) if check else None
+
     return SessionStartResponse(
         conversation_id=conversation_id,
         entity_id=entity.index_name,
@@ -414,6 +440,7 @@ async def session_start(
         rooms_notice=rooms_notice,
         rooms_error=rooms_error,
         git_identity=cc.git_identity_for(entity),
+        notes_check=notes_check,
     )
 
 
