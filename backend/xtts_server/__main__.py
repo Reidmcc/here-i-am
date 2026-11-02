@@ -3,12 +3,14 @@ Entry point for running the XTTS server as a module.
 
 Usage:
     python -m xtts_server
-    python -m xtts_server --port 8020 --host 0.0.0.0
+    python -m xtts_server --port 8020 --allow-origin https://<host>.<tailnet>.ts.net
 """
 
 import argparse
 
 import uvicorn
+
+from voice_common.origin_guard import set_allowed_origins_env
 
 
 def main():
@@ -19,8 +21,17 @@ def main():
     parser.add_argument(
         "--host",
         type=str,
-        default="0.0.0.0",
-        help="Host to bind the server to",
+        default="127.0.0.1",
+        help="Host to bind the server to. Keep the default: the browser on this "
+             "machine calls the server directly, and it has no authentication.",
+    )
+    parser.add_argument(
+        "--allow-origin",
+        action="append",
+        default=[],
+        metavar="ORIGIN",
+        help="An origin whose pages may call this server, besides the local app "
+             "(http://localhost:8000). Repeatable. Example: https://him.example.ts.net",
     )
     parser.add_argument(
         "--port",
@@ -41,6 +52,7 @@ def main():
     )
 
     args = parser.parse_args()
+    origins = set_allowed_origins_env(args.allow_origin)
 
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
@@ -54,6 +66,7 @@ def main():
 ║  Press Ctrl+C to stop the server.                            ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
+    print(f"Pages allowed to call it: {', '.join(origins)}")
 
     uvicorn.run(
         "xtts_server.server:app",
