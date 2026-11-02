@@ -263,11 +263,7 @@ See [docs/tools.md](docs/tools.md) for the full catalog with descriptions and re
 
 ## API Reference
 
-Interactive API documentation is served when the app is running:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
-A full endpoint listing is also available in [docs/api.md](docs/api.md).
+A full endpoint listing is in [docs/api.md](docs/api.md). FastAPI's interactive pages (Swagger UI at `/docs`, ReDoc at `/redoc`) are off by default; set `API_DOCS_ENABLED=true` to serve them.
 
 ## Memory System Architecture
 
