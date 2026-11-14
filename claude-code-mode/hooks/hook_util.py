@@ -47,6 +47,9 @@ Environment:
                        the session runs on a machine other than the
                        server's (issue #397; see notes_root_payload). Unset
                        = the server's own paths, right beside the server
+    HIM_TIMEZONE       the human's timezone as an IANA name, for the clock
+                       line on every prompt (see clock_line). Unset = this
+                       machine's own zone, right on the human's machine
 """
 import collections
 import glob
@@ -910,6 +913,204 @@ def fit_retrieval(header: str, items: list, budget: int) -> tuple:
 def fail_loud(message: str) -> None:
     """One in-context line announcing degraded operation (stdout, exit 0)."""
     print(f"[HERE I AM] {message}")
+
+
+# --- The clock: the time each prompt arrived, in the human's local time.
+#
+# Native conversations stamp every human message with its send time
+# (session_helpers.stamp_human_message). A hook can't edit the prompt, so
+# here the same fact is one line of hook output, printed first by the
+# UserPromptSubmit hook on every path it has: a typed prompt, a wakeup
+# tick, a letter, harness plumbing, and each failure, the unreachable
+# backend above all. The session that came back after seven hours with the
+# server down (2026-11-12) learned the hour from the human; this line is
+# what would have told it. So the hook reads its own machine's clock and
+# asks the backend nothing.
+#
+# Local, never UTC, like every stored time the server shows the entity
+# (memory markers, link markers, the readers; services/local_time.py).
+# Those were UTC once, and reading them as local is where its wrong dates
+# came from. The line gives the weekday, the date, the time, the zone, and
+# the zone's offset from UTC, so converting a UTC time that still turns up
+# (a GitHub timestamp, a log line, an old marker) takes no recall of
+# whether daylight time is in force.
+#
+# "Local" is the human's zone, which is this machine's only while the
+# session runs on the human's machine. HIM_TIMEZONE names it (an IANA name
+# such as America/New_York) for a session that runs elsewhere, a cloud
+# VM's clock being UTC as a rule; unset, the machine's own zone is used. A
+# name that doesn't load is said on the line itself, every prompt, until
+# it is fixed: a silently wrong zone is the error this exists to prevent.
+# On Windows zoneinfo has no database of its own and needs the tzdata
+# package, and the machine's own zone is named in full by the OS ("Eastern
+# Standard Time"), so setting HIM_TIMEZONE there also shortens the name.
+#
+# No "time since your last turn": the previous turn's line is in context,
+# so the gap is two lines' difference (decided 2026-11-12).
+#
+# One other place says it: the SessionStart hook, after a compaction only
+# (decided 2026-11-14). An auto-compaction lands in the middle of a turn,
+# and the turn goes on afterwards with no prompt, so no prompt hook: the
+# last clock line went with the context, the compaction mod's turn (which
+# is told the time) was before the boundary, and until the next prompt the
+# hour was a shell read. A new session or a resume needs no line of its
+# own, the first prompt's following at once.
+
+TIMEZONE_ENV = "HIM_TIMEZONE"
+CLOCK_PREFIX = "[HERE I AM CLOCK] "
+# What the time on the line is the time of
+CLOCK_AT_PROMPT = "when this prompt arrived"
+CLOCK_AT_COMPACTION = "when this context was compacted"
+
+
+def local_moment(now: Optional[datetime] = None) -> tuple:
+    """
+    (the moment in the human's local time, a problem with HIM_TIMEZONE or
+    None). `now` is an aware datetime, the current time when omitted.
+    """
+    moment = now or datetime.now(timezone.utc)
+    name = (os.environ.get(TIMEZONE_ENV) or "").strip()
+    if not name:
+        return moment.astimezone(), None
+    try:
+        from zoneinfo import ZoneInfo
+
+        return moment.astimezone(ZoneInfo(name)), None
+    except Exception as e:  # unknown or malformed name, or no tz database
+        return moment.astimezone(), (
+            f'{TIMEZONE_ENV}="{name}" could not be loaded ({describe_error(e)}), '
+            "so this is the machine's own timezone, which may not be the human's"
+        )
+
+
+def utc_offset_minutes(moment: datetime) -> int:
+    offset = moment.utcoffset()
+    return int(offset.total_seconds() // 60) if offset is not None else 0
+
+
+def offset_label(minutes: int) -> str:
+    """'UTC-05:00' for an offset from UTC in minutes."""
+    sign = "-" if minutes < 0 else "+"
+    hours, rest = divmod(abs(minutes), 60)
+    return f"UTC{sign}{hours:02d}:{rest:02d}"
+
+
+def utc_offset_label(moment: datetime) -> str:
+    """'UTC-05:00' for an aware datetime."""
+    return offset_label(utc_offset_minutes(moment))
+
+
+def clock_line(now: Optional[datetime] = None, event: str = CLOCK_AT_PROMPT) -> str:
+    """
+    '[HERE I AM CLOCK] Saturday 2026-11-14 15:03 EST (UTC-05:00), when this
+    prompt arrived.' One line, always: a zone that can't be loaded changes
+    what the line says, never whether there is one. `event` says what the
+    time is the time of (CLOCK_AT_PROMPT, CLOCK_AT_COMPACTION).
+    """
+    moment, problem = local_moment(now)
+    offset = utc_offset_label(moment)
+    name = (moment.tzname() or "").strip()
+    if not name or name == offset:
+        zone = offset
+    elif name == "UTC" and offset == "UTC+00:00":
+        zone = name
+    else:
+        zone = f"{name} ({offset})"
+    line = (
+        f"{CLOCK_PREFIX}{moment.strftime('%A %Y-%m-%d %H:%M')} {zone}, {event}."
+    )
+    return f"{line} {problem}." if problem else line
+
+
+# --- Two clocks: this machine's zone against the server's.
+#
+# The clock line is this machine's time (HIM_TIMEZONE, or its own zone).
+# Every stored time the entity is shown is the server's rendering (memory
+# markers, the archive readers), in the server's zone (LOCAL_TIMEZONE, or
+# its own), and so is every offset-less time the memory tools read back. On
+# one machine with neither knob set they are the same zone by construction.
+# With the server on a cloud VM (issue #396) they differ by default, the
+# VM's clock being UTC, and then a time copied off the clock line and given
+# to memory_read without an offset is read hours away from what was meant,
+# with nothing said. So the session-start response carries the server's
+# offsets (local_time.clock_report) and the SessionStart hook compares them
+# with its own, on every firing, and says so loudly while they differ: the
+# same rule as a HIM_TIMEZONE that won't load. Only SessionStart: the
+# prompt hook has to tell the time with the server down, and has nothing to
+# compare then.
+#
+# Offsets are compared, not names (Windows names its zone in full), at each
+# instant the server names: now, and one in January and one in July, since
+# two zones can agree today and part ways at a daylight-time change.
+
+CLOCK_FIX_ADVICE = (
+    "Tell the user: HIM_TIMEZONE in the hooks' environment and "
+    "LOCAL_TIMEZONE in the server's .env should name the same zone."
+)
+
+
+def _apart(minutes: int) -> str:
+    hours, rest = divmod(abs(minutes), 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours} hour{'' if hours == 1 else 's'}")
+    if rest:
+        parts.append(f"{rest} minutes")
+    return " ".join(parts)
+
+
+def clock_check_lines(body) -> list:
+    """
+    The loud line when this machine's zone and the server's are not the
+    same clock. Empty when they agree at every instant the server named, or
+    when the response carries no report (an older backend).
+    """
+    report = (body or {}).get("server_clock")
+    if not isinstance(report, dict):
+        return []
+    # (which probe, this machine's time at it, its offset, the server's);
+    # the server's first probe is the present
+    differing = []
+    for index, probe in enumerate(report.get("offsets") or []):
+        try:
+            at = datetime.fromisoformat(str(probe["at"]))
+            theirs = int(probe["minutes"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        mine, _ = local_moment(at)
+        ours = utc_offset_minutes(mine)
+        if ours != theirs:
+            differing.append((index, mine, ours, theirs))
+    if not differing:
+        return []
+    index, mine, ours, theirs = differing[0]
+    gap = _apart(ours - theirs)
+    if index == 0:
+        server_zone = str(report.get("zone") or "").strip()
+        server = f"{server_zone} ({offset_label(theirs)})" if server_zone else offset_label(theirs)
+        return [
+            "[HERE I AM] TWO CLOCKS: this machine and the Here I Am server are in "
+            f"different timezones, {gap} apart. The clock line on your prompts is "
+            f"this machine's, {offset_label(ours)}. Every stored time you are shown "
+            "(memory markers, the archive readers, notices) is the server's, "
+            f"{server}, and so is any time you give memory_read, memory_find or "
+            "memory_query without an offset: a time copied off the clock line is "
+            f"read {gap} away from what you meant. Until this is fixed, give those "
+            "tools times with the offset written out (now, on this machine: "
+            f"{mine.isoformat(timespec='minutes')}). "
+            + CLOCK_FIX_ADVICE
+        ]
+    return [
+        "[HERE I AM] TWO CLOCKS: this machine's timezone and the Here I Am "
+        "server's agree today but not all year. On "
+        f"{mine.strftime('%Y-%m-%d')} this machine is at {offset_label(ours)} and "
+        f"the server at {offset_label(theirs)}, {gap} apart, so for that part of "
+        "the year the server's stamps and this machine's clock line disagree, "
+        "and a time given to the memory tools without an offset is read "
+        f"{gap} off. " + CLOCK_FIX_ADVICE
+    ]
 
 
 # --- Rooms registry (issue #323): what the harness lets a hook see about

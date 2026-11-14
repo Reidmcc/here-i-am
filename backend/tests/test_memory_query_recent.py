@@ -163,7 +163,7 @@ class TestRecentModeBehavior:
 
             call_kwargs = mock_service.get_recent_reflections.call_args[1]
             assert call_kwargs["since"] == datetime(2026, 8, 24, 18, 0, 0)
-        assert "created after 2026-08-24T18:00:00 UTC" in result
+        assert "created after 2026-08-24 18:00:00 UTC" in result
 
     @pytest.mark.asyncio
     async def test_aware_since_converted_to_naive_utc(self, mock_db_session):

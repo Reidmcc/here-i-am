@@ -234,12 +234,56 @@ class TestReadSpan:
         assert ids_in_order(result) == [midday.id[:8], late.id[:8]]
         assert aug31_eastern.id[:8] not in result
         assert "2 messages in the span; this page shows 1–2" in result
-        # UTC stamp with the local time alongside
-        assert "2026-09-02 02:00:00 UTC (2026-09-01 22:00:00 EDT)" in result
-        assert "[America/New_York; UTC 2026-09-01 04:00:00 to 2026-09-02 03:59:59]" in result
+        # One stamp per row, in the zone asked for; nothing in UTC beside it
+        assert "(You said, 2026-09-01 22:00:00 EDT, via Here I Am" in result
+        assert "Your archive, 2026-09-01 00:00:00 EDT to 2026-09-01 23:59:59 EDT:" in result
+        assert "UTC" not in result
         assert result.rstrip().endswith("End of span.")
 
-    async def test_utc_default_and_explicit_to(self, db, tools_db):
+    async def test_the_default_zone_is_the_humans_local_one(self, db, tools_db, monkeypatch):
+        """With no tz, a bare date is the human's day (LOCAL_TIMEZONE) and
+        the stamps are printed in it: the same clock as memory markers and
+        the stamp on the human's messages, so a date read off one can be
+        handed to the reader as it stands."""
+        monkeypatch.setattr(settings, "local_timezone", "America/New_York")
+        conversation = await make_conversation(db)
+        aug31_eastern = await make_message(
+            db, conversation, content="late on the 31st", created_at=datetime(2026, 9, 1, 1, 0)
+        )
+        late = await make_message(
+            db, conversation, content="ten pm on the 1st", created_at=datetime(2026, 9, 2, 2, 0)
+        )
+
+        result = await read_memories(native_ctx(), from_="2026-09-01")
+
+        assert ids_in_order(result) == [late.id[:8]]
+        assert aug31_eastern.id[:8] not in result
+        assert "Your archive, 2026-09-01 00:00:00 EDT to 2026-09-01 23:59:59 EDT:" in result
+        assert "(You said, 2026-09-01 22:00:00 EDT, via Here I Am" in result
+
+        # A moment with no offset is local too; one with an offset is as given
+        moment = await read_memories(native_ctx(), from_="2026-09-01T21:30", to="2026-09-01T22:30")
+        assert ids_in_order(moment) == [late.id[:8]]
+        given = await read_memories(
+            native_ctx(), from_="2026-09-02T01:30:00+00:00", to="2026-09-02T02:30:00+00:00"
+        )
+        assert ids_in_order(given) == [late.id[:8]]
+        assert "2026-09-01 21:30:00 EDT to 2026-09-01 22:30:00 EDT" in given
+
+        # tz still overrides, for the day boundaries and the stamps alike
+        utc = await read_memories(native_ctx(), from_="2026-09-01", tz="UTC")
+        assert ids_in_order(utc) == [aug31_eastern.id[:8]]
+        assert "(You said, 2026-09-01 01:00:00 UTC, via Here I Am" in utc
+
+    async def test_a_span_across_a_clock_change_names_both_zones(self, db, tools_db, monkeypatch):
+        monkeypatch.setattr(settings, "local_timezone", "America/New_York")
+        conversation = await make_conversation(db)
+        await make_message(db, conversation, content="x", created_at=datetime(2026, 11, 1, 12, 0))
+        result = await read_memories(native_ctx(), from_="2026-10-31", to="2026-11-01")
+        assert "2026-10-31 00:00:00 EDT to 2026-11-01 23:59:59 EST" in result
+        assert "2026-11-01 07:00:00 EST" in result
+
+    async def test_explicit_to(self, db, tools_db):
         conversation = await make_conversation(db)
         first = await make_message(db, conversation, content="a", created_at=at(hours=-2))
         second = await make_message(db, conversation, content="b", created_at=at(hours=1))
@@ -249,14 +293,14 @@ class TestReadSpan:
             native_ctx(), from_="2026-09-01T09:00", to="2026-09-02"
         )
         assert ids_in_order(result) == [first.id[:8], second.id[:8]]
-        assert "2026-09-01 09:00:00 to 2026-09-02 23:59:59 UTC" in result
-        # UTC only: no bracketed local time
-        assert "(2026-09-01" not in result.split("\n")[0]
+        assert "2026-09-01 09:00:00 UTC to 2026-09-02 23:59:59 UTC" in result
 
     async def test_empty_span_says_so_plainly(self, db, tools_db):
         await make_conversation(db)
         result = await read_memories(native_ctx(), from_="2020-01-01")
-        assert result.startswith("No messages between 2020-01-01 00:00:00 to 2020-01-01 23:59:59 UTC")
+        assert result.startswith(
+            "No messages between 2020-01-01 00:00:00 UTC to 2020-01-01 23:59:59 UTC"
+        )
         assert "Released memories are not shown" in result
 
     async def test_argument_errors(self, db, tools_db):
@@ -1100,7 +1144,7 @@ class TestBackward:
             native_ctx(), direction="backward", to="2026-09-01T07:00", tz="America/New_York"
         )
         assert ids_in_order(result) == [old.id[:8]]
-        assert "[America/New_York; UTC the start to 2026-09-01 11:00:00]" in result
+        assert "Your archive, the start of your archive to 2026-09-01 07:00:00 EDT:" in result
 
         # Forward still requires 'from', and the error points at the alternative
         error = await read_memories(native_ctx())

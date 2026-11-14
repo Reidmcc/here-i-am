@@ -202,8 +202,9 @@ class TestBoundsAndFilters:
 
         day = await find_memories(native_ctx(), text="Ren", from_="2026-09-01", to="2026-09-01", tz="America/New_York")
         assert ids_in_order(day) == [sep1.id[:8]]
-        assert "between 2026-09-01 00:00:00 EDT (2026-09-01 04:00:00 UTC) and 2026-09-01 23:59:59 EDT" in day
-        assert "2026-09-01 16:00:00 UTC (2026-09-01 12:00:00 EDT)" in day
+        assert "between 2026-09-01 00:00:00 EDT and 2026-09-01 23:59:59 EDT" in day
+        assert "(You said, 2026-09-01 12:00:00 EDT, via Here I Am" in day
+        assert "UTC" not in day
 
         from_only = await find_memories(native_ctx(), text="Ren", from_="2026-09-02")
         assert ids_in_order(from_only) == [sep2.id[:8]]

@@ -71,6 +71,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.services.local_time import local_stamp
 from app.services.notes_service import notes_service
 
 logger = logging.getLogger(__name__)
@@ -226,12 +227,13 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
 
 
 def _render_local(value: Optional[str]) -> str:
-    """An ISO timestamp rendered in the server's local timezone (the same
-    convention as human-message stamps), or an em-dash placeholder."""
+    """An ISO timestamp rendered in the human's local time (local_time:
+    the same clock as human-message stamps and memory markers), or an
+    em-dash placeholder."""
     parsed = _parse_iso(value)
     if parsed is None:
         return "—"
-    return parsed.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    return local_stamp(parsed)
 
 
 def _render_address_source(row: Dict[str, Any]) -> Optional[str]:

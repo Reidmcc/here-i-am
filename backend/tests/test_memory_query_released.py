@@ -113,7 +113,7 @@ class TestReleasedModeArguments:
             mock_service.record_memory_link.assert_not_called()  # native: no links
 
         assert "(AI-authored memories only)" in result
-        assert "(released after 2026-08-24T18:00:00 UTC)" in result
+        assert "(released after 2026-08-24 18:00:00 UTC)" in result
         assert "3 shown of 7 released in total" in result
 
     @pytest.mark.asyncio

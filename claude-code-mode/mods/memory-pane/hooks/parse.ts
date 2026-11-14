@@ -9,11 +9,14 @@
 import type { Entry, MemoryCard, MemoryWhere, ReadSpan, SpillFile } from '../types'
 
 // [MEMORY <id> from <created_at> - <role label> - via <origin>]
-// (memory_context.build_memory_message). The role label can hold " - " in a
+// (memory_context.build_memory_message). The time is local with its zone,
+// "2026-08-24 16:29 EDT" (a zone name may be several words), and in rows
+// written before that a bare ISO stamp, "2026-08-24T20:29:42.953550": both
+// end at the first " - ". The role label can hold " - " in a
 // multi-entity room, so the origin is anchored at the end instead. The close
 // counts only in the shape the backend writes it, alone at the start of its
 // line: a memory that quotes the marker mid-line (a94e68cc does) is not cut.
-const BLOCK = /\[MEMORY ([0-9a-f]{6,}) from (\S+) - (.+?) - (via [^\]\r\n]+)\]\r?\n([\s\S]*?)\r?\n\[\/MEMORY\][ \t]*(?=\r?\n|$)/g
+const BLOCK = /\[MEMORY ([0-9a-f]{6,}) from ([^\]\r\n]+?) - (.+?) - (via [^\]\r\n]+)\]\r?\n([\s\S]*?)\r?\n\[\/MEMORY\][ \t]*(?=\r?\n|$)/g
 // A header where the backend writes one: at the start of a line (in a
 // wrapped row, right after the harness's "hook success: " prefix)
 const HEADER = /(?:^|hook success: )\[MEMORY ([0-9a-f]{6,}) from /gm
@@ -266,6 +269,15 @@ export function argsText(e: Record<string, unknown>): string {
     shown[key] = value
   }
   return JSON.stringify(shown)
+}
+
+/**
+ * A card's time as the pane shows it: the marker's own local stamp
+ * ("2026-08-24 16:29 EDT") whole, and a row from before markers were local
+ * (a bare ISO stamp with microseconds) cut to the second.
+ */
+export function shownDate(date: string): string {
+  return /^\d{4}-\d{2}-\d{2}T/.test(date) ? date.slice(0, 19) : date
 }
 
 export function clock(ms: number): string {

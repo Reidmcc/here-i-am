@@ -21,6 +21,7 @@ from app.models import (
     Message,
     MessageRole,
 )
+from app.services.local_time import to_local
 from app.services.memory_context import (
     SINCE_LAST_SESSION,
     format_archive_change_notice,
@@ -1673,8 +1674,14 @@ class MemoryService:
         page's leading edge — the last row shown reading forward, the
         oldest row shown reading backward (then tagged with the direction)
         — and the number of the page it came from.
+
+        The time in it is the human's local time with its offset written
+        out: readable as the same clock as the rows above it, and still one
+        exact moment (to the microsecond, which the keyset needs) whatever
+        zone it is decoded in. A cursor with no offset is an older one, or
+        one built by hand, and is UTC as stored.
         """
-        cursor = f"{created_at.isoformat()}|{message_id}"
+        cursor = f"{to_local(created_at).isoformat()}|{message_id}"
         if backward:
             cursor += f"|{cls.CURSOR_BACKWARD_TAG}"
         return f"{cursor}|{cls.CURSOR_PAGE_TAG}{int(page)}"

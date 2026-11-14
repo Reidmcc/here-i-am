@@ -42,7 +42,7 @@ that lands after the cancel records nothing: either order ends with no
 delivery.
 
 What is put back is the archive itself (memory_read's own row format,
-UTC stamps), so it is the talk and nothing else: prompts, turns, letters,
+local stamps), so it is the talk and nothing else: prompts, turns, letters,
 reflections; never tool traffic, never thinking. It is never recorded
 again: the harness stores the appended message as a plain user entry, the
 Stop hook skips it by the marker it opens with (hook_util.is_turn_boundary),
@@ -59,6 +59,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Conversation
 from app.services import memory_tools
+from app.services.local_time import local_stamp
 from app.services.memory_service import memory_service
 
 logger = logging.getLogger(__name__)
@@ -215,7 +216,8 @@ def take_delivery(conversation_id: str, now: Optional[datetime] = None) -> Optio
 
 
 def _stamp(iso: str) -> str:
-    return datetime.fromisoformat(iso).strftime("%Y-%m-%d %H:%M UTC")
+    """'2026-11-14 15:01 EST': local, like the rows' own stamps under it."""
+    return local_stamp(iso)
 
 
 def older_talk_call(conversation_id: str, cursor: str) -> str:

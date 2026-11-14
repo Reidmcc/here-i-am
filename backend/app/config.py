@@ -177,6 +177,17 @@ class Settings(BaseSettings):
     # are clamped, and models with no effort parameter ignore it entirely.
     default_thinking_effort: str = "high"
 
+    # The human's timezone, as an IANA name (e.g. "America/New_York"): the
+    # zone for every time the entity is shown as "now" or "when this was
+    # sent" — the stamp on human messages and the [DATE CONTEXT] dates (see
+    # services/local_time.py). Unset = the server's OS timezone, which is
+    # the human's only while the server runs on their machine; set it when
+    # the server runs elsewhere (a cloud VM's clock is usually UTC). A name
+    # that doesn't load is warned about at startup and the OS zone is used.
+    # The Claude Code hooks tell the time themselves and have their own
+    # per-machine knob, HIM_TIMEZONE.
+    local_timezone: str = ""
+
     # Tool Use settings
     # Enable tool use (web search, content fetching) for AI entities
     tools_enabled: bool = True

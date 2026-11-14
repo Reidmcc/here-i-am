@@ -12,10 +12,11 @@ import itertools
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 from app.config import settings
+from app.services.local_time import to_local
 from app.services.memory_service import (
     ROLE_FILTER_AI,
     ROLE_FILTER_HUMAN,
@@ -36,8 +37,8 @@ def stamp_human_message(content: str, timestamp: Optional[datetime]) -> str:
     content-suffix matching (e.g. regenerate's endswith fallback) keeps
     working.
 
-    Timestamps are rendered in the server's local timezone (from the OS /
-    TZ env var, via datetime.astimezone with no argument — no config knob).
+    Timestamps are rendered in the human's local time (local_time.to_local):
+    the zone LOCAL_TIMEZONE names, or the server's OS zone when it is unset.
     Naive datetimes are treated as UTC, matching Message.created_at and
     datetime.utcnow().
 
@@ -50,9 +51,7 @@ def stamp_human_message(content: str, timestamp: Optional[datetime]) -> str:
     """
     if not timestamp:
         return content
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
-    local_ts = timestamp.astimezone()
+    local_ts = to_local(timestamp)
     return f"[{local_ts.strftime('%Y-%m-%d %H:%M %Z')}] {content}"
 
 

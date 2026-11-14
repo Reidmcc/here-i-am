@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.config import settings
 from app.services.memory_service import role_matches_filter
 from app.services.session_helpers import (
     POOL_AI,
@@ -43,10 +44,14 @@ class TestStampHumanMessage:
     """Tests for timestamping human messages in LLM context."""
 
     @pytest.fixture
-    def chicago_tz(self):
-        """Force a known local timezone so the UTC->local conversion is deterministic."""
+    def chicago_tz(self, monkeypatch):
+        """Force a known OS timezone so the UTC->local conversion is
+        deterministic, with LOCAL_TIMEZONE unset (conftest pins it to UTC
+        for every other test): this is the fallback to the server's own
+        zone, which is what the stamp was before the setting existed."""
         if not hasattr(time, "tzset"):
             pytest.skip("time.tzset not available on this platform")
+        monkeypatch.setattr(settings, "local_timezone", "")
         old_tz = os.environ.get("TZ")
         os.environ["TZ"] = "America/Chicago"
         time.tzset()

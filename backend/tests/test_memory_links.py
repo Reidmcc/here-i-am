@@ -56,6 +56,7 @@ from app.models import (
     MessageRole,
 )
 from app.services.conversation_session import ConversationSession, MemoryEntry
+from app.services.local_time import local_stamp
 from app.services.memory_context import format_memory_link_lines
 from app.services.memory_service import (
     load_memory_link_annotations,
@@ -622,14 +623,14 @@ class TestSurfaces:
         assert content[2] == "Both ancestor lines."
         assert content[3] == "[/MEMORY]"
 
-    async def test_unlinked_memory_marker_is_byte_identical_to_before(self, db, corrected):
+    async def test_unlinked_memory_marker_carries_no_link_lines(self, db, corrected):
         session = ConversationSession(conversation_id="native", model="m", entity_id=ENTITY)
         session.insert_memory_into_context(MemoryEntry(
             id="abcdef1234", conversation_id="c", role="human", content="Hello.",
             created_at="2026-09-09T17:00:00", times_retrieved=0,
         ))
         assert session.conversation_context[-1]["content"] == (
-            "[MEMORY abcdef12 from 2026-09-09T17:00:00 - originally from human - via Here I Am]\n"
+            "[MEMORY abcdef12 from 2026-09-09 17:00 UTC - originally from human - via Here I Am]\n"
             "Hello.\n[/MEMORY]"
         )
 
@@ -680,7 +681,7 @@ class TestNativeReloadStability:
             retrieved_at=at(days=1, seconds=-1), annotation=annotation,
         )
         live_marker = (
-            f"[MEMORY {said.id[:8]} from {said.created_at.isoformat()} - originally from you "
+            f"[MEMORY {said.id[:8]} from {local_stamp(said.created_at)} - originally from you "
             f"- via Here I Am]\n{annotation}\nA claim.\n[/MEMORY]"
         )
 

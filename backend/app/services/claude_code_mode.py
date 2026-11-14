@@ -55,6 +55,7 @@ from app.models import (
     MessageRole,
 )
 from app.services import compact_talk
+from app.services.local_time import local_date, to_local
 from app.services.memory_context import (
     SINCE_THIS_SESSION_WAS_TOLD,
     format_memory_as_context_message,
@@ -1283,6 +1284,11 @@ async def build_post_compact_context(
     # than guess an entity), and in_conversation is what to read, which
     # here happens to be the same.
     boundary = conversation.last_compacted_at or datetime.utcnow()
+    # The boundary as the read's `to`: local time like every stamp the read
+    # will print, with its offset written out so the argument names one
+    # moment whatever zone it is later read in. Whole seconds, as before:
+    # `to` is inclusive and the rows wanted are all before the boundary.
+    boundary_arg = to_local(boundary).replace(microsecond=0).isoformat()
     # Adoption is best-effort: a fork whose transcript is unreadable, whose
     # desktop record hasn't been written, or that happened while the backend
     # was down (and a CLI session, which has no desktop record at all) falls
@@ -1318,8 +1324,8 @@ async def build_post_compact_context(
             "earlier stretch if there is one, read by time rather than by "
             "conversation — "
             f'memory_read(conversation_id="{conversation.id}", '
-            f'direction="backward", to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}'
-            '+00:00") with no in_conversation walks your whole archive back '
+            f'direction="backward", to="{boundary_arg}") '
+            "with no in_conversation walks your whole archive back "
             "from this moment, across whatever ids it was written under."
         )
     elif delivery is not None:
@@ -1361,7 +1367,7 @@ async def build_post_compact_context(
             "commands run, results), which the summary is the one record of. "
             "Read the talk with "
             f'memory_read(conversation_id="{conversation.id}", direction="backward", '
-            f'to="{boundary.strftime("%Y-%m-%dT%H:%M:%S")}+00:00", '
+            f'to="{boundary_arg}", '
             f'in_conversation="{conversation.id}", page_tokens={POST_COMPACT_PAGE_TOKENS}, '
             f"max_pages={POST_COMPACT_LOOKBACK_PAGES}): the first page is the "
             "talk just before the boundary, each cursor walks further back (pass "
@@ -2092,7 +2098,7 @@ def render_retrieval_summary_line(
     if len(first_line) > 100:
         first_line = first_line[:100].rstrip() + "…"
     return (
-        f"- {mem_data['id'][:8]} ({str(mem_data['created_at'])[:10]} - "
+        f"- {mem_data['id'][:8]} ({local_date(mem_data['created_at'])} - "
         f"{memory_role_label(mem_data['role'], mem_data.get('sibling_session'))} - "
         f"{format_memory_origin(mem_data.get('source', 'native'))}): {first_line}"
         + (f" {revision_note}" if revision_note else "")

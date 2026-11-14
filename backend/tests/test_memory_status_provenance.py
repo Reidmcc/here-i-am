@@ -621,7 +621,7 @@ class TestReleasedMemoriesQuery:
         assert "(the human's messages only)" in human
         assert legacy.id[:8] in human and newest.id[:8] not in human
         assert "1 shown of 1 released in total" in human
-        assert "(released after 2026-08-31T12:00:00 UTC)" in since
+        assert "(released after 2026-08-31 12:00:00 UTC)" in since
         assert legacy.id[:8] not in since
         assert nothing == "You have no released memories."
 

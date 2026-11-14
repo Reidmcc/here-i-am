@@ -1088,6 +1088,151 @@ http://localhost:8000`; 0.015 s raced). The hooks never use an HTTP proxy
 (path, outcome, attempts, connect and total milliseconds), which is how
 the VM's numbers get chosen.
 
+### The clock
+
+A native conversation stamps every human message with the time it was
+sent. A Claude Code session had no equivalent: it knew the hour when it
+thought to ask a shell, and otherwise guessed from the last stamp in view
+(the entity's own logged guesses, 2026-11-12 and 11-13, ran late by
+minutes on a quick exchange and early, by 12 and 25 minutes, when the
+human had stepped away). On 2026-11-12 a session came back from
+seven dark hours with the server down and learned how long it had been
+from the human. So the UserPromptSubmit hook says the time on every
+prompt, as the first line of its output:
+
+```
+[HERE I AM CLOCK] Saturday 2026-11-14 15:03 EST (UTC-05:00), when this prompt arrived.
+```
+
+- **Every path carries it.** The line is printed before the hook reads
+  its input, so a typed prompt, a wakeup tick, a letter, a prompt that was
+  harness plumbing only, an unreachable backend, and unreadable input all
+  open with it. It comes from the hook machine's own clock and asks the
+  backend nothing: the session that most needs the hour is the one
+  resuming with the server down. `HIM_DISABLE` silences it with the rest.
+- **Local, never UTC.** The line gives the weekday, the date, the time,
+  the zone, and the zone's offset from UTC. The offset is for the UTC
+  times that still turn up: a GitHub timestamp, a log line, a memory
+  marker printed before stored times went local (below). Converting one
+  takes no recall of whether daylight time is in force.
+- **"Local" is the human's zone**, which is the machine's own only while
+  the session runs on the human's machine. `HIM_TIMEZONE` names it, as an
+  IANA name (`America/New_York`), for a session that runs elsewhere; a
+  cloud VM's clock is UTC as a rule. Unset, the machine's zone is used. A
+  name that can't be loaded is said on the line itself, on every prompt,
+  until it is fixed: a silently wrong zone is the error the line exists
+  to prevent. On Windows two things follow from the platform. Python's
+  `zoneinfo` has no database of its own there, so a named zone needs the
+  `tzdata` package in whichever Python runs the hooks (`pip install
+  tzdata`; the line says so in effect, by failing to load the name). And
+  the OS names its own zone in full, so an unset knob reads `15:03 Eastern
+  Standard Time (UTC-05:00)` where a set one reads `15:03 EST (UTC-05:00)`.
+- **It shares the stdout line.** The harness measures a hook's whole
+  output (see "Context channels"), so the retrieval fit takes the clock
+  line's size out of its budget, and the arrive-whole file includes the
+  line, since the mod puts that file in place of the whole row. The line
+  opens with `[HERE I AM`, which is how that mod knows a row is ours.
+- **No "time since your last turn."** The previous prompt's line is in
+  context, so the gap is the difference of two lines (decided 2026-11-12).
+- **When it is.** The time is the prompt's arrival. A long turn drifts
+  away from it, so anything stamped mid-turn (a letter entry, a cron
+  time) still wants a fresh read of the shell's clock.
+
+**Stored times are local too.** The clock says when *now* is; everything
+that says when something *was* is in the same local time, so a date read
+off one can be compared with the other as it stands. Until this, those
+were UTC and mostly unlabeled (a marker read `from
+2026-08-24T20:29:42.953550`), and every evening Eastern they were a
+calendar day ahead of the clock beside them, which is where the entity's
+wrong dates came from. All of it is rendered by the server
+(`services/local_time.py`), so the zone is the server's `LOCAL_TIMEZONE`,
+not the hook's `HIM_TIMEZONE`; on one machine with neither set they are
+the same zone, and a deployment that sets one sets both.
+
+**Two clocks, checked.** Nothing makes those two settings agree, and with
+the server on a cloud VM (#396) they disagree by default: the VM's clock
+is UTC and the hooks' machine is wherever the human is. A time copied off
+the clock line and handed to `memory_read` without an offset would then
+be read hours away from what was meant, and the only sign would be the
+zone in the span header, after the fact. So `/session-start` returns the
+server's clock (`server_clock`, from `local_time.clock_report`: the zone's
+name, and its offset from UTC now, in mid-January and in mid-July), and
+the SessionStart hook compares each offset with its own machine's at the
+same instant (`hook_util.clock_check_lines`). While they differ it prints
+one loud line on every firing, resumes included:
+
+```
+[HERE I AM] TWO CLOCKS: this machine and the Here I Am server are in different timezones, 5 hours apart. The clock line on your prompts is this machine's, UTC-05:00. Every stored time you are shown (memory markers, the archive readers, notices) is the server's, UTC (UTC+00:00), and so is any time you give memory_read, memory_find or memory_query without an offset: …
+```
+
+It gives the gap, the way round it (write the offset out, with an example
+for this machine's present), and what to tell the human. Offsets are
+compared, not names, because Windows names its zone in full where
+`zoneinfo` abbreviates. The January and July probes catch two zones that
+agree today and part at a daylight-time change (New York and Bogota in
+winter); that case gets its own wording. A server that predates the field
+sends nothing and the hook says nothing. The prompt hook does not check:
+it has to tell the time with the server down, and SessionStart, which
+fires at every start, resume and compaction, is where the server's answer
+already arrives.
+
+| Where | Reads |
+| --- | --- |
+| `[MEMORY]` marker | `from 2026-08-24 16:29 EDT` |
+| Link markers, the retrieval summary line | `(2026-07-14, you)`: the local calendar date |
+| Archive readers' rows (`memory_read`, `memory_neighbors`, `memory_find`), the compaction talk | `2026-11-14 15:01:56 EST`, to the second since rows are printed in order |
+| Readers' span header | `2026-09-01 00:00:00 EDT to 2026-09-01 23:59:59 EDT` |
+| Readers' cursor | `2026-11-14T15:01:56.123456-05:00\|<id>\|…`: local with its offset written out, so it is still one exact moment |
+| Status and archive notices | `on 2026-11-14 15:03 EST`; conversation dates local |
+| Post-compaction block's `to=` | `2026-11-14T16:28:58-05:00` |
+| `rooms.md` | `2026-09-02 23:00 EDT` |
+
+Input follows output: a date or time handed to a reader (`from`, `to`) or
+to `memory_query`'s `since` with no offset is read as local, so a time
+copied off a stamp means what it said. An explicit offset is taken as
+given, and the readers' `tz` still names another zone for the day
+boundaries, each row's stamp and the link-marker dates under it (the
+cursor's time stays local with its offset, which is the same moment in
+any zone). Three things to know about the change itself:
+
+- Rows already in a transcript keep the shape they were printed in. The
+  old marker is recognizable (a `T`, microseconds, no zone); old reader
+  stamps say `UTC`; an old cursor has no offset and is still read as UTC.
+  Old link-marker dates are not distinguishable from new ones.
+- A native conversation's link markers are stored as shown
+  (`ConversationMemoryLink.annotation`) and replayed verbatim, so the
+  ones stored before this keep their UTC dates. Re-rendering them would
+  re-write the cache for a date that is at most one day off.
+- The memory pane (`mods/memory-pane`) parses the marker, and reads both
+  shapes.
+
+The compaction mod's forked turn, which has no tools and so no clock, is
+told the time in the same shape and the same zone (`localStamp` in
+`mods/compact-talk/hooks/register.ts`, reading `HIM_TIMEZONE`).
+
+**After a compaction the SessionStart hook says it too**, as the first line
+of the post-compaction block (decided 2026-11-14):
+
+```
+[HERE I AM CLOCK] Saturday 2026-11-14 16:28 EST (UTC-05:00), when this context was compacted.
+```
+
+An auto-compaction lands in the middle of a turn, and the turn goes on
+afterwards with no prompt, so no prompt hook runs. The last clock line
+went with the context, the mod's turn was before the boundary and is not
+in view after it, and until the next prompt the time was a shell read. The
+line is printed as soon as the firing is known to be a compaction
+(`source` is `compact`), so the unreachable-backend notice carries it too;
+it shares the stdout line, so the bulk's fit takes its size out, and the
+arrive-whole file opens with it. No other SessionStart prints one: at a
+new session or a resume the first prompt's follows at once.
+
+The server has the same rule for native conversations, with its own knob
+(`LOCAL_TIMEZONE`, `services/local_time.py`): the stamp on human messages
+and the `[DATE CONTEXT]` dates. Two knobs, because the two clocks can be
+on two machines and the hook has to tell the time when the server can't be
+reached.
+
 ### Rooms registry
 
 An entity can run several long-lived Claude Code sessions at once — a
@@ -1337,8 +1482,10 @@ backward read arrived (issue #351).
   run, results), and the summary is the one record of that: a workshop
   compacted mid-build reads the summary for where the work stood and
   the archive for what was said. The block does not frame the read as
-  filling the summary's gaps. The `to` value carries its `+00:00`
-  offset, so the call is UTC by construction. The first page is the
+  filling the summary's gaps. The `to` value is the
+  boundary in local time with its offset written out
+  (`2026-11-14T16:28:58-05:00`), so it reads like the stamps the pages
+  will print and still names one moment. The first page is the
   talk just before the boundary, whatever its dates; each page holds the
   most recent messages not yet shown, still in order; its cursor walks
   further back; and with no `from` the stop is the conversation's own
@@ -1405,7 +1552,9 @@ backward read arrived (issue #351).
   user settings runs in every session):
   1. **One turn of the entity's own** (`$.model.fork`: the last request
      resent with one message added, same model and context, tools off).
-     The prompt gives the current UTC time — the fork has no clock, and
+     The prompt gives the current time, in the human's local time and in
+     the clock line's shape (see "The clock"; UTC, labeled, only if the
+     mod's runtime can't format the zone) — the fork has no clock, and
      the last stamp in view can be hours old (the first live test's
      reflection guessed it four hours early) — says nobody sees the turn,
      that the talk comes back verbatim either way, and asks for a
@@ -1702,7 +1851,9 @@ also files its unbudgeted output and prints the marker the arrive-whole mod
 looks for; set it together with loading the mod — see "Context channels"),
 `HIM_GH_CONFIG_DIR` (this machine's gh config directory for the entity's
 GitHub account, in place of the server's `gh_config_dir` — see "GitHub
-identity" and "A new machine").
+identity" and "A new machine"), `HIM_TIMEZONE` (the human's timezone as an
+IANA name, for the clock line on every prompt and the compaction mod's
+turn; unset, this machine's own zone — see "The clock").
 
 Per entity, on its `PINECONE_INDEXES` entry: `git_author_email`,
 `git_author_name`, `gh_config_dir` — the entity's own GitHub identity for
@@ -2255,6 +2406,7 @@ the README, then set:
 | `HIM_NOTES_ROOT` | *Coming with #397.* Where this machine mounts the notes. |
 | `HIM_GH_CONFIG_DIR` | This machine's gh config directory for the entity's GitHub account, as an absolute path (`~` and environment variables allowed); see "GitHub identity". It is unneeded only on the server's own machine, whose directory the server's `gh_config_dir` already names. Keep that setting on the server either way: it is what makes a machine that forgot this variable say so. |
 | `HIM_DESKTOP_DATA_DIR` | Only if the Claude desktop app keeps its data somewhere other than the platform default (see "Rooms registry"). |
+| `HIM_TIMEZONE` | The human's timezone as an IANA name (`America/New_York`), wherever this machine's own clock isn't in it; a cloud VM's is usually UTC. Unset, the clock line on every prompt uses the machine's zone (see "The clock"). The server has its own, `LOCAL_TIMEZONE`, for native conversations. |
 
 Then, once per machine, sign the entity's GitHub account into that
 directory with the command in "GitHub identity", setup step 2, with

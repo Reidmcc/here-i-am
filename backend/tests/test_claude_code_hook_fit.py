@@ -28,6 +28,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.hook_clock import PIN_CLOCK, without_clock
+
 HOOKS_DIR = Path(__file__).resolve().parents[2] / "claude-code-mode" / "hooks"
 SESSION = "fit-test"
 DEFAULT_BUDGET = 9600
@@ -46,7 +48,10 @@ def _run(script: str, stdin_payload: dict, body: dict, extra_env=None) -> str:
     code = (
         "import io, json, sys\n"
         "import hook_util\n"
-        f"body = json.load(open({str(body_path)!r}, encoding='utf-8'))\n"
+        # Pinned: these tests compare two runs of a hook, and the minute
+        # can turn between them
+        + PIN_CLOCK
+        + f"body = json.load(open({str(body_path)!r}, encoding='utf-8'))\n"
         "hook_util.post_backend = lambda path, payload, timeout=30: body\n"
         f"sys.stdin = io.StringIO({json.dumps(json.dumps(stdin_payload))})\n"
         f"import {script}\n"
@@ -141,8 +146,9 @@ def test_oversized_block_lands_leading_memories_whole_and_the_rest_by_summary(tm
     out = run_prompt_hook(
         retrieval_body(items, new_sibling_reflections=2, already_in_context=1), tmp_path
     )
+    # The clock line first, then the block; the budget covers both
     assert harness_len(out) <= DEFAULT_BUDGET
-    assert out.startswith(HEADER)
+    assert without_clock(out).startswith(HEADER)
     # The first memories are whole, in rank order; the rest are one line each
     shown = [item for item in items if item["text"] in out]
     assert shown == items[: len(shown)]

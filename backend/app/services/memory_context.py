@@ -11,8 +11,9 @@ ConversationSession uses these tracking mechanisms for all memory handling.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+from app.services.local_time import local_date, local_stamp
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +95,7 @@ def format_status_change_notice(
         status = change.get("memory_status")
         outcome = f"now {status}" if status else "status cleared (now normal)"
         set_at = change.get("status_set_at")
-        if isinstance(set_at, str):
-            set_at = datetime.fromisoformat(set_at)
-        when = f" on {set_at.strftime('%Y-%m-%d %H:%M')} UTC" if set_at else ""
+        when = f" on {local_stamp(set_at)}" if set_at else ""
         snippet = memory_snippet(change.get("content", ""), snippet_length)
         lines.append(
             f'- {str(change["id"])[:8]} ({memory_role_label(change.get("role", ""))}): '
@@ -125,30 +124,22 @@ def format_researcher_change_check_failure(error: Exception) -> str:
     )
 
 
-def _as_datetime(value: Any) -> Optional[datetime]:
-    if isinstance(value, str):
-        return datetime.fromisoformat(value)
-    return value
-
-
 def _archive_change_line(change: Dict[str, Any]) -> str:
     """One conversation's line in the archive notice: span, size, origin,
-    what happened and when, and the researcher's note if one was left."""
-    first = _as_datetime(change.get("first_message_at"))
-    last = _as_datetime(change.get("last_message_at"))
+    what happened and when, and the researcher's note if one was left.
+    Dates and the time are the human's local ones."""
+    first = change.get("first_message_at")
+    last = change.get("last_message_at")
     message_count = change.get("message_count") or 0
     if first is None:
-        created = _as_datetime(change.get("created_at"))
+        created = change.get("created_at")
         span = "An empty conversation"
         if created is not None:
-            span += f" started {created.strftime('%Y-%m-%d')}"
-    elif last is None or first.date() == last.date():
-        span = f"A conversation on {first.strftime('%Y-%m-%d')}"
+            span += f" started {local_date(created)}"
+    elif last is None or local_date(first) == local_date(last):
+        span = f"A conversation on {local_date(first)}"
     else:
-        span = (
-            f"A conversation from {first.strftime('%Y-%m-%d')} "
-            f"to {last.strftime('%Y-%m-%d')}"
-        )
+        span = f"A conversation from {local_date(first)} to {local_date(last)}"
     size = f"{message_count} message{'' if message_count == 1 else 's'}"
     origin = format_memory_origin(change.get("source") or "native")
     outcome = (
@@ -156,8 +147,8 @@ def _archive_change_line(change: Dict[str, Any]) -> str:
         if change.get("is_archived")
         else "was restored to your memory"
     )
-    changed_at = _as_datetime(change.get("archive_changed_at"))
-    when = f" on {changed_at.strftime('%Y-%m-%d %H:%M')} UTC" if changed_at else ""
+    changed_at = change.get("archive_changed_at")
+    when = f" on {local_stamp(changed_at)}" if changed_at else ""
     line = f"- {span} ({size}, {origin}) {outcome} by the researcher{when}."
     note = " ".join((change.get("archive_note") or "").split())
     if note:
@@ -281,6 +272,7 @@ def _link_target_entry(
     entity_id: Optional[str],
     entity_labels: Optional[Dict[str, str]],
     state_prefix: str,
+    date_of: Callable[[Any], str] = local_date,
 ) -> str:
     """One linked memory a reflection points AT: 'id (date, who)', or the
     state it has since left view in — a withdrawn memory (archived
@@ -289,19 +281,21 @@ def _link_target_entry(
     short_id = str(end["id"])[:8]
     if end.get("state") == "withdrawn":
         return f"{short_id} ({state_prefix}withdrawn)"
-    parts = [str(end.get("created_at") or "")[:10], _link_speaker(end, entity_id, entity_labels)]
+    parts = [date_of(end.get("created_at")), _link_speaker(end, entity_id, entity_labels)]
     if end.get("state") == "released":
         parts.append(f"{state_prefix}released")
     return f"{short_id} ({', '.join(p for p in parts if p)})"
 
 
-def _link_reflection_entry(end: Dict[str, Any], with_date: bool) -> str:
+def _link_reflection_entry(
+    end: Dict[str, Any], with_date: bool, date_of: Callable[[Any], str] = local_date
+) -> str:
     """One reflection pointing at this memory: its id, its date when asked
     for, and "released" if the entity has released it. (A reflection in an
     archived conversation never gets here: the loader drops withdrawn
     reverse ends, so a withdrawn verdict can't outlive the archive.)"""
     short_id = str(end["id"])[:8]
-    parts = [str(end.get("created_at") or "")[:10]] if with_date else []
+    parts = [date_of(end.get("created_at"))] if with_date else []
     if end.get("state") == "released":
         parts.append("released")
     return f"{short_id} ({', '.join(parts)})" if parts else short_id
@@ -312,6 +306,7 @@ def format_memory_link_lines(
     role: str,
     entity_id: Optional[str] = None,
     entity_labels: Optional[Dict[str, str]] = None,
+    date_of: Callable[[Any], str] = local_date,
 ) -> List[str]:
     """
     The marker lines for a memory's links (issues #366, #368), one line per
@@ -331,7 +326,11 @@ def format_memory_link_lines(
     "later revised", something said is "later corrected or outdated", and
     the reflection holds the reason. Every entry is a pointer — an id, a
     date, who spoke — never content and never a count: the entity follows
-    one with memory_neighbors. A source that has left view says so
+    one with memory_neighbors. Dates are the human's local calendar dates
+    (local_time.local_date), like every other time the entity is shown;
+    `date_of` replaces that for a reader called with its own tz, so a row's
+    link dates are in the same zone as the stamp on its header. A
+    source that has left view says so
     ("source released", "source withdrawn") instead of disappearing; a
     reflection pointing at this memory is labeled "released" when the
     entity released it, and is absent when its conversation was archived.
@@ -344,15 +343,19 @@ def format_memory_link_lines(
     lines: List[str] = []
     revises = links.get("revises") or []
     if revises:
-        entries = [_link_target_entry(end, entity_id, entity_labels, "") for end in revises]
+        entries = [_link_target_entry(end, entity_id, entity_labels, "", date_of) for end in revises]
         lines.append(f"[revises {', '.join(entries)}]")
     cites = links.get("cites") or []
     if cites:
-        entries = [_link_target_entry(end, entity_id, entity_labels, "source ") for end in cites]
+        entries = [
+            _link_target_entry(end, entity_id, entity_labels, "source ", date_of) for end in cites
+        ]
         lines.append(f"[sources: {', '.join(entries)}]")
     revised_by = links.get("revised_by") or []
     if revised_by:
-        entries = ", ".join(_link_reflection_entry(end, with_date=True) for end in revised_by)
+        entries = ", ".join(
+            _link_reflection_entry(end, with_date=True, date_of=date_of) for end in revised_by
+        )
         if role == "reflection":
             lines.append(f"[later revised → {entries}]")
         else:
@@ -385,7 +388,9 @@ def format_memory_as_context_message(
     Args:
         memory_id: The unique ID of the memory
         content: The memory content (original message text)
-        created_at: ISO format timestamp of when the original message was created
+        created_at: ISO format timestamp (naive UTC, as stored) of when the
+                original message was created. Rendered in the human's local
+                time with its zone ('2026-08-24 16:29 EDT').
         role: The original role of the message ("human" or "assistant")
         origin: Which experience the memory was formed in ("native" or
                 "claude_code"), from the memory's conversation row. Rendered
@@ -412,8 +417,11 @@ def format_memory_as_context_message(
     short_id = memory_id[:8]
     origin_label = format_memory_origin(origin)
     annotation_lines = f"{annotation}\n" if annotation else ""
+    # The human's local time, like the stamp on the human's own messages: a
+    # pure function of created_at and LOCAL_TIMEZONE, so live and reloaded
+    # markers stay identical
     formatted_content = (
-        f"[MEMORY {short_id} from {created_at} - {role_label} - {origin_label}]\n"
+        f"[MEMORY {short_id} from {local_stamp(created_at)} - {role_label} - {origin_label}]\n"
         f"{annotation_lines}{content}\n[/MEMORY]"
     )
     

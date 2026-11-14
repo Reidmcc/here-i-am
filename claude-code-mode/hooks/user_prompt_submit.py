@@ -70,8 +70,14 @@ refused, name resolution) is reported as unrecorded without the check;
 when the check itself fails the notice says the recording is UNCONFIRMED
 rather than guessing either way.
 
-Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE, HIM_INLINE_BUDGET
-(see session_start.py / hook_util.py).
+The output opens with the clock: one line giving the time this prompt
+arrived, in the human's local time (hook_util.clock_line). It is printed
+before anything else is attempted, so every path here carries it — a
+typed prompt, a wakeup tick, harness plumbing, and each failure, the
+unreachable backend above all, which is when the hour is least known.
+
+Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE, HIM_INLINE_BUDGET,
+HIM_TIMEZONE (see session_start.py / hook_util.py).
 """
 import os
 import sys
@@ -85,6 +91,12 @@ def main() -> None:
     if os.environ.get("HIM_DISABLE"):
         return
     hook_util.start_hook_clock("UserPromptSubmit")
+    # The time this prompt arrived, printed before anything can fail: every
+    # path below, the failures included, then carries it by construction.
+    # Everything printed after it counts against the same stdout line, so
+    # the fit below takes its size out of the budget.
+    clock = hook_util.clock_line()
+    print(clock, end="\n\n")
     data = hook_util.read_hook_input()
     if data is None:
         hook_util.fail_loud(
@@ -225,9 +237,9 @@ def main() -> None:
     # A block was printed: if the dedup suppressed anything, say what
     # (issue #328) — right after the block, before the mailbox and reminder
     tail = [part for part in (dedup_stamp(body), *tail) if part]
-    budget = hook_util.inline_budget(body)
-    # The whole stdout is what the harness measures — the block AND the
-    # lines after it
+    # The whole stdout is what the harness measures — the clock line
+    # already printed, the block, AND the lines after it
+    budget = hook_util.inline_budget(body) - hook_util.output_chars(clock + "\n\n")
     if hook_util.output_chars("\n\n".join([context, *tail])) <= budget:
         print("\n\n".join([context, *tail]))
         return
@@ -238,9 +250,13 @@ def main() -> None:
     path = hook_util.spill(context, session_id, name)
     if hook_util.arrive_whole_enabled():
         # Issue #384: the output exactly as the fit above would have printed
-        # it, for the arrive-whole mod; the marker goes last in the tail,
-        # which the fit below measures
-        tail = [*tail, hook_util.whole_marker("\n\n".join([context, *tail]), session_id, name)]
+        # it, for the arrive-whole mod — the clock line included, since the
+        # mod puts this file in place of the whole row; the marker goes
+        # last in the tail, which the fit below measures
+        tail = [
+            *tail,
+            hook_util.whole_marker("\n\n".join([clock, context, *tail]), session_id, name),
+        ]
     items = [
         item for item in (body.get("context_items") or [])
         if isinstance(item, dict) and item.get("text") and item.get("summary")
