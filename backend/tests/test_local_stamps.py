@@ -238,3 +238,31 @@ def test_rooms_file_times_are_local(zone):
     zone("America/New_York")
     assert rooms_registry._render_local("2026-09-03T03:00:00+00:00") == "2026-09-02 23:00 EDT"
     assert rooms_registry._render_local(None) == "—"
+
+
+# --- A reader's tz reaches the link dates on its rows (PR #410 review, finding 2)
+
+
+def test_a_readers_zone_covers_the_stamp_and_the_link_dates(zone):
+    from app.services.memory_tools import _format_archive_item
+
+    zone("America/New_York")
+    item = {
+        "id": "0123456789abcdef", "role": "reflection", "content": "A second look.",
+        "created_at": "2026-11-14T20:01:56", "source": "native",
+        "conversation_id": "conv-1234", "conversation_title": "Porch",
+        # 9 PM on the 13th in New York; already the 14th in Tokyo
+        "links": {"revises": [
+            {"id": "abcd1234ffff", "created_at": "2026-11-14T02:00:00", "role": "assistant"},
+        ]},
+    }
+    now = datetime(2026, 11, 15)
+    tokyo = local_time.ZoneInfo("Asia/Tokyo")
+
+    local = _format_archive_item(item, None, {}, local_time.configured_zone(), False, now)[0]
+    assert "2026-11-14 15:01:56 EST" in local
+    assert "[revises abcd1234 (2026-11-13, you)]" in local
+
+    asked = _format_archive_item(item, None, {}, tokyo, False, now)[0]
+    assert "2026-11-15 05:01:56 JST" in asked
+    assert "[revises abcd1234 (2026-11-14, you)]" in asked

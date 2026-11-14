@@ -157,6 +157,26 @@ class TestSessionStart:
         assert again.json()["conversation_id"] == body["conversation_id"]
         assert again.json()["created"] is True
 
+    async def test_every_firing_reports_the_servers_clock(self, async_client, monkeypatch):
+        """The hook tells the time from its own machine and the server
+        prints and reads stored times in its own zone; the response carries
+        the server's offsets so the hook can say when they differ (PR #410
+        review, finding 1). On a resume too: it is a fact about the server,
+        not part of the context block."""
+        monkeypatch.setattr("app.config.settings.local_timezone", "America/New_York")
+        session_id = str(uuid.uuid4())
+        for source in ("startup", "resume", "compact"):
+            response = await async_client.post(
+                "/api/claude-code/session-start",
+                json={"session_id": session_id, "source": source},
+            )
+            clock = response.json()["server_clock"]
+            assert clock["zone"] in ("EST", "EDT")
+            now, january, july = clock["offsets"]
+            assert now["minutes"] in (-300, -240)
+            assert (january["at"][5:10], january["minutes"]) == ("01-15", -300)
+            assert (july["at"][5:10], july["minutes"]) == ("07-15", -240)
+
     async def test_first_prompt_registers_under_announced_id(
         self, async_client, db_session
     ):

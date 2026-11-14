@@ -36,6 +36,7 @@ from app.models import Message, MessageRole
 from app.services import claude_code_mcp, compact_talk, memory_tools
 from app.services import claude_code_mode as cc
 from app.services.harness_limits import HOOK_INLINE_BUDGET_CHARS
+from app.services.local_time import clock_report
 from app.services.memory_service import memory_service
 from app.services.notes_vector_service import notes_vector_service
 
@@ -134,6 +135,19 @@ class NotesCheck(BaseModel):
     index_sha256: Optional[str] = None
 
 
+class ClockOffset(BaseModel):
+    """The server's offset from UTC, in minutes, at one instant (ISO, UTC)."""
+    at: str
+    minutes: int
+
+
+class ServerClock(BaseModel):
+    """The zone the server prints and reads stored times in
+    (local_time.clock_report), for the hook to compare with its own."""
+    zone: str = ""
+    offsets: List[ClockOffset] = []
+
+
 class SessionStartResponse(BaseModel):
     # The session's conversation id — deterministic, and handed out before
     # the row exists (lazy registration; see services/claude_code_mode.py)
@@ -172,6 +186,11 @@ class SessionStartResponse(BaseModel):
     # sha256 of the server's index.md, so the hook can say loudly when what
     # this machine reaches at that path is not the server's copy
     notes_check: Optional[NotesCheck] = None
+    # The server's zone, on every firing: the hook tells the time from its
+    # own machine (HIM_TIMEZONE) and the server prints and reads stored
+    # times in its own (LOCAL_TIMEZONE), and the hook says loudly when the
+    # two are not the same clock. None from a server that predates it.
+    server_clock: Optional[ServerClock] = None
 
 
 class PeerMessage(BaseModel):
@@ -441,6 +460,7 @@ async def session_start(
         rooms_error=rooms_error,
         git_identity=cc.git_identity_for(entity),
         notes_check=notes_check,
+        server_clock=ServerClock(**clock_report()),
     )
 
 

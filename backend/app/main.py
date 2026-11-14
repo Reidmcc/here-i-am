@@ -113,13 +113,12 @@ def warn_retired_voice_settings():
 
 
 def warn_unloadable_local_timezone():
-    """Say aloud at startup when LOCAL_TIMEZONE names a zone that won't load."""
-    from app.services.local_time import local_timezone_problem
+    """Say aloud at startup when LOCAL_TIMEZONE names a zone that won't
+    load. Resolving the zone is what warns (once per name, and the answer
+    is kept), so the first stamp rendered afterwards doesn't say it again."""
+    from app.services.local_time import configured_zone
 
-    name = (settings.local_timezone or "").strip()
-    problem = local_timezone_problem(name) if name else None
-    if problem:
-        logging.getLogger("app.main").warning(problem)
+    configured_zone()
 
 
 @asynccontextmanager

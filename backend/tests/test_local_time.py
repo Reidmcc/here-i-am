@@ -101,6 +101,51 @@ def test_startup_warns_about_an_unloadable_zone(zone, caplog):
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
+def test_startup_and_the_first_stamp_warn_once_between_them(zone, caplog):
+    # The startup check resolves the zone, which is what warns and what
+    # keeps the answer; it used to check on the side, and the first render
+    # then said it all again (PR #410 review, finding 3)
+    zone("Mars/Phobos")
+    with caplog.at_level(logging.WARNING):
+        warn_unloadable_local_timezone()
+        stamp_human_message("Hello", datetime(2026, 7, 8, 14, 32))
+        local_time.local_stamp("2026-07-08T14:32:00")
+    warnings = [r for r in caplog.records if "LOCAL_TIMEZONE" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+# --- clock_report: the server's zone, for the hook to compare with its own
+
+
+def test_clock_report_gives_offsets_now_and_either_side_of_the_year(zone):
+    zone("America/New_York")
+    report = local_time.clock_report(datetime(2026, 11, 14, 20, 3, 41, 500, tzinfo=timezone.utc))
+    assert report == {
+        "zone": "EST",
+        "offsets": [
+            {"at": "2026-11-14T20:03:41+00:00", "minutes": -300},
+            {"at": "2026-01-15T12:00:00+00:00", "minutes": -300},
+            {"at": "2026-07-15T12:00:00+00:00", "minutes": -240},
+        ],
+    }
+
+
+def test_clock_report_in_utc_and_on_a_half_hour(zone):
+    zone("UTC")
+    assert {o["minutes"] for o in local_time.clock_report()["offsets"]} == {0}
+    zone("Asia/Kolkata")
+    report = local_time.clock_report()
+    assert report["zone"] == "IST"
+    assert {o["minutes"] for o in report["offsets"]} == {330}
+
+
+def test_clock_report_with_no_zone_named_is_the_servers_own(zone):
+    zone("")
+    now = datetime(2026, 11, 14, 20, 3, tzinfo=timezone.utc)
+    report = local_time.clock_report(now)
+    assert report["offsets"][0]["minutes"] == now.astimezone().utcoffset().total_seconds() // 60
+
+
 # --- The stamp on human messages
 
 

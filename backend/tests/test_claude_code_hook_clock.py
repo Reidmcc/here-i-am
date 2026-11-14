@@ -367,3 +367,94 @@ def test_the_line_counts_against_the_post_compaction_budget(tmp_path):
     assert compacted.startswith(COMPACTED + "\n\n" + context)
     assert bulk not in compacted and "post-compact-notes-index.md" in compacted
     assert hook_util.output_chars(compacted) <= budget
+
+
+# --- Two clocks: this machine's zone against the server's (PR #410 review,
+# --- finding 1)
+#
+# The clock line is the hook machine's time; every stored time the entity is
+# shown, and every offset-less time the memory tools read back, is the
+# server's. On one machine they agree by construction. With the server on a
+# VM they differ unless both knobs are set, and a time copied off the clock
+# line is then read hours off with nothing said. The session-start response
+# carries the server's offsets, and the hook says so while they differ.
+
+
+def server_clock(zone_name: str, *minutes: int) -> dict:
+    instants = ["2026-11-14T20:03:41+00:00", "2026-01-15T12:00:00+00:00", "2026-07-15T12:00:00+00:00"]
+    return {
+        "zone": zone_name,
+        "offsets": [{"at": at, "minutes": m} for at, m in zip(instants, minutes, strict=True)],
+    }
+
+
+NEW_YORK_CLOCK = server_clock("EST", -300, -300, -240)
+UTC_CLOCK = server_clock("UTC", 0, 0, 0)
+
+
+def test_the_same_clock_says_nothing(zone):
+    zone("America/New_York")
+    assert hook_util.clock_check_lines({"server_clock": NEW_YORK_CLOCK}) == []
+    # The name is not what is compared: Windows spells this zone out
+    spelled = dict(NEW_YORK_CLOCK, zone="Eastern Standard Time")
+    assert hook_util.clock_check_lines({"server_clock": spelled}) == []
+
+
+def test_a_server_in_another_zone_is_said_with_the_gap_and_the_way_round_it(zone):
+    # The VM case: the server's clock is UTC and nobody set LOCAL_TIMEZONE
+    zone("America/New_York")
+    (line,) = hook_util.clock_check_lines({"server_clock": UTC_CLOCK})
+    assert line.startswith("[HERE I AM] TWO CLOCKS: this machine and the Here I Am server")
+    assert "5 hours apart" in line
+    assert "this machine's, UTC-05:00" in line
+    assert "the server's, UTC (UTC+00:00)" in line
+    assert "memory_read, memory_find or memory_query without an offset" in line
+    # A time with its offset written out is right whichever zone reads it
+    assert "2026-11-14T15:03-05:00" in line
+    assert "HIM_TIMEZONE" in line and "LOCAL_TIMEZONE" in line
+    assert "\n" not in line
+
+
+def test_a_half_hour_gap(zone):
+    zone("Asia/Kolkata")
+    (line,) = hook_util.clock_check_lines({"server_clock": UTC_CLOCK})
+    assert "5 hours 30 minutes apart" in line
+
+
+def test_zones_that_agree_today_but_not_all_year(zone):
+    # Bogota keeps UTC-05:00 all year; New York leaves it in March. In
+    # November the two read the same, and a July day would be an hour out
+    zone("America/Bogota")
+    (line,) = hook_util.clock_check_lines({"server_clock": NEW_YORK_CLOCK})
+    assert "agree today but not all year" in line
+    assert "On 2026-07-15 this machine is at UTC-05:00 and the server at UTC-04:00" in line
+    assert "1 hour apart" in line and "1 hour off" in line
+
+
+def test_no_report_or_an_unreadable_one_says_nothing(zone):
+    zone("America/New_York")
+    assert hook_util.clock_check_lines({}) == []
+    assert hook_util.clock_check_lines({"server_clock": None}) == []
+    assert hook_util.clock_check_lines({"server_clock": "UTC"}) == []
+    assert hook_util.clock_check_lines({"server_clock": {"zone": "UTC", "offsets": []}}) == []
+    junk = {"zone": "UTC", "offsets": [{"at": "sometime", "minutes": 0}, {"minutes": 0}, "x"]}
+    assert hook_util.clock_check_lines({"server_clock": junk}) == []
+
+
+@pytest.mark.parametrize("source", ["startup", "resume", "compact"])
+def test_every_session_start_says_it_while_they_differ(source):
+    out, _ = run_session_start(source, body={"context": "", "server_clock": UTC_CLOCK})
+    assert out.count("[HERE I AM] TWO CLOCKS:") == 1
+    assert "5 hours apart" in out
+    # A resume prints nothing else at all
+    if source == "resume":
+        assert out.startswith("[HERE I AM] TWO CLOCKS:")
+
+
+def test_a_session_start_on_the_same_clock_prints_no_notice():
+    out, _ = run_session_start(
+        "startup", body={"context": "[HERE I AM] You are Test Entity.", "server_clock": NEW_YORK_CLOCK}
+    )
+    assert "TWO CLOCKS" not in out
+    out, _ = run_session_start("resume", body={"context": "", "server_clock": NEW_YORK_CLOCK})
+    assert out == ""

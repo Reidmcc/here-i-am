@@ -53,6 +53,7 @@ from app.services.harness_limits import (  # noqa: F401 — the limits are re-ex
 from app.services.local_time import (
     Zone,
     configured_zone,
+    date_in_zone,
     format_stamp,
     in_zone,
     local_stamp,
@@ -395,6 +396,7 @@ def _link_markers(
     role: str,
     entity_id: Optional[str],
     labels: Optional[Dict[str, str]] = None,
+    date_of: Optional[Callable[[Any], str]] = None,
 ) -> str:
     """
     A memory's link marker lines (issues #366, #368) as a suffix for its
@@ -402,11 +404,13 @@ def _link_markers(
     memory prints exactly as before. They ride with the header, not the
     content: a memory listed by header only (RESULT_SIZE_POINTER, or an
     in-context pointer in the readers) still shows that it was corrected,
-    and what it was based on.
+    and what it was based on. `date_of` gives the links' dates in a
+    reader's own zone; without it they are local, like the header's.
     """
     lines = format_memory_link_lines(
         links, role, entity_id=entity_id,
         entity_labels=labels if labels is not None else _entity_labels(),
+        **({"date_of": date_of} if date_of is not None else {}),
     )
     return "".join(f"\n{line}" for line in lines)
 
@@ -1498,7 +1502,11 @@ def _format_archive_item(
     header = (
         f"--- {marker}Memory {item['id'][:8]} ({', '.join(parts)}{flag_text}"
         f"{_model_display(item, include_model)}) ---"
-        + _link_markers(item.get("links"), item.get("role"), entity_id, entity_labels)
+        # The links' dates in the zone of the stamp beside them
+        + _link_markers(
+            item.get("links"), item.get("role"), entity_id, entity_labels,
+            date_of=lambda value: date_in_zone(value, tzinfo),
+        )
     )
     if item.get("in_context"):
         return [header, IN_CONTEXT_POINTER, ""]
@@ -2707,10 +2715,12 @@ MEMORY_READ_SCHEMA = {
             "type": "string",
             "description": (
                 "IANA timezone the day boundaries in 'from'/'to' are read in "
-                "and the output's stamps are printed in, e.g. 'UTC' or "
-                "'Asia/Tokyo'. Default: local time, the zone every other "
-                "stamp you are shown is in, so leave it out unless you want "
-                "another zone."
+                "and each message's stamp and link-marker dates are printed "
+                "in, e.g. 'UTC' or 'Asia/Tokyo'. Default: local time, the "
+                "zone every other stamp you are shown is in, so leave it out "
+                "unless you want another zone. The cursor's time stays local, "
+                "with its offset written out, which is the same moment in "
+                "any zone."
             ),
         },
         "in_conversation": {
@@ -2891,10 +2901,12 @@ MEMORY_FIND_SCHEMA = {
             "type": "string",
             "description": (
                 "IANA timezone the day boundaries in 'from'/'to' are read in "
-                "and the output's stamps are printed in, e.g. 'UTC' or "
-                "'Asia/Tokyo'. Default: local time, the zone every other "
-                "stamp you are shown is in, so leave it out unless you want "
-                "another zone."
+                "and each message's stamp and link-marker dates are printed "
+                "in, e.g. 'UTC' or 'Asia/Tokyo'. Default: local time, the "
+                "zone every other stamp you are shown is in, so leave it out "
+                "unless you want another zone. The cursor's time stays local, "
+                "with its offset written out, which is the same moment in "
+                "any zone."
             ),
         },
         "in_conversation": {

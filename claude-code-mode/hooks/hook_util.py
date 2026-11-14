@@ -983,13 +983,21 @@ def local_moment(now: Optional[datetime] = None) -> tuple:
         )
 
 
-def utc_offset_label(moment: datetime) -> str:
-    """'UTC-05:00' for an aware datetime."""
+def utc_offset_minutes(moment: datetime) -> int:
     offset = moment.utcoffset()
-    minutes = int(offset.total_seconds() // 60) if offset is not None else 0
+    return int(offset.total_seconds() // 60) if offset is not None else 0
+
+
+def offset_label(minutes: int) -> str:
+    """'UTC-05:00' for an offset from UTC in minutes."""
     sign = "-" if minutes < 0 else "+"
     hours, rest = divmod(abs(minutes), 60)
     return f"UTC{sign}{hours:02d}:{rest:02d}"
+
+
+def utc_offset_label(moment: datetime) -> str:
+    """'UTC-05:00' for an aware datetime."""
+    return offset_label(utc_offset_minutes(moment))
 
 
 def clock_line(now: Optional[datetime] = None, event: str = CLOCK_AT_PROMPT) -> str:
@@ -1012,6 +1020,97 @@ def clock_line(now: Optional[datetime] = None, event: str = CLOCK_AT_PROMPT) -> 
         f"{CLOCK_PREFIX}{moment.strftime('%A %Y-%m-%d %H:%M')} {zone}, {event}."
     )
     return f"{line} {problem}." if problem else line
+
+
+# --- Two clocks: this machine's zone against the server's.
+#
+# The clock line is this machine's time (HIM_TIMEZONE, or its own zone).
+# Every stored time the entity is shown is the server's rendering (memory
+# markers, the archive readers), in the server's zone (LOCAL_TIMEZONE, or
+# its own), and so is every offset-less time the memory tools read back. On
+# one machine with neither knob set they are the same zone by construction.
+# With the server on a cloud VM (issue #396) they differ by default, the
+# VM's clock being UTC, and then a time copied off the clock line and given
+# to memory_read without an offset is read hours away from what was meant,
+# with nothing said. So the session-start response carries the server's
+# offsets (local_time.clock_report) and the SessionStart hook compares them
+# with its own, on every firing, and says so loudly while they differ: the
+# same rule as a HIM_TIMEZONE that won't load. Only SessionStart: the
+# prompt hook has to tell the time with the server down, and has nothing to
+# compare then.
+#
+# Offsets are compared, not names (Windows names its zone in full), at each
+# instant the server names: now, and one in January and one in July, since
+# two zones can agree today and part ways at a daylight-time change.
+
+CLOCK_FIX_ADVICE = (
+    "Tell the user: HIM_TIMEZONE in the hooks' environment and "
+    "LOCAL_TIMEZONE in the server's .env should name the same zone."
+)
+
+
+def _apart(minutes: int) -> str:
+    hours, rest = divmod(abs(minutes), 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours} hour{'' if hours == 1 else 's'}")
+    if rest:
+        parts.append(f"{rest} minutes")
+    return " ".join(parts)
+
+
+def clock_check_lines(body) -> list:
+    """
+    The loud line when this machine's zone and the server's are not the
+    same clock. Empty when they agree at every instant the server named, or
+    when the response carries no report (an older backend).
+    """
+    report = (body or {}).get("server_clock")
+    if not isinstance(report, dict):
+        return []
+    # (which probe, this machine's time at it, its offset, the server's);
+    # the server's first probe is the present
+    differing = []
+    for index, probe in enumerate(report.get("offsets") or []):
+        try:
+            at = datetime.fromisoformat(str(probe["at"]))
+            theirs = int(probe["minutes"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        mine, _ = local_moment(at)
+        ours = utc_offset_minutes(mine)
+        if ours != theirs:
+            differing.append((index, mine, ours, theirs))
+    if not differing:
+        return []
+    index, mine, ours, theirs = differing[0]
+    gap = _apart(ours - theirs)
+    if index == 0:
+        server_zone = str(report.get("zone") or "").strip()
+        server = f"{server_zone} ({offset_label(theirs)})" if server_zone else offset_label(theirs)
+        return [
+            "[HERE I AM] TWO CLOCKS: this machine and the Here I Am server are in "
+            f"different timezones, {gap} apart. The clock line on your prompts is "
+            f"this machine's, {offset_label(ours)}. Every stored time you are shown "
+            "(memory markers, the archive readers, notices) is the server's, "
+            f"{server}, and so is any time you give memory_read, memory_find or "
+            "memory_query without an offset: a time copied off the clock line is "
+            f"read {gap} away from what you meant. Until this is fixed, give those "
+            "tools times with the offset written out (now, on this machine: "
+            f"{mine.isoformat(timespec='minutes')}). "
+            + CLOCK_FIX_ADVICE
+        ]
+    return [
+        "[HERE I AM] TWO CLOCKS: this machine's timezone and the Here I Am "
+        "server's agree today but not all year. On "
+        f"{mine.strftime('%Y-%m-%d')} this machine is at {offset_label(ours)} and "
+        f"the server at {offset_label(theirs)}, {gap} apart, so for that part of "
+        "the year the server's stamps and this machine's clock line disagree, "
+        "and a time given to the memory tools without an offset is read "
+        f"{gap} off. " + CLOCK_FIX_ADVICE
+    ]
 
 
 # --- Rooms registry (issue #323): what the harness lets a hook see about

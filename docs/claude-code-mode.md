@@ -1149,6 +1149,33 @@ wrong dates came from. All of it is rendered by the server
 not the hook's `HIM_TIMEZONE`; on one machine with neither set they are
 the same zone, and a deployment that sets one sets both.
 
+**Two clocks, checked.** Nothing makes those two settings agree, and with
+the server on a cloud VM (#396) they disagree by default: the VM's clock
+is UTC and the hooks' machine is wherever the human is. A time copied off
+the clock line and handed to `memory_read` without an offset would then
+be read hours away from what was meant, and the only sign would be the
+zone in the span header, after the fact. So `/session-start` returns the
+server's clock (`server_clock`, from `local_time.clock_report`: the zone's
+name, and its offset from UTC now, in mid-January and in mid-July), and
+the SessionStart hook compares each offset with its own machine's at the
+same instant (`hook_util.clock_check_lines`). While they differ it prints
+one loud line on every firing, resumes included:
+
+```
+[HERE I AM] TWO CLOCKS: this machine and the Here I Am server are in different timezones, 5 hours apart. The clock line on your prompts is this machine's, UTC-05:00. Every stored time you are shown (memory markers, the archive readers, notices) is the server's, UTC (UTC+00:00), and so is any time you give memory_read, memory_find or memory_query without an offset: …
+```
+
+It gives the gap, the way round it (write the offset out, with an example
+for this machine's present), and what to tell the human. Offsets are
+compared, not names, because Windows names its zone in full where
+`zoneinfo` abbreviates. The January and July probes catch two zones that
+agree today and part at a daylight-time change (New York and Bogota in
+winter); that case gets its own wording. A server that predates the field
+sends nothing and the hook says nothing. The prompt hook does not check:
+it has to tell the time with the server down, and SessionStart, which
+fires at every start, resume and compaction, is where the server's answer
+already arrives.
+
 | Where | Reads |
 | --- | --- |
 | `[MEMORY]` marker | `from 2026-08-24 16:29 EDT` |
@@ -1163,8 +1190,10 @@ the same zone, and a deployment that sets one sets both.
 Input follows output: a date or time handed to a reader (`from`, `to`) or
 to `memory_query`'s `since` with no offset is read as local, so a time
 copied off a stamp means what it said. An explicit offset is taken as
-given, and the readers' `tz` still names another zone for both the day
-boundaries and the stamps. Three things to know about the change itself:
+given, and the readers' `tz` still names another zone for the day
+boundaries, each row's stamp and the link-marker dates under it (the
+cursor's time stays local with its offset, which is the same moment in
+any zone). Three things to know about the change itself:
 
 - Rows already in a transcript keep the shape they were printed in. The
   old marker is recognizable (a `T`, microseconds, no zone); old reader

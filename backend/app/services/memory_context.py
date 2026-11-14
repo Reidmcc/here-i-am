@@ -11,7 +11,7 @@ ConversationSession uses these tracking mechanisms for all memory handling.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from app.services.local_time import local_date, local_stamp
 
@@ -272,6 +272,7 @@ def _link_target_entry(
     entity_id: Optional[str],
     entity_labels: Optional[Dict[str, str]],
     state_prefix: str,
+    date_of: Callable[[Any], str] = local_date,
 ) -> str:
     """One linked memory a reflection points AT: 'id (date, who)', or the
     state it has since left view in — a withdrawn memory (archived
@@ -280,19 +281,21 @@ def _link_target_entry(
     short_id = str(end["id"])[:8]
     if end.get("state") == "withdrawn":
         return f"{short_id} ({state_prefix}withdrawn)"
-    parts = [local_date(end.get("created_at")), _link_speaker(end, entity_id, entity_labels)]
+    parts = [date_of(end.get("created_at")), _link_speaker(end, entity_id, entity_labels)]
     if end.get("state") == "released":
         parts.append(f"{state_prefix}released")
     return f"{short_id} ({', '.join(p for p in parts if p)})"
 
 
-def _link_reflection_entry(end: Dict[str, Any], with_date: bool) -> str:
+def _link_reflection_entry(
+    end: Dict[str, Any], with_date: bool, date_of: Callable[[Any], str] = local_date
+) -> str:
     """One reflection pointing at this memory: its id, its date when asked
     for, and "released" if the entity has released it. (A reflection in an
     archived conversation never gets here: the loader drops withdrawn
     reverse ends, so a withdrawn verdict can't outlive the archive.)"""
     short_id = str(end["id"])[:8]
-    parts = [local_date(end.get("created_at"))] if with_date else []
+    parts = [date_of(end.get("created_at"))] if with_date else []
     if end.get("state") == "released":
         parts.append("released")
     return f"{short_id} ({', '.join(parts)})" if parts else short_id
@@ -303,6 +306,7 @@ def format_memory_link_lines(
     role: str,
     entity_id: Optional[str] = None,
     entity_labels: Optional[Dict[str, str]] = None,
+    date_of: Callable[[Any], str] = local_date,
 ) -> List[str]:
     """
     The marker lines for a memory's links (issues #366, #368), one line per
@@ -323,7 +327,9 @@ def format_memory_link_lines(
     the reflection holds the reason. Every entry is a pointer — an id, a
     date, who spoke — never content and never a count: the entity follows
     one with memory_neighbors. Dates are the human's local calendar dates
-    (local_time.local_date), like every other time the entity is shown. A
+    (local_time.local_date), like every other time the entity is shown;
+    `date_of` replaces that for a reader called with its own tz, so a row's
+    link dates are in the same zone as the stamp on its header. A
     source that has left view says so
     ("source released", "source withdrawn") instead of disappearing; a
     reflection pointing at this memory is labeled "released" when the
@@ -337,15 +343,19 @@ def format_memory_link_lines(
     lines: List[str] = []
     revises = links.get("revises") or []
     if revises:
-        entries = [_link_target_entry(end, entity_id, entity_labels, "") for end in revises]
+        entries = [_link_target_entry(end, entity_id, entity_labels, "", date_of) for end in revises]
         lines.append(f"[revises {', '.join(entries)}]")
     cites = links.get("cites") or []
     if cites:
-        entries = [_link_target_entry(end, entity_id, entity_labels, "source ") for end in cites]
+        entries = [
+            _link_target_entry(end, entity_id, entity_labels, "source ", date_of) for end in cites
+        ]
         lines.append(f"[sources: {', '.join(entries)}]")
     revised_by = links.get("revised_by") or []
     if revised_by:
-        entries = ", ".join(_link_reflection_entry(end, with_date=True) for end in revised_by)
+        entries = ", ".join(
+            _link_reflection_entry(end, with_date=True, date_of=date_of) for end in revised_by
+        )
         if role == "reflection":
             lines.append(f"[later revised → {entries}]")
         else:

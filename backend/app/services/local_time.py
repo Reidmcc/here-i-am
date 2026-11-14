@@ -141,10 +141,54 @@ def local_stamp(value: Any, seconds: bool = False) -> str:
     return format_stamp(to_local(moment), seconds)
 
 
-def local_date(value: Any) -> str:
-    """'2026-11-14': the local calendar date of a stored timestamp. No
-    zone: a date shown alone is the human's date, like every other."""
+def date_in_zone(value: Any, zone: Zone) -> str:
+    """'2026-11-14': the calendar date of a stored timestamp in `zone`."""
     moment = as_moment(value)
     if moment is None:
         return str(value or "")[:10]
-    return to_local(moment).strftime("%Y-%m-%d")
+    return in_zone(moment, zone).strftime("%Y-%m-%d")
+
+
+def local_date(value: Any) -> str:
+    """'2026-11-14': the local calendar date of a stored timestamp. No
+    zone: a date shown alone is the human's date, like every other."""
+    return date_in_zone(value, configured_zone())
+
+
+def _offset_minutes(moment: datetime) -> int:
+    offset = moment.utcoffset()
+    return int(offset.total_seconds() // 60) if offset is not None else 0
+
+
+def clock_report(now: Optional[datetime] = None) -> Dict[str, Any]:
+    """
+    What this server's clock is, for a caller on another machine to hold
+    against its own: the zone's name now, and its offset from UTC (in
+    minutes) at a few named instants.
+
+    The Claude Code hooks tell the time from their own machine
+    (HIM_TIMEZONE) and this server prints and reads every stored time in
+    its zone (LOCAL_TIMEZONE). Nothing makes the two agree, and when they
+    don't, a time copied off the hook's clock line and handed back to a
+    reader without an offset is read hours off, silently. The SessionStart
+    hook compares (hook_util.clock_check_lines) and says so aloud.
+
+    Offsets, not names: Windows calls its zone "Eastern Standard Time"
+    where zoneinfo says "EST", and two differently named zones can be the
+    same clock. Three instants, not one: two zones can agree today and
+    differ across a daylight-time change (New York and Bogota, in winter),
+    which a mid-January and a mid-July probe catch whenever it is asked.
+    """
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0)
+    probes = [
+        now,
+        datetime(now.year, 1, 15, 12, tzinfo=timezone.utc),
+        datetime(now.year, 7, 15, 12, tzinfo=timezone.utc),
+    ]
+    return {
+        "zone": to_local(now).tzname() or "",
+        "offsets": [
+            {"at": probe.isoformat(), "minutes": _offset_minutes(to_local(probe))}
+            for probe in probes
+        ],
+    }

@@ -131,13 +131,16 @@ def main() -> None:
     identity_lines = hook_util.git_identity_lines(body, announce=bool(context))
 
     # Trailer lines come last, after the context and any spill pointer: a
-    # notes directory that isn't the server's copy (issue #397), the
-    # identity statement, then the rooms registry's one-line notice or loud
+    # notes directory that isn't the server's copy (issue #397), a server
+    # in another timezone than this machine, the identity statement, then the rooms registry's one-line notice or loud
     # write failure. The notes lines are kept apart too, for the one branch
     # that has to move them up (an over-budget identity block, below)
     notes_lines = hook_util.notes_check_lines(body)
     trailer_lines = [
         *notes_lines,
+        # This machine's zone against the server's, on every firing while
+        # they differ (see hook_util, "Two clocks")
+        *hook_util.clock_check_lines(body),
         *identity_lines,
         *hook_util.rooms_output_lines(body),
     ]
