@@ -1179,11 +1179,24 @@ boundaries and the stamps. Three things to know about the change itself:
 
 The compaction mod's forked turn, which has no tools and so no clock, is
 told the time in the same shape and the same zone (`localStamp` in
-`mods/compact-talk/hooks/register.ts`, reading `HIM_TIMEZONE`). SessionStart
-prints no clock line. At a new session the first prompt's follows at once.
-After an auto-compaction in the middle of a turn nothing follows until the
-next prompt (the mod's turn was before the boundary and is not in view
-after it), so there the time is still a shell read.
+`mods/compact-talk/hooks/register.ts`, reading `HIM_TIMEZONE`).
+
+**After a compaction the SessionStart hook says it too**, as the first line
+of the post-compaction block (decided 2026-11-14):
+
+```
+[HERE I AM CLOCK] Saturday 2026-11-14 16:28 EST (UTC-05:00), when this context was compacted.
+```
+
+An auto-compaction lands in the middle of a turn, and the turn goes on
+afterwards with no prompt, so no prompt hook runs. The last clock line
+went with the context, the mod's turn was before the boundary and is not
+in view after it, and until the next prompt the time was a shell read. The
+line is printed as soon as the firing is known to be a compaction
+(`source` is `compact`), so the unreachable-backend notice carries it too;
+it shares the stdout line, so the bulk's fit takes its size out, and the
+arrive-whole file opens with it. No other SessionStart prints one: at a
+new session or a resume the first prompt's follows at once.
 
 The server has the same rule for native conversations, with its own knob
 (`LOCAL_TIMEZONE`, `services/local_time.py`): the stamp on human messages

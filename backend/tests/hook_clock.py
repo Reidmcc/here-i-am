@@ -15,8 +15,10 @@ PINNED_CLOCK = (
     "prompt arrived."
 )
 
-# Goes after `import hook_util` in a test's stub code
-PIN_CLOCK = f"hook_util.clock_line = lambda now=None: {PINNED_CLOCK!r}\n"
+# Goes after `import hook_util` in a test's stub code. One pinned line
+# whatever the event: the SessionStart hook prints it too, after a
+# compaction, and the tests that pin compare two runs of the same hook
+PIN_CLOCK = f"hook_util.clock_line = lambda now=None, event=None: {PINNED_CLOCK!r}\n"
 
 
 def without_clock(out: str) -> str:

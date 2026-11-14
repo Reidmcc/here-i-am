@@ -142,11 +142,16 @@ def test_default_now_is_the_present(zone):
 # --- The hook: the line opens the output on every path
 
 
-def run_hook(stdin_text, body=None, unreachable=False, extra_env=None, tmp_path=None):
+def run_hook(
+    stdin_text, body=None, unreachable=False, extra_env=None, tmp_path=None,
+    script="user_prompt_submit",
+):
     """
-    Run user_prompt_submit.main() with the backend stubbed and the clock
-    held at NOW (the real clock_line, so HIM_TIMEZONE still decides the
-    zone). Returns (stdout, whether the backend was called).
+    Run a hook's main() (the prompt hook's unless `script` says otherwise)
+    with the backend stubbed and the clock held at NOW (the real
+    clock_line, so HIM_TIMEZONE still decides the zone and the hook still
+    chooses what the time is the time of). Returns (stdout, whether the
+    backend was called).
     """
     stub_tail = (
         "    import urllib.error\n"
@@ -159,15 +164,16 @@ def run_hook(stdin_text, body=None, unreachable=False, extra_env=None, tmp_path=
         "from datetime import datetime, timezone\n"
         "import hook_util\n"
         "real = hook_util.clock_line\n"
-        f"hook_util.clock_line = lambda now=None: real(datetime.fromisoformat({NOW.isoformat()!r}))\n"
+        "hook_util.clock_line = lambda now=None, event=hook_util.CLOCK_AT_PROMPT: "
+        f"real(datetime.fromisoformat({NOW.isoformat()!r}), event)\n"
         f"body = json.loads({json.dumps(json.dumps(body if body is not None else {'context': ''}))})\n"
         "def stub(path, payload, timeout=30):\n"
         "    sys.stderr.write('BACKEND-CALLED')\n"
         + stub_tail
         + "hook_util.post_backend = stub\n"
         f"sys.stdin = io.StringIO({json.dumps(stdin_text)})\n"
-        "import user_prompt_submit\n"
-        "user_prompt_submit.main()\n"
+        f"import {script}\n"
+        f"{script}.main()\n"
     )
     env = {**os.environ, "HIM_TIMEZONE": "America/New_York", **(extra_env or {})}
     if "HIM_DISABLE" not in (extra_env or {}):
@@ -265,3 +271,99 @@ def test_the_line_counts_against_the_stdout_budget(tmp_path):
     for out in (plain, long_line):
         assert hook_util.output_chars(out) <= budget
     assert len(long_line.splitlines()[0]) > len(plain.splitlines()[0])
+
+
+# --- SessionStart: the line opens the block after a compaction, and only then
+#
+# An auto-compaction lands in the middle of a turn, and the turn goes on
+# with no prompt: the last clock line went with the context, and no prompt
+# hook runs until the human next writes. So the compaction's own SessionStart
+# says the time. A new session or a resume doesn't: its first prompt does.
+
+COMPACTED = (
+    "[HERE I AM CLOCK] Saturday 2026-11-14 15:03 EST (UTC-05:00), when this "
+    "context was compacted."
+)
+
+
+def session_start(source: str, session_id: str = "clock-test") -> str:
+    return json.dumps({"session_id": session_id, "source": source, "cwd": "."})
+
+
+def run_session_start(source, body=None, **kwargs):
+    return run_hook(session_start(source), body=body, script="session_start", **kwargs)
+
+
+def test_the_line_says_what_its_time_is_the_time_of(zone):
+    zone("America/New_York")
+    assert hook_util.clock_line(NOW, event=hook_util.CLOCK_AT_COMPACTION) == COMPACTED
+    assert hook_util.clock_line(NOW, event=hook_util.CLOCK_AT_PROMPT) == NEW_YORK
+
+
+def test_post_compaction_block_opens_with_the_time():
+    out, called = run_session_start(
+        "compact", body={"context": "[HERE I AM] This session's context was just compacted."}
+    )
+    assert called
+    assert out.startswith(COMPACTED + "\n\n[HERE I AM] This session's context was just compacted.")
+    assert out.count(hook_util.CLOCK_PREFIX) == 1
+
+
+@pytest.mark.parametrize("source", ["startup", "resume", "clear"])
+def test_other_session_starts_carry_no_clock_line(source):
+    # The first prompt's line follows at once; a second one here would be noise
+    out, _ = run_session_start(source, body={"context": "[HERE I AM] You are Test Entity."})
+    assert out.startswith("[HERE I AM] You are Test Entity.")
+    assert hook_util.CLOCK_PREFIX not in out
+
+
+def test_a_resume_that_prints_nothing_still_prints_nothing():
+    out, _ = run_session_start("resume", body={"context": ""})
+    assert out == ""
+
+
+def test_compaction_with_the_backend_down_still_gets_the_time():
+    out, _ = run_session_start("compact", unreachable=True)
+    assert out.startswith(COMPACTED + "\n\n[HERE I AM] The Here I Am backend was unreachable")
+
+
+def test_disabled_session_start_says_nothing_at_all():
+    out, called = run_session_start("compact", extra_env={"HIM_DISABLE": "1"})
+    assert out == "" and not called
+
+
+def test_a_zone_that_wont_load_is_said_after_a_compaction_too():
+    out, _ = run_session_start(
+        "compact", body={"context": "[HERE I AM] compacted"},
+        extra_env={"HIM_TIMEZONE": "Mars/Phobos"},
+    )
+    first = out.splitlines()[0]
+    assert first.startswith(hook_util.CLOCK_PREFIX)
+    assert 'HIM_TIMEZONE="Mars/Phobos" could not be loaded' in first
+    assert "when this context was compacted" in first
+
+
+def test_the_line_counts_against_the_post_compaction_budget(tmp_path):
+    # The block plus its bulk sized to land exactly on the budget without
+    # the line: with the line it is over, so the bulk has to go to a file
+    # and what is printed still comes in under the line the harness draws
+    budget = hook_util.DEFAULT_INLINE_BUDGET
+    context = "[HERE I AM] compacted"
+    trailer = "[ROOMS REGISTRY] this session is the porch"
+    room = budget - hook_util.output_chars(f"{context}\n\n\n\n{trailer}")
+    bulk = "i" * room
+    body = {
+        "context": context,
+        "bulk_context": bulk,
+        "bulk_parts": [{"name": "notes-index", "text": bulk}],
+        "rooms_notice": trailer,
+        "created": False,
+    }
+    assert hook_util.output_chars(f"{context}\n\n{bulk}\n\n{trailer}") == budget
+    # A new session prints that whole: it is exactly on the line, with no clock
+    started, _ = run_session_start("startup", body=body, tmp_path=tmp_path)
+    assert bulk in started
+    compacted, _ = run_session_start("compact", body=body, tmp_path=tmp_path)
+    assert compacted.startswith(COMPACTED + "\n\n" + context)
+    assert bulk not in compacted and "post-compact-notes-index.md" in compacted
+    assert hook_util.output_chars(compacted) <= budget

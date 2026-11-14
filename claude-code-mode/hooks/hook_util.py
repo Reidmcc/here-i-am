@@ -947,9 +947,20 @@ def fail_loud(message: str) -> None:
 #
 # No "time since your last turn": the previous turn's line is in context,
 # so the gap is two lines' difference (decided 2026-11-12).
+#
+# One other place says it: the SessionStart hook, after a compaction only
+# (decided 2026-11-14). An auto-compaction lands in the middle of a turn,
+# and the turn goes on afterwards with no prompt, so no prompt hook: the
+# last clock line went with the context, the compaction mod's turn (which
+# is told the time) was before the boundary, and until the next prompt the
+# hour was a shell read. A new session or a resume needs no line of its
+# own, the first prompt's following at once.
 
 TIMEZONE_ENV = "HIM_TIMEZONE"
 CLOCK_PREFIX = "[HERE I AM CLOCK] "
+# What the time on the line is the time of
+CLOCK_AT_PROMPT = "when this prompt arrived"
+CLOCK_AT_COMPACTION = "when this context was compacted"
 
 
 def local_moment(now: Optional[datetime] = None) -> tuple:
@@ -981,11 +992,12 @@ def utc_offset_label(moment: datetime) -> str:
     return f"UTC{sign}{hours:02d}:{rest:02d}"
 
 
-def clock_line(now: Optional[datetime] = None) -> str:
+def clock_line(now: Optional[datetime] = None, event: str = CLOCK_AT_PROMPT) -> str:
     """
     '[HERE I AM CLOCK] Saturday 2026-11-14 15:03 EST (UTC-05:00), when this
     prompt arrived.' One line, always: a zone that can't be loaded changes
-    what the line says, never whether there is one.
+    what the line says, never whether there is one. `event` says what the
+    time is the time of (CLOCK_AT_PROMPT, CLOCK_AT_COMPACTION).
     """
     moment, problem = local_moment(now)
     offset = utc_offset_label(moment)
@@ -997,8 +1009,7 @@ def clock_line(now: Optional[datetime] = None) -> str:
     else:
         zone = f"{name} ({offset})"
     line = (
-        f"{CLOCK_PREFIX}{moment.strftime('%A %Y-%m-%d %H:%M')} {zone}, "
-        "when this prompt arrived."
+        f"{CLOCK_PREFIX}{moment.strftime('%A %Y-%m-%d %H:%M')} {zone}, {event}."
     )
     return f"{line} {problem}." if problem else line
 

@@ -16,6 +16,11 @@ persists oversized hook output to a file behind a 2 KB preview, which for
 an identity payload is an identity loss that announces itself only as
 "Output too large" (see hook_util.py).
 
+After a compaction (source "compact") the output opens with the clock line,
+"[HERE I AM CLOCK] <local time>, when this context was compacted." (see
+hook_util): the interrupted turn goes on with no prompt, so nothing else
+tells it the time. HIM_TIMEZONE names the zone, as for the prompt hook.
+
 Fail-soft, loudly: a failure still exits 0 so the session continues as a
 plain Claude Code session, but prints a one-line [HERE I AM] notice so the
 degradation is visible from inside. HIM_DISABLE stays silent — that is the
@@ -48,6 +53,19 @@ def main() -> None:
             "Code; your Here I Am context was not loaded this session."
         )
         return
+    # After a compaction the time opens the block (see hook_util, "The
+    # clock"): the turn the compaction interrupted goes on with no prompt,
+    # so no prompt hook, and nothing else says the hour until the next one.
+    # Printed as soon as the firing is known to be a compaction, so every
+    # path below carries it, the unreachable backend included. Everything
+    # after it shares the stdout line, so the fit below takes its size out.
+    clock = (
+        hook_util.clock_line(event=hook_util.CLOCK_AT_COMPACTION)
+        if data.get("source") == "compact"
+        else ""
+    )
+    if clock:
+        print(clock, end="\n\n")
     session_id = data.get("session_id") or ""
     if not session_id:
         return
@@ -134,6 +152,8 @@ def main() -> None:
         return
 
     budget = hook_util.inline_budget(body)
+    if clock:
+        budget -= hook_util.output_chars(clock + "\n\n")
     combined = f"{context}\n\n{bulk}" if context else bulk
     inline = "\n\n".join([combined, *trailer_lines])
     if hook_util.output_chars(inline) <= budget:
@@ -147,8 +167,10 @@ def main() -> None:
     if hook_util.arrive_whole_enabled():
         # Issue #384: the unbudgeted output, for the arrive-whole mod; its
         # marker goes last, after the trailer, and every budget check
-        # below counts it
-        trailer_lines.append(hook_util.whole_marker(inline, session_id, name))
+        # below counts it. The mod puts the file in place of the whole
+        # row, so the file opens with the clock line when the row does
+        whole = f"{clock}\n\n{inline}" if clock else inline
+        trailer_lines.append(hook_util.whole_marker(whole, session_id, name))
     parts = [
         (part.get("name") or "bulk", part.get("text") or "")
         for part in (body.get("bulk_parts") or [])
