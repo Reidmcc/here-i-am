@@ -2,14 +2,16 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { cardsFor, clean, coverage, entryKind, parseBlocks, readSpanOf, parseFiles, parseStamps, parseSummaries, pieces, toolMemoryIds } from '../hooks/parse'
+import { cardsFor, clean, coverage, entryKind, parseBlocks, readSpanOf, parseFiles, parseStamps, parseSummaries, pieces, shownDate, toolMemoryIds } from '../hooks/parse'
 
 // Synthetic memories in the backend's exact shapes (memory_context's marker,
 // claude_code_mode's summary line, the hooks' spill wording). No real
-// archive content belongs in a fixture.
+// archive content belongs in a fixture. A marker's time is local with its
+// zone (A, and B with a zone Windows names in full); C keeps the bare ISO
+// stamp markers carried before that, which old rows still hold.
 const SPILL = 'C:\\Users\\someone\\AppData\\Local\\Temp\\here-i-am-sessions\\abc-retrieval-131619.md'
-const BLOCK_A = '[MEMORY aaaa1111 from 2026-08-24T16:31:15.788419 - originally from you - via Here I Am]\nThe first memory, whole.\nIts second line.\n[/MEMORY]'
-const BLOCK_B = '[MEMORY bbbb2222 from 2026-10-07T17:00:44.017912 - a reflection you saved - via Claude Code]\n[revises cccc3333 (2026-10-04, reflection)]\nA reflection that revises another.\n[/MEMORY]'
+const BLOCK_A = '[MEMORY aaaa1111 from 2026-08-24 12:31 EDT - originally from you - via Here I Am]\nThe first memory, whole.\nIts second line.\n[/MEMORY]'
+const BLOCK_B = '[MEMORY bbbb2222 from 2026-10-07 13:00 Eastern Daylight Time - a reflection you saved - via Claude Code]\n[revises cccc3333 (2026-10-04, reflection)]\nA reflection that revises another.\n[/MEMORY]'
 const BLOCK_C = '[MEMORY dddd4444 from 2026-09-01T10:00:00 - originally from human - via Here I Am]\nThe spilled one, only on disk.\nMore of it.\n[/MEMORY]'
 const ROW = [
   '<system-reminder>',
@@ -58,11 +60,25 @@ describe('parsing the hooks rows', () => {
   test('whole blocks, link marks, summary lines, spill files and stamps', async () => {
     const blocks = parseBlocks(ROW, 'context')
     expect(blocks.map(card => card.id)).toEqual(['aaaa1111', 'bbbb2222'])
-    expect(blocks[0]).toMatchObject({ date: '2026-08-24T16:31:15.788419', from: 'originally from you', via: 'via Here I Am', text: 'The first memory, whole.\nIts second line.' })
-    expect(blocks[1]).toMatchObject({ from: 'a reflection you saved', via: 'via Claude Code', marks: ['[revises cccc3333 (2026-10-04, reflection)]'], text: 'A reflection that revises another.' })
+    expect(blocks[0]).toMatchObject({ date: '2026-08-24 12:31 EDT', from: 'originally from you', via: 'via Here I Am', text: 'The first memory, whole.\nIts second line.' })
+    expect(blocks[1]).toMatchObject({ date: '2026-10-07 13:00 Eastern Daylight Time', from: 'a reflection you saved', via: 'via Claude Code', marks: ['[revises cccc3333 (2026-10-04, reflection)]'], text: 'A reflection that revises another.' })
     expect(parseSummaries(ROW).map(card => card.id)).toEqual(['dddd4444'])
     expect(parseFiles(ROW)).toEqual([{ path: SPILL, kind: 'hook' }])
     expect(parseStamps(ROW)).toContain('[HERE I AM MEMORY RETRIEVAL] matched: 3 new (1 in-context reflection skipped; in-context verbatim held 0 slots).')
+  })
+
+  test('a marker from before stamps were local still parses, and is cut to the second', async () => {
+    const [old] = parseBlocks(BLOCK_C, 'context')
+    expect(old).toMatchObject({ id: 'dddd4444', date: '2026-09-01T10:00:00', from: 'originally from human' })
+    expect(shownDate('2026-08-24T16:31:15.788419')).toBe('2026-08-24T16:31:15')
+    expect(shownDate('2026-08-24 12:31 EDT')).toBe('2026-08-24 12:31 EDT')
+    expect(shownDate('2026-10-07 13:00 Eastern Daylight Time')).toBe('2026-10-07 13:00 Eastern Daylight Time')
+  })
+
+  test('a zone written as an offset does not end the time early', async () => {
+    // zoneinfo names some zones by their offset ("-03"), next to the " - " separators
+    const [card] = parseBlocks('[MEMORY eeee5555 from 2026-08-24 13:31 -03 - originally from you - via Here I Am]\nwords\n[/MEMORY]', 'context')
+    expect(card).toMatchObject({ date: '2026-08-24 13:31 -03', from: 'originally from you' })
   })
 
   test('a spilled memory is filled from its file and labeled as not in context', async () => {

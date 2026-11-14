@@ -927,11 +927,13 @@ def fail_loud(message: str) -> None:
 # what would have told it. So the hook reads its own machine's clock and
 # asks the backend nothing.
 #
-# Local, never UTC: everything else the entity is shown is stamped in UTC
-# (memory markers, link markers, the readers), and reading those as local
-# is where its wrong dates have come from. The line gives the weekday, the
-# date, the time, the zone, and the zone's offset from UTC, so converting
-# a UTC stamp takes no recall of whether daylight time is in force.
+# Local, never UTC, like every stored time the server shows the entity
+# (memory markers, link markers, the readers; services/local_time.py).
+# Those were UTC once, and reading them as local is where its wrong dates
+# came from. The line gives the weekday, the date, the time, the zone, and
+# the zone's offset from UTC, so converting a UTC time that still turns up
+# (a GitHub timestamp, a log line, an old marker) takes no recall of
+# whether daylight time is in force.
 #
 # "Local" is the human's zone, which is this machine's only while the
 # session runs on the human's machine. HIM_TIMEZONE names it (an IANA name

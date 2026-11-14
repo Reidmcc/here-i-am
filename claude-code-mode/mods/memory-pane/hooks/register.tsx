@@ -16,7 +16,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Entry, MemoryCard, ReadSpan, SpillFile, ToolEntry } from '../types'
 import {
   argsText, cardsFor, clip, clock, coverage, entryKind, isOurs, normPath, parseFiles, parseStamps, pieces,
-  readSpanOf, toolMemoryIds,
+  readSpanOf, shownDate, toolMemoryIds,
 } from './parse'
 
 const PANE = 'memory'
@@ -322,7 +322,7 @@ export const register: Register = on => {
       return (
         <Box key={key} flexDirection="column" marginTop={1}>
           <Text wrap="wrap">
-            <Text bold>{memory.id}</Text> · {memory.date.slice(0, 19)} · {memory.from} · {memory.via}
+            <Text bold>{memory.id}</Text> · {shownDate(memory.date)} · {memory.from} · {memory.via}
           </Text>
           <Text dimColor wrap="wrap">{whereLabel(memory, entry.files)}</Text>
           {memory.marks.map(mark => <Text dimColor wrap="wrap">{clip(mark)}</Text>)}

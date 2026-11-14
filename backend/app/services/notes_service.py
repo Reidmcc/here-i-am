@@ -12,11 +12,12 @@ Each entity can have an index.md that gets automatically injected into their con
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.config import settings
+from app.services.local_time import to_local
 
 logger = logging.getLogger(__name__)
 
@@ -466,7 +467,12 @@ class NotesService:
                     files.append({
                         'filename': item.name,
                         'size_bytes': stat.st_size,
-                        'modified': datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        # The human's local wall time (local_time), no
+                        # offset, as it always was on the human's own
+                        # machine: notes_list shows its date
+                        'modified': to_local(
+                            datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+                        ).replace(tzinfo=None).isoformat(),
                     })
             
             # Sort by filename for consistent ordering

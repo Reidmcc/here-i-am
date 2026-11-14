@@ -27,6 +27,18 @@ def _no_arrive_whole(monkeypatch):
     monkeypatch.delenv("HIM_ARRIVE_WHOLE", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _utc_clock(monkeypatch):
+    """Every time the entity is shown is rendered in the human's local zone
+    (services/local_time.py), which unset is the machine's own: Eastern on
+    one developer's desk, UTC on CI. Pinned to UTC so an expected stamp
+    means the same thing on both. Tests about another zone, or about the
+    unset fallback, set LOCAL_TIMEZONE themselves."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "local_timezone", "UTC")
+
+
 @pytest.fixture(scope="session")
 def event_loop():
     """Create an event loop for the test session."""

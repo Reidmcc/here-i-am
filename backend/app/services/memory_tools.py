@@ -50,6 +50,14 @@ from app.services.harness_limits import (  # noqa: F401 — the limits are re-ex
     fit_report,
     utf8_size,
 )
+from app.services.local_time import (
+    Zone,
+    configured_zone,
+    format_stamp,
+    in_zone,
+    local_stamp,
+    read_in_zone,
+)
 from app.services.memory_context import format_memory_link_lines, format_memory_origin
 from app.services.memory_service import (
     MEMORY_ROLES,
@@ -346,22 +354,25 @@ def _parse_since(since: Optional[str]) -> Tuple[Optional[datetime], Optional[str
     """
     Parse memory_query's `since` parameter into a naive-UTC datetime.
 
-    Memory timestamps are stored naive UTC, so an aware input is converted
-    to UTC and stripped. Returns (datetime, error) — at most one is set.
+    Memory timestamps are stored naive UTC. A moment without an offset is
+    read in the human's local time, the zone every stamp is printed in, so
+    a time copied off a marker means what it said; an offset-carrying one
+    is taken as given. Returns (datetime, error) — at most one is set.
     """
     if since is None or not str(since).strip():
         return None, None
     try:
         parsed = datetime.fromisoformat(str(since).strip())
-    except ValueError:
+        if parsed.tzinfo is None:
+            parsed = read_in_zone(parsed, configured_zone())
+    except (ValueError, OSError, OverflowError):
         return None, (
             f"Error: Could not parse since='{since}'. Use ISO 8601, e.g. "
-            "'2026-08-24' or '2026-08-24T18:00:00' (UTC assumed when no "
-            "timezone is given)."
+            "'2026-08-24' or '2026-08-24T18:00:00' (local time, as stamps "
+            "are printed, when no offset is given) or "
+            "'2026-08-24T18:00:00+00:00'."
         )
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
-    return parsed, None
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None), None
 
 
 def _model_display(mem: Dict[str, Any], include_model: bool) -> str:
@@ -766,7 +777,9 @@ async def query_memories(
                 f"Error: mode 'recent' returns your saved reflections only; "
                 f"it cannot be combined with source '{role_filter}'."
             )
-        since_suffix = f" (created after {since_dt.isoformat()} UTC)" if since_dt else ""
+        since_suffix = (
+            f" (created after {local_stamp(since_dt, seconds=True)})" if since_dt else ""
+        )
         try:
             return await _recent_reflections(
                 ctx, num_results, since_dt, since_suffix, include_model=include_model
@@ -778,7 +791,9 @@ async def query_memories(
     if mode_normalized == MODE_RELEASED:
         # `since` bounds the release time here, not creation: "what has been
         # released since X" is the review question
-        since_suffix = f" (released after {since_dt.isoformat()} UTC)" if since_dt else ""
+        since_suffix = (
+            f" (released after {local_stamp(since_dt, seconds=True)})" if since_dt else ""
+        )
         try:
             return await _released_memories(
                 ctx, num_results, since_dt, since_suffix, role_filter, source_suffix,
@@ -1040,7 +1055,7 @@ def _link_echo_line(
     }
     parts = [
         _archive_attribution(item, ctx.entity_id, labels),
-        _format_stamp(message.created_at.isoformat(), None),
+        _format_stamp(message.created_at, configured_zone()),
         format_memory_origin(conversation.source or "native"),
         _conversation_label(item),
     ]
@@ -1359,36 +1374,48 @@ def _live_view(
     )
 
 
-def _resolve_tz(tz: Optional[str]) -> Tuple[Optional[ZoneInfo], Optional[str]]:
-    """An IANA timezone for span boundaries; UTC when omitted."""
-    name = str(tz if tz is not None else "").strip() or "UTC"
+def _resolve_tz(tz: Optional[str]) -> Tuple[Zone, Optional[str]]:
+    """
+    (zone, error) for a reader's tz argument: the zone its span is read in
+    and its stamps are printed in. Omitted, that is the human's local zone
+    (LOCAL_TIMEZONE, else the server's own, which is the None a Zone allows),
+    the same one every other stamp the entity sees is in.
+    """
+    name = str(tz if tz is not None else "").strip()
+    if not name:
+        return configured_zone(), None
     try:
         return ZoneInfo(name), None
     except (ZoneInfoNotFoundError, ValueError):
         return None, (
             f"Error: Unknown timezone '{tz}'. Use an IANA name such as 'UTC', "
-            "'America/New_York', or 'Europe/London'."
+            "'America/New_York', or 'Europe/London', or leave tz out for "
+            "local time."
         )
 
 
 def _parse_span_bound(
-    value: Any, tzinfo: ZoneInfo, end_of_day: bool
+    value: Any, zone: Zone, end_of_day: bool
 ) -> Tuple[Optional[datetime], Optional[datetime], Optional[str]]:
     """
     Parse one end of a memory_read span. A bare date means the start (or,
-    for `to`, the end) of that day in tzinfo; a datetime without an offset
-    is read in tzinfo; an offset-carrying datetime is taken as is. Returns
-    (naive UTC for the query, aware local for display, error).
+    for `to`, the end) of that day in the zone; a datetime without an
+    offset is read in the zone; an offset-carrying datetime is taken as is.
+    Returns (naive UTC for the query, the same moment in the zone for
+    display, error).
     """
     text = str(value if value is not None else "").strip()
     try:
         if _BARE_DATE_RE.match(text):
             day = date.fromisoformat(text)
-            local = datetime.combine(day, time.max if end_of_day else time.min, tzinfo=tzinfo)
+            local = read_in_zone(
+                datetime.combine(day, time.max if end_of_day else time.min), zone
+            )
         else:
             parsed = datetime.fromisoformat(text)
-            local = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=tzinfo)
-    except ValueError:
+            local = parsed if parsed.tzinfo is not None else read_in_zone(parsed, zone)
+        local = local.astimezone(zone)
+    except (ValueError, OSError, OverflowError):
         return None, None, (
             f"Error: Could not parse '{value}'. Use ISO 8601 — a date such as "
             "'2026-09-01' (the whole day) or a moment such as "
@@ -1398,18 +1425,14 @@ def _parse_span_bound(
 
 
 def _format_local(moment: datetime) -> str:
-    return moment.strftime("%Y-%m-%d %H:%M:%S %Z")
+    return format_stamp(moment, seconds=True)
 
 
-def _format_stamp(created_at_iso: str, tzinfo: Optional[ZoneInfo]) -> str:
-    """UTC stamp, with the local time alongside when a non-UTC tz was given."""
-    moment = datetime.fromisoformat(created_at_iso)
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    text = moment.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    if tzinfo is not None and tzinfo.key != "UTC":
-        text += f" ({_format_local(moment.astimezone(tzinfo))})"
-    return text
+def _format_stamp(created_at: Any, zone: Zone) -> str:
+    """A row's stored time (naive UTC, a datetime or its ISO string) as the
+    readers print it: to the second, in the reading zone, with the zone."""
+    moment = created_at if isinstance(created_at, datetime) else datetime.fromisoformat(created_at)
+    return _format_local(in_zone(moment, zone))
 
 
 def _entity_labels() -> Dict[str, str]:
@@ -1448,7 +1471,7 @@ def _format_archive_item(
     item: Dict[str, Any],
     entity_id: Optional[str],
     entity_labels: Dict[str, str],
-    tzinfo: Optional[ZoneInfo],
+    tzinfo: Zone,
     include_model: bool,
     now: datetime,
     marked: bool = False,
@@ -1518,7 +1541,7 @@ def rendered_tokens(text: str) -> int:
 
 
 def _page_weigher(
-    entity_id: Optional[str], tzinfo: Optional[ZoneInfo], include_model: bool
+    entity_id: Optional[str], tzinfo: Zone, include_model: bool
 ) -> Callable[[Dict[str, Any]], int]:
     """
     The row weight the readers hand the paging core (issue #353): the row
@@ -1537,20 +1560,21 @@ def _page_weigher(
 
 
 def archive_row_weigher(entity_id: Optional[str]) -> Callable[[Dict[str, Any]], int]:
-    """The readers' row weight (UTC stamps, no model), for a caller outside
-    the tools that pages the archive the same way: the compaction mod's
-    talk (services/compact_talk.py)."""
-    return _page_weigher(entity_id, None, False)
+    """The readers' row weight (local stamps, no model), for a caller
+    outside the tools that pages the archive the same way: the compaction
+    mod's talk (services/compact_talk.py)."""
+    return _page_weigher(entity_id, configured_zone(), False)
 
 
 def render_archive_rows(items: List[Dict[str, Any]], entity_id: Optional[str]) -> List[str]:
-    """Archive rows as the readers print them (UTC stamps, no model), each
-    row's header, content and blank line, for the same caller."""
+    """Archive rows as the readers print them (local stamps, no model),
+    each row's header, content and blank line, for the same caller."""
     labels = _entity_labels()
     now = datetime.utcnow()
+    zone = configured_zone()
     lines: List[str] = []
     for item in items:
-        lines.extend(_format_archive_item(item, entity_id, labels, None, False, now))
+        lines.extend(_format_archive_item(item, entity_id, labels, zone, False, now))
     return lines
 
 
@@ -1606,7 +1630,7 @@ def _render_archive_page(
     ctx: MemoryToolContext,
     page: Dict[str, Any],
     header: str,
-    tzinfo: Optional[ZoneInfo],
+    tzinfo: Zone,
     include_model: bool,
     isolated: bool,
     released_note: str,
@@ -1669,29 +1693,19 @@ def _render_archive_page(
 
 
 def _span_text(
-    start: Optional[datetime],
-    start_local: Optional[datetime],
-    end: Optional[datetime],
-    end_local: Optional[datetime],
-    tzinfo: ZoneInfo,
+    start_local: Optional[datetime], end_local: Optional[datetime]
 ) -> str:
     """
-    The span as memory_read's header states it: both bounds in tz with the
-    UTC pair bracketed when tz is not UTC; an open start is "the start of
-    your archive", an open end "now".
+    The span as memory_read's header states it: both bounds in the reading
+    zone, each with its zone (the two differ across a daylight-time change),
+    the same shape as the rows' stamps under it; an open start is "the start
+    of your archive", an open end "now".
     """
-    def utc(moment: datetime) -> str:
-        return moment.strftime("%Y-%m-%d %H:%M:%S")
-
-    if tzinfo.key == "UTC":
-        start_text = utc(start) if start is not None else "the start of your archive"
-        end_text = f"{utc(end)} UTC" if end is not None else "now"
-        return f"{start_text} to {end_text}"
-    start_text = _format_local(start_local) if start is not None else "the start of your archive"
-    end_text = _format_local(end_local) if end is not None else "now"
-    start_utc = utc(start) if start is not None else "the start"
-    end_utc = utc(end) if end is not None else "now"
-    return f"{start_text} to {end_text} [{tzinfo.key}; UTC {start_utc} to {end_utc}]"
+    start_text = (
+        _format_local(start_local) if start_local is not None else "the start of your archive"
+    )
+    end_text = _format_local(end_local) if end_local is not None else "now"
+    return f"{start_text} to {end_text}"
 
 
 async def _resolve_conversation_filter(
@@ -1807,7 +1821,9 @@ async def read_memories(
     elif not backward:
         # Forward default: the end of the day `from` names, in tz.
         # Backward default: open — the page begins at the newest row.
-        end_local = datetime.combine(start_local.date(), time.max, tzinfo=tzinfo)
+        end_local = read_in_zone(
+            datetime.combine(start_local.date(), time.max), tzinfo
+        ).astimezone(tzinfo)
         end = end_local.astimezone(timezone.utc).replace(tzinfo=None)
     if start is not None and end is not None and end < start:
         return (
@@ -1829,7 +1845,7 @@ async def read_memories(
     if error:
         return error
 
-    span_text = _span_text(start, start_local, end, end_local, tzinfo)
+    span_text = _span_text(start_local, end_local)
 
     try:
         async with async_session_maker() as db:
@@ -1907,12 +1923,6 @@ MATCH_DESCRIPTIONS = {
     memory_service.MATCH_ALL: "all of the words",
     memory_service.MATCH_ANY: "any of the words",
 }
-
-
-def _describe_bound(moment_utc: datetime, local: datetime, tzinfo: ZoneInfo) -> str:
-    if tzinfo.key == "UTC":
-        return f"{moment_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC"
-    return f"{_format_local(local)} ({moment_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC)"
 
 
 async def find_memories(
@@ -1993,13 +2003,12 @@ async def find_memories(
 
     if start is not None and end is not None:
         span_text = (
-            f", between {_describe_bound(start, start_local, tzinfo)} and "
-            f"{_describe_bound(end, end_local, tzinfo)}"
+            f", between {_format_local(start_local)} and {_format_local(end_local)}"
         )
     elif start is not None:
-        span_text = f", from {_describe_bound(start, start_local, tzinfo)}"
+        span_text = f", from {_format_local(start_local)}"
     elif end is not None:
-        span_text = f", up to {_describe_bound(end, end_local, tzinfo)}"
+        span_text = f", up to {_format_local(end_local)}"
     else:
         span_text = ""
     boundary = "whole words" if whole_words else "inside words too"
@@ -2223,7 +2232,7 @@ def _fit_neighbor_window(
     now = datetime.utcnow()
     rendered = [
         _format_archive_item(
-            item, ctx.entity_id, labels, None, include_model, now,
+            item, ctx.entity_id, labels, configured_zone(), include_model, now,
             marked=(index == window["target_index"]),
         )
         for index, item in enumerate(items)
@@ -2423,8 +2432,9 @@ MEMORY_QUERY_SCHEMA = {
             "type": "string",
             "description": (
                 "Modes 'recent' and 'released' only: an ISO 8601 moment, "
-                "e.g. '2026-08-24' or '2026-08-24T18:00:00' (UTC assumed "
-                "when no timezone is given). In 'recent' it returns "
+                "e.g. '2026-08-24' or '2026-08-24T18:00:00' (local time, as "
+                "every stamp is printed, when no offset is given; "
+                "'2026-08-24T18:00:00+00:00' as given). In 'recent' it returns "
                 "reflections created after it ('everything saved since this "
                 "session started'); in 'released' it returns memories "
                 "released after it."
@@ -2635,7 +2645,7 @@ _MAX_PAGES_PROPERTY = {
 MEMORY_READ_DESCRIPTION = (
     "Read your archive in order: the verbatim record by date, rather than "
     "by similarity. Give a span ('from', optionally 'to'; a bare date means "
-    "that whole day, read in 'tz' if given) and it returns every message in "
+    "that whole day in local time, or in 'tz' if given) and it returns every message in "
     "it — the human's, yours, your reflections where they were saved, "
     "inter-session letters — in the order they happened, each with the "
     "short memory ID the other memory tools accept, who said it, its "
@@ -2674,8 +2684,9 @@ MEMORY_READ_SCHEMA = {
             "type": "string",
             "description": (
                 "Start of the span, ISO 8601: a date ('2026-09-01' = the start "
-                "of that day in tz) or a moment ('2026-09-01T14:00', read in "
-                "tz; '2026-09-01T14:00:00+00:00' as given). Required when "
+                "of that day, local time unless tz is given) or a moment "
+                "('2026-09-01T14:00', read the same way; "
+                "'2026-09-01T14:00:00+00:00' as given). Required when "
                 "reading forward; when direction='backward' it is the stop, "
                 "and defaults to the start of your archive. Note that 'from' "
                 "alone reads that one day forward but that day up to now "
@@ -2695,11 +2706,12 @@ MEMORY_READ_SCHEMA = {
         "tz": {
             "type": "string",
             "description": (
-                "IANA timezone the day boundaries in 'from'/'to' are read in, "
-                "e.g. 'America/New_York'. Default 'UTC'. Output stamps stay UTC, "
-                "with the local time alongside when tz is not UTC."
+                "IANA timezone the day boundaries in 'from'/'to' are read in "
+                "and the output's stamps are printed in, e.g. 'UTC' or "
+                "'Asia/Tokyo'. Default: local time, the zone every other "
+                "stamp you are shown is in, so leave it out unless you want "
+                "another zone."
             ),
-            "default": "UTC",
         },
         "in_conversation": {
             "type": "string",
@@ -2878,11 +2890,12 @@ MEMORY_FIND_SCHEMA = {
         "tz": {
             "type": "string",
             "description": (
-                "IANA timezone the day boundaries in 'from'/'to' are read in, "
-                "e.g. 'America/New_York'. Default 'UTC'. Output stamps stay UTC, "
-                "with the local time alongside when tz is not UTC."
+                "IANA timezone the day boundaries in 'from'/'to' are read in "
+                "and the output's stamps are printed in, e.g. 'UTC' or "
+                "'Asia/Tokyo'. Default: local time, the zone every other "
+                "stamp you are shown is in, so leave it out unless you want "
+                "another zone."
             ),
-            "default": "UTC",
         },
         "in_conversation": {
             "type": "string",
