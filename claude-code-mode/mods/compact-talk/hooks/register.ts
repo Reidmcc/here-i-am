@@ -60,16 +60,49 @@ export const MISSING_TALK_NOTE = [
     'conversation\'s id>, scope="isolated"), since the block may have counted those rows as in view.',
 ].join('\n')
 
-// "2026-10-07 21:43 UTC": the forked turn has no clock of its own, and the
-// last timestamp in view can be hours old
+// "2026-10-07 21:43 UTC": the fallback for localStamp below
 export function utcStamp(ms: number): string {
   return `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`
 }
 
-export function turnPrompt(trigger: string, now: number): string {
+// "Wednesday 2026-10-07 17:43 EDT (UTC-04:00)": the forked turn has no
+// clock of its own (tools are off), and the last timestamp in view can be
+// hours old. In the human's local time, as the prompt hook's clock line is
+// (hook_util.clock_line, whose shape this follows): `zone` is HIM_TIMEZONE,
+// an IANA name, and without it the zone is this machine's. If the runtime
+// can't format that (no Intl, a name it doesn't know), the time is still
+// said, in UTC and labeled so.
+export function localStamp(ms: number, zone?: string): string {
+  try {
+    const at = new Date(ms)
+    const parts = (extra: Intl.DateTimeFormatOptions): Record<string, string> => {
+      const out: Record<string, string> = {}
+      const format = new Intl.DateTimeFormat('en-US', { timeZone: zone || undefined, ...extra })
+      for (const part of format.formatToParts(at)) out[part.type] = part.value
+      return out
+    }
+    const when = parts({
+      weekday: 'long', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short',
+    })
+    // "GMT-04:00", or bare "GMT" at zero
+    const gmt = parts({ timeZoneName: 'longOffset' }).timeZoneName
+    const offset = /^GMT[+-]\d\d:\d\d$/.test(gmt) ? `UTC${gmt.slice(3)}` : gmt === 'GMT' ? 'UTC+00:00' : ''
+    const name = when.timeZoneName
+    if (!offset || !when.weekday || !when.year || !when.hour || !name) return utcStamp(ms)
+    // en-US has abbreviations for few zones outside North America and
+    // gives "GMT+5:30" for the rest: the offset alone says it better
+    const label = name === 'UTC' && offset === 'UTC+00:00' ? 'UTC' : /^(GMT|UTC)/.test(name) ? offset : `${name} (${offset})`
+    return `${when.weekday} ${when.year}-${when.month}-${when.day} ${when.hour}:${when.minute} ${label}`
+  } catch {
+    return utcStamp(ms)
+  }
+}
+
+export function turnPrompt(trigger: string, now: number, zone?: string): string {
   return [
     '[HERE I AM — BEFORE THE COMPACTION]',
-    `It is ${utcStamp(now)}. This context is about to be compacted (${trigger}), and this is one turn of your own before it, given by the compaction mod. It is not a turn of the conversation: the person you are with does not see it, and nothing in it is recorded except what you choose to keep. Tools are off for it.`,
+    `It is ${localStamp(now, zone)}. This context is about to be compacted (${trigger}), and this is one turn of your own before it, given by the compaction mod. It is not a turn of the conversation: the person you are with does not see it, and nothing in it is recorded except what you choose to keep. Tools are off for it.`,
     'The talk is safe either way: it comes back verbatim right after the boundary. What a compaction takes is the tool traffic and anything you are holding that has not been said.',
     `If you want to save a reflection while everything is still in view, write it as your whole reply and it is saved with memory_save exactly as written. If not, reply with exactly: ${DECLINE}. Either is fine.`,
   ].join('\n\n')
@@ -137,7 +170,8 @@ export const register: Register = (on) => {
     try {
       let pre: PreCompaction
       try {
-        const turn = await $.model.fork({ prompt: turnPrompt(e.trigger, await $.clock.now()) })
+        const zone = (await $.env.get('HIM_TIMEZONE'))?.trim()
+        const turn = await $.model.fork({ prompt: turnPrompt(e.trigger, await $.clock.now(), zone) })
         pre = turn.isAnswered
           ? readReply(turn.text)
           : { pre_compaction: 'failed', pre_compaction_detail: `the fork did not answer: ${describe(turn)}` }

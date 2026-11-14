@@ -27,6 +27,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.hook_clock import PIN_CLOCK, PINNED_CLOCK, without_clock
+
 HOOKS_DIR = Path(__file__).resolve().parents[2] / "claude-code-mode" / "hooks"
 
 MATCHED_ZERO = (
@@ -41,6 +43,8 @@ def run_hook(prompt: str, body=None, unreachable: bool = False, extra_env=None):
     """Run user_prompt_submit.main() with post_backend stubbed.
 
     Returns (stdout, called) — called is whether the backend was posted to.
+    The stdout is what follows the clock line, which every path opens with
+    (tests/hook_clock.py).
     """
     stdin_payload = json.dumps({"session_id": "stamp-test", "prompt": prompt})
     marker = "BACKEND-CALLED"
@@ -55,7 +59,8 @@ def run_hook(prompt: str, body=None, unreachable: bool = False, extra_env=None):
     code = (
         "import io, json, sys\n"
         "import hook_util\n"
-        f"body = json.loads({json.dumps(json.dumps(body if body is not None else {'context': ''}))})\n"
+        + PIN_CLOCK
+        + f"body = json.loads({json.dumps(json.dumps(body if body is not None else {'context': ''}))})\n"
         "def stub(path, payload, timeout=30):\n"
         f"    sys.stderr.write({marker!r})\n"
         + stub_tail
@@ -75,7 +80,7 @@ def run_hook(prompt: str, body=None, unreachable: bool = False, extra_env=None):
     )
     stderr = result.stderr.decode("utf-8", "replace")
     assert result.returncode == 0, stderr
-    return result.stdout.decode("utf-8"), marker in stderr
+    return without_clock(result.stdout.decode("utf-8")), marker in stderr
 
 
 def lines(out: str):
@@ -200,7 +205,8 @@ def test_unrecognized_wrapper_is_recorded_and_said_aloud():
     code = (
         "import io, json, sys\n"
         "import hook_util\n"
-        "def stub(path, payload, timeout=30):\n"
+        + PIN_CLOCK
+        + "def stub(path, payload, timeout=30):\n"
         "    sys.stderr.write('SENT:' + json.dumps([payload['prompt'], payload['unrecognized_wrapper']]) + '\\n')\n"
         "    return {'context': '', 'retrieval_status': 'ran'}\n"
         "hook_util.post_backend = stub\n"
@@ -218,7 +224,7 @@ def test_unrecognized_wrapper_is_recorded_and_said_aloud():
     assert result.returncode == 0, stderr
     sent = json.loads(stderr.split("SENT:", 1)[1].splitlines()[0])
     assert sent == ['<novel-event kind="x">hi</novel-event>', "novel-event"]
-    out = lines(result.stdout.decode("utf-8"))
+    out = lines(without_clock(result.stdout.decode("utf-8")))
     assert out[0] == MATCHED_ZERO
     assert out[1].startswith(
         "[HERE I AM] This prompt arrived in an unrecognized wrapper <novel-event>; "
@@ -267,11 +273,14 @@ def test_a_plain_prompt_is_not_flagged():
     assert "unrecognized wrapper" not in out
 
 
-def test_missing_session_id_stays_silent():
+def test_missing_session_id_says_only_the_time():
+    # Nothing to record against and nothing to stamp, but the clock line
+    # needs no session: it is printed before the input is even read
     code = (
         "import io, json, sys\n"
         "import hook_util\n"
-        "hook_util.post_backend = lambda *a, **k: {'context': ''}\n"
+        + PIN_CLOCK
+        + "hook_util.post_backend = lambda *a, **k: {'context': ''}\n"
         "sys.stdin = io.StringIO(json.dumps({'prompt': 'hello'}))\n"
         "import user_prompt_submit\n"
         "user_prompt_submit.main()\n"
@@ -282,7 +291,7 @@ def test_missing_session_id_stays_silent():
         [sys.executable, "-c", code], capture_output=True, cwd=HOOKS_DIR, env=env
     )
     assert result.returncode == 0
-    assert result.stdout.decode("utf-8").strip() == ""
+    assert result.stdout.decode("utf-8").strip() == PINNED_CLOCK
 
 
 # --- other empty outcomes, each with its own text

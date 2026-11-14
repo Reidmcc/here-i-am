@@ -26,6 +26,8 @@ sys.path.insert(0, str(HOOKS_DIR))
 
 import hook_util  # noqa: E402
 
+from tests.hook_clock import PIN_CLOCK, without_clock  # noqa: E402
+
 # --- is_wakeup_prompt: the sentinel convention itself
 
 
@@ -84,7 +86,8 @@ def run_hook(
     """Run user_prompt_submit.main() with post_backend stubbed.
 
     Returns (stdout, payload) — payload is what the hook POSTed, or None
-    when it never called the backend."""
+    when it never called the backend. The stdout is what follows the clock
+    line, which every path opens with (tests/hook_clock.py)."""
     payload_file = tmp_path / "payload.json"
     stdin_payload = json.dumps({"session_id": "wakeup-test", "prompt": prompt})
     stub_tail = (
@@ -95,7 +98,8 @@ def run_hook(
     code = (
         "import io, json, sys\n"
         "import hook_util\n"
-        f"body = {(body if body is not None else {'context': ''})!r}\n"
+        + PIN_CLOCK
+        + f"body = {(body if body is not None else {'context': ''})!r}\n"
         "def stub(path, payload, timeout=30):\n"
         f"    with open({str(payload_file)!r}, 'w', encoding='utf-8') as f:\n"
         "        json.dump(payload, f)\n"
@@ -120,7 +124,7 @@ def run_hook(
         if payload_file.exists()
         else None
     )
-    return result.stdout.decode("utf-8"), payload
+    return without_clock(result.stdout.decode("utf-8")), payload
 
 
 def test_wakeup_tick_records_nothing_but_pings_backend(tmp_path):

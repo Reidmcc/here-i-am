@@ -9,6 +9,7 @@ import tiktoken
 from anthropic import APIConnectionError, AsyncAnthropic, Timeout
 
 from app.config import settings
+from app.services.local_time import local_now, to_local
 from app.services.notes_service import notes_service
 from app.services.thinking_effort import clamp_effort, resolve_effort
 
@@ -180,6 +181,31 @@ def _get_content_text(content: Union[str, List[Dict[str, Any]]]) -> str:
         # from the visible text, and the calibration ratio absorbs the drift
 
     return "\n".join(text_parts)
+
+
+def build_date_context(
+    conversation_start_date: Optional[datetime] = None,
+    now: Optional[datetime] = None,
+) -> str:
+    """
+    The per-turn [DATE CONTEXT] block: the date the conversation started and
+    today's, both in the human's local time (local_time.to_local), with the
+    zone named on today's so a bare date is never read as another zone's.
+
+    Date-only, as it has always been: the time of day reaches the entity on
+    the human message's own stamp (session_helpers.stamp_human_message).
+    """
+    today = to_local(now) if now else local_now()
+    zone = today.strftime("%Z")
+    lines = ["[DATE CONTEXT]"]
+    if conversation_start_date:
+        started = to_local(conversation_start_date)
+        lines.append(f"This conversation started: {started.strftime('%Y-%m-%d')}")
+    lines.append(
+        f"Current date: {today.strftime('%Y-%m-%d')}" + (f" ({zone})" if zone else "")
+    )
+    lines.append("[/DATE CONTEXT]")
+    return "\n".join(lines)
 
 
 def _build_timeout() -> Timeout:
@@ -972,14 +998,10 @@ class AnthropicService:
         # Current message section marker
         final_parts.append("[CURRENT USER MESSAGE]")
 
-        # Date context
-        current_date = datetime.utcnow()
-        date_block = "[DATE CONTEXT]\n"
-        if conversation_start_date:
-            date_block += f"This conversation started: {conversation_start_date.strftime('%Y-%m-%d')}\n"
-        date_block += f"Current date: {current_date.strftime('%Y-%m-%d')}\n"
-        date_block += "[/DATE CONTEXT]"
-        final_parts.append(date_block)
+        # Date context, in the human's local time like the stamp on their
+        # messages: a UTC date here read a day ahead of that stamp every
+        # evening west of Greenwich
+        final_parts.append(build_date_context(conversation_start_date))
 
         # Entity notes (index.md):
         # For single-entity conversations the notes are injected ONCE at the front of

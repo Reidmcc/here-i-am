@@ -112,12 +112,23 @@ def warn_retired_voice_settings():
         logging.getLogger("app.main").warning(retired_voice_env_warning(names))
 
 
+def warn_unloadable_local_timezone():
+    """Say aloud at startup when LOCAL_TIMEZONE names a zone that won't load."""
+    from app.services.local_time import local_timezone_problem
+
+    name = (settings.local_timezone or "").strip()
+    problem = local_timezone_problem(name) if name else None
+    if problem:
+        logging.getLogger("app.main").warning(problem)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
     run_pinecone_connection_test()
     warn_retired_voice_settings()
+    warn_unloadable_local_timezone()
     yield
     # Shutdown
     pass

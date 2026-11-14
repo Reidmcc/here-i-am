@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { DECLINE, FALLBACK_BUDGET, MISSING_TALK_NOTE, QUESTION_TIMEOUT_MS, TALK_MARKER, TALK_TIMEOUT_MS, readReply, talkBudget, utcStamp } from './register.ts'
+import { DECLINE, FALLBACK_BUDGET, MISSING_TALK_NOTE, QUESTION_TIMEOUT_MS, TALK_MARKER, TALK_TIMEOUT_MS, localStamp, readReply, talkBudget, utcStamp } from './register.ts'
 
 const SUMMARY = { role: 'user' as const, text: 'This session is being continued...', toolUses: [] }
 const OLD = { role: 'assistant' as const, text: 'the talk before', toolUses: [] }
@@ -229,9 +229,22 @@ describe('the turn before', () => {
     await $.session.compact({ trigger: 'auto', messages: [OLD] })
     expect(seen.forks.length).toBe(1)
     expect(seen.forks[0]).toContain('(auto)')
-    expect(seen.forks[0]).toContain('It is 2026-10-07 21:43 UTC.')
+    // The machine's own zone when HIM_TIMEZONE is unset, whatever it is here
+    expect(seen.forks[0]).toContain(`It is ${localStamp(NOW)}.`)
     expect(seen.posts[0].pre_compaction).toBe('saved')
     expect(seen.posts[0].reflection).toBe('What this stretch was.')
+  })
+
+  test("the time it gives is the human's local time", async ($, on) => {
+    const seen = engine(on, { env: { HIM_TIMEZONE: ' America/New_York ' } })
+    await $.session.compact({ trigger: 'auto', messages: [OLD] })
+    expect(seen.forks[0]).toContain('It is Wednesday 2026-10-07 17:43 EDT (UTC-04:00). This context')
+  })
+
+  test('a zone that cannot be loaded leaves the time in UTC, said so', async ($, on) => {
+    const seen = engine(on, { env: { HIM_TIMEZONE: 'Mars/Phobos' } })
+    await $.session.compact({ trigger: 'auto', messages: [OLD] })
+    expect(seen.forks[0]).toContain('It is 2026-10-07 21:43 UTC. This context')
   })
 
   test('declining saves nothing', async ($, on) => {
@@ -276,6 +289,39 @@ describe('passes through', () => {
 describe('utcStamp', () => {
   test('reads to the minute, in UTC', () => {
     expect(utcStamp(Date.UTC(2026, 0, 2, 3, 4, 59))).toBe('2026-01-02 03:04 UTC')
+  })
+})
+
+describe('localStamp', () => {
+  const at = Date.UTC(2026, 10, 15, 1, 30, 59)
+
+  test('names the weekday, the local date and time, the zone and its offset', () => {
+    // Already Sunday in UTC: the date is the one on the human's calendar
+    expect(localStamp(at, 'America/New_York')).toBe('Saturday 2026-11-14 20:30 EST (UTC-05:00)')
+    expect(localStamp(Date.UTC(2026, 6, 8, 14, 32), 'America/New_York')).toBe('Wednesday 2026-07-08 10:32 EDT (UTC-04:00)')
+  })
+
+  test('midnight is 00, not 24', () => {
+    expect(localStamp(Date.UTC(2026, 10, 14, 5, 0), 'America/New_York')).toBe('Saturday 2026-11-14 00:00 EST (UTC-05:00)')
+  })
+
+  test('a zone with no short name here is given by its offset', () => {
+    expect(localStamp(at, 'Asia/Kolkata')).toBe('Sunday 2026-11-15 07:00 UTC+05:30')
+    expect(localStamp(at, 'America/St_Johns')).toBe('Saturday 2026-11-14 22:00 UTC-03:30')
+  })
+
+  test('UTC reads as UTC', () => {
+    expect(localStamp(at, 'UTC')).toBe('Sunday 2026-11-15 01:30 UTC')
+  })
+
+  test("with no zone named, it is this machine's", () => {
+    const here = localStamp(at)
+    expect(here).toBe(localStamp(at, Intl.DateTimeFormat().resolvedOptions().timeZone))
+    expect(localStamp(at, '')).toBe(here)
+  })
+
+  test('a name it cannot load falls back to the UTC stamp', () => {
+    expect(localStamp(at, 'Mars/Phobos')).toBe('2026-11-15 01:30 UTC')
   })
 })
 

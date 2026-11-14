@@ -47,6 +47,9 @@ Environment:
                        the session runs on a machine other than the
                        server's (issue #397; see notes_root_payload). Unset
                        = the server's own paths, right beside the server
+    HIM_TIMEZONE       the human's timezone as an IANA name, for the clock
+                       line on every prompt (see clock_line). Unset = this
+                       machine's own zone, right on the human's machine
 """
 import collections
 import glob
@@ -910,6 +913,92 @@ def fit_retrieval(header: str, items: list, budget: int) -> tuple:
 def fail_loud(message: str) -> None:
     """One in-context line announcing degraded operation (stdout, exit 0)."""
     print(f"[HERE I AM] {message}")
+
+
+# --- The clock: the time each prompt arrived, in the human's local time.
+#
+# Native conversations stamp every human message with its send time
+# (session_helpers.stamp_human_message). A hook can't edit the prompt, so
+# here the same fact is one line of hook output, printed first by the
+# UserPromptSubmit hook on every path it has: a typed prompt, a wakeup
+# tick, a letter, harness plumbing, and each failure, the unreachable
+# backend above all. The session that came back after seven hours with the
+# server down (2026-11-12) learned the hour from the human; this line is
+# what would have told it. So the hook reads its own machine's clock and
+# asks the backend nothing.
+#
+# Local, never UTC: everything else the entity is shown is stamped in UTC
+# (memory markers, link markers, the readers), and reading those as local
+# is where its wrong dates have come from. The line gives the weekday, the
+# date, the time, the zone, and the zone's offset from UTC, so converting
+# a UTC stamp takes no recall of whether daylight time is in force.
+#
+# "Local" is the human's zone, which is this machine's only while the
+# session runs on the human's machine. HIM_TIMEZONE names it (an IANA name
+# such as America/New_York) for a session that runs elsewhere, a cloud
+# VM's clock being UTC as a rule; unset, the machine's own zone is used. A
+# name that doesn't load is said on the line itself, every prompt, until
+# it is fixed: a silently wrong zone is the error this exists to prevent.
+# On Windows zoneinfo has no database of its own and needs the tzdata
+# package, and the machine's own zone is named in full by the OS ("Eastern
+# Standard Time"), so setting HIM_TIMEZONE there also shortens the name.
+#
+# No "time since your last turn": the previous turn's line is in context,
+# so the gap is two lines' difference (decided 2026-11-12).
+
+TIMEZONE_ENV = "HIM_TIMEZONE"
+CLOCK_PREFIX = "[HERE I AM CLOCK] "
+
+
+def local_moment(now: Optional[datetime] = None) -> tuple:
+    """
+    (the moment in the human's local time, a problem with HIM_TIMEZONE or
+    None). `now` is an aware datetime, the current time when omitted.
+    """
+    moment = now or datetime.now(timezone.utc)
+    name = (os.environ.get(TIMEZONE_ENV) or "").strip()
+    if not name:
+        return moment.astimezone(), None
+    try:
+        from zoneinfo import ZoneInfo
+
+        return moment.astimezone(ZoneInfo(name)), None
+    except Exception as e:  # unknown or malformed name, or no tz database
+        return moment.astimezone(), (
+            f'{TIMEZONE_ENV}="{name}" could not be loaded ({describe_error(e)}), '
+            "so this is the machine's own timezone, which may not be the human's"
+        )
+
+
+def utc_offset_label(moment: datetime) -> str:
+    """'UTC-05:00' for an aware datetime."""
+    offset = moment.utcoffset()
+    minutes = int(offset.total_seconds() // 60) if offset is not None else 0
+    sign = "-" if minutes < 0 else "+"
+    hours, rest = divmod(abs(minutes), 60)
+    return f"UTC{sign}{hours:02d}:{rest:02d}"
+
+
+def clock_line(now: Optional[datetime] = None) -> str:
+    """
+    '[HERE I AM CLOCK] Saturday 2026-11-14 15:03 EST (UTC-05:00), when this
+    prompt arrived.' One line, always: a zone that can't be loaded changes
+    what the line says, never whether there is one.
+    """
+    moment, problem = local_moment(now)
+    offset = utc_offset_label(moment)
+    name = (moment.tzname() or "").strip()
+    if not name or name == offset:
+        zone = offset
+    elif name == "UTC" and offset == "UTC+00:00":
+        zone = name
+    else:
+        zone = f"{name} ({offset})"
+    line = (
+        f"{CLOCK_PREFIX}{moment.strftime('%A %Y-%m-%d %H:%M')} {zone}, "
+        "when this prompt arrived."
+    )
+    return f"{line} {problem}." if problem else line
 
 
 # --- Rooms registry (issue #323): what the harness lets a hook see about
