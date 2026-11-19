@@ -154,9 +154,10 @@ cp .env.example .env
 
 4. Set the password you will log in with:
 ```bash
-python -m app.auth init
+./auth.sh init       # Linux/macOS
+auth.bat init        # Windows (PowerShell or Command Prompt)
 ```
-The server answers only to a credential: this password in the browser, and a token for each machine that runs Claude Code sessions (the same command mints the first one when Claude Code mode is on). See [docs/authentication.md](docs/authentication.md).
+The server answers only to a credential: this password in the browser, and a token for each machine that runs Claude Code sessions (the same command mints the first one when Claude Code mode is on; with more than one entity configured, add `--entity <name>`). See [docs/authentication.md](docs/authentication.md).
 
 5. Run the application:
 ```bash
@@ -259,7 +260,7 @@ GitHub repository access, the Codebase Navigator (Devstral), and Moltbook are co
 
 ### Authentication
 
-Every request needs a credential; there is no switch that turns this off, and localhost is not trusted without one. The researcher logs in at the web page with a password. Machines (the Claude Code hooks, the memory tools, scripts) send bearer tokens, each scoped either to one entity's Claude Code endpoints or to everything. Passwords and tokens are made only by `python -m app.auth` on the server's own machine. Setup, the cutover for an existing install, and what it does and does not protect are in [docs/authentication.md](docs/authentication.md).
+Every request needs a credential; there is no switch that turns this off, and localhost is not trusted without one. The researcher logs in at the web page with a password. Machines (the Claude Code hooks, the memory tools, scripts) send bearer tokens, each scoped either to one entity's Claude Code endpoints or to everything. Passwords and tokens are made only by the `auth` command (`auth.bat` / `auth.sh`, i.e. `python -m app.auth`) on the server's own machine. Setup, the cutover for an existing install, and what it does and does not protect are in [docs/authentication.md](docs/authentication.md).
 
 ### Claude Code Mode
 

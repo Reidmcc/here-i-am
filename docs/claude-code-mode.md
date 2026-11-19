@@ -1914,8 +1914,41 @@ nothing and asks nothing afterwards, and says so in the transcript.
 
 A session whose MCP server is refused starts normally, with the server
 shown as failed and the memory tools absent. Nothing in the harness tells
-the entity why, so the SessionStart hook's line does: it says the memory
-tools use the same token.
+the entity why, so the hooks' lines for a missing or unaccepted token do:
+they say the memory tools use the same token. (A 403 is a token the
+server accepts, so the tools are not refused with it and the line doesn't
+say they are.)
+
+Two setups work and are wrong, so the SessionStart hook says them on every
+firing (`hook_util.credential_lines`). A **researcher token in
+`HIM_TOKEN`** passes every hook call and puts the researcher's whole reach
+where the entity's shell can read it; the backend sees which kind of token
+arrived and returns `credential_notice`. A **`HIM_BACKEND_URL` ending in
+a slash** is stripped by the hooks and the mod, but an MCP entry built as
+`${HIM_BACKEND_URL}/mcp` then points at `//mcp`, which the server doesn't
+serve: the hooks work and the memory tools are gone.
+
+With no token at all, the compaction mod gives no turn before the
+compaction: every call would be a certain 401, and a reflection written
+first would be thrown away with it.
+
+**What an entity token reaches is a list** (`auth/policy.ENTITY_ROUTES`),
+not the `/api/claude-code/` prefix. A route added to this router is closed
+to every entity token until it is listed, and a test fails until it is
+either listed or moved (`test_the_entity_list_is_exactly_the_claude_code_routes`).
+Before listing one, make it hold its caller to the token's entity, before
+it writes: `_entity_for`, `_refuse_another_entitys_session` first, and
+`_refuse_another_entitys_conversation` on whatever `resolve_session` hands
+back (two sessions racing to register one id are given the same row).
+
+**A memory named by id is looked up inside the entity's experience**
+(`memory_tools._resolve_memory_id`), by the readers' own rule, and
+literally (`%` and `_` are not wildcards). That resolver serves
+`memory_neighbors`, `memory_mark`, `memory_release` and `memory_save`'s
+links; it used to search the whole table and check afterwards, by a looser
+rule, which with one token per entity was a way into another entity's
+rows. `memory_mark` and `memory_release` also refuse another entity's
+words in a shared room: a memory's status is one value on the row.
 
 ### Endpoints
 
@@ -2459,8 +2492,8 @@ the README, then set:
 
 | Variable | Set it to |
 | --- | --- |
-| `HIM_BACKEND_URL` | The server's address as this machine reaches it. The default, `http://localhost:8000`, is right only when the server runs on this machine. |
-| `HIM_TOKEN` | This machine's own token for the entity, minted on the server (`python -m app.auth token create --name <machine> --entity <entity>`) and revocable without touching the other machines. Without it every hook call is refused, and says so. The `here-i-am` MCP server needs the same token as its `Authorization` header; see "Authentication". |
+| `HIM_BACKEND_URL` | The server's address as this machine reaches it, with no slash on the end. The default, `http://localhost:8000`, is right only when the server runs on this machine. |
+| `HIM_TOKEN` | This machine's own token for the entity, minted on the server (`auth.bat token create --name <machine> --entity <entity>`, or `./auth.sh …`) and revocable without touching the other machines. Without it every hook call is refused, and says so. The `here-i-am` MCP server needs the same token as its `Authorization` header; [authentication.md](authentication.md), "Setting it up", has the command. |
 | `HIM_ENTITY` | The entity's index name or label. Optional with a token, which is bound to its entity; naming a different one is refused. |
 | `HIM_NOTES_ROOT` | *Coming with #397.* Where this machine mounts the notes. |
 | `HIM_GH_CONFIG_DIR` | This machine's gh config directory for the entity's GitHub account, as an absolute path (`~` and environment variables allowed); see "GitHub identity". It is unneeded only on the server's own machine, whose directory the server's `gh_config_dir` already names. Keep that setting on the server either way: it is what makes a machine that forgot this variable say so. |
