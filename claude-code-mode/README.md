@@ -45,7 +45,8 @@ line, with the full block in a file. Small payloads stay fully inline;
 nothing is ever cut mid-memory. Spill files are read with the `Read` tool
 (a shell `cat` over 50KB is persisted the same way).
 
-An MCP server (`.mcp.json`, pointing at `http://localhost:8000/mcp`) gives
+An MCP server (`.mcp.json`, pointing at `HIM_BACKEND_URL`'s `/mcp`,
+`http://localhost:8000/mcp` by default, and sending `HIM_TOKEN`) gives
 the entity its deliberate memory tools in the session: `memory_query`,
 `memory_save`, `memory_mark`, `memory_release` — plus `declare_room` and
 `retire_room` for the rooms registry. The session-start context tells the
@@ -82,18 +83,36 @@ its own pre-compaction talk back after a compaction). For hooks registered in `~
 (all projects), register the server user-wide to match:
 
 ```bash
-claude mcp add --scope user --transport http here-i-am http://localhost:8000/mcp
+claude mcp add-json --scope user here-i-am '{"type":"http","url":"${HIM_BACKEND_URL:-http://localhost:8000}/mcp","headers":{"Authorization":"Bearer ${HIM_TOKEN}"}}'
 ```
 
-For project-scoped setups, copy this directory's `.mcp.json` into the
-project root instead (or `claude mcp add` without `--scope user`). Verify
-with `claude mcp list` — `here-i-am` should show as connected while the
-backend is running.
+The `${…}` are left as written (single quotes) and filled in by Claude
+Code from the `env` block of `settings.json` when a session starts, so the
+token is kept in one place. For project-scoped setups, copy this
+directory's `.mcp.json` into the project root instead; it is the same
+entry. Verify with `claude mcp list`: `here-i-am` should show as
+connected while the backend is running, and "Missing environment
+variables: HIM_TOKEN" means the token isn't set where Claude Code reads
+it.
+
+**The token.** The backend answers only to a credential. Mint this
+machine's on the server, from its `backend` directory:
+
+```bash
+python -m app.auth token create --name this-machine --entity your-entity-label
+```
+
+and put the `him_…` value it prints (once) in the `env` block as
+`HIM_TOKEN`. It is good only for the endpoints the hooks and memory tools
+use, and only for that entity. Without it, or with one that was revoked,
+every hook prints a `[HERE I AM]` line saying which, and nothing is
+recorded. See [`docs/authentication.md`](../docs/authentication.md).
 
 ## Requirements
 
 - The Here I Am backend running locally (`cd backend && ./start.sh`) with
   `CLAUDE_CODE_MODE_ENABLED=true` in its environment/`.env`
+- A token for this machine in `HIM_TOKEN` (see "The token" above)
 - `python3` on `PATH` (the hooks are dependency-free Python scripts).
   On Windows that is usually `python` or `py -3` — see [Windows](#windows)
 - Local Claude Code sessions only (CLI or desktop app). Cloud sessions run
@@ -111,6 +130,7 @@ the `here-i-am` server to an existing one):
 {
   "env": {
     "HIM_BACKEND_URL": "http://localhost:8000",
+    "HIM_TOKEN": "him_...",
     "HIM_ENTITY": "your-entity-label"
   },
   "hooks": {
