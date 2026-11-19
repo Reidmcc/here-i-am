@@ -30,7 +30,16 @@ Two jobs the individual hook scripts delegate here:
   seconds, and which says whether a failed request could have reached the
   server at all (see "Talking to the backend" below).
 
+- **Say who is calling.** The backend answers only to a credential
+  (issue #396): every request carries this machine's token, and a refusal
+  is said in its own words, apart from "unreachable" (see "The token").
+
 Environment:
+    HIM_TOKEN          this machine's token for the backend, minted on the
+                       server with `python -m app.auth token create` and
+                       bound to one entity. Sent as a bearer header on
+                       every request; without it the backend refuses them
+                       all
     HIM_HOOK_TIMING_LOG  a file path; when set, every backend request
                        appends one JSON line (path, outcome, attempts,
                        connect and total milliseconds), the measurement
@@ -721,10 +730,99 @@ def recorded_message_ids(session_id: str, message_ids: list) -> set:
     return {str(mid) for mid in (check.get("recorded") or [])}
 
 
+# --- The token (issue #396)
+#
+# The backend answers only to a credential. A Claude Code machine's is a
+# token minted on the server (`python -m app.auth token create --name
+# <machine> --entity <entity>`), bound to one entity and good only for the
+# endpoints these hooks and the memory tools call. It reaches the hooks as
+# HIM_TOKEN in the session's environment, beside HIM_BACKEND_URL.
+#
+# The entity's own shell can read it, and that is accepted: it grants what
+# the hooks already do on the entity's behalf and nothing of the
+# researcher's.
+#
+# A refusal is its own kind of failure, said in its own words. The backend
+# checks the credential before any handler runs, and an entity token's
+# further limits (another entity's session) are checked before any row is
+# written, so a 401 or 403 means nothing of the request was recorded: the
+# recording hooks say NOT recorded outright and skip the /recorded check,
+# which would be refused the same way.
+
+TOKEN_ENV = "HIM_TOKEN"
+
+
+def backend_token() -> Optional[str]:
+    return (os.environ.get(TOKEN_ENV) or "").strip() or None
+
+
 def backend_headers() -> dict:
     """The headers of every backend request: the one place a header is
-    added, so every hook sends it."""
-    return {"Content-Type": "application/json"}
+    added, so every hook sends it. The token goes only here, never into a
+    URL or a payload."""
+    headers = {"Content-Type": "application/json"}
+    token = backend_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def refused_before_recording(error: Exception) -> bool:
+    """Whether the backend refused a request for its credential (401) or
+    for what the credential may do (403): both before anything was
+    written."""
+    return isinstance(error, urllib.error.HTTPError) and error.code in (401, 403)
+
+
+def _refusal_detail(error: Exception) -> str:
+    """The backend's own sentence for a refusal: the `detail` of its JSON
+    body, which post_backend carries in the error's message after the
+    status reason; the raw text when it isn't that shape."""
+    text = str(getattr(error, "reason", "") or getattr(error, "msg", "") or "")
+    _reason, _, body = text.partition(": ")
+    try:
+        detail = json.loads(body).get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip().rstrip(".")
+    except Exception:
+        pass
+    return (body or text).strip().rstrip(".")
+
+
+MINT_ADVICE = (
+    "mint one on the server (in its backend directory: python -m app.auth "
+    "token create --name <this machine> --entity <entity>), set it as "
+    f"{TOKEN_ENV} in the \"env\" block of this machine's Claude Code settings "
+    "and as the Authorization header of its here-i-am MCP server, and "
+    "restart the session"
+)
+
+
+def auth_refusal_notice(error: Exception) -> Optional[str]:
+    """What to say when the backend refused this machine's credential, or
+    None for any other failure. One sentence naming which of three things
+    happened (no token here, a token the server doesn't accept, a token
+    that isn't allowed this), then what to tell the user. The memory tools
+    ride the same token, so their loss is named too."""
+    if not refused_before_recording(error):
+        return None
+    tools = "The memory tools (MCP) use the same token and are refused the same way."
+    if error.code == 403:
+        return (
+            "The Here I Am backend refused this request as not allowed for "
+            f"this machine's token (403: {_refusal_detail(error)}). Tell the user."
+        )
+    if backend_token() is None:
+        return (
+            "The Here I Am backend requires a token and this machine has "
+            f"none: {TOKEN_ENV} is not set in this session's environment "
+            f"(the backend answered 401). {tools} Tell the user: {MINT_ADVICE}."
+        )
+    return (
+        f"The Here I Am backend refused this machine's token (401: {TOKEN_ENV} "
+        f"is unknown to the server or was revoked). {tools} Tell the user: "
+        f"{MINT_ADVICE}."
+    )
 
 
 def post_backend(path: str, payload: dict, timeout: Union[RequestTimeouts, float]):
