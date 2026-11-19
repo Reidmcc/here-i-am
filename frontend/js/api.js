@@ -4,6 +4,70 @@
 const API_BASE = '/api';
 
 class ApiClient {
+    constructor() {
+        // Called when the backend answers 401: the page isn't logged in, or
+        // its session ended. Set by the app to show the login form.
+        this._onUnauthorized = null;
+    }
+
+    setUnauthorizedHandler(handler) {
+        this._onUnauthorized = handler;
+    }
+
+    /**
+     * Every request to this app's own backend goes through here, so a 401
+     * from any of them (the streams included) shows the login form. The
+     * session cookie rides along by itself: these are same-origin requests,
+     * and the page's scripts can't read the cookie at all.
+     *
+     * A 401 still throws, like any other error status, with `unauthorized`
+     * set so a caller can tell "log in" from "that failed".
+     */
+    async _fetch(url, config) {
+        const response = await fetch(url, config);
+        if (response.status === 401) {
+            const error = await response.json().catch(() => ({}));
+            const detail = this._formatErrorDetail(error.detail, 401);
+            if (this._onUnauthorized) {
+                this._onUnauthorized(detail);
+            }
+            const failure = new Error(detail);
+            failure.unauthorized = true;
+            throw failure;
+        }
+        return response;
+    }
+
+    // Logging in and out (issue #396). These use fetch directly: a 401 from
+    // login means a wrong password, not an ended session.
+    async login(password) {
+        const response = await fetch(`${API_BASE}/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password }),
+        });
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+            const failure = new Error(this._formatErrorDetail(error.detail, response.status));
+            failure.status = response.status;
+            failure.retryAfter = Number(response.headers.get('Retry-After')) || null;
+            throw failure;
+        }
+        return response.json();
+    }
+
+    async getAuthSession() {
+        return this.request('/auth/session');
+    }
+
+    async logout() {
+        return this.request('/auth/logout', { method: 'POST' });
+    }
+
+    async logoutEverywhere() {
+        return this.request('/auth/logout-all', { method: 'POST' });
+    }
+
     async request(endpoint, options = {}) {
         const url = `${API_BASE}${endpoint}`;
         const defaultHeaders = {
@@ -22,7 +86,7 @@ class ApiClient {
             config.body = JSON.stringify(config.body);
         }
 
-        const response = await fetch(url, config);
+        const response = await this._fetch(url, config);
 
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
@@ -172,7 +236,7 @@ class ApiClient {
     async importExternalConversationsStream(data, callbacks = {}, signal = null) {
         const url = `${API_BASE}/conversations/import-external/stream`;
 
-        const response = await fetch(url, {
+        const response = await this._fetch(url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -286,7 +350,7 @@ class ApiClient {
     async sendMessageStream(data, callbacks = {}, signal = null) {
         const url = `${API_BASE}/chat/stream`;
 
-        const response = await fetch(url, {
+        const response = await this._fetch(url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -580,7 +644,7 @@ class ApiClient {
             body.voice_id = voiceId;
         }
 
-        const response = await fetch(url, {
+        const response = await this._fetch(url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -706,7 +770,7 @@ class ApiClient {
     async regenerateStream(data, callbacks = {}, signal = null) {
         const url = `${API_BASE}/chat/regenerate`;
 
-        const response = await fetch(url, {
+        const response = await this._fetch(url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
