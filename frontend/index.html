@@ -10,7 +10,7 @@
     <!-- Login (issue #396). Shown when the backend answers 401; the app
          behind it is inert until then. -->
     <div class="login-overlay" id="login-overlay" hidden>
-        <form class="login-card" id="login-form" autocomplete="on">
+        <form class="login-card" id="login-form" method="post" action="/api/auth/login" autocomplete="on">
             <h1 class="app-title">Here I Am</h1>
             <p class="login-message" id="login-message">Log in to continue.</p>
             <!-- A username a password manager can file the password under;

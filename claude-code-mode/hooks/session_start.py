@@ -150,6 +150,9 @@ def main() -> None:
         # This machine's zone against the server's, on every firing while
         # they differ (see hook_util, "Two clocks")
         *hook_util.clock_check_lines(body),
+        # The token and the address it is sent to (issue #396), on every
+        # firing while either is wrong
+        *hook_util.credential_lines(body),
         *identity_lines,
         *hook_util.rooms_output_lines(body),
     ]

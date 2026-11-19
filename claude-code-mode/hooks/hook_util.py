@@ -767,6 +767,38 @@ def backend_headers() -> dict:
     return headers
 
 
+def credential_lines(body) -> list:
+    """Lines the SessionStart hook prints about this machine's credential
+    setup, on every firing while they hold; none when all is well.
+
+    Two things, both of which work silently and are wrong:
+
+    - The backend's `credential_notice`: HIM_TOKEN is a researcher token.
+      Every hook call succeeds with it, and it puts the researcher's whole
+      reach where this session's shell can read it.
+    - HIM_BACKEND_URL ends in a slash. The hooks strip it, but an MCP entry
+      built as `${HIM_BACKEND_URL}/mcp` (the plugin's, and the one the
+      docs give) then points at `//mcp`, which the server doesn't serve:
+      the hooks work and the memory tools are gone, with nothing in the
+      harness saying why.
+    """
+    lines = []
+    notice = _optional_str(body.get("credential_notice")) if isinstance(body, dict) else None
+    if notice:
+        lines.append(f"[HERE I AM] {notice}")
+    url = os.environ.get("HIM_BACKEND_URL") or ""
+    if url.strip().endswith("/"):
+        lines.append(
+            f"[HERE I AM] HIM_BACKEND_URL ends with a slash ({url.strip()}). The "
+            "hooks ignore it, but the memory tools' server address is built as "
+            "${HIM_BACKEND_URL}/mcp and does not resolve with it: if your memory "
+            "tools are missing this session, that is why. Tell the user to "
+            "remove the trailing slash from HIM_BACKEND_URL in this machine's "
+            "Claude Code settings."
+        )
+    return lines
+
+
 def refused_before_recording(error: Exception) -> bool:
     """Whether the backend refused a request for its credential (401) or
     for what the credential may do (403): both before anything was

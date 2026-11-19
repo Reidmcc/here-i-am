@@ -5,10 +5,11 @@
 
 // Import modules
 import { state, resetMemoryState, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName, loadEnterInsertsNewline, loadLocalVoiceSettings, loadMessageInputHeight, saveMessageInputHeight, getValidSavedEntityModel, LEGACY_ENTITY_PROMPTS_KEY } from './modules/state.js';
-import { setToastContainer, escapeHtml } from './modules/utils.js';
+import { setToastContainer, showToast, escapeHtml } from './modules/utils.js';
 import { loadTheme, getCurrentTheme } from './modules/theme.js';
 import {
     setElements as setAuthElements,
+    setCallbacks as setAuthCallbacks,
     showLogin,
     submitLogin,
     ensureLoggedIn,
@@ -375,6 +376,15 @@ class App {
             error: this.elements.loginError,
             submit: this.elements.loginSubmit,
         });
+        setAuthCallbacks({
+            // Once the app has started, logging back in lifts the form and
+            // leaves the page (and anything typed on it) as it is
+            isRunning: () => this.started === true,
+            onResumed: () => {
+                this.loggedIn = true;
+                showToast('Logged in again. Anything that failed while you were logged out can be retried.', 'success');
+            },
+        });
         window.api.setUnauthorizedHandler(() => showLogin(
             this.loggedIn ? 'Your login has ended. Log in again to continue.' : undefined
         ));
@@ -457,8 +467,11 @@ class App {
     bindEvents() {
         // Login and logout
         this.elements.loginForm?.addEventListener('submit', (e) => submitLogin(e));
-        this.elements.logoutBtn?.addEventListener('click', () => logOut(false));
-        this.elements.logoutEverywhereBtn?.addEventListener('click', () => logOut(true));
+        const loggingOut = (everywhere) => logOut(everywhere).catch((error) => {
+            showToast(`Could not log out: ${error.message}`, 'error');
+        });
+        this.elements.logoutBtn?.addEventListener('click', () => loggingOut(false));
+        this.elements.logoutEverywhereBtn?.addEventListener('click', () => loggingOut(true));
 
         // Send message
         this.elements.sendBtn?.addEventListener('click', () => sendMessage());
@@ -632,10 +645,13 @@ class App {
         // Everything below asks the backend for something, and the backend
         // answers only to a login (issue #396). Logged out, the form is
         // showing and the page starts over once it is submitted.
-        this.loggedIn = await ensureLoggedIn();
-        if (!this.loggedIn) {
+        const loggedIn = await ensureLoggedIn();
+        if (loggedIn === false) {
             return;
         }
+        // null: the backend didn't answer, which the calls below report
+        this.loggedIn = loggedIn === true;
+        this.started = true;
 
         // Load saved state from localStorage (system prompts are backend-owned)
         loadEntityModelsFromStorage();

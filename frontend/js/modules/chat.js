@@ -335,7 +335,22 @@ async function streamSingleEntitySend({ content, attachments, messageToSend, use
         scrollToBottom();
 
     } catch (error) {
-        if (error.name !== 'AbortError') {
+        if (error.unauthorized) {
+            // The login had ended, so the server refused this before it
+            // stored anything. Take the unsent message off the page and
+            // put its words back where they can be sent again.
+            streamingMessage.element.remove();
+            userMessageEl?.remove();
+            if (elements.messageInput && !elements.messageInput.value) {
+                elements.messageInput.value = content || '';
+            }
+            showToast(
+                attachments && attachments.length
+                    ? 'Not sent: your login had ended. Your message is back in the box; attach the files again.'
+                    : 'Not sent: your login had ended. Your message is back in the box.',
+                'warning'
+            );
+        } else if (error.name !== 'AbortError') {
             streamingMessage.element.remove();
             addMessage('assistant', `Error: ${error.message}`, { isError: true });
             showToast('Failed to send message', 'error');

@@ -153,6 +153,13 @@ export const register: Register = (on) => {
 
     const backend = ((await $.env.get('HIM_BACKEND_URL')) || 'http://localhost:8000').replace(/\/+$/, '')
     const token = ((await $.env.get('HIM_TOKEN')) || '').trim()
+    if (!token) {
+        // Without a token every call below is a certain 401. Asking the
+        // entity for a reflection first would spend a turn of its own on
+        // words that are then thrown away, so nothing is asked.
+      await $.ui.log(`here-i-am-compact-talk: ${refusal(401, false, '')}; the turn before compaction is not given and nothing is appended. Mint a token on the server (python -m app.auth token create) and set it as HIM_TOKEN`)
+      return next(e)
+    }
     const post = async (path: string, payload: object, timeoutMs: number): Promise<Record<string, unknown>> => {
       const fetching = $.http.fetch(`${backend}/api/claude-code/${path}`, {
         method: 'POST',

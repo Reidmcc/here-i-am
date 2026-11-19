@@ -18,6 +18,13 @@ let elements = {};
 let callbacks = {
     // Reload the page once logged in or out; injected so tests can watch
     reload: () => window.location.reload(),
+    // Whether the app behind the form had already started (the login ended
+    // while the page was in use). Then logging in just lifts the form: a
+    // reload would throw away whatever is on the page, including a message
+    // typed and not yet sent.
+    isRunning: () => false,
+    // Called when the form is lifted without a reload
+    onResumed: () => {},
 };
 
 let submitting = false;
@@ -119,6 +126,35 @@ export async function submitLogin(event) {
         return;
     }
     elements.password.value = '';
+
+    // The password was right. Did the browser keep the login? If it
+    // dropped the cookie (a Secure cookie over plain http, or cookies
+    // blocked for this address), a reload would come straight back to an
+    // empty form with no word of why.
+    try {
+        await api.getAuthSession();
+    } catch (error) {
+        if (error && error.unauthorized) {
+            setError(
+                'The password was right, but this browser did not keep the login. '
+                + 'Check that cookies are allowed for this address; over plain http, '
+                + 'the server must not be set to AUTH_COOKIE_SECURE=always.'
+            );
+            setBusy(false);
+            return;
+        }
+        // The backend went away between the two requests: carry on, and
+        // the page will say so in its own way
+    }
+
+    if (callbacks.isRunning()) {
+        // The app was already up when the login ended. Lift the form and
+        // leave the page as it is.
+        elements.overlay.hidden = true;
+        setBusy(false);
+        callbacks.onResumed();
+        return;
+    }
     // The page loaded logged out, so most of what it tried to load was
     // refused. Starting over is simpler and surer than replaying it.
     callbacks.reload();
@@ -128,7 +164,8 @@ export async function submitLogin(event) {
  * Ask the backend whether this page is logged in. A 401 shows the form
  * (through api.js); any other failure is the backend being down, which
  * the rest of startup reports in its own way.
- * @returns {Promise<boolean>} false only when the page is not logged in
+ * @returns {Promise<boolean|null>} true when logged in, false when not
+ *   (the form is showing), null when the backend didn't say
  */
 export async function ensureLoggedIn() {
     try {
@@ -139,7 +176,7 @@ export async function ensureLoggedIn() {
             showLogin();
             return false;
         }
-        return true;
+        return null;
     }
 }
 

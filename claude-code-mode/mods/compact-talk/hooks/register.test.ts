@@ -40,7 +40,9 @@ function engine(on: any, opts: Opts): Seen {
     seen.forks.push(e.prompt)
     return { value: opts.fork ?? { isAnswered: true, text: opts.reply ?? DECLINE, usage: {} } }
   })
-  on('env.get', async (_$: any, e: any) => ({ value: (opts.env ?? {})[e.name] }))
+  // A machine set up for the backend has a token; a test of one that
+  // hasn't says so with HIM_TOKEN: ''
+  on('env.get', async (_$: any, e: any) => ({ value: ({ HIM_TOKEN: 'him_this-machine', ...(opts.env ?? {}) } as Record<string, string>)[e.name] }))
   on('session.id', async () => ({ value: 'session-1' }))
   on('clock.now', async () => ({ value: NOW }))
   on('session.usage', async () => {
@@ -127,10 +129,24 @@ describe('the talk', () => {
     }
   })
 
-  test('with no token it sends no authorization header', async ($, on) => {
-    const seen = engine(on, {})
+  test('with no token it asks the entity for nothing and calls nothing', async ($, on) => {
+    // Every call would be a certain 401, and a reflection written first
+    // would be thrown away with it (PR #411 review)
+    const seen = engine(on, { env: { HIM_TOKEN: '' } })
+    const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(seen.forks.length).toBe(0)
+    expect(seen.posts.length).toBe(0)
+    expect(result.messages.length).toBe(1)
+    expect(seen.logs.join('\n')).toContain('requires a token and this machine has none')
+    expect(seen.logs.join('\n')).toContain('python -m app.auth token create')
+    expect(seen.logs.length).toBe(1)
+  })
+
+  test('a token that is only whitespace is no token', async ($, on) => {
+    const seen = engine(on, { env: { HIM_TOKEN: '   ' } })
     await $.session.compact({ trigger: 'manual', messages: [OLD] })
-    expect((seen.posts[0] as any).headers).toEqual({ 'content-type': 'application/json' })
+    expect(seen.forks.length).toBe(0)
+    expect(seen.posts.length).toBe(0)
   })
 
   test('a refused token is said as a refusal, with nothing to cancel or ask about', async ($, on) => {
@@ -146,14 +162,6 @@ describe('the talk', () => {
     expect(logs).not.toContain('could not cancel')
     expect(logs).not.toContain('him_revoked')
     expect(seen.logs.length).toBe(1)
-  })
-
-  test('a machine with no token is told that, not that its token was refused', async ($, on) => {
-    const seen = engine(on, { status: 401, backend: { detail: 'Authentication required.' } })
-    const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
-    expect(result.messages.length).toBe(1)
-    expect(seen.logs.join('\n')).toContain('requires a token and this machine has none')
-    expect(seen.posts.length).toBe(1)
   })
 
   test("a 403 carries the backend's reason", async ($, on) => {

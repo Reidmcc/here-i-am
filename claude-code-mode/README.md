@@ -83,12 +83,13 @@ its own pre-compaction talk back after a compaction). For hooks registered in `~
 (all projects), register the server user-wide to match:
 
 ```bash
-claude mcp add-json --scope user here-i-am '{"type":"http","url":"${HIM_BACKEND_URL:-http://localhost:8000}/mcp","headers":{"Authorization":"Bearer ${HIM_TOKEN}"}}'
+claude mcp add --transport http --scope user here-i-am '${HIM_BACKEND_URL:-http://localhost:8000}/mcp' --header 'Authorization: Bearer ${HIM_TOKEN}'
 ```
 
-The `${…}` are left as written (single quotes) and filled in by Claude
-Code from the `env` block of `settings.json` when a session starts, so the
-token is kept in one place. For project-scoped setups, copy this
+The `${…}` are typed as written, in single quotes, and filled in by
+Claude Code from the `env` block of `settings.json` when a session starts,
+so the token is kept in one place. (To change an existing entry, `claude
+mcp remove --scope user here-i-am` first, and add it again right after.) For project-scoped setups, copy this
 directory's `.mcp.json` into the project root instead; it is the same
 entry. Verify with `claude mcp list`: `here-i-am` should show as
 connected while the backend is running, and "Missing environment
@@ -96,10 +97,11 @@ variables: HIM_TOKEN" means the token isn't set where Claude Code reads
 it.
 
 **The token.** The backend answers only to a credential. Mint this
-machine's on the server, from its `backend` directory:
+machine's on the server, from its `backend` directory (`auth.bat` on
+Windows):
 
 ```bash
-python -m app.auth token create --name this-machine --entity your-entity-label
+./auth.sh token create --name this-machine --entity your-entity-label
 ```
 
 and put the `him_…` value it prints (once) in the `env` block as

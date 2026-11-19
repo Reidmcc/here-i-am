@@ -53,7 +53,7 @@ describe('Login', () => {
         elements.error.hidden = true;
         setElements(elements);
         reload = vi.fn();
-        setCallbacks({ reload });
+        setCallbacks({ reload, isRunning: () => false, onResumed: () => {} });
     });
 
     describe('a 401 from the backend', () => {
@@ -176,6 +176,46 @@ describe('Login', () => {
             expect(elements.password.value).toBe('');
         });
 
+        it('on a page that was already running, lifts the form and reloads nothing', async () => {
+            // The login ended while the page was in use: a reload would
+            // throw away whatever is on it, a typed message included
+            const onResumed = vi.fn();
+            setCallbacks({ isRunning: () => true, onResumed });
+            global.fetch.mockResolvedValue(response(200, { scope: 'researcher' }));
+            elements.password.value = 'a long enough password';
+            await submitLogin();
+            expect(reload).not.toHaveBeenCalled();
+            expect(isLoginShown()).toBe(false);
+            expect(onResumed).toHaveBeenCalledTimes(1);
+            expect(elements.submit.disabled).toBe(false);
+            // And the form works again the next time the login ends
+            showLogin('Your login has ended.');
+            expect(isLoginShown()).toBe(true);
+        });
+
+        it('says so when the password was right but the browser kept no login', async () => {
+            // A cookie the browser dropped: without this the page reloads
+            // straight back to an empty form, forever, with no reason given
+            global.fetch
+                .mockResolvedValueOnce(response(200, { scope: 'researcher' }))
+                .mockResolvedValueOnce(response(401, { detail: 'Authentication required.' }));
+            elements.password.value = 'a long enough password';
+            await submitLogin();
+            expect(reload).not.toHaveBeenCalled();
+            expect(isLoginShown()).toBe(true);
+            expect(elements.error.textContent).toContain('did not keep the login');
+            expect(elements.submit.disabled).toBe(false);
+        });
+
+        it('checks the login stuck by asking the backend who it is', async () => {
+            global.fetch.mockResolvedValue(response(200, { scope: 'researcher' }));
+            elements.password.value = 'a long enough password';
+            await submitLogin();
+            expect(global.fetch.mock.calls.map((call) => call[0])).toEqual([
+                '/api/auth/login', '/api/auth/session',
+            ]);
+        });
+
         it('a wrong password says so, clears the field, and stays put', async () => {
             global.fetch.mockResolvedValue(response(401, { detail: 'Wrong password.' }));
             elements.password.value = 'not it';
@@ -202,6 +242,7 @@ describe('Login', () => {
             expect(elements.submit.disabled).toBe(true);
             await submitLogin();
             expect(global.fetch).toHaveBeenCalledTimes(1);
+            global.fetch.mockResolvedValue(response(200, {}));
             finish(response(200, {}));
             await first;
             expect(reload).toHaveBeenCalledTimes(1);
@@ -248,9 +289,9 @@ describe('Login', () => {
             expect(isLoginShown()).toBe(true);
         });
 
-        it('a backend that is down is not mistaken for logged out', async () => {
+        it('a backend that is down is neither logged in nor logged out', async () => {
             global.fetch.mockRejectedValue(new TypeError('Failed to fetch'));
-            expect(await ensureLoggedIn()).toBe(true);
+            expect(await ensureLoggedIn()).toBe(null);
             expect(isLoginShown()).toBe(false);
         });
     });
