@@ -12,6 +12,8 @@ included.
 - [What it does not do](#what-it-does-not-do)
 - [What was measured](#what-was-measured)
 
+Putting the server on a cloud machine is [deployment.md](deployment.md).
+
 ## Setting it up
 
 Everything is done with one command, run on the server's own machine from
@@ -328,8 +330,8 @@ Stated plainly, so none of it is assumed:
   same user can open the SQLite file, or run the CLI and mint itself a
   researcher token. On a single desktop that is the case today, and the
   standing agreement not to touch the live directory is the fence. On a
-  cloud machine the fix is the server running as its own OS user (the
-  deployment guide).
+  cloud machine the fix is the server running as its own OS user
+  ([deployment.md](deployment.md), step 1).
 - **It does not stop a session that drives the researcher's own browser.**
   A session using Claude in Chrome acts inside a browser that is logged
   in, with the researcher's session. That stays an agreement.

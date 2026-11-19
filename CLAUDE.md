@@ -92,7 +92,7 @@ frontend/js/
 
 Modules don't import each other. The orchestrator injects DOM elements via `setElements()` and cross-module callbacks via `setCallbacks()`.
 
-Reference docs live in `docs/`: `tools.md` (tool catalog — update when adding/changing tools), `api.md` (endpoint listing), `authentication.md` (setup, the design, what it doesn't protect), `local-services.md` (XTTS/StyleTTS 2/Whisper setup), `integrations.md` (GitHub/navigator/Moltbook setup), `claude-code-mode.md` (entity operating from inside Claude Code sessions). The README carries only summaries and links to these.
+Reference docs live in `docs/`: `tools.md` (tool catalog — update when adding/changing tools), `api.md` (endpoint listing), `authentication.md` (setup, the design, what it doesn't protect), `deployment.md` (a cloud machine: the server's own OS user, Tailscale, tokens per machine, backups; its machine-side steps are marked where not yet run), `local-services.md` (XTTS/StyleTTS 2/Whisper setup), `integrations.md` (GitHub/navigator/Moltbook setup), `claude-code-mode.md` (entity operating from inside Claude Code sessions). The README carries only summaries and links to these.
 
 ## Things that will bite you
 

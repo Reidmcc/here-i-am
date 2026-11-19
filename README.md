@@ -260,7 +260,7 @@ GitHub repository access, the Codebase Navigator (Devstral), and Moltbook are co
 
 ### Authentication
 
-Every request needs a credential; there is no switch that turns this off, and localhost is not trusted without one. The researcher logs in at the web page with a password. Machines (the Claude Code hooks, the memory tools, scripts) send bearer tokens, each scoped either to one entity's Claude Code endpoints or to everything. Passwords and tokens are made only by the `auth` command (`auth.bat` / `auth.sh`, i.e. `python -m app.auth`) on the server's own machine. Setup, the cutover for an existing install, and what it does and does not protect are in [docs/authentication.md](docs/authentication.md).
+Every request needs a credential; there is no switch that turns this off, and localhost is not trusted without one. The researcher logs in at the web page with a password. Machines (the Claude Code hooks, the memory tools, scripts) send bearer tokens, each scoped either to one entity's Claude Code endpoints or to everything. Passwords and tokens are made only by the `auth` command (`auth.bat` / `auth.sh`, i.e. `python -m app.auth`) on the server's own machine. Setup, the cutover for an existing install, and what it does and does not protect are in [docs/authentication.md](docs/authentication.md); running the server on a cloud machine reachable only from your own devices is [docs/deployment.md](docs/deployment.md).
 
 ### Claude Code Mode
 
