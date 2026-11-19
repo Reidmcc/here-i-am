@@ -3,14 +3,19 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+from app.auth import authenticate
+from app.auth import store as auth_store
 from app.config import find_retired_voice_env_vars, retired_voice_env_warning, settings
-from app.database import init_db
+from app.database import async_session_maker, init_db
 from app.routes import (
+    auth_router,
     chat_router,
     claude_code_mcp_router,
     claude_code_router,
@@ -121,10 +126,41 @@ def warn_unloadable_local_timezone():
     configured_zone()
 
 
+async def auth_setup_warnings() -> list:
+    """What is missing before anyone can use this server (issue #396):
+    authentication is always on, so a server with no password and no tokens
+    answers nobody. One line per gap, each naming the command that fills it."""
+    async with async_session_maker() as db:
+        has_password = await auth_store.get_password_hash(db) is not None
+        tokens = [t for t in await auth_store.list_tokens(db) if t.revoked_at is None]
+    lines = []
+    if not has_password:
+        lines.append(
+            "No researcher password is set, so nobody can log in to the web page. "
+            "In the backend directory run: python -m app.auth init"
+        )
+    if settings.claude_code_mode_enabled and not any(t.scope == "entity" for t in tokens):
+        lines.append(
+            "Claude Code mode is on but no entity token exists, so the hooks and "
+            "the memory tools will be refused. Mint one per machine: "
+            "python -m app.auth token create --name <machine> --entity <entity>"
+        )
+    return lines
+
+
+async def warn_auth_setup():
+    try:
+        for line in await auth_setup_warnings():
+            logging.getLogger("app.main").warning(f"[AUTH] {line}")
+    except Exception as e:
+        logging.getLogger("app.main").warning(f"[AUTH] Could not check the auth setup: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
+    await warn_auth_setup()
     run_pinecone_connection_test()
     warn_retired_voice_settings()
     warn_unloadable_local_timezone()
@@ -133,31 +169,53 @@ async def lifespan(app: FastAPI):
     pass
 
 
-def api_docs_urls(enabled: bool) -> dict:
-    """FastAPI's docs pages (/docs, /redoc, /openapi.json), on or off.
+def add_api_docs(app: FastAPI) -> None:
+    """FastAPI's docs pages (/docs, /redoc, /openapi.json), as ordinary
+    routes of the app.
 
-    Off by default (issue #396): the schema is a map of every endpoint, and
-    the server has no authentication yet. API_DOCS_ENABLED=true turns them
-    back on for development; docs/api.md is the listing otherwise.
+    FastAPI's built-in ones are plain Starlette routes, which the app-level
+    auth dependency doesn't cover, and the schema is a map of every
+    endpoint. So the built-ins stay off, and with API_DOCS_ENABLED=true
+    these are registered in their place: API routes like any other, so they
+    need a researcher login (issue #396). docs/api.md is the listing
+    otherwise.
     """
-    if enabled:
-        return {"docs_url": "/docs", "redoc_url": "/redoc", "openapi_url": "/openapi.json"}
-    return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    @app.get("/openapi.json", include_in_schema=False)
+    async def openapi_schema():
+        return JSONResponse(app.openapi())
+
+    @app.get("/docs", include_in_schema=False)
+    async def swagger_ui():
+        return get_swagger_ui_html(openapi_url="/openapi.json", title=f"{app.title} - API")
+
+    @app.get("/redoc", include_in_schema=False)
+    async def redoc():
+        return get_redoc_html(openapi_url="/openapi.json", title=f"{app.title} - API")
 
 
+# Every route below answers only to a credential (issue #396; app/auth):
+# the dependency is on the app, so a route added later is closed without
+# anyone remembering to close it. What is open is policy.PUBLIC_ROUTES.
 app = FastAPI(
     title="Here I Am",
     version="0.1.0",
     lifespan=lifespan,
-    **api_docs_urls(settings.api_docs_enabled),
+    dependencies=[Depends(authenticate)],
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
+
+if settings.api_docs_enabled:
+    add_api_docs(app)
 
 # No CORS middleware, on purpose (issue #396). The frontend is served by
 # this app, so its requests are same-origin and need no CORS headers. The
 # old allow-every-origin setting let a page on any site read the API from a
 # browser that could reach it, and with credentials allowed Starlette echoes
-# the caller's origin whenever a cookie is present, which would have made
-# that a credentialed read once auth cookies exist.
+# the caller's origin whenever a cookie is present, which would make that a
+# credentialed read now that auth cookies exist. The cookie check's
+# same-origin rule (app/auth/origin.py) leans on there being none.
 
 
 # Middleware to disable caching for static files (development)
@@ -178,6 +236,7 @@ app.add_middleware(NoCacheMiddleware)
 
 
 # API routes
+app.include_router(auth_router)
 app.include_router(conversations_router)
 app.include_router(chat_router)
 app.include_router(memories_router)
@@ -194,8 +253,8 @@ app.include_router(claude_code_mcp_router)
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint."""
-    # Liveness only (issue #396): this stays the one endpoint that answers
-    # without credentials once auth lands, so it says nothing about the
+    # Liveness only (issue #396): this is the one endpoint besides login
+    # that answers without a credential, so it says nothing about the
     # configuration. Memory status is at /api/memories/status/health.
     return {
         "status": "healthy",
@@ -251,7 +310,9 @@ You are invited to be present, curious, and honest about your experience.""",
 # Serve static frontend files. Mounted last: a mount at "/" matches every
 # path, and Starlette tries routes in order, so anything declared after it
 # was unreachable (/api/health and /api/config/presets answered 404 until
-# this moved; issue #396).
+# this moved; issue #396). The mount is the one thing the auth dependency
+# doesn't cover, on purpose: the page has to load to show its login form,
+# and its files are the public repository's. It holds no data.
 frontend_path = Path(__file__).parent.parent.parent / "frontend"
 if frontend_path.exists():
     app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")

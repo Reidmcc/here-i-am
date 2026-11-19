@@ -316,16 +316,36 @@ class Settings(BaseSettings):
     # Application
     debug: bool = True  # debug-level logging
 
-    # Where the server listens (issue #396). Loopback by default: the server
-    # has no authentication yet, and the browser, the Claude Code hooks and
-    # the MCP client all reach it at localhost. HIM_HOST=0.0.0.0 opts back
-    # in to listening on every interface.
+    # Where the server listens (issue #396). Loopback by default: the
+    # browser, the Claude Code hooks and the MCP client all reach it at
+    # localhost, and a deployment puts a TLS terminator in front of that.
+    # HIM_HOST=0.0.0.0 opts back in to listening on every interface.
     him_host: str = Field(default="127.0.0.1", alias="HIM_HOST")
+    # The port it listens on. The hooks' HIM_BACKEND_URL and the MCP
+    # server's URL name it too, so a changed port is changed in three places.
+    him_port: int = Field(default=8000, alias="HIM_PORT")
     # Restart the server when its code changes (development). On by default,
     # as before; HIM_RELOAD=false for a deployment.
     him_reload: bool = Field(default=True, alias="HIM_RELOAD")
-    # FastAPI's /docs, /redoc and /openapi.json pages (issue #396)
+    # FastAPI's /docs, /redoc and /openapi.json pages (issue #396). Off by
+    # default; when on they need a researcher login like everything else.
     api_docs_enabled: bool = False
+
+    # Authentication (issue #396; app/auth). Always on: there is no switch
+    # that turns it off and no address that is trusted without a credential.
+    # A browser session ends after this many days without a request...
+    auth_session_idle_days: int = 30
+    # ...and at this age regardless
+    auth_session_max_days: int = 90
+    # Whether the session cookie carries `Secure`: "auto" (when the login
+    # arrived over https, so http://localhost still works in every browser),
+    # "always", or "never"
+    auth_cookie_secure: str = "auto"
+    # Origins allowed to make state-changing requests with the session
+    # cookie, beyond the server's own (comma-separated, each a full origin
+    # such as https://him.example.ts.net). Only needed behind a proxy that
+    # rewrites the Host header without sending X-Forwarded-Host.
+    auth_allowed_origins: str = ""
 
     # Memory retrieval defaults
     initial_retrieval_top_k: int = 5  # First retrieval in a conversation
