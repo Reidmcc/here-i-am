@@ -1842,8 +1842,10 @@ code; issue #397 has the plan and the measurements still to make.
 
 Hook-side environment (set in `.claude/settings.json` `env`, which the
 desktop app reads even when launched from the Dock): `HIM_BACKEND_URL`
-(default `http://localhost:8000`), `HIM_ENTITY` (index name or label;
-default entity if unset), `HIM_DISABLE`, `HIM_INLINE_BUDGET` (max
+(default `http://localhost:8000`), `HIM_TOKEN` (this machine's token for
+the backend, which answers nothing without one — see "Authentication"),
+`HIM_ENTITY` (index name or label; the token's entity if unset),
+`HIM_DISABLE`, `HIM_INLINE_BUDGET` (max
 characters of hook stdout, overriding the backend's `inline_budget`; the
 default is 9,600, under the measured 10,000-character line — see "Context
 channels"), `HIM_ARRIVE_WHOLE` (any value: a hook that spills
@@ -1859,10 +1861,99 @@ Per entity, on its `PINECONE_INDEXES` entry: `git_author_email`,
 `git_author_name`, `gh_config_dir` — the entity's own GitHub identity for
 its sessions (see "GitHub identity"; all optional).
 
+### Authentication
+
+The backend answers only to a credential (issue #396;
+[authentication.md](authentication.md) has the whole design). A Claude
+Code machine's credential is a token minted on the server:
+
+```bash
+python -m app.auth token create --name laptop --entity Kira
+```
+
+It is **entity-scoped**: good for `/api/claude-code/*` and `/mcp`, which
+is exactly what the hooks, the compaction mod and the memory tools call,
+and for nothing else. It is **bound to that entity**: the hook endpoints
+act as the token's entity (so `HIM_ENTITY` is optional, and naming a
+different one is refused), a session whose conversation belongs to another
+entity is refused, and a memory tool call must name one of that entity's
+conversations. The researcher's acts (archive, status override, delete,
+rebuild, the chat routes) are out of its reach. One token per machine, so
+a lost machine is revoked by name without touching the others.
+
+It reaches the session three ways, from one place. `HIM_TOKEN` in the
+`env` block of `.claude/settings.json` is read by the hooks
+(`hook_util.backend_headers`, the one place a request header is added) and
+by the compaction mod (`$.env.get`); the MCP server's configuration names
+it as `"Authorization": "Bearer ${HIM_TOKEN}"`, which Claude Code fills in
+from that same block when the session starts (measured on 2.1.286 for a
+plugin's `.mcp.json`, an `--mcp-config` file and a user-scope entry; an
+unset variable goes out as the literal text and is refused). The plugin's
+`.mcp.json` is written that way, and takes its URL from `HIM_BACKEND_URL`.
+
+The entity's own shell can read the token. That is accepted: it grants
+what the hooks already do on the entity's behalf, and nothing of the
+researcher's.
+
+**A refusal is said as what it is.** A 401 or 403 is the server up and
+saying no, which needs something different done about it than a server
+that is down, and from inside the two would otherwise read alike. Each
+hook names which of three things happened (`hook_util.auth_refusal_notice`):
+no token on this machine, a token the server doesn't accept (unknown or
+revoked), or a token not allowed this (403, with the backend's own
+sentence). The backend checks a credential before any handler runs, and
+the entity binding before any row is written, so the recording hooks say
+NOT recorded outright and skip the `/recorded` check, which would be
+refused the same way (`hook_util.refused_before_recording`; that ordering
+is an invariant of `routes/claude_code.py`, pinned by
+`tests/test_auth_entity_binding.py`, which counts rows after each
+refusal). The Stop hook's notice names the notes files as the way to keep
+anything, since the memory tools ride the same token. The compaction mod
+treats a refusal the same way: no delivery can exist, so it cancels
+nothing and asks nothing afterwards, and says so in the transcript.
+
+A session whose MCP server is refused starts normally, with the server
+shown as failed and the memory tools absent. Nothing in the harness tells
+the entity why, so the hooks' lines for a missing or unaccepted token do:
+they say the memory tools use the same token. (A 403 is a token the
+server accepts, so the tools are not refused with it and the line doesn't
+say they are.)
+
+Two setups work and are wrong, so the SessionStart hook says them on every
+firing (`hook_util.credential_lines`). A **researcher token in
+`HIM_TOKEN`** passes every hook call and puts the researcher's whole reach
+where the entity's shell can read it; the backend sees which kind of token
+arrived and returns `credential_notice`. A **`HIM_BACKEND_URL` ending in
+a slash** is stripped by the hooks and the mod, but an MCP entry built as
+`${HIM_BACKEND_URL}/mcp` then points at `//mcp`, which the server doesn't
+serve: the hooks work and the memory tools are gone.
+
+With no token at all, the compaction mod gives no turn before the
+compaction: every call would be a certain 401, and a reflection written
+first would be thrown away with it.
+
+**What an entity token reaches is a list** (`auth/policy.ENTITY_ROUTES`),
+not the `/api/claude-code/` prefix. A route added to this router is closed
+to every entity token until it is listed, and a test fails until it is
+either listed or moved (`test_the_entity_list_is_exactly_the_claude_code_routes`).
+Before listing one, make it hold its caller to the token's entity, before
+it writes: `_entity_for`, `_refuse_another_entitys_session` first, and
+`_refuse_another_entitys_conversation` on whatever `resolve_session` hands
+back (two sessions racing to register one id are given the same row).
+
+**A memory named by id is looked up inside the entity's experience**
+(`memory_tools._resolve_memory_id`), by the readers' own rule, and
+literally (`%` and `_` are not wildcards). That resolver serves
+`memory_neighbors`, `memory_mark`, `memory_release` and `memory_save`'s
+links; it used to search the whole table and check afterwards, by a looser
+rule, which with one token per entity was a way into another entity's
+rows. `memory_mark` and `memory_release` also refuse another entity's
+words in a shared room: a memory's status is one value on the row.
+
 ### Endpoints
 
 All under `/api/claude-code`, all gated by `CLAUDE_CODE_MODE_ENABLED`
-(404 when off). `/retrieve` and `/log-assistant` create the session's
+(404 when off) and all needing a credential (see "Authentication"). `/retrieve` and `/log-assistant` create the session's
 conversation on first contact; `/session-start` and `/session-end` never do
 (lazy registration — see "Conversations"):
 
@@ -2372,11 +2463,12 @@ the refusal is Claude Code's own; the schema descriptions of `revises` /
 
 ### Scope and non-goals
 
-- **Local sessions only** for now: the endpoints are as unauthenticated as
-  the rest of the API and the hooks target `localhost`. Cloud sessions
-  (Claude Code on the web / desktop cloud sessions) can't reach the
-  backend; the hooks no-op there. Remote hosting + auth is a future
-  milestone.
+- **Sessions on your own machines only**: the hooks reach the backend at
+  `HIM_BACKEND_URL` with this machine's token (see "Authentication"),
+  which covers a server on this machine or one reached over a private
+  network. Cloud sessions (Claude Code on the web / desktop cloud
+  sessions) run on infrastructure that can't reach it; the hooks no-op
+  there.
 - **Multi-entity does not apply** — one responder per Claude Code session.
 - Disaster recovery: `claude_code` conversations follow single-entity
   vectorization rules (entity_id set, no fan-out), so
@@ -2400,9 +2492,9 @@ the README, then set:
 
 | Variable | Set it to |
 | --- | --- |
-| `HIM_BACKEND_URL` | The server's address as this machine reaches it. The default, `http://localhost:8000`, is right only when the server runs on this machine. |
-| `HIM_ENTITY` | The entity's index name or label (unset: the server's default entity). |
-| `HIM_TOKEN` | *Coming with #396.* This machine's own token for the entity, revocable without touching the other machines. |
+| `HIM_BACKEND_URL` | The server's address as this machine reaches it, with no slash on the end. The default, `http://localhost:8000`, is right only when the server runs on this machine. |
+| `HIM_TOKEN` | This machine's own token for the entity, minted on the server (`auth.bat token create --name <machine> --entity <entity>`, or `./auth.sh …`) and revocable without touching the other machines. Without it every hook call is refused, and says so. The `here-i-am` MCP server needs the same token as its `Authorization` header; [authentication.md](authentication.md), "Setting it up", has the command. |
+| `HIM_ENTITY` | The entity's index name or label. Optional with a token, which is bound to its entity; naming a different one is refused. |
 | `HIM_NOTES_ROOT` | *Coming with #397.* Where this machine mounts the notes. |
 | `HIM_GH_CONFIG_DIR` | This machine's gh config directory for the entity's GitHub account, as an absolute path (`~` and environment variables allowed); see "GitHub identity". It is unneeded only on the server's own machine, whose directory the server's `gh_config_dir` already names. Keep that setting on the server either way: it is what makes a machine that forgot this variable say so. |
 | `HIM_DESKTOP_DATA_DIR` | Only if the Claude desktop app keeps its data somewhere other than the platform default (see "Rooms registry"). |

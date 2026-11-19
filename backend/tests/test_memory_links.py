@@ -332,7 +332,9 @@ class TestSaveRefusals:
         result = await save_memory(ctx(), "Based on that.", cites=[theirs.id[:8]])
 
         assert result.startswith("Error: Nothing was saved. cites:")
-        assert "another entity" in result
+        # Outside the experience it is simply not there: the lookup runs
+        # inside the experience, so it doesn't say the row exists (PR #411)
+        assert "No memory found" in result
         await self.assert_nothing_saved(db, before)
 
     async def test_unknown_prefix_refuses_the_whole_save(self, db, tools_db):

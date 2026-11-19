@@ -1,13 +1,17 @@
 """
-What the server exposes before authentication exists (issue #396, phase 0):
-where it listens, no CORS, no docs pages, and a health check that says
-nothing about the configuration.
+What the server exposes apart from authentication (issue #396, phase 0):
+where it listens, no CORS, no docs pages by default, and a health check
+that says nothing about the configuration. What a request needs in order
+to be answered at all is tests/test_auth_route_walk.py.
 """
 import pytest
+from fastapi import Depends, FastAPI
+from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 
+from app.auth import authenticate
 from app.config import Settings
-from app.main import api_docs_urls, app
+from app.main import add_api_docs, app
 from run import server_options
 
 
@@ -74,12 +78,34 @@ class TestDocsPages:
         response = await client.get(path)
         assert response.status_code == 404
 
-    def test_setting_turns_them_on(self):
-        assert api_docs_urls(True) == {
-            "docs_url": "/docs",
-            "redoc_url": "/redoc",
-            "openapi_url": "/openapi.json",
-        }
+    def _docs_app(self) -> FastAPI:
+        docs_app = FastAPI(
+            dependencies=[Depends(authenticate)],
+            docs_url=None, redoc_url=None, openapi_url=None,
+        )
+        add_api_docs(docs_app)
+        return docs_app
+
+    def test_setting_registers_them_as_ordinary_routes(self):
+        # FastAPI's built-in docs routes are plain Starlette routes, which
+        # an app-level dependency doesn't cover; these are API routes, so
+        # they are behind the same check as everything else
+        routes = {r.path: r for r in self._docs_app().routes}
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert isinstance(routes[path], APIRoute)
+
+    @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+    async def test_enabled_pages_answer_the_researcher(self, path):
+        transport = ASGITransport(app=self._docs_app())
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            assert (await c.get(path)).status_code == 200
+
+    @pytest.mark.real_auth
+    @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+    async def test_enabled_pages_refuse_a_stranger(self, path):
+        transport = ASGITransport(app=self._docs_app())
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            assert (await c.get(path)).status_code == 401
 
 
 class TestHealth:

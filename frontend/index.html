@@ -7,6 +7,23 @@
     <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
+    <!-- Login (issue #396). Shown when the backend answers 401; the app
+         behind it is inert until then. -->
+    <div class="login-overlay" id="login-overlay" hidden>
+        <form class="login-card" id="login-form" method="post" action="/api/auth/login" autocomplete="on">
+            <h1 class="app-title">Here I Am</h1>
+            <p class="login-message" id="login-message">Log in to continue.</p>
+            <!-- A username a password manager can file the password under;
+                 the server has one account and reads only the password -->
+            <input type="text" name="username" value="researcher" autocomplete="username" hidden>
+            <label for="login-password">Password</label>
+            <input type="password" id="login-password" name="password"
+                   autocomplete="current-password" required>
+            <p class="login-error" id="login-error" role="alert" hidden></p>
+            <button type="submit" id="login-submit" class="primary-btn">Log in</button>
+        </form>
+    </div>
+
     <div class="app-container">
         <!-- Sidebar -->
         <aside class="sidebar">
@@ -225,6 +242,15 @@
                         <option value="dark">Dark</option>
                         <option value="light">Light</option>
                     </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Login</label>
+                    <div class="login-actions">
+                        <button type="button" id="logout-btn" class="secondary-btn">Log out</button>
+                        <button type="button" id="logout-everywhere-btn" class="secondary-btn">Log out everywhere</button>
+                    </div>
+                    <small class="form-help">"Everywhere" ends the login on every browser and device, for one that is lost. Tokens for Claude Code machines are separate: revoke those on the server with <code>python -m app.auth token revoke</code>.</small>
                 </div>
 
                 <div class="form-group">

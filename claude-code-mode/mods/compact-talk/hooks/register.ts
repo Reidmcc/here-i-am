@@ -127,6 +127,20 @@ export function talkBudget(line: number | undefined): number | undefined {
   return line && line > 0 ? Math.floor(line * TALK_SHARE) : undefined
 }
 
+// The backend answers only to a credential (issue #396): this machine's
+// token, HIM_TOKEN, sent as the Python hooks send it. A 401 or 403 is the
+// backend refusing before it did anything, so there is no delivery to
+// cancel and nothing to ask about afterwards; it is said as a refusal, in
+// the words the hooks use, and not as a backend that failed.
+export class Refused extends Error {}
+
+export function refusal(status: number, hasToken: boolean, body: string): string {
+  if (status === 403) return `the backend refused this as not allowed for this machine's token (403: ${body.slice(0, 300)})`
+  return hasToken
+    ? 'the backend refused this machine\'s token (401: HIM_TOKEN is unknown to the server or was revoked)'
+    : 'the backend requires a token and this machine has none (401: HIM_TOKEN is not set in this session\'s environment)'
+}
+
 function describe(result: object): string {
   const { usage: _usage, ...rest } = result as Record<string, unknown>
   return JSON.stringify(rest)
@@ -138,10 +152,19 @@ export const register: Register = (on) => {
     if (await $.env.get('HIM_DISABLE')) return next(e)
 
     const backend = ((await $.env.get('HIM_BACKEND_URL')) || 'http://localhost:8000').replace(/\/+$/, '')
+    const token = ((await $.env.get('HIM_TOKEN')) || '').trim()
+    if (!token) {
+        // Without a token every call below is a certain 401. Asking the
+        // entity for a reflection first would spend a turn of its own on
+        // words that are then thrown away, so nothing is asked.
+      await $.ui.log(`here-i-am-compact-talk: ${refusal(401, false, '')}; the turn before compaction is not given and nothing is appended. Mint a token on the server (python -m app.auth token create) and set it as HIM_TOKEN`)
+      return next(e)
+    }
     const post = async (path: string, payload: object, timeoutMs: number): Promise<Record<string, unknown>> => {
       const fetching = $.http.fetch(`${backend}/api/claude-code/${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        // The token goes only here, never into the URL or the body
+        headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify(payload),
       })
       // The fetch can't be aborted, only stopped waiting for: whatever it
@@ -154,6 +177,9 @@ export const register: Register = (on) => {
           (err) => { timer.cancel(); reject(err) },
         )
       })
+      if (response.status === 401 || response.status === 403) {
+        throw new Refused(refusal(response.status, token !== '', response.text))
+      }
       if (!response.ok) throw new Error(`the backend answered ${response.status}: ${response.text.slice(0, 300)}`)
       return JSON.parse(response.text) as Record<string, unknown>
     }
@@ -209,16 +235,22 @@ export const register: Register = (on) => {
       }
     } catch (err) {
       talk = deliveryId = undefined
-      if (asked) {
-        // Before the engine's compaction, where the block would take it
-        try {
-          await post('compact-talk/cancel', { delivery_id: chosenId }, QUESTION_TIMEOUT_MS)
-        } catch (cancelErr) {
-          cancelFailed = true
-          await $.ui.log(`here-i-am-compact-talk: could not cancel the delivery either (${String(cancelErr)}); will ask after the compaction whether the block took it`)
+      if (err instanceof Refused) {
+        // Refused for its credential, before the backend did anything: no
+        // delivery exists to cancel, and the cancel would be refused too
+        await $.ui.log(`here-i-am-compact-talk: ${err.message}; nothing was saved or fetched, and nothing is appended. Mint a token on the server (python -m app.auth token create) and set it as HIM_TOKEN`)
+      } else {
+        if (asked) {
+          // Before the engine's compaction, where the block would take it
+          try {
+            await post('compact-talk/cancel', { delivery_id: chosenId }, QUESTION_TIMEOUT_MS)
+          } catch (cancelErr) {
+            cancelFailed = true
+            await $.ui.log(`here-i-am-compact-talk: could not cancel the delivery either (${String(cancelErr)}); will ask after the compaction whether the block took it`)
+          }
         }
+        await $.ui.log(`here-i-am-compact-talk: ${String(err)}; nothing appended, the post-compaction block names the read as before`)
       }
-      await $.ui.log(`here-i-am-compact-talk: ${String(err)}; nothing appended, the post-compaction block names the read as before`)
     }
 
     const result = await next(e)

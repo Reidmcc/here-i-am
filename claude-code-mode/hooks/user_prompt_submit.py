@@ -76,7 +76,7 @@ before anything else is attempted, so every path here carries it — a
 typed prompt, a wakeup tick, harness plumbing, and each failure, the
 unreachable backend above all, which is when the hour is least known.
 
-Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE, HIM_INLINE_BUDGET,
+Environment: HIM_BACKEND_URL, HIM_TOKEN, HIM_ENTITY, HIM_DISABLE, HIM_INLINE_BUDGET,
 HIM_TIMEZONE (see session_start.py / hook_util.py).
 """
 import os
@@ -182,9 +182,12 @@ def main() -> None:
         if not prompt and not peer_messages:
             # Wakeup tick: nothing was going to be recorded, so the loss is
             # only the mailbox check and the background notes sync
-            hook_util.fail_loud(
+            cause = hook_util.auth_refusal_notice(e) or (
                 "The Here I Am backend was unreachable for this wakeup tick "
-                f"({hook_util.describe_error(e)}). Nothing needed recording, "
+                f"({hook_util.describe_error(e)})."
+            )
+            hook_util.fail_loud(
+                f"{cause} Nothing needed recording, "
                 "but no notes sync ran and new sibling reflections were not "
                 "checked."
             )
@@ -340,6 +343,12 @@ def recording_failure_notice(error, session_id, human_id, peer_ids) -> str:
     )
     if hook_util.never_reached_backend(error):
         return f"The Here I Am backend was unreachable for this prompt ({err}). {not_recorded}"
+    # Refused for its credential (issue #396): the backend checks that
+    # before anything is written, and the /recorded check would be refused
+    # the same way, so this is NOT recorded without asking
+    refusal = hook_util.auth_refusal_notice(error)
+    if refusal:
+        return f"{refusal} {not_recorded}"
     try:
         recorded = hook_util.recorded_message_ids(session_id, list(labels))
     except Exception as check_error:

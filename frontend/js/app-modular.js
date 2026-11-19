@@ -5,8 +5,16 @@
 
 // Import modules
 import { state, resetMemoryState, loadEntityModelsFromStorage, loadSelectedVoiceFromStorage, loadResearcherName, loadEnterInsertsNewline, loadLocalVoiceSettings, loadMessageInputHeight, saveMessageInputHeight, getValidSavedEntityModel, LEGACY_ENTITY_PROMPTS_KEY } from './modules/state.js';
-import { setToastContainer, escapeHtml } from './modules/utils.js';
+import { setToastContainer, showToast, escapeHtml } from './modules/utils.js';
 import { loadTheme, getCurrentTheme } from './modules/theme.js';
+import {
+    setElements as setAuthElements,
+    setCallbacks as setAuthCallbacks,
+    showLogin,
+    submitLogin,
+    ensureLoggedIn,
+    logOut
+} from './modules/auth.js';
 import { setElements as setModalElements, showModal, hideModal, closeActiveModal, closeAllDropdowns } from './modules/modals.js';
 import {
     setElements as setEntityElements,
@@ -210,6 +218,16 @@ class App {
             systemPromptHelp: document.getElementById('system-prompt-help'),
             presetSelect: document.getElementById('preset-select'),
             themeSelect: document.getElementById('theme-select'),
+
+            // Login (issue #396)
+            loginOverlay: document.getElementById('login-overlay'),
+            loginForm: document.getElementById('login-form'),
+            loginMessage: document.getElementById('login-message'),
+            loginPassword: document.getElementById('login-password'),
+            loginError: document.getElementById('login-error'),
+            loginSubmit: document.getElementById('login-submit'),
+            logoutBtn: document.getElementById('logout-btn'),
+            logoutEverywhereBtn: document.getElementById('logout-everywhere-btn'),
             verbositySelect: document.getElementById('verbosity-select'),
             thinkingEffortSelect: document.getElementById('thinking-effort-select'),
             researcherNameInput: document.getElementById('researcher-name-input'),
@@ -349,6 +367,28 @@ class App {
         // Initialize modal module
         setModalElements(this.elements);
 
+        // Login (issue #396): a 401 from any request shows the form. A
+        // session that ends while the page is open says so.
+        setAuthElements({
+            overlay: this.elements.loginOverlay,
+            message: this.elements.loginMessage,
+            password: this.elements.loginPassword,
+            error: this.elements.loginError,
+            submit: this.elements.loginSubmit,
+        });
+        setAuthCallbacks({
+            // Once the app has started, logging back in lifts the form and
+            // leaves the page (and anything typed on it) as it is
+            isRunning: () => this.started === true,
+            onResumed: () => {
+                this.loggedIn = true;
+                showToast('Logged in again. Anything that failed while you were logged out can be retried.', 'success');
+            },
+        });
+        window.api.setUnauthorizedHandler(() => showLogin(
+            this.loggedIn ? 'Your login has ended. Log in again to continue.' : undefined
+        ));
+
         // Initialize entity module
         setEntityElements(this.elements);
         setEntityCallbacks({
@@ -425,6 +465,14 @@ class App {
      * Bind all event listeners
      */
     bindEvents() {
+        // Login and logout
+        this.elements.loginForm?.addEventListener('submit', (e) => submitLogin(e));
+        const loggingOut = (everywhere) => logOut(everywhere).catch((error) => {
+            showToast(`Could not log out: ${error.message}`, 'error');
+        });
+        this.elements.logoutBtn?.addEventListener('click', () => loggingOut(false));
+        this.elements.logoutEverywhereBtn?.addEventListener('click', () => loggingOut(true));
+
         // Send message
         this.elements.sendBtn?.addEventListener('click', () => sendMessage());
         this.elements.messageInput?.addEventListener('keydown', (e) => {
@@ -593,6 +641,17 @@ class App {
         if (this.elements.themeSelect) {
             this.elements.themeSelect.value = getCurrentTheme();
         }
+
+        // Everything below asks the backend for something, and the backend
+        // answers only to a login (issue #396). Logged out, the form is
+        // showing and the page starts over once it is submitted.
+        const loggedIn = await ensureLoggedIn();
+        if (loggedIn === false) {
+            return;
+        }
+        // null: the backend didn't answer, which the calls below report
+        this.loggedIn = loggedIn === true;
+        this.started = true;
 
         // Load saved state from localStorage (system prompts are backend-owned)
         loadEntityModelsFromStorage();
