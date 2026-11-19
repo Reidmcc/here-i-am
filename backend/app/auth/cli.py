@@ -62,20 +62,29 @@ async def open_session():
 
 def resolve_entity(identifier: Optional[str]) -> EntityConfig:
     """The configured entity an index name or label names (as the hooks'
-    HIM_ENTITY is read); no identifier means the default entity."""
+    HIM_ENTITY is read). With one entity configured it needs no naming.
+    With several, this does not guess: a token bound to the wrong entity
+    is refused on every hook call of a machine whose HIM_ENTITY names
+    another, and on a machine with no HIM_ENTITY it would quietly record
+    that machine's sessions as the wrong entity."""
     entities = settings.get_entities()
     if not entities:
         raise CliError(
             "No entities are configured (PINECONE_INDEXES is empty), so there "
             "is no entity to bind a token to."
         )
+    known = ", ".join(f"{e.label} ({e.index_name})" for e in entities)
     if not identifier or not identifier.strip():
-        return entities[0]
+        if len(entities) == 1:
+            return entities[0]
+        raise CliError(
+            "More than one entity is configured, so say which one this token "
+            f"is for with --entity. Configured: {known}."
+        )
     wanted = identifier.strip().lower()
     for entity in entities:
         if entity.index_name.lower() == wanted or entity.label.lower() == wanted:
             return entity
-    known = ", ".join(f"{e.label} ({e.index_name})" for e in entities)
     raise CliError(f"Unknown entity '{identifier}'. Configured: {known}.")
 
 
@@ -86,10 +95,31 @@ def _entity_label(entity_id: Optional[str]) -> str:
     return entity.label if entity else f"{entity_id} (no longer configured)"
 
 
+def is_interactive() -> bool:
+    """Whether a password can be asked for without echo: standard input is
+    a real console. It is not in Git Bash's own window on Windows (mintty),
+    where getpass neither shows its prompt nor returns, nor in a pipe."""
+    try:
+        return sys.stdin.isatty()
+    except Exception:
+        return False
+
+
+NOT_INTERACTIVE = (
+    "This terminal can't be asked for a password without showing it (standard "
+    "input is not a console; Git Bash's window on Windows is like that). Run "
+    "this in PowerShell or Command Prompt, or put 'winpty' in front of the "
+    "command in Git Bash, or pass --password-stdin and send the password on "
+    "standard input. Nothing was changed."
+)
+
+
 def read_new_password(from_stdin: bool, stdin=None) -> str:
     if from_stdin:
         password = (stdin or sys.stdin).readline().rstrip("\r\n")
     else:
+        if not is_interactive():
+            raise CliError(NOT_INTERACTIVE)
         password = getpass.getpass(f"New password (at least {MIN_PASSWORD_LENGTH} characters): ")
         if getpass.getpass("Again: ") != password:
             raise CliError("The two entries differ. Nothing was changed.")
@@ -124,9 +154,9 @@ def token_instructions(value: str, scope: str) -> List[str]:
     if scope == SCOPE_ENTITY:
         lines += [
             "On the machine it is for, give it to Claude Code as HIM_TOKEN, in the",
-            '"env" block of ~/.claude/settings.json beside HIM_BACKEND_URL, and to',
-            "the MCP server as an Authorization header (docs/claude-code-mode.md,",
-            "\"Authentication\"). Restart that machine's Claude Code sessions.",
+            '"env" block of ~/.claude/settings.json beside HIM_BACKEND_URL, and make',
+            "its here-i-am MCP server send it (docs/authentication.md, \"Setting it",
+            "up\", has both steps). Then restart that machine's Claude Code sessions.",
         ]
     else:
         lines += [
@@ -214,6 +244,14 @@ async def cmd_status(db, args, out) -> None:
 async def cmd_init(db, args, out, stdin=None) -> None:
     """First run: whatever is missing of a password and a first entity
     token. Safe to run again; it changes nothing that is already there."""
+    # Which token, if any, before anything is asked or changed: a mistake
+    # in --entity should not come after a password has been typed twice
+    active = [t for t in await store.list_tokens(db) if t.revoked_at is None]
+    wants_token = settings.claude_code_mode_enabled and not any(
+        t.scope == SCOPE_ENTITY for t in active
+    )
+    entity = resolve_entity(args.entity) if wants_token else None
+
     if await store.get_password_hash(db) is None:
         out("Setting the researcher's password (what you type at the web page's login).")
         await store.set_password(db, read_new_password(args.password_stdin, stdin))
@@ -224,11 +262,9 @@ async def cmd_init(db, args, out, stdin=None) -> None:
     if not settings.claude_code_mode_enabled:
         out("Claude Code mode is off (CLAUDE_CODE_MODE_ENABLED), so no machine token is needed.")
         return
-    active = [t for t in await store.list_tokens(db) if t.revoked_at is None]
-    if any(t.scope == SCOPE_ENTITY for t in active):
+    if not wants_token:
         out("An entity token already exists (list them with: python -m app.auth token list).")
         return
-    entity = resolve_entity(args.entity)
     name = args.name or socket.gethostname() or "this-machine"
     try:
         value, token = await store.create_token(db, name, SCOPE_ENTITY, entity.index_name)

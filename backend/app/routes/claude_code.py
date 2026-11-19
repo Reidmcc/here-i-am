@@ -30,7 +30,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import Principal, authenticate
+from app.auth import SCOPE_ENTITY, Principal, authenticate
+from app.auth.policy import VIA_TOKEN
 from app.config import EntityConfig, settings
 from app.database import get_db
 from app.models import Message, MessageRole
@@ -192,6 +193,10 @@ class SessionStartResponse(BaseModel):
     # times in its own (LOCAL_TIMEZONE), and the hook says loudly when the
     # two are not the same clock. None from a server that predates it.
     server_clock: Optional[ServerClock] = None
+    # Something the session should be told about the credential its hooks
+    # sent (a researcher token where an entity token belongs); the hook
+    # prints it on every firing while it holds
+    credential_notice: Optional[str] = None
 
 
 class PeerMessage(BaseModel):
@@ -349,7 +354,19 @@ def _resolve_entity_or_400(identifier: Optional[str]) -> EntityConfig:
 # rely on to say "NOT recorded" outright (hook_util.refused_before_recording).
 
 def _bound_entity_id(principal: Optional[Principal]) -> Optional[str]:
-    return principal.entity_id if principal is not None else None
+    """The entity an entity token is bound to; None for the researcher,
+    who is bound to nobody. An entity-scoped credential that names no
+    entity is refused outright (the dependency already refuses such a
+    token; this is the same rule held a second time, so that "no entity"
+    can never be read here as "any entity")."""
+    if principal is None or principal.scope != SCOPE_ENTITY:
+        return None
+    if not principal.entity_id:
+        raise HTTPException(
+            status_code=403,
+            detail="This machine's token is entity-scoped but names no entity.",
+        )
+    return principal.entity_id
 
 
 def _entity_for(principal: Optional[Principal], identifier: Optional[str]) -> EntityConfig:
@@ -365,8 +382,12 @@ def _entity_for(principal: Optional[Principal], identifier: Optional[str]) -> En
             raise HTTPException(
                 status_code=403,
                 detail=(
-                    "This machine's token is bound to another entity than "
-                    f"'{identifier}' (HIM_ENTITY). It can only act as its own."
+                    f"This machine's token is bound to {_entity_name(bound)}, and "
+                    f"the request named '{identifier}' (HIM_ENTITY). A token acts "
+                    "only as its own entity: remove HIM_ENTITY from this machine's "
+                    "settings, or mint a token for that entity on the server "
+                    "(python -m app.auth token create --name <machine> --entity "
+                    f"{identifier})"
                 ),
             )
         return entity
@@ -380,6 +401,54 @@ def _entity_for(principal: Optional[Principal], identifier: Optional[str]) -> En
             ),
         )
     return entity
+
+
+RESEARCHER_TOKEN_NOTICE = (
+    "This machine's HIM_TOKEN is a researcher token: it can do everything the "
+    "researcher can (archive, delete, override, spend provider credit), and "
+    "this session's shell can read it. A Claude Code machine should hold an "
+    "entity token. Tell the user: mint one on the server (python -m app.auth "
+    "token create --name <this machine> --entity <entity>), put it in "
+    "HIM_TOKEN in place of this one, and revoke this one (python -m app.auth "
+    "token revoke <its name>)."
+)
+
+
+def _credential_notice(principal: Optional[Principal]) -> Optional[str]:
+    """Something the session should be told about the credential its hooks
+    are using, or None. Only one case today: a researcher token in
+    HIM_TOKEN works on every hook call, silently, and puts the researcher's
+    whole reach where the entity's own shell can read it, which is the one
+    thing the two scopes exist to prevent."""
+    if principal is not None and principal.via == VIA_TOKEN and principal.is_researcher:
+        return RESEARCHER_TOKEN_NOTICE
+    return None
+
+
+def _entity_name(index_name: str) -> str:
+    entity = settings.get_entity_by_index(index_name)
+    return f"'{entity.label}'" if entity else f"'{index_name}'"
+
+
+def _refuse_another_entitys_conversation(
+    principal: Optional[Principal], conversation
+) -> None:
+    """The same refusal, for a conversation a handler has just resolved.
+    `resolve_session` can hand back a row this request did not expect: two
+    sessions racing to register one session id, where the loser is given
+    the winner's row. Checked before the handler writes a message, so a
+    403 still means nothing of this request was recorded."""
+    bound = _bound_entity_id(principal)
+    if bound is None or conversation is None:
+        return
+    if conversation.entity_id != bound:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This session's conversation belongs to another entity than "
+                "the one this machine's token is bound to."
+            ),
+        )
 
 
 async def _refuse_another_entitys_session(
@@ -452,6 +521,7 @@ async def session_start(
         transcript_message_ids=data.transcript_message_ids,
     )
     conversation = resolution.conversation if resolution else None
+    _refuse_another_entitys_conversation(principal, conversation)
     # An adoption that happened on this call speaks for itself; one that
     # landed on an earlier hook with no channel back (the Stop hook's
     # stdout is not injected) left its line for whoever speaks next
@@ -529,6 +599,7 @@ async def session_start(
         git_identity=cc.git_identity_for(entity),
         notes_check=notes_check,
         server_clock=ServerClock(**clock_report()),
+        credential_notice=_credential_notice(principal),
     )
 
 
@@ -567,6 +638,7 @@ async def retrieve(
         transcript_message_ids=data.transcript_message_ids,
     )
     conversation = resolution.conversation
+    _refuse_another_entitys_conversation(principal, conversation)
 
     # Rooms registry: a prompt in any room is a chance to catch a rename
     # anywhere (the snapshot covers every live session the hook could see),
@@ -907,6 +979,7 @@ async def compact_talk_for_session(
     if conversation is None and saving:
         resolution = await cc.resolve_session(db, data.session_id, entity, create=True)
         conversation = resolution.conversation if resolution else None
+        _refuse_another_entitys_conversation(principal, conversation)
     if conversation is None:
         return CompactTalkResponse(
             available=False,
@@ -1025,6 +1098,7 @@ async def log_assistant(
         transcript_message_ids=data.transcript_message_ids,
     )
     conversation = resolution.conversation
+    _refuse_another_entitys_conversation(principal, conversation)
 
     # The Stop hook is often the first call after the harness has written
     # a fork's files, so it is a real adopter (issue #359) — but its own

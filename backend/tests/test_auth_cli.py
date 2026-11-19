@@ -76,6 +76,7 @@ class TestSetPassword:
             assert (await db.execute(select(AuthSession))).scalars().all() == []
 
     async def test_typed_twice_must_match(self, maker, monkeypatch):
+        monkeypatch.setattr(cli, "is_interactive", lambda: True)
         answers = iter([PASSWORD, PASSWORD + " typo"])
         monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": next(answers))
         code, output = await run("set-password")
@@ -99,10 +100,26 @@ class TestTokens:
         _code, listing = await run("token", "list")
         assert value not in listing and "laptop" in listing and "Bea" in listing
 
-    async def test_the_default_entity_is_the_first_configured(self, maker):
-        await run("token", "create", "--name", "desktop")
+    async def test_with_one_entity_configured_it_needs_no_naming(self, maker, monkeypatch):
+        monkeypatch.setattr(
+            settings, "pinecone_indexes",
+            '[{"index_name": "ada-index", "label": "Ada", "llm_provider": "anthropic"}]',
+        )
+        code, _output = await run("token", "create", "--name", "desktop")
+        assert code == 0
         async with maker() as db:
             assert (await db.execute(select(ApiToken))).scalar_one().entity_id == "ada-index"
+
+    async def test_with_several_it_does_not_guess(self, maker):
+        # A token bound to the wrong entity is refused on every hook call of
+        # a machine whose HIM_ENTITY names another, and with no HIM_ENTITY
+        # it would record that machine's sessions as the wrong entity
+        code, output = await run("token", "create", "--name", "desktop")
+        assert code == 1
+        assert "--entity" in output and "Ada (ada-index)" in output and "Bea (bea-index)" in output
+        assert TOKEN.search(output) is None
+        async with maker() as db:
+            assert (await db.execute(select(ApiToken))).scalars().all() == []
 
     async def test_a_researcher_token_is_bound_to_nobody(self, maker):
         code, output = await run("token", "create", "--name", "script", "--scope", "researcher")
@@ -124,8 +141,8 @@ class TestTokens:
             assert (await db.execute(select(ApiToken))).scalars().all() == []
 
     async def test_a_name_in_use_is_refused(self, maker):
-        await run("token", "create", "--name", "laptop")
-        code, output = await run("token", "create", "--name", "laptop")
+        await run("token", "create", "--name", "laptop", "--entity", "ada")
+        code, output = await run("token", "create", "--name", "laptop", "--entity", "ada")
         assert code == 1 and "already exists" in output
 
     async def test_with_no_entities_there_is_nothing_to_bind_to(self, maker, monkeypatch):
@@ -134,7 +151,7 @@ class TestTokens:
         assert code == 1 and "No entities are configured" in output
 
     async def test_revoke(self, maker):
-        await run("token", "create", "--name", "laptop")
+        await run("token", "create", "--name", "laptop", "--entity", "ada")
         code, output = await run("token", "revoke", "laptop")
         assert code == 0 and "Revoked 'laptop'" in output
         _code, listing = await run("token", "list")
@@ -143,9 +160,43 @@ class TestTokens:
         assert code == 1 and "Nothing was revoked" in output
 
 
+class TestATerminalThatCannotHideAPassword:
+    """Git Bash's own window on Windows is not a console: getpass shows no
+    prompt there and never returns. The command says so instead of hanging
+    (PR #411 review)."""
+
+    @pytest.mark.parametrize("argv", [("set-password",), ("init", "--entity", "ada")])
+    async def test_it_says_what_to_do_and_changes_nothing(self, maker, monkeypatch, argv):
+        monkeypatch.setattr(cli, "is_interactive", lambda: False)
+        asked = []
+        monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": asked.append(prompt) or "x" * 20)
+        code, output = await run(*argv)
+        assert code == 1 and asked == []
+        assert "PowerShell" in output and "winpty" in output and "--password-stdin" in output
+        async with maker() as db:
+            assert await store.get_password_hash(db) is None
+            assert await store.list_tokens(db) == []
+
+    async def test_password_stdin_needs_no_console(self, maker, monkeypatch):
+        monkeypatch.setattr(cli, "is_interactive", lambda: False)
+        code, _output = await run("set-password", "--password-stdin", stdin=PASSWORD + "\n")
+        assert code == 0
+
+
 class TestInit:
+    async def test_a_missing_entity_is_said_before_any_password_is_asked(self, maker, monkeypatch):
+        monkeypatch.setattr(cli, "is_interactive", lambda: True)
+        asked = []
+        monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": asked.append(prompt) or PASSWORD)
+        code, output = await run("init")
+        assert code == 1 and asked == []
+        assert "--entity" in output and "Ada (ada-index)" in output
+        async with maker() as db:
+            assert await store.get_password_hash(db) is None
+            assert await store.list_tokens(db) == []
+
     async def test_first_run_sets_the_password_and_mints_this_machines_token(self, maker):
-        code, output = await run("init", "--password-stdin", "--name", "desk", stdin=PASSWORD + "\n")
+        code, output = await run("init", "--password-stdin", "--name", "desk", "--entity", "ada", stdin=PASSWORD + "\n")
         assert code == 0
         assert "The password is set." in output
         assert "Token 'desk' created" in output and "entity: Ada" in output
@@ -155,7 +206,7 @@ class TestInit:
             assert len(await store.list_tokens(db)) == 1
 
     async def test_running_it_again_changes_nothing(self, maker):
-        await run("init", "--password-stdin", "--name", "desk", stdin=PASSWORD + "\n")
+        await run("init", "--password-stdin", "--name", "desk", "--entity", "ada", stdin=PASSWORD + "\n")
         async with maker() as db:
             before = await store.get_password_hash(db)
         code, output = await run("init", "--password-stdin", stdin="some other password\n")
@@ -168,7 +219,7 @@ class TestInit:
 
     async def test_the_token_is_named_for_the_machine_by_default(self, maker, monkeypatch):
         monkeypatch.setattr(cli.socket, "gethostname", lambda: "workshop-pc")
-        _code, output = await run("init", "--password-stdin", stdin=PASSWORD + "\n")
+        _code, output = await run("init", "--password-stdin", "--entity", "ada", stdin=PASSWORD + "\n")
         assert "Token 'workshop-pc' created" in output
 
     async def test_with_claude_code_mode_off_no_token_is_minted(self, maker, monkeypatch):
@@ -183,7 +234,7 @@ class TestStatusAndSessions:
     async def test_status_says_what_is_missing(self, maker):
         _code, output = await run("status")
         assert "Password: NOT SET" in output and "Active tokens: 0" in output
-        await run("init", "--password-stdin", "--name", "desk", stdin=PASSWORD + "\n")
+        await run("init", "--password-stdin", "--name", "desk", "--entity", "ada", stdin=PASSWORD + "\n")
         _code, output = await run("status")
         assert "Password: set" in output and "Active tokens: 1" in output and "desk" in output
 
@@ -198,6 +249,56 @@ class TestStatusAndSessions:
         assert output == "No browser sessions."
 
 
+class TestTheRealCommand:
+    def test_python_m_app_auth_on_a_fresh_database(self, tmp_path):
+        """Everything above replaces the function that opens the database.
+        This runs the command as a person does, against a database file
+        that doesn't exist yet: the tables are made, the password set, the
+        token printed once, and the second command sees them."""
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        backend = Path(__file__).resolve().parents[1]
+        database = (tmp_path / "fresh.db").as_posix()
+        env = {
+            **os.environ,
+            "HERE_I_AM_DATABASE_URL": f"sqlite+aiosqlite:///{database}",
+            "PINECONE_INDEXES": TWO_ENTITIES,
+            "CLAUDE_CODE_MODE_ENABLED": "true",
+            "LOCAL_TIMEZONE": "UTC",
+        }
+
+        def auth(*argv, stdin=""):
+            result = subprocess.run(
+                [sys.executable, "-m", "app.auth", *argv], input=stdin.encode("utf-8"),
+                capture_output=True, cwd=backend, env=env, timeout=120,
+            )
+            return result.returncode, result.stdout.decode("utf-8", "replace"), result.stderr.decode("utf-8", "replace")
+
+        code, out, err = auth("status")
+        assert code == 0, err
+        assert "Password: NOT SET" in out
+
+        code, out, err = auth("init", "--password-stdin", "--name", "desk", "--entity", "Bea",
+                              stdin=PASSWORD + "\n")
+        assert code == 0, err
+        token = TOKEN.search(out.replace("\r\n", "\n")).group(1)
+        assert "entity: Bea" in out and PASSWORD not in out + err
+
+        code, out, err = auth("token", "list")
+        assert code == 0 and "desk" in out and "Bea" in out and "active" in out
+        assert token not in out + err
+
+        code, out, _err = auth("token", "create", "--name", "second")
+        assert code == 1 and "--entity" in out
+
+        # A terminal with no console attached (this subprocess has a pipe)
+        code, out, _err = auth("set-password")
+        assert code == 1 and "--password-stdin" in out
+
+
 class TestStartupWarnings:
     async def test_the_server_says_what_is_missing_at_startup(self, maker, monkeypatch):
         import app.main as main
@@ -207,5 +308,5 @@ class TestStartupWarnings:
         assert len(lines) == 2
         assert "python -m app.auth init" in lines[0]
         assert "token create" in lines[1]
-        await run("init", "--password-stdin", "--name", "desk", stdin=PASSWORD + "\n")
+        await run("init", "--password-stdin", "--name", "desk", "--entity", "ada", stdin=PASSWORD + "\n")
         assert await main.auth_setup_warnings() == []

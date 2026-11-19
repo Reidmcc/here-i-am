@@ -9,8 +9,10 @@ Order, for a route that isn't public:
    be a live bearer token. A request that presents a bad one is refused
    even if it also carries a good cookie, so a credential that was offered
    is never quietly ignored in favor of another.
-2. Otherwise the session cookie, which must name a live session, and for a
-   request that changes something the Origin must be this server's own.
+2. Otherwise the session cookie, which must name a live session. The
+   browser must not have marked the request as another origin's
+   (Sec-Fetch-Site), and for a request that changes something the Origin
+   must be this server's own.
 3. Otherwise 401.
 
 Then the principal's scope must reach the route, or 403.
@@ -27,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app.auth import policy, store
-from app.auth.origin import SAFE_METHODS, origin_problem
+from app.auth.origin import SAFE_METHODS, SAME_ORIGIN_FETCH_SITES, origin_problem
 from app.auth.policy import (
     SCOPE_ENTITY,
     SCOPE_RESEARCHER,
@@ -52,8 +54,9 @@ TOKEN_REFUSED = (
 )
 SESSION_ENDED = "The login session has expired or was signed out. Log in again."
 ENTITY_SCOPE_ONLY = (
-    "This token is entity-scoped: it reaches /api/claude-code/* and /mcp "
-    "only. This endpoint is the researcher's."
+    "This token is entity-scoped: it reaches the Claude Code hook endpoints "
+    "and /mcp only (auth/policy.py lists them). This endpoint is the "
+    "researcher's."
 )
 
 
@@ -84,27 +87,49 @@ async def _principal_from_token(request: Request, db: AsyncSession, header: str)
     if row.revoked_at is not None:
         logger.warning(f"[AUTH] Refused {where}: the revoked token '{row.name}'")
         raise unauthenticated(TOKEN_REFUSED)
-    try:
-        await store.stamp_token_used(db, row)
-    except Exception as e:
-        # A missed last-used stamp is not a reason to refuse the request
-        await db.rollback()
-        logger.warning(f"[AUTH] Could not stamp token '{row.name}' as used: {e}")
-    return Principal(
+    if row.scope == SCOPE_ENTITY and not row.entity_id:
+        # store.create_token never makes one; a row edited by hand could be
+        # one, and "no entity" must not come to mean "any entity"
+        logger.warning(f"[AUTH] Refused {where}: token '{row.name}' is entity-scoped with no entity")
+        raise unauthenticated(TOKEN_REFUSED)
+    # Everything the request needs of the row, read before the stamp: a
+    # failed stamp rolls the session back, which expires the row, and
+    # reading an expired row here would be a 500 for a valid token
+    principal = Principal(
         scope=row.scope,
         via=VIA_TOKEN,
         name=row.name,
         entity_id=row.entity_id if row.scope == SCOPE_ENTITY else None,
         credential_id=row.id,
     )
+    try:
+        await store.stamp_token_used(db, row)
+    except Exception as e:
+        # A missed last-used stamp (SQLite's one writer was busy) is not a
+        # reason to refuse the request
+        await db.rollback()
+        logger.warning(f"[AUTH] Could not stamp token '{principal.name}' as used: {e}")
+    return principal
 
 
 async def _principal_from_cookie(request: Request, db: AsyncSession, cookie: str) -> Principal:
     where = f"{request.method} {request.url.path} from {_client(request)}"
-    session = await store.find_session(db, cookie)
-    if session is None:
+    session_id = await store.find_session_id(db, cookie)
+    if session_id is None:
         logger.info(f"[AUTH] Refused {where}: an expired or unknown session")
         raise unauthenticated(SESSION_ENDED)
+    fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    if fetch_site and fetch_site not in SAME_ORIGIN_FETCH_SITES:
+        # The browser itself says another origin sent this. Covers reads as
+        # well as writes, and the pages SameSite lets through: another port
+        # on the same host is "same-site"
+        problem = (
+            "The browser marked this request as coming from another origin "
+            f"(Sec-Fetch-Site: {fetch_site}), and the login cookie is only "
+            "honored from this server's own page."
+        )
+        logger.warning(f"[AUTH] Refused {where}: {problem}")
+        raise HTTPException(status_code=403, detail=problem)
     if request.method.upper() not in SAFE_METHODS:
         problem = origin_problem(request)
         if problem:
@@ -114,7 +139,7 @@ async def _principal_from_cookie(request: Request, db: AsyncSession, cookie: str
         scope=SCOPE_RESEARCHER,
         via=VIA_SESSION,
         name=store.RESEARCHER,
-        credential_id=session.id,
+        credential_id=session_id,
     )
 
 

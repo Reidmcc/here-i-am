@@ -5,22 +5,35 @@ A browser attaches the session cookie to a request without being asked, so
 a page on another site could aim one at this server and have it arrive
 logged in. `SameSite=Strict` already tells the browser not to send the
 cookie from another site; this is the server's own check on top of it, for
-the requests that change something: the `Origin` header the browser sets
-must name this server.
+the requests that change something and for logging in: the `Origin` header
+the browser sets must be one this server knows as itself.
 
-"This server" is the `Host` the request was sent to. Behind a TLS
-terminator that rewrites `Host`, the name the browser used arrives as
-`X-Forwarded-Host`, and that is accepted too: a page on another site can't
-set that header on a cross-site request without a preflight this server
-never grants (it sends no CORS headers at all). AUTH_ALLOWED_ORIGINS names
-any further origin outright, for a proxy that does neither.
+"Knows as itself" is two things, and neither is taken from the request:
 
-Only the host and port are compared, not the scheme: the terminator speaks
-https to the browser and http to this server, so the scheme this server
-sees says nothing about the one the browser used.
+- **Its own page on this machine**: an origin whose host is a loopback
+  name (`localhost`, `127.0.0.1`, `[::1]`, `*.localhost`) and is the same
+  host and port the request was sent to. A browser resolves those names
+  to this machine and nowhere else.
+- **An origin named in AUTH_ALLOWED_ORIGINS**: the address the browser
+  uses when the server is reached any other way (through a TLS terminator,
+  by a LAN address).
+
+The first version of this rule compared `Origin` with the request's own
+`Host` header, or `X-Forwarded-Host`, whatever they said. A DNS-rebinding
+page controls both: it is served from a name its author points at
+127.0.0.1, so the browser sends that name as `Host` and as `Origin`, and
+they match by construction. Such a page has no cookie for the name, so no
+data route opens to it, but it could send password guesses to the login
+endpoint and read the answers, and hold the login wait at its cap. A
+loopback name can't be rebound and a listed origin isn't the attacker's,
+so the rule now holds against it (PR #411 review).
 
 Bearer tokens don't go through this. A browser never attaches one by
 itself, so there is nothing for another site to borrow.
+
+A second, independent signal is checked in dependency.py for every
+cookie-authenticated request, reads included: `Sec-Fetch-Site`, which the
+browser sets itself and a page cannot forge.
 """
 from typing import Optional
 from urllib.parse import urlsplit
@@ -31,8 +44,15 @@ from app.config import settings
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+# What Sec-Fetch-Site says of a request this server's own page made, or
+# one the person typed or bookmarked. "same-site" is another port or
+# subdomain, and "cross-site" is anyone
+SAME_ORIGIN_FETCH_SITES = frozenset({"same-origin", "none"})
 
-def _allowed_origins() -> set:
+LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def allowed_origins() -> set:
     return {
         origin.strip().rstrip("/").lower()
         for origin in (settings.auth_allowed_origins or "").split(",")
@@ -40,15 +60,9 @@ def _allowed_origins() -> set:
     }
 
 
-def _own_hosts(request: Request) -> set:
-    hosts = set()
-    for header in ("host", "x-forwarded-host"):
-        value = request.headers.get(header) or ""
-        # A chain of proxies appends; the first is the name the browser used
-        first = value.split(",")[0].strip().lower()
-        if first:
-            hosts.add(first)
-    return hosts
+def is_loopback_hostname(hostname: Optional[str]) -> bool:
+    name = (hostname or "").lower()
+    return name in LOOPBACK_HOSTNAMES or name.endswith(".localhost")
 
 
 def origin_problem(request: Request) -> Optional[str]:
@@ -63,17 +77,25 @@ def origin_problem(request: Request) -> Optional[str]:
             "login cookie must come from this server's own page. A browser "
             "always sends one; a script should use a bearer token instead."
         )
-    if origin.rstrip("/").lower() in _allowed_origins():
+    if origin.rstrip("/").lower() in allowed_origins():
         return None
-    host = urlsplit(origin).netloc.lower()
-    own = _own_hosts(request)
-    if host and host in own:
+    try:
+        parsed = urlsplit(origin)
+        hostname = parsed.hostname
+    except ValueError:
+        parsed, hostname = None, None
+    sent_to = (request.headers.get("host") or "").strip().lower()
+    if (
+        parsed is not None
+        and is_loopback_hostname(hostname)
+        and parsed.netloc.lower() == sent_to
+    ):
         return None
     return (
-        f"This request came from '{origin}', which is not this server "
-        f"({', '.join(sorted(own)) or 'no Host header'}). If the server is "
-        "behind a proxy that rewrites the Host header, set "
-        f"AUTH_ALLOWED_ORIGINS={origin} in its environment."
+        f"This request came from '{origin}', which this server does not know "
+        "as its own address. Its page on this machine (http://localhost) is "
+        "always accepted; any other address the browser uses has to be named "
+        f"in the server's environment: AUTH_ALLOWED_ORIGINS={origin}"
     )
 
 

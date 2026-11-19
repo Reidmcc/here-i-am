@@ -91,20 +91,27 @@ class TestPolicy:
         for path in ("/api/conversations/", "/api/claude-code/retrieve", "/mcp", "/anything"):
             assert policy.allowed(self.researcher, "DELETE", path)
 
-    @pytest.mark.parametrize("path", [
-        "/api/claude-code/session-start", "/api/claude-code/retrieve",
-        "/api/claude-code/compact-talk/taken", "/mcp",
-    ])
-    def test_an_entity_token_reaches_the_claude_code_endpoints(self, path):
-        assert policy.allowed(self.entity, "POST", path)
+    @pytest.mark.parametrize("method,path", sorted(policy.ENTITY_ROUTES))
+    def test_an_entity_token_reaches_the_routes_listed_for_it(self, method, path):
+        assert policy.allowed(self.entity, method, path)
 
     @pytest.mark.parametrize("path", [
         "/api/conversations/{conversation_id}/archive", "/api/memories/{message_id}/status",
         "/api/chat/stream", "/api/claude-code", "/api/claude-codex/x", "/mcp/x", "/mcpx",
         "/api/auth/logout-all", "/docs", None, "",
+        # Under the hooks' prefix, and still closed: the grant is a list,
+        # so a route added there later starts out the researcher's
+        "/api/claude-code/brand-new", "/api/claude-code/retrieve/extra",
+        "/api/claude-code/", "/api/claude-code/admin/reset",
     ])
     def test_an_entity_token_reaches_nothing_else(self, path):
-        assert not policy.allowed(self.entity, "POST", path)
+        for method in ("GET", "POST", "PUT", "DELETE"):
+            assert not policy.allowed(self.entity, method, path)
+
+    def test_the_grant_is_by_method_too(self):
+        assert policy.allowed(self.entity, "POST", "/api/claude-code/retrieve")
+        assert not policy.allowed(self.entity, "GET", "/api/claude-code/retrieve")
+        assert not policy.allowed(self.entity, "DELETE", "/api/claude-code/retrieve")
 
     def test_any_principal_may_ask_who_it_is(self):
         assert policy.allowed(self.entity, "GET", "/api/auth/session")
@@ -171,59 +178,73 @@ class TestThrottle:
 
 
 class TestOrigin:
-    def test_the_servers_own_origin_passes(self):
-        request = request_with({"Host": "localhost:8000", "Origin": "http://localhost:8000"})
-        assert origin_problem(request) is None
-
-    def test_scheme_is_not_compared(self):
-        # Behind a TLS terminator the browser's origin is https and this
-        # server is spoken to over http
-        request = request_with({"Host": "him.example.ts.net", "Origin": "https://him.example.ts.net"})
-        assert origin_problem(request) is None
+    def test_the_servers_own_page_on_this_machine_passes(self):
+        for host in ("localhost:8000", "127.0.0.1:8000", "[::1]:8000", "him.localhost:8000", "localhost"):
+            request = request_with({"Host": host, "Origin": f"http://{host}"})
+            assert origin_problem(request) is None, host
 
     def test_another_site_is_refused(self):
         request = request_with({"Host": "localhost:8000", "Origin": "https://elsewhere.example"})
         problem = origin_problem(request)
         assert "https://elsewhere.example" in problem
-        assert "AUTH_ALLOWED_ORIGINS" in problem
+        assert "AUTH_ALLOWED_ORIGINS=https://elsewhere.example" in problem
 
-    def test_another_port_is_another_origin(self):
+    def test_another_port_on_this_machine_is_another_origin(self):
         request = request_with({"Host": "localhost:8000", "Origin": "http://localhost:3000"})
         assert origin_problem(request) is not None
 
     def test_a_lookalike_host_is_refused(self):
-        request = request_with({"Host": "localhost:8000", "Origin": "http://localhost:8000.evil.example"})
-        assert origin_problem(request) is not None
+        for origin in ("http://localhost:8000.evil.example", "http://localhost.evil.example:8000",
+                       "http://evil.example@localhost:8000", "http://127.0.0.1.evil.example:8000"):
+            request = request_with({"Host": "localhost:8000", "Origin": origin})
+            assert origin_problem(request) is not None, origin
 
     @pytest.mark.parametrize("headers", [{}, {"Origin": ""}, {"Origin": "null"}])
     def test_no_origin_is_refused(self, headers):
         problem = origin_problem(request_with({"Host": "localhost:8000", **headers}))
         assert "bearer token" in problem
 
-    def test_a_proxy_that_rewrites_host_is_covered_by_forwarded_host(self):
+    def test_a_rebound_name_is_refused_though_it_matches_its_own_host(self):
+        # DNS rebinding: a page served from a name its author points at
+        # 127.0.0.1. The browser sends that name as Host and as Origin, so
+        # the two agree; what the page cannot do is be a name this server
+        # knows (PR #411 review)
         request = request_with({
-            "Host": "127.0.0.1:8000",
-            "X-Forwarded-Host": "him.example.ts.net",
-            "Origin": "https://him.example.ts.net",
-        })
-        assert origin_problem(request) is None
-
-    def test_the_first_forwarded_host_is_the_one_the_browser_used(self):
-        request = request_with({
-            "Host": "127.0.0.1:8000",
-            "X-Forwarded-Host": "him.example.ts.net, inner.proxy",
-            "Origin": "https://inner.proxy",
+            "Host": "rebind.attacker.example:8000",
+            "Origin": "http://rebind.attacker.example:8000",
         })
         assert origin_problem(request) is not None
 
-    def test_allowed_origins_name_one_outright(self, monkeypatch):
+    def test_nothing_the_request_says_about_its_own_host_is_believed(self):
+        # A rebound page is same-origin with itself, so it can set any header
+        for extra in ({"X-Forwarded-Host": "rebind.attacker.example:8000"},
+                      {"X-Forwarded-Host": "localhost:8000"},
+                      {"Forwarded": "host=localhost:8000"}):
+            request = request_with({
+                "Host": "rebind.attacker.example:8000",
+                "Origin": "http://rebind.attacker.example:8000", **extra,
+            })
+            assert origin_problem(request) is not None
+
+    def test_an_address_the_server_was_told_is_its_own_passes(self, monkeypatch):
         monkeypatch.setattr(
             settings, "auth_allowed_origins", "https://a.example , https://him.example.ts.net/"
         )
-        request = request_with({"Host": "127.0.0.1:8000", "Origin": "https://him.example.ts.net"})
-        assert origin_problem(request) is None
+        # Behind a TLS terminator: https to the browser, http and a loopback
+        # Host to this server. Only the listed origin matters
+        for host in ("127.0.0.1:8000", "him.example.ts.net"):
+            request = request_with({"Host": host, "Origin": "https://him.example.ts.net"})
+            assert origin_problem(request) is None
         request = request_with({"Host": "127.0.0.1:8000", "Origin": "https://b.example"})
         assert origin_problem(request) is not None
+        # The scheme is part of an origin: the plain-http twin is not listed
+        request = request_with({"Host": "him.example.ts.net", "Origin": "http://him.example.ts.net"})
+        assert origin_problem(request) is not None
+
+    def test_a_non_loopback_address_needs_naming_even_when_it_matches_host(self):
+        request = request_with({"Host": "192.168.1.5:8000", "Origin": "http://192.168.1.5:8000"})
+        problem = origin_problem(request)
+        assert "AUTH_ALLOWED_ORIGINS=http://192.168.1.5:8000" in problem
 
 
 class TestCookieSecure:

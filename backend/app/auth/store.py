@@ -8,18 +8,21 @@ who may do what; that is policy.py and dependency.py.
 """
 import asyncio
 import hashlib
+import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import passwords
 from app.auth.policy import SCOPE_ENTITY, SCOPE_RESEARCHER, SCOPES
 from app.config import settings
 from app.models.auth import ApiToken, AuthCredential, AuthSession
+
+logger = logging.getLogger(__name__)
 
 RESEARCHER = "researcher"
 SESSION_COOKIE = "him_session"
@@ -80,18 +83,40 @@ async def check_password(db: AsyncSession, password: str) -> Optional[bool]:
     stored = await get_password_hash(db)
     if stored is None:
         return None
-    return await asyncio.to_thread(passwords.verify_password, password, stored)
+    right = await asyncio.to_thread(passwords.verify_password, password, stored)
+    if right and passwords.needs_rehash(stored):
+        # The cost was raised since this hash was made, and the password is
+        # in hand only now: store it again at today's cost. Sessions stay.
+        try:
+            row = await db.get(AuthCredential, RESEARCHER)
+            row.password_hash = await asyncio.to_thread(passwords.hash_password, password)
+            row.updated_at = _now()
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.warning(f"[AUTH] Could not re-hash the password at today's cost: {e}")
+    return right
 
 
 # --- Browser sessions
 
 async def create_session(
-    db: AsyncSession, user_agent: Optional[str] = None
+    db: AsyncSession, user_agent: Optional[str] = None, replacing: Optional[str] = None
 ) -> Tuple[str, AuthSession]:
     """Open a session. Returns (the cookie's value, the row); the value is
-    not stored and can't be recovered from the row."""
+    not stored and can't be recovered from the row.
+
+    `replacing` is the cookie the browser logged in with, if it had one:
+    that session ends here, so logging in again never leaves the old one
+    standing. Sessions past either limit are cleared out at the same time
+    (otherwise one is only ever deleted when its own cookie comes back)."""
     value = secrets.token_urlsafe(SECRET_BYTES)
     now = _now()
+    idle_cutoff = now - timedelta(days=settings.auth_session_idle_days)
+    ended = or_(AuthSession.expires_at <= now, AuthSession.last_seen_at <= idle_cutoff)
+    if replacing:
+        ended = or_(ended, AuthSession.id == digest(replacing))
+    await db.execute(delete(AuthSession).where(ended))
     session = AuthSession(
         id=digest(value),
         created_at=now,
@@ -108,23 +133,33 @@ def session_idle_deadline(session: AuthSession) -> datetime:
     return session.last_seen_at + timedelta(days=settings.auth_session_idle_days)
 
 
-async def find_session(db: AsyncSession, cookie_value: str) -> Optional[AuthSession]:
-    """The live session a cookie names, or None. One past either limit is
-    deleted on sight, so an expired cookie can't be revived by anything."""
+async def find_session_id(db: AsyncSession, cookie_value: str) -> Optional[str]:
+    """The id of the live session a cookie names, or None. One past either
+    limit is refused and deleted on sight.
+
+    The verdict is reached from what was read, before anything is
+    written: the delete and the last-seen stamp are housekeeping, and a
+    write that fails (SQLite's one writer was busy) must neither let an
+    expired session in nor turn a live one into an error."""
     if not cookie_value:
         return None
     session = await db.get(AuthSession, digest(cookie_value))
     if session is None:
         return None
+    session_id = session.id
     now = _now()
-    if session.expires_at <= now or session_idle_deadline(session) <= now:
-        await db.delete(session)
-        await db.commit()
-        return None
-    if now - session.last_seen_at >= STAMP_INTERVAL:
-        session.last_seen_at = now
-        await db.commit()
-    return session
+    expired = session.expires_at <= now or session_idle_deadline(session) <= now
+    try:
+        if expired:
+            await db.delete(session)
+            await db.commit()
+        elif now - session.last_seen_at >= STAMP_INTERVAL:
+            session.last_seen_at = now
+            await db.commit()
+    except Exception as e:
+        await db.rollback()
+        logger.warning(f"[AUTH] Could not update a login session's row: {e}")
+    return None if expired else session_id
 
 
 async def delete_session(db: AsyncSession, session_id: str) -> None:

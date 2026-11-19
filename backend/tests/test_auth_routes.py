@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from app.auth import passwords, store
 from app.auth.throttle import FREE_FAILURES, login_throttle
@@ -17,7 +18,8 @@ from app.models.auth import ApiToken, AuthSession
 pytestmark = pytest.mark.real_auth
 
 PASSWORD = "correct horse battery staple"
-ORIGIN = {"Origin": "http://test"}
+# The test client is the server's own page on this machine
+ORIGIN = {"Origin": "http://localhost"}
 # Any route that needs a credential and nothing else; cheap, and reads only
 PROTECTED = "/api/config/presets"
 
@@ -30,7 +32,7 @@ def fast_scrypt(monkeypatch):
 @pytest.fixture
 async def client(auth_app):
     app, _maker = auth_app
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         yield c
 
 
@@ -90,10 +92,11 @@ class TestLogin:
         assert "samesite=strict" in cookie
         assert "path=/" in cookie
         assert f"max-age={settings.auth_session_max_days * 86400}" in cookie
-        # http://test is plain http: Secure would make some browsers drop it
+        # Plain http: Secure would make some browsers drop it
         assert "secure" not in cookie
 
-    async def test_over_https_the_cookie_is_secure(self, auth_app, with_password):
+    async def test_over_https_the_cookie_is_secure(self, auth_app, with_password, monkeypatch):
+        monkeypatch.setattr(settings, "auth_allowed_origins", "https://him.example")
         app, _ = auth_app
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="https://him.example") as c:
@@ -190,8 +193,8 @@ class TestSessionLifetime:
     async def test_sign_out_everywhere(self, auth_app, with_password):
         app, _ = auth_app
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as here, \
-                AsyncClient(transport=transport, base_url="http://test") as there:
+        async with AsyncClient(transport=transport, base_url="http://localhost") as here, \
+                AsyncClient(transport=transport, base_url="http://localhost") as there:
             await log_in(here)
             await log_in(there)
             response = await here.post("/api/auth/logout-all", headers=ORIGIN)
@@ -251,15 +254,197 @@ class TestSameOriginRule:
         assert (await client.get(PROTECTED)).status_code == 200
         assert (await client.post("/api/auth/logout", headers=ORIGIN)).status_code == 200
 
-    @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
-    async def test_every_unsafe_method_is_held_to_it(self, client, with_password, method):
+    @pytest.mark.parametrize("method,path", [
+        ("POST", "/api/auth/logout"),
+        ("PUT", "/api/entities/nobody/system-prompt"),
+        ("PATCH", "/api/conversations/nothing-by-this-name"),
+        ("DELETE", "/api/conversations/nothing-by-this-name"),
+    ])
+    async def test_every_unsafe_method_is_held_to_it(self, client, with_password, method, path):
+        # A real route for each method, so the refusal is the origin rule's
+        # and not a 404 or 405 for a route that isn't there
         await log_in(client)
-        # A path that exists for none of these methods would be a 404/405
-        # after the check; the check comes first for one that does exist
-        response = await client.request(method, "/api/auth/logout")
-        assert response.status_code in (403, 405)
-        if method == "POST":
-            assert response.status_code == 403
+        for headers in ({}, {"Origin": "https://elsewhere.example"}, {"Origin": "http://localhost:3000"}):
+            response = await client.request(method, path, headers=headers)
+            assert response.status_code == 403, (method, headers)
+            assert "Origin" in response.json()["detail"] or "came from" in response.json()["detail"]
+        # From its own page the same request gets past the rule (and is then
+        # whatever the handler says of something that doesn't exist)
+        own = await client.request(method, path, headers=ORIGIN, json={})
+        assert own.status_code != 403
+
+    @pytest.mark.parametrize("fetch_site", ["cross-site", "same-site"])
+    async def test_a_request_the_browser_marks_as_another_origins_is_refused(
+        self, client, with_password, fetch_site
+    ):
+        # Sec-Fetch-Site is set by the browser, and a page cannot change it.
+        # "same-site" is another port on this host, which SameSite lets by.
+        # Reads are covered too, and they have no Origin to check.
+        await log_in(client)
+        read = await client.get(PROTECTED, headers={"Sec-Fetch-Site": fetch_site})
+        assert read.status_code == 403
+        assert fetch_site in read.json()["detail"]
+        write = await client.post(
+            "/api/auth/logout", headers={**ORIGIN, "Sec-Fetch-Site": fetch_site}
+        )
+        assert write.status_code == 403
+        assert (await client.get(PROTECTED)).status_code == 200
+
+    @pytest.mark.parametrize("fetch_site", ["same-origin", "none"])
+    async def test_its_own_page_and_a_typed_address_are_not(self, client, with_password, fetch_site):
+        await log_in(client)
+        response = await client.get(PROTECTED, headers={"Sec-Fetch-Site": fetch_site})
+        assert response.status_code == 200
+
+    async def test_a_token_is_not_held_to_the_browsers_marking(self, client, maker):
+        headers = await mint(maker, scope="researcher", entity_id=None)
+        response = await client.get(PROTECTED, headers={**headers, "Sec-Fetch-Site": "cross-site"})
+        assert response.status_code == 200
+
+    async def test_a_rebound_name_cannot_drive_the_login(self, auth_app, with_password):
+        # DNS rebinding: the page's name resolves to this machine, so Host
+        # and Origin agree with each other. Refused before the password is
+        # looked at, and not counted as a guess (PR #411 review)
+        app, _ = auth_app
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://rebind.attacker.example:8000") as c:
+            for _ in range(FREE_FAILURES + 3):
+                response = await c.post(
+                    "/api/auth/login", json={"password": "a guess at the password"},
+                    headers={"Origin": "http://rebind.attacker.example:8000"},
+                )
+                assert response.status_code == 403
+            right = await c.post(
+                "/api/auth/login", json={"password": PASSWORD},
+                headers={"Origin": "http://rebind.attacker.example:8000"},
+            )
+            assert right.status_code == 403 and "set-cookie" not in right.headers
+        assert login_throttle.retry_after() == 0
+
+
+class TestABusyDatabase:
+    """A credential check reads; the last-used and last-seen stamps are
+    housekeeping. A stamp that can't be written (SQLite has one writer)
+    must not turn a valid request into an error (PR #411 review: it was a
+    500, from reading a row the rollback had expired)."""
+
+    async def test_a_token_still_works_when_its_stamp_cannot_be_written(
+        self, client, maker, monkeypatch
+    ):
+        headers = await mint(maker, scope="researcher", entity_id=None)
+        real = store.stamp_token_used
+
+        async def locked(db, token):
+            # As far in as a real failure gets: the UPDATE issued, then refused
+            await real(db, token)
+            raise OperationalError("UPDATE api_tokens", {}, Exception("database is locked"))
+
+        monkeypatch.setattr(store, "stamp_token_used", locked)
+        who = await client.get("/api/auth/session", headers=headers)
+        assert who.status_code == 200
+        assert who.json()["name"] == "laptop"
+
+    async def test_a_login_still_works_when_its_stamp_cannot_be_written(
+        self, auth_app, client, with_password, maker, monkeypatch
+    ):
+        await log_in(client)
+        later = datetime.utcnow() + timedelta(hours=1)
+        monkeypatch.setattr(store, "_now", lambda: later)
+        self._break_commits(auth_app, monkeypatch)
+        assert (await client.get(PROTECTED)).status_code == 200
+
+    async def test_an_expired_login_is_refused_even_if_its_row_cannot_be_deleted(
+        self, auth_app, client, with_password, maker, monkeypatch
+    ):
+        await log_in(client)
+        later = datetime.utcnow() + timedelta(days=settings.auth_session_max_days, minutes=1)
+        monkeypatch.setattr(store, "_now", lambda: later)
+        self._break_commits(auth_app, monkeypatch)
+        assert (await client.get(PROTECTED)).status_code == 401
+
+    @staticmethod
+    def _break_commits(auth_app, monkeypatch):
+        from sqlalchemy.ext.asyncio import AsyncSession
+
+        async def locked(self):
+            raise OperationalError("COMMIT", {}, Exception("database is locked"))
+
+        monkeypatch.setattr(AsyncSession, "commit", locked)
+
+
+class TestLoggingInAgain:
+    async def test_the_browsers_old_session_ends(self, client, with_password, maker):
+        await log_in(client)
+        first = client.cookies.get(store.SESSION_COOKIE)
+        await log_in(client)
+        second = client.cookies.get(store.SESSION_COOKIE)
+        assert first != second
+        async with maker() as db:
+            rows = (await db.execute(select(AuthSession))).scalars().all()
+        assert [row.id for row in rows] == [store.digest(second)]
+
+    async def test_sessions_past_their_limits_are_cleared_out(
+        self, client, with_password, maker, monkeypatch
+    ):
+        async with maker() as db:
+            await store.create_session(db, "a browser never seen again")
+        later = datetime.utcnow() + timedelta(days=settings.auth_session_idle_days + 1)
+        monkeypatch.setattr(store, "_now", lambda: later)
+        client.cookies.clear()
+        await log_in(client)
+        async with maker() as db:
+            rows = (await db.execute(select(AuthSession))).scalars().all()
+        assert len(rows) == 1 and rows[0].user_agent != "a browser never seen again"
+
+    async def test_a_hash_made_at_an_older_cost_is_made_again_at_todays(
+        self, client, with_password, maker, monkeypatch
+    ):
+        async with maker() as db:
+            before = await store.get_password_hash(db)
+        monkeypatch.setattr(passwords, "SCRYPT_N", 2 ** 11)
+        assert (await log_in(client, "not the password at all")).status_code == 401
+        async with maker() as db:
+            assert await store.get_password_hash(db) == before
+        assert (await log_in(client)).status_code == 200
+        async with maker() as db:
+            after = await store.get_password_hash(db)
+        assert after != before and after.startswith(f"scrypt${2 ** 11}$")
+        # The login it happened on stands, and the password still works
+        assert (await client.get(PROTECTED)).status_code == 200
+        client.cookies.clear()
+        assert (await log_in(client)).status_code == 200
+
+
+class TestNothingSecretIsLogged:
+    async def test_no_token_cookie_or_password_reaches_the_log(
+        self, client, with_password, maker, caplog
+    ):
+        import logging
+
+        caplog.set_level(logging.DEBUG)
+        good = await mint(maker, scope="researcher", entity_id=None)
+        token = good["Authorization"].split(" ", 1)[1]
+        entity = (await mint(maker, name="bea-machine"))["Authorization"].split(" ", 1)[1]
+        made_up = "him_a-made-up-token-that-names-nothing-0123456789"
+
+        await client.get(PROTECTED, headers=good)
+        await client.get(PROTECTED, headers={"Authorization": f"Bearer {entity}"})
+        await client.get(PROTECTED, headers={"Authorization": f"Bearer {made_up}"})
+        async with maker() as db:
+            await store.revoke_tokens(db, "laptop")
+        await client.get(PROTECTED, headers=good)
+        await log_in(client, "a wrong password guess")
+        await log_in(client)
+        cookie = client.cookies.get(store.SESSION_COOKIE)
+        await client.get(PROTECTED)
+        await client.post("/api/auth/logout", headers={"Origin": "https://elsewhere.example"})
+        await client.post("/api/auth/logout", headers=ORIGIN)
+        await client.get(PROTECTED, cookies={store.SESSION_COOKIE: cookie})
+
+        logged = caplog.text
+        assert "[AUTH]" in logged and "revoked token 'laptop'" in logged
+        for secret in (token, entity, made_up, cookie, PASSWORD, "a wrong password guess"):
+            assert secret not in logged
 
 
 class TestTokens:

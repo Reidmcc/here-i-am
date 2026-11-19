@@ -136,7 +136,11 @@ async def login(
         logger.warning(f"[AUTH] Wrong password at login from {client}")
         raise HTTPException(status_code=401, detail="Wrong password.")
 
-    value, session = await store.create_session(db, request.headers.get("user-agent"))
+    value, session = await store.create_session(
+        db,
+        request.headers.get("user-agent"),
+        replacing=request.cookies.get(store.SESSION_COOKIE),
+    )
     _set_session_cookie(response, request, value)
     logger.info("[AUTH] The researcher logged in")
     return SessionInfo(

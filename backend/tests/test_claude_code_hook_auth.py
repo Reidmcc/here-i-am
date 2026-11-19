@@ -323,3 +323,33 @@ class TestTheSessionEndHook:
             code, out, err = run_hook("session_end.py", backend, tmp_path, token)
             assert (code, out, err) == (0, "", "")
         assert [r["authorization"] for r in backend.requests] == [f"Bearer {GOOD}", None]
+
+
+class TestCredentialLines:
+    """Two setups that work and are wrong, so nothing else would say so."""
+
+    def test_a_researcher_token_in_a_sessions_hands_is_said(self, monkeypatch):
+        monkeypatch.delenv("HIM_BACKEND_URL", raising=False)
+        notice = "This machine's HIM_TOKEN is a researcher token: ..."
+        assert hook_util.credential_lines({"credential_notice": notice}) == [f"[HERE I AM] {notice}"]
+
+    @pytest.mark.parametrize("body", [{}, {"credential_notice": None}, {"credential_notice": ""}, None])
+    def test_nothing_is_said_when_all_is_well(self, monkeypatch, body):
+        monkeypatch.setenv("HIM_BACKEND_URL", "https://him.example.ts.net")
+        assert hook_util.credential_lines(body) == []
+
+    def test_a_trailing_slash_is_said_because_it_only_breaks_the_memory_tools(self, monkeypatch):
+        monkeypatch.setenv("HIM_BACKEND_URL", "https://him.example.ts.net/ ")
+        (line,) = hook_util.credential_lines({})
+        assert "ends with a slash" in line and "memory tools" in line
+        assert "${HIM_BACKEND_URL}/mcp" in line
+
+    def test_the_session_start_hook_prints_them(self, backend, tmp_path):
+        code, out, _err = run_hook(
+            "session_start.py", backend, tmp_path, GOOD, {"source": "resume"},
+            extra_env={"HIM_BACKEND_URL": backend.url + "/"},
+        )
+        assert code == 0
+        assert "HIM_BACKEND_URL ends with a slash" in out
+        # The hooks themselves strip it, which is why nothing else notices
+        assert backend.paths() == ["/api/claude-code/session-start"]

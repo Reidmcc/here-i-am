@@ -27,8 +27,26 @@ PUBLIC_ROUTES = frozenset({
 
 # What an entity token reaches: the endpoints the Claude Code hooks and the
 # compaction mod call, and the MCP transport the memory tools ride on.
-ENTITY_PATH_PREFIX = "/api/claude-code/"
-ENTITY_PATHS = frozenset({"/mcp"})
+# Listed one by one, not granted by the `/api/claude-code/` prefix: a route
+# added to that router later is closed to every entity token until it is
+# added here, by someone who has checked that it binds its caller to the
+# token's entity before it reads or writes (routes/claude_code.py). The
+# hooks would say so at once, with a 403 that names the scope.
+ENTITY_ROUTES = frozenset({
+    ("POST", "/api/claude-code/session-start"),
+    ("POST", "/api/claude-code/retrieve"),
+    ("POST", "/api/claude-code/recorded"),
+    ("POST", "/api/claude-code/log-assistant"),
+    ("POST", "/api/claude-code/compact-talk"),
+    ("POST", "/api/claude-code/compact-talk/taken"),
+    ("POST", "/api/claude-code/compact-talk/cancel"),
+    ("POST", "/api/claude-code/session-end"),
+    ("POST", "/mcp"),
+    # The MCP transport's other two verbs answer 405 (no stream, no
+    # sessions); a client that tries them should hear that, not a refusal
+    ("GET", "/mcp"),
+    ("DELETE", "/mcp"),
+})
 
 # Open to any authenticated principal, whatever its scope: asking who you
 # are, which is how a machine checks its own token.
@@ -63,10 +81,8 @@ def is_public(method: str, path_template: Optional[str]) -> bool:
     return (method.upper(), path_template) in PUBLIC_ROUTES
 
 
-def in_entity_scope(path_template: Optional[str]) -> bool:
-    if not path_template:
-        return False
-    return path_template.startswith(ENTITY_PATH_PREFIX) or path_template in ENTITY_PATHS
+def in_entity_scope(method: str, path_template: Optional[str]) -> bool:
+    return (method.upper(), path_template) in ENTITY_ROUTES
 
 
 def allowed(principal: Principal, method: str, path_template: Optional[str]) -> bool:
@@ -78,4 +94,4 @@ def allowed(principal: Principal, method: str, path_template: Optional[str]) -> 
         return False
     if (method.upper(), path_template) in ANY_PRINCIPAL_ROUTES:
         return True
-    return in_entity_scope(path_template)
+    return in_entity_scope(method, path_template)

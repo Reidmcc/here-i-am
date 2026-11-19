@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
@@ -218,12 +219,18 @@ if settings.api_docs_enabled:
 # same-origin rule (app/auth/origin.py) leans on there being none.
 
 
-# Middleware to disable caching for static files (development)
+# Middleware to disable caching for static files (development), and to
+# keep the page out of anyone else's frame
 
 
 class NoCacheMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
+        # Another page framing this one could put its own buttons over the
+        # logged-in app's (the login cookie is sent in a frame from another
+        # port on the same host). Nothing here is meant to be framed.
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
         # Add no-cache headers for HTML, JS, and CSS files
         path = request.url.path
         if path.endswith(('.html', '.js', '.css')) or path == '/':
@@ -311,8 +318,35 @@ You are invited to be present, curious, and honest about your experience.""",
 # path, and Starlette tries routes in order, so anything declared after it
 # was unreachable (/api/health and /api/config/presets answered 404 until
 # this moved; issue #396). The mount is the one thing the auth dependency
-# doesn't cover, on purpose: the page has to load to show its login form,
-# and its files are the public repository's. It holds no data.
+# doesn't cover, on purpose: the page has to load to show its login form.
+# It serves the page's own files and nothing else in that directory.
+class FrontendFiles(StaticFiles):
+    """The web page, and only the web page: `index.html`, `css/` and `js/`.
+
+    The directory also holds what the page is built and tested with
+    (`node_modules`, `package.json`, the lint and test configuration,
+    `js/__tests__`), and whatever else lands in it later. This is the one
+    thing the server hands a stranger, so it hands over the files the
+    login page needs and answers 404 for the rest (PR #411 review).
+    """
+
+    @staticmethod
+    def is_served(path: str) -> bool:
+        parts = [part for part in path.replace("\\", "/").split("/") if part not in ("", ".")]
+        if not parts or parts == ["index.html"]:
+            return True
+        if ".." in parts or any(part.startswith(".") for part in parts):
+            return False
+        if parts[0] == "css":
+            return True
+        return parts[0] == "js" and "__tests__" not in parts
+
+    async def get_response(self, path: str, scope):
+        if not self.is_served(path):
+            raise StarletteHTTPException(status_code=404)
+        return await super().get_response(path, scope)
+
+
 frontend_path = Path(__file__).parent.parent.parent / "frontend"
 if frontend_path.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
+    app.mount("/", FrontendFiles(directory=str(frontend_path), html=True), name="frontend")

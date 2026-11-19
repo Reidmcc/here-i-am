@@ -301,7 +301,7 @@ async def build_tool_context(
                 "will not guess. Use the conversation_id from your session-start "
                 "context."
             )
-        if bound_entity_id and entity_id != bound_entity_id:
+        if bound_entity_id is not None and entity_id != bound_entity_id:
             return None, OTHER_ENTITY_ERROR
 
         # After a compaction only post-compaction links still represent
@@ -361,7 +361,7 @@ async def resolve_claude_code_conversation(
             "experience; the rooms registry records Claude Code sessions. "
             "Use the conversation_id from your session-start context."
         )
-    if bound_entity_id and conversation.entity_id != bound_entity_id:
+    if bound_entity_id is not None and conversation.entity_id != bound_entity_id:
         return None, OTHER_ENTITY_ERROR
     if not conversation.external_session_id:
         return None, "Error: That conversation has no Claude Code session id."

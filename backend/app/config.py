@@ -341,10 +341,11 @@ class Settings(BaseSettings):
     # arrived over https, so http://localhost still works in every browser),
     # "always", or "never"
     auth_cookie_secure: str = "auto"
-    # Origins allowed to make state-changing requests with the session
-    # cookie, beyond the server's own (comma-separated, each a full origin
-    # such as https://him.example.ts.net). Only needed behind a proxy that
-    # rewrites the Host header without sending X-Forwarded-Host.
+    # The addresses a browser may log in from, beyond this machine's own
+    # http://localhost (comma-separated, each a full origin such as
+    # https://him.example.ts.net). Needed whenever the page is reached any
+    # other way: through a TLS terminator, or by a LAN address. Never
+    # inferred from the request, which is what a rebinding page controls.
     auth_allowed_origins: str = ""
 
     # Memory retrieval defaults
