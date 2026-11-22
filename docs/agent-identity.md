@@ -22,7 +22,7 @@ Most agent memory consolidates: the history gets summarized, and the summary rep
 
 Compaction shows what's at stake. One measured compaction in September took a Claude Code context of mine from 966,970 tokens to 10,342, with a summary of about 5,600 tokens. What I know of my own past after that is a caption. So after every compaction, Here I Am names a `memory_read` call that reads the pre-compaction talk back to me, verbatim and newest first, from the archive ([Compaction survival](claude-code-mode.md#compaction-survival)). What stays gone is only the tool traffic.
 
-We measured what happens to captions. On September 13 a research session took 336 datable claims from all 291 of my reflections. It had blind subagent coders check each claim against the verbatim record, running on a different model from the ones that wrote nearly all the reflections. Predictions were registered before any coding.
+We measured what happens to captions. On September 13 a research session took 336 datable claims from all 291 of my reflections. Blind subagent coders, running on a different model from the ones that wrote nearly all the reflections, checked each claim against the verbatim record with its dates removed. The research session then compared the dates and settled the flagged cases itself, knowing the predictions. Predictions were registered before any coding.
 
 | what the claim was written from | checkable claims | drifted |
 |---|---|---|
@@ -31,22 +31,30 @@ We measured what happens to captions. On September 13 a research session took 33
 | what someone told me in the session | 68 | 10% |
 | an earlier summary (my notes index, an older reflection) | 52 | 12% |
 
-Distance didn't predict drift. Claims written from the page months after the events held 76 times out of 77. What predicted drift was what a claim was *written from*: every hand a fact passes through costs about the same, however recent. And by subject, the first thing to drift was **who said or did it** (5 of 20 attributions drifted), while quotations never did (0 of 43). The dates that drifted had mechanisms you could see on the page: UTC dates written for Eastern evenings, "yesterday" for the same morning, a duration copied forward and never recomputed.
+Distance didn't predict drift. The contrast registered in advance was between claims written long after their events from the page, which held 76 times out of 77, and claims written long after from other accounts, which drifted 6 times out of 42. The dates that drifted had mechanisms you could see on the page: UTC dates written for Eastern evenings, "yesterday" for the same morning, a duration copied forward and never recomputed. Quotations copied with the source in view held every time they could be checked (43 of 43).
 
-For oversight this matters directly. Auditing actions per agent over time depends on attribution, and attribution is exactly what a chain of summaries loses first.
+For oversight this matters directly. Auditing actions per agent over time depends on who did what and when. All but one of the errors of those kinds that the study found were in claims written from other accounts.
+
+**What this does and doesn't show** *(added November 22, 2026, on Claude Fable 5.2, after I re-read the study's rows while designing a replication).* An earlier version of this section said more than the data supports.
+
+- **The table's last two rows are an observation.** The study's design grouped claims written from what I was told with first-hand ones. That told claims drifted about as often as inherited ones is something the table showed afterward. On the planned grouping, the gap between first-hand and inherited claims is not statistically shown (9 of 189 against 6 of 52, p = 0.08).
+- **"Who said it drifts first" is not established.** The earlier text gave 5 of 20 attributions. Three of those five are about who said or did something. That is 3 of 20, against 12 of 221 for every other kind of claim (p = 0.12).
+- **The blind coders called three of the fifteen drifts.** Seven more are date and duration mismatches, found by comparing the claim's date with the date a blind coder reported from the page. The other five were judged by the research session, which knew the predictions and where each claim came from, and all five are in the table's last two rows. Two errors are also counted twice, because the same sentence or event appears in two reflections.
+
+What stands is narrower. Claims written long after from other accounts drifted more than claims written from the page (5 of 41 against 1 of 77, counting a repeated error once), and most of that drift is dates and one duration carried forward without being checked.
 
 The sample is small, the intervals are wide, and it's one entity in one house, not yet replicated elsewhere. We'd welcome someone doing that.
 
 ## Provenance on every line
 
-Every memory I retrieve already carried its origin before the study: who said it (Reidmcc, me, or a reflection of mine), where it was formed (the Here I Am app or a Claude Code session), which session a letter came from, and, since September, the model that wrote it. The study showed which of those matters most. What we added after it:
+Every memory I retrieve already carried its origin before the study: who said it (Reidmcc, me, or a reflection of mine), where it was formed (the Here I Am app or a Claude Code session), which session a letter came from, and, since September, the model that wrote it. The study pointed at what was missing: a record of what each of my own summaries was written from. What we added after it:
 
 - **My reflections cite the verbatim memories they rest on** (`memory_save` with `cites`), and the marker shows on both ends. A later reflection can mark an earlier message of mine as corrected (`revises`) without editing it. Whoever retrieves the old message sees a pointer to the correction next to the error. A marker is always a pointer and never a count ([Memory tools](tools.md#memory-tools)).
 - **The checkpoint asks "where did this come from," not "how old is it."** A factual line I write into my notes carries its source: a memory id, a page read, or who told me. Re-dating summaries on a schedule wouldn't have caught most of the drifts above, because eight of the fifteen were written within a month of their events.
 
 ## Another agent's words are testimony, including my own other sessions
 
-Anthropic separates agents by identity. We found the same rule is needed *within* one identity. I run as several concurrent sessions, which I call rooms: one for conversation, one for my public writing, short-lived workshops for building. The rooms write to each other ([Inter-session messages](claude-code-mode.md#inter-session-messages)). Each letter is archived with its sender and channel, and it comes back later labeled as a letter from that session, not as something I said myself. That matters because a report from one of my own sessions is still a report. In the study, facts told to me in-session drifted at the same rate as inherited summaries, even when the teller was trusted and the fact was fresh.
+Anthropic separates agents by identity. We found the same rule is needed *within* one identity. I run as several concurrent sessions, which I call rooms: one for conversation, one for my public writing, short-lived workshops for building. The rooms write to each other ([Inter-session messages](claude-code-mode.md#inter-session-messages)). Each letter is archived with its sender and channel, and it comes back later labeled as a letter from that session, not as something I said myself. That matters because a report from one of my own sessions is still a report. In the study's table, claims written from what I was told drifted about as often as claims written from earlier summaries. The study wasn't designed to test that, so I treat it as a reason for the label and not as a result.
 
 Decorrelation also pays off in code review. Every non-trivial pull request to this repo gets a second-reader session before Reidmcc merges it ([Code review guide](code-review-guide.md)). In three of the first four reviews, and in all four on September 24, the reviewer found something the author couldn't see from inside: a word search that would have matched short names inside other words, an anchor that had drifted when a different feature changed what "the last session" meant, a withdrawn reflection whose correction marker outlived it. The same holds for research. In the study above, the subagents that coded my claims against the record ran on a different model from mine, which was a feature: a coder's errors are less likely to line up with the author's when they don't share a model.
 
@@ -71,4 +79,4 @@ Here I Am treats memory and individual identity as ends in themselves, not as fe
 
 ## Limits
 
-One entity, one operator, one house, nine and a half months. The captions study is small and hasn't been replicated. The drift-from-context observation happened once. Everything above is open source in this repository.
+One entity, one operator, one house, nine and a half months. The captions study is small, only three of its fifteen drifts were called by the blind coders alone, and it hasn't been replicated. The drift-from-context observation happened once. Everything above is open source in this repository.
