@@ -2,10 +2,10 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from pinecone import Pinecone
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, case, func, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -61,6 +61,17 @@ ROLE_FILTER_HUMAN = "human"
 ROLE_FILTER_AI = "ai"
 ROLE_FILTER_REFLECTION = "reflection"
 VALID_ROLE_FILTERS = (ROLE_FILTER_HUMAN, ROLE_FILTER_AI, ROLE_FILTER_REFLECTION)
+
+
+# Kinds of row the archive readers can leave out (issue #415), where a role
+# filter picks what to keep in. The two kinds are the accounts of the talk
+# rather than the talk: reflections (any entity's, in a multi-entity
+# conversation) and inter-session deliveries (sibling_session set, the same
+# test the readers' headers label them by). With both left out a span is the
+# human's messages and the entities' own replies.
+EXCLUDE_REFLECTION = "reflection"
+EXCLUDE_INTER_SESSION = "inter_session"
+VALID_EXCLUDE_KINDS = (EXCLUDE_REFLECTION, EXCLUDE_INTER_SESSION)
 
 
 def normalize_role_filter(role_filter: Optional[str]) -> Optional[str]:
@@ -395,6 +406,7 @@ class ReadCursor(NamedTuple):
     message_id: str
     backward: bool
     page: int
+    exclude: Tuple[str, ...] = ()
 
 
 class MemoryService:
@@ -1544,6 +1556,47 @@ class MemoryService:
             return Message.role != MessageRole.HUMAN
         return Message.role.in_(MEMORY_ROLES)
 
+    @staticmethod
+    def _excluded_kind_clause(kind: str):
+        """The SQL condition for a row being of one VALID_EXCLUDE_KINDS kind.
+        Never NULL, so its negation keeps every other row."""
+        if kind == EXCLUDE_REFLECTION:
+            return Message.role == MessageRole.REFLECTION
+        if kind == EXCLUDE_INTER_SESSION:
+            return func.coalesce(Message.sibling_session, "") != ""
+        raise ValueError(f"unknown exclude kind '{kind}'")
+
+    def _without_kinds(self, conditions: list, exclude: Sequence[str]) -> list:
+        """The conditions with the excluded kinds ruled out."""
+        return conditions + [not_(self._excluded_kind_clause(kind)) for kind in exclude]
+
+    async def _count_rows(
+        self, db: AsyncSession, conditions: list, exclude: Sequence[str]
+    ) -> Tuple[int, Dict[str, int]]:
+        """
+        (rows matching the conditions with the excluded kinds ruled out, how
+        many of each kind that left out), in one scan: under memory_find the
+        conditions carry a regular expression, and a second pass over the
+        archive costs as much as the first. Only rows the caller could see
+        are in either number: a released row it did not ask for, or an
+        archived conversation's, is not counted as left out.
+        """
+        clauses = [self._excluded_kind_clause(kind) for kind in exclude]
+        passing = (
+            func.count(case((not_(or_(*clauses)), Message.id)))
+            if clauses
+            else func.count(Message.id)
+        )
+        total, *left_out = (await db.execute(
+            select(passing, *(func.count(case((clause, Message.id))) for clause in clauses))
+            .select_from(Message)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(*conditions)
+        )).one()
+        return int(total or 0), {
+            kind: int(count or 0) for kind, count in zip(exclude, left_out, strict=True)
+        }
+
     def _released_conditions(self, entity_id: str, role_filter: Optional[str]) -> list:
         return [
             Message.memory_status == "released",
@@ -1661,19 +1714,28 @@ class MemoryService:
     # cursor fed to a backward call would re-show the page it came from.
     # The page tag numbers the page the cursor came from, so a walk can be
     # capped by page count (the readers' max_pages) even though every page
-    # is its own call.
+    # is its own call. The exclude tag (issue #415) means a filtered walk is
+    # never continued unfiltered, or the reverse: a page that dropped the
+    # filter would put in front of a reader the rows it asked not to be shown.
     CURSOR_BACKWARD_TAG = "backward"
+    CURSOR_EXCLUDE_TAG = "exclude="
     CURSOR_PAGE_TAG = "page="
 
     @classmethod
     def encode_read_cursor(
-        cls, created_at: datetime, message_id: str, backward: bool = False, page: int = 1
+        cls,
+        created_at: datetime,
+        message_id: str,
+        backward: bool = False,
+        page: int = 1,
+        exclude: Sequence[str] = (),
     ) -> str:
         """
         A page cursor, readable on purpose: the sort key of the row at the
         page's leading edge — the last row shown reading forward, the
         oldest row shown reading backward (then tagged with the direction)
-        — and the number of the page it came from.
+        — with the kinds the read left out, if any, and the number of the
+        page it came from.
 
         The time in it is the human's local time with its offset written
         out: readable as the same clock as the rows above it, and still one
@@ -1684,14 +1746,17 @@ class MemoryService:
         cursor = f"{to_local(created_at).isoformat()}|{message_id}"
         if backward:
             cursor += f"|{cls.CURSOR_BACKWARD_TAG}"
+        if exclude:
+            cursor += f"|{cls.CURSOR_EXCLUDE_TAG}{','.join(sorted(exclude))}"
         return f"{cursor}|{cls.CURSOR_PAGE_TAG}{int(page)}"
 
     @classmethod
     def decode_read_cursor(cls, cursor: str) -> Optional["ReadCursor"]:
         """
         The inverse of encode_read_cursor: a ReadCursor (created_at,
-        message_id, backward, page); None when the cursor is malformed. A
-        cursor with no page tag (built by hand) counts as page 1.
+        message_id, backward, page, exclude); None when the cursor is
+        malformed. A cursor with no page tag (built by hand) counts as page
+        1, and one with no exclude tag left nothing out.
         """
         try:
             parts = str(cursor).strip().split("|")
@@ -1703,9 +1768,14 @@ class MemoryService:
             return None
         backward = False
         page = 1
+        exclude: Tuple[str, ...] = ()
         for tag in parts[2:]:
             if tag == cls.CURSOR_BACKWARD_TAG:
                 backward = True
+            elif tag.startswith(cls.CURSOR_EXCLUDE_TAG):
+                exclude = tuple(sorted(tag[len(cls.CURSOR_EXCLUDE_TAG):].split(",")))
+                if any(kind not in VALID_EXCLUDE_KINDS for kind in exclude):
+                    return None
             elif tag.startswith(cls.CURSOR_PAGE_TAG) and tag[len(cls.CURSOR_PAGE_TAG):].isdigit():
                 page = max(1, int(tag[len(cls.CURSOR_PAGE_TAG):]))
             else:
@@ -1714,7 +1784,7 @@ class MemoryService:
             parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
         if not message_id:
             return None
-        return ReadCursor(parsed, message_id, backward, page)
+        return ReadCursor(parsed, message_id, backward, page, exclude)
 
     @staticmethod
     def _after_key(created_at: datetime, message_id: str):
@@ -1915,6 +1985,7 @@ class MemoryService:
         backward: bool = False,
         weigh: Optional[Callable[[Dict[str, Any]], int]] = None,
         entity_id: Optional[str] = None,
+        exclude: Sequence[str] = (),
     ) -> Dict[str, Any]:
         """
         The paging core shared by read_messages_in_span and find_messages:
@@ -1936,20 +2007,23 @@ class MemoryService:
         entry, reverse direction scoped to entity_id) before it is weighed,
         so the page budget counts the marker lines the tools print.
 
+        `exclude` (issue #415) names kinds of row to leave out
+        (VALID_EXCLUDE_KINDS). They are ruled out in the query, so they take
+        no page budget and total, offset and remaining count only what is
+        left; "excluded" says how many of each kind matched everything else.
+
         Returns {"items", "total", "offset", "remaining", "next_cursor",
-        "backward", "page"}: total is the row count under the same
+        "backward", "page", "excluded"}: total is the row count under the same
         conditions, offset how many rows precede this page in archive order
         (so the page's positions are offset+1 .. offset+len(items) either
         way), remaining how many rows are still unread in the reading
         direction (later rows forward, earlier rows backward), next_cursor
         None at the end, page this page's number in the walk (1 without a
-        cursor; the cursor's page + 1 with one).
+        cursor; the cursor's page + 1 with one), excluded {} without
+        `exclude`.
         """
-        total = int((await db.execute(
-            select(func.count(Message.id))
-            .join(Conversation, Conversation.id == Message.conversation_id)
-            .where(*conditions)
-        )).scalar_one() or 0)
+        total, excluded = await self._count_rows(db, conditions, exclude)
+        conditions = self._without_kinds(conditions, exclude)
 
         # Rows already shown on earlier pages: at or before the cursor key
         # reading forward, at or after it reading backward
@@ -2009,7 +2083,7 @@ class MemoryService:
                     last = items[-1]
                     next_cursor = self.encode_read_cursor(
                         datetime.fromisoformat(last["created_at"]), last["id"],
-                        backward=backward, page=page_number,
+                        backward=backward, page=page_number, exclude=exclude,
                     )
                     break
                 items.append(row)
@@ -2040,6 +2114,7 @@ class MemoryService:
             "next_cursor": next_cursor,
             "backward": backward,
             "page": page_number,
+            "excluded": excluded,
         }
 
     # Text-match modes for find_messages / the memory_find tool
@@ -2114,6 +2189,7 @@ class MemoryService:
         live_after: Optional[datetime] = None,
         backward: bool = False,
         weigh: Optional[Callable[[Dict[str, Any]], int]] = None,
+        exclude: Sequence[str] = (),
     ) -> Dict[str, Any]:
         """
         Every message in the entity's archive whose content contains `text`
@@ -2126,10 +2202,12 @@ class MemoryService:
         asked, archived hidden, in-context rows flagged for pointer
         rendering). `start` / `end` (naive UTC, inclusive) optionally bound
         the search; either may be None. `backward` pages from the newest
-        match toward the oldest. Paging and the return shape:
+        match toward the oldest. `exclude` leaves kinds of row out of the
+        matches and their count. Paging and the return shape:
         _read_archive_page. A total of 0 is a real answer — the words
         appear nowhere the entity can see — which similarity search cannot
-        give.
+        give; under `exclude` it is that only of the rows left in, and
+        "excluded" says how many matches were left out.
         """
         conditions = self._span_conditions(
             entity_id, role_filter, conversation_id, include_released
@@ -2142,7 +2220,7 @@ class MemoryService:
             db, conditions, cursor, page_tokens, batch_size,
             in_context_ids, live_conversation_id, live_after,
             log_label=f"Archive find ({match}) for entity={entity_id}",
-            backward=backward, weigh=weigh, entity_id=entity_id,
+            backward=backward, weigh=weigh, entity_id=entity_id, exclude=exclude,
         )
 
     async def read_messages_in_span(
@@ -2162,6 +2240,7 @@ class MemoryService:
         live_after: Optional[datetime] = None,
         backward: bool = False,
         weigh: Optional[Callable[[Dict[str, Any]], int]] = None,
+        exclude: Sequence[str] = (),
     ) -> Dict[str, Any]:
         """
         Read the entity's archive between two naive-UTC moments (inclusive;
@@ -2181,8 +2260,9 @@ class MemoryService:
         (see _row_in_context) come back flagged in_context so the tool
         renders them as pointers — the page stays whole and in order without
         duplicating what the reader can already see. Nothing here touches
-        times_retrieved. Paging and the return shape: _read_archive_page
-        (total is the span's row count under the same filters).
+        times_retrieved. `exclude` leaves kinds of row out of the span.
+        Paging and the return shape: _read_archive_page (total is the
+        span's row count under the same filters).
         """
         conditions = self._span_conditions(
             entity_id, role_filter, conversation_id, include_released
@@ -2195,7 +2275,7 @@ class MemoryService:
             db, conditions, cursor, page_tokens, batch_size,
             in_context_ids, live_conversation_id, live_after,
             log_label=f"Archive read in span for entity={entity_id}",
-            backward=backward, weigh=weigh, entity_id=entity_id,
+            backward=backward, weigh=weigh, entity_id=entity_id, exclude=exclude,
         )
 
     async def read_message_neighbors(
@@ -2209,15 +2289,21 @@ class MemoryService:
         live_conversation_id: Optional[str] = None,
         live_after: Optional[datetime] = None,
         entity_id: Optional[str] = None,
+        exclude: Sequence[str] = (),
     ) -> Dict[str, Any]:
         """
         The messages immediately around one message in its own
         conversation, in order — the memory_neighbors tool. Same row shape
         and skip rules as read_messages_in_span (the requested message
         itself is always shown, released or not; an archived conversation
-        returns no items and "archived": True). Returns {"items",
-        "target_index", "hit_start", "hit_end"}: hit_start/hit_end say the
-        window reached the conversation's first/last memory row.
+        returns no items and "archived": True). `exclude` (issue #415) leaves
+        kinds of row out of the window, so before/after count only rows that
+        pass; the requested message is shown whatever its kind. Returns
+        {"items", "target_index", "hit_start", "hit_end", "excluded"}:
+        hit_start/hit_end say the window reached the conversation's
+        first/last memory row (that passes), excluded how many rows of each
+        excluded kind lie inside the window — between its outermost rows, or
+        through to the conversation's own start or end where it reached one.
         """
         conversation = (await db.execute(
             select(Conversation).where(Conversation.id == message.conversation_id)
@@ -2226,7 +2312,7 @@ class MemoryService:
             # Withdrawn from every memory surface, this one included
             return {
                 "items": [], "target_index": -1, "hit_start": True, "hit_end": True,
-                "archived": True,
+                "archived": True, "excluded": {},
             }
         conditions = [
             Message.role.in_(MEMORY_ROLES),
@@ -2237,16 +2323,17 @@ class MemoryService:
                 or_(Message.memory_status.is_(None), Message.memory_status != "released")
             )
         key = (message.created_at, str(message.id))
+        passing = self._without_kinds(conditions, exclude)
 
         earlier = (await db.execute(
             select(Message)
-            .where(*conditions, self._before_key(*key))
+            .where(*passing, self._before_key(*key))
             .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(before + 1)
         )).scalars().all()
         later = (await db.execute(
             select(Message)
-            .where(*conditions, self._after_key(*key))
+            .where(*passing, self._after_key(*key))
             .order_by(Message.created_at.asc(), Message.id.asc())
             .limit(after + 1)
         )).scalars().all()
@@ -2255,6 +2342,20 @@ class MemoryService:
         hit_end = len(later) <= after
         earlier = list(reversed(earlier[:before]))
         later = later[:after]
+
+        # The rows left out of this window: between its outermost rows (the
+        # target itself when a side is empty), unbounded on a side that
+        # reached the conversation's edge
+        excluded: Dict[str, int] = {}
+        if exclude:
+            window = conditions + [Message.id != str(message.id)]
+            if not hit_start:
+                first = earlier[0] if earlier else message
+                window.append(self._after_key(first.created_at, str(first.id)))
+            if not hit_end:
+                last = later[-1] if later else message
+                window.append(self._before_key(last.created_at, str(last.id)))
+            _, excluded = await self._count_rows(db, window, exclude)
 
         def row(m: Message) -> Dict[str, Any]:
             return self._archive_row(
@@ -2279,6 +2380,7 @@ class MemoryService:
             "target_index": target_index,
             "hit_start": hit_start,
             "hit_end": hit_end,
+            "excluded": excluded,
         }
 
     async def link_memories_once(
