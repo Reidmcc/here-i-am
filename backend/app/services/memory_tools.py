@@ -33,7 +33,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
@@ -1622,12 +1622,25 @@ def _parse_max_pages(max_pages: Any) -> Tuple[Optional[int], Optional[str]]:
     return value, None
 
 
+def _exclude_argument(exclude: Sequence[str]) -> str:
+    """An exclude value as a caller would write it."""
+    if not exclude:
+        return "no exclude"
+    return "exclude=[" + ", ".join(f'"{kind}"' for kind in exclude) + "]"
+
+
 def _check_cursor(
-    cursor: Any, tool_name: str, same: str = "span", backward: bool = False
+    cursor: Any,
+    tool_name: str,
+    same: str = "span",
+    backward: bool = False,
+    exclude: Tuple[str, ...] = (),
 ) -> Tuple[Optional[str], Optional[str]]:
     """(cursor or None when absent, error) for a page cursor argument;
     `same` names what a resumed page must repeat ("span" or "text"). A
-    cursor is only resumed in the direction it was made in."""
+    cursor is only resumed in the direction it was made in, and with the
+    exclude it was made with: a continuation that dropped it would show the
+    rows the walk was started to leave out."""
     if cursor is None or not str(cursor).strip():
         return None, None
     decoded = memory_service.decode_read_cursor(cursor)
@@ -1642,6 +1655,12 @@ def _check_cursor(
             f"Error: That cursor came from a {tool_name} page read "
             f"direction=\"{made_in}\"; pass it back with the same direction, "
             "or start a new read without a cursor."
+        )
+    if set(decoded.exclude) != set(exclude):
+        return None, (
+            f"Error: That cursor came from a {tool_name} page read with "
+            f"{_exclude_argument(decoded.exclude)}; pass it back with the same "
+            "exclude, or start a new read without a cursor."
         )
     return cursor, None
 
@@ -1956,7 +1975,7 @@ async def read_memories(
     page_tokens, error = _parse_page_tokens(page_tokens)
     if error:
         return error
-    cursor, error = _check_cursor(cursor, "memory_read", backward=backward)
+    cursor, error = _check_cursor(cursor, "memory_read", backward=backward, exclude=exclude)
     if error:
         return error
     max_pages, error = _parse_max_pages(max_pages)
@@ -2118,7 +2137,9 @@ async def find_memories(
     page_tokens, error = _parse_page_tokens(page_tokens)
     if error:
         return error
-    cursor, error = _check_cursor(cursor, "memory_find", same="text", backward=backward)
+    cursor, error = _check_cursor(
+        cursor, "memory_find", same="text", backward=backward, exclude=exclude
+    )
     if error:
         return error
     max_pages, error = _parse_max_pages(max_pages)
@@ -2181,17 +2202,18 @@ async def find_memories(
     )
     total = page["total"]
     if total == 0:
-        # The zero is whole only when nothing matched among the excluded
-        # rows either
-        left_out = sum(page["excluded"].values())
-        where = (
-            "the archive you can see."
-            if not left_out
-            else "the archive you can see except in what was left out."
+        # The zero speaks for the whole archive only when nothing bounded
+        # the search, and for all of that only when no match was left out
+        bounded = (
+            start is not None or end is not None
+            or role_filter is not None or conversation_id is not None
         )
+        where = "what was searched" if bounded else "the archive you can see"
+        if sum(page["excluded"].values()):
+            where += " except in what was left out"
         return (
             f"No messages contain {what}{filters}: the words appear nowhere in "
-            f"{where}" + released_note
+            f"{where}." + released_note
         )
     plural = "es" if total != 1 else ""
     if not items:
@@ -2377,7 +2399,8 @@ def _fit_neighbor_window(
 
     footer = (
         "Read more of this conversation with memory_read (in_conversation="
-        f"\"{target['conversation_id'][:8]}\", from=<date>)."
+        f"\"{target['conversation_id'][:8]}\", from=<date>"
+        + (f", {_exclude_argument(exclude)}" if exclude else "") + ")."
     )
     labels = _entity_labels()
     now = datetime.utcnow()
@@ -2775,7 +2798,8 @@ _EXCLUDE_PROPERTY = {
         "conversation) and 'inter_session' (letters between sessions). With both, what is left "
         "is the talk itself: the human's messages and the replies. Left-out "
         "messages take no page budget and are in no count, and the first "
-        "line says the filter is on and how many it left out. Markers on "
+        "line says the filter is on and how many it left out. A cursor is "
+        "resumed with the same exclude. Markers on "
         "the messages that remain (cited by, later corrected) still show "
         "and can name a reflection. A list of quoted strings, even for one: "
         '["reflection"]. Default: nothing left out.'
@@ -2840,9 +2864,7 @@ MEMORY_READ_DESCRIPTION = (
     "retrieval: it does not feed significance, though what a page shows "
     "counts as in view for later automatic retrieval and queries. Released memories are skipped "
     "unless include_released is set; archived conversations are never shown. "
-    "'exclude' leaves kinds of message out where 'source' picks one to keep: "
-    "exclude=['reflection', 'inter_session'] reads a span as the talk alone, "
-    "without your later accounts of it. "
+    "'exclude' leaves out reflections, inter-session letters, or both. "
     "scope='isolated' is for a reader whose context is not this "
     "conversation's (a subagent shares its parent's conversation_id): "
     "every message comes back in full, nothing is a pointer, and nothing "
@@ -2996,8 +3018,8 @@ MEMORY_FIND_DESCRIPTION = (
     "promise: a name, a number (an issue or PR, a memory id, a date), a "
     "filename, a quote you want verified at its source; for completeness — "
     "every occurrence, not the nearest few; and for its opposite — a result "
-    "of zero means the words appear nowhere you can see, which a semantic "
-    "query can never say. 'text' is matched literally and "
+    "of zero over the whole archive means the words appear nowhere you can "
+    "see, which a semantic query can never say. 'text' is matched literally and "
     "case-insensitively, as whole words by default (so 'Sage' is not found "
     "inside 'message'; whole_words=false also matches inside words — a "
     "stem, part of an id); any whitespace in it matches any whitespace in "
@@ -3006,8 +3028,7 @@ MEMORY_FIND_DESCRIPTION = (
     "any order ('all'), or of which any may ('any'). Optional 'from' / 'to' "
     "bound the search by date (as in memory_read, read in 'tz'); "
     "'in_conversation', 'source' and 'exclude' narrow it as in memory_read "
-    "(the count is then of what is left, and a zero says whether any match "
-    "was left out); "
+    "(the count, or the zero, is then of what was searched); "
     "direction='backward' pages from the newest match toward the oldest "
     "(when did I last say this), each page still in order; 'max_pages' "
     "caps the walk. Text of "

@@ -14,7 +14,8 @@ absent, every page is what it was.
 # ruff: noqa: F811 — the reader tests' fixtures are imported below and then
 # named as test parameters, which ruff reads as redefinition.
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.engine import Engine
 
 from app.models import ConversationMemoryLink, ConversationSource, MessageRole
 from app.services import memory_tools
@@ -158,8 +159,8 @@ class TestRead:
 
         talk = await make_message(db, conversation, content="talk", created_at=at(minutes=1))
         for direction, edge in (
-            ("forward", "2026-09-01T23:00:00+00:00|zzz|page=1"),
-            ("backward", "2026-09-01T01:00:00+00:00|000|backward|page=1"),
+            ("forward", "2026-09-01T23:00:00+00:00|zzz|exclude=reflection|page=1"),
+            ("backward", "2026-09-01T01:00:00+00:00|000|backward|exclude=reflection|page=1"),
         ):
             past = await read_memories(
                 native_ctx(), from_=DAY, to=DAY, exclude=["reflection"],
@@ -342,13 +343,87 @@ class TestPaging:
         assert "230 reflections left out" in first_line(result)
         assert result.endswith("End of span.")
 
+    async def test_both_readers_hold_the_reserve_back(self, db, tools_db, monkeypatch):
+        conversation = await make_conversation(db)
+        for i in range(20):
+            await make_message(db, conversation, content=f"harbor {i}", created_at=at(minutes=i))
+
+        async def shown(reader, exclude, **kwargs):
+            return len(ids_in_order(await reader(
+                native_ctx(), exclude=exclude, page_tokens=1000, **kwargs
+            )))
+
+        monkeypatch.setattr(memory_tools, "EXCLUDE_FRAME_TOKENS", 400)
+        for reader, kwargs in ((read_memories, {"from_": DAY}), (find_memories, {"text": "harbor"})):
+            plain = await shown(reader, None, **kwargs)
+            assert 0 < await shown(reader, ["reflection"], **kwargs) < plain
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    async def test_a_cursor_is_only_resumed_with_its_own_exclude(self, db, tools_db, direction):
+        """The second reader's other case on PR #417: page 2 of a filtered
+        walk, asked for with the cursor alone, came back with the reflections
+        on it."""
+        await self.make_long_day(db)
+        readers = (
+            ("memory_read", read_memories, {"from_": DAY, "to": DAY}),
+            ("memory_find", find_memories, {"text": "turn", "match": "any", "whole_words": True}),
+        )
+        for name, reader, kwargs in readers:
+            kwargs = {**kwargs, "direction": direction, "page_tokens": READ_PAGE_TOKENS_MIN}
+            filtered = cursor_of(await reader(native_ctx(), exclude=BOTH, **kwargs))
+            assert "|exclude=inter_session,reflection|" in filtered
+            for other in (None, ["reflection"], ["inter_session"]):
+                assert await reader(native_ctx(), exclude=other, cursor=filtered, **kwargs) == (
+                    f"Error: That cursor came from a {name} page read with "
+                    'exclude=["inter_session", "reflection"]; pass it back with the same '
+                    "exclude, or start a new read without a cursor."
+                )
+            # Order doesn't matter
+            assert not (await reader(
+                native_ctx(), exclude=list(reversed(BOTH)), cursor=filtered, **kwargs
+            )).startswith("Error")
+
+            unfiltered = cursor_of(await reader(native_ctx(), **kwargs))
+            assert "exclude" not in unfiltered
+            assert "page read with no exclude; pass it back" in await reader(
+                native_ctx(), exclude=BOTH, cursor=unfiltered, **kwargs
+            )
+
+    async def test_a_cursor_naming_an_unknown_kind_is_not_one(self, db, tools_db):
+        result = await read_memories(
+            native_ctx(), from_=DAY, cursor="2026-09-01T23:00:00+00:00|zzz|exclude=letters|page=1",
+        )
+        assert result.startswith("Error: Unrecognized cursor")
+
+    async def test_one_counting_query_whatever_is_excluded(self, db, tools_db, monkeypatch):
+        """Under memory_find the conditions carry a regex over the archive,
+        so the total and the left-out counts share a scan."""
+        await make_day(db, await make_conversation(db))
+        statements = []
+
+        @event.listens_for(Engine, "before_cursor_execute")
+        def record(conn, cursor, statement, *args):
+            if "REGEXP" in statement:
+                statements.append(statement)
+
+        try:
+            for exclude in (None, ["reflection"], BOTH):
+                statements.clear()
+                await find_memories(native_ctx(), text="harbor", exclude=exclude)
+                # One to count, one for the page
+                assert len(statements) == 2
+        finally:
+            event.remove(Engine, "before_cursor_execute", record)
+
     def test_the_note_has_its_own_reserve_in_the_page_frame(self):
         """Held back only when the note is there, so a page read without
         exclude holds the rows it always held."""
         counts = {kind: 999_999 for kind in VALID_EXCLUDE_KINDS}
         for role_filter in (None, "human", "ai", "reflection"):
             note = _exclude_suffix(VALID_EXCLUDE_KINDS, counts, "matches", role_filter)
-            assert 0 < rendered_tokens(note) <= EXCLUDE_FRAME_TOKENS
+            # The cursor in the footer carries the kinds too
+            tag = "|exclude=" + ",".join(sorted(VALID_EXCLUDE_KINDS))
+            assert note and rendered_tokens(note + tag) <= EXCLUDE_FRAME_TOKENS
         assert _rows_budget(8000, ()) == 8000 - PAGE_FRAME_TOKENS
         assert _rows_budget(8000, VALID_EXCLUDE_KINDS) == 8000 - PAGE_FRAME_TOKENS - EXCLUDE_FRAME_TOKENS
 
@@ -428,11 +503,44 @@ class TestFind:
         assert [i for page in pages for i in ids_in_order(page)] == [m.id[:8] for m in talk]
         assert all("6 reflections left out of the matches): 6 matches;" in first_line(p) for p in pages)
 
-        past = await find_memories(
-            native_ctx(), text="harbor", exclude=["reflection"],
-            cursor="2026-09-01T23:00:00+00:00|zzz|page=1",
+        for direction, edge in (
+            ("forward", "2026-09-01T23:00:00+00:00|zzz|exclude=reflection|page=1"),
+            ("backward", "2026-09-01T01:00:00+00:00|000|backward|exclude=reflection|page=1"),
+        ):
+            past = await find_memories(
+                native_ctx(), text="harbor", exclude=["reflection"], direction=direction, cursor=edge,
+            )
+            assert ids_in_order(past) == []
+            assert "(exclude on: 6 reflections left out of the matches) (6 matches in all)" in past
+
+    async def test_a_bounded_zero_claims_only_what_was_searched(self, db, tools_db):
+        """The second reader's case on PR #417: the words are in a human's
+        message outside the search, so "nowhere in the archive" is false,
+        with exclude or without it."""
+        conversation = await make_conversation(db)
+        elsewhere = await make_conversation(db, title="Elsewhere")
+        await make_message(
+            db, conversation, role=MessageRole.REFLECTION, content="kiln", speaker_entity_id=ENTITY,
         )
-        assert "(exclude on: 6 reflections left out of the matches) (6 matches in all)" in past
+        await make_message(
+            db, conversation, role=MessageRole.HUMAN, content="the kiln", created_at=at(days=3)
+        )
+        for bound in (
+            {"from_": DAY, "to": DAY}, {"to": DAY}, {"source": "ai"},
+        ):
+            result = await find_memories(native_ctx(), text="kiln", exclude=["reflection"], **bound)
+            assert (
+                "(exclude on: 1 reflection left out of the matches): the words appear nowhere in "
+                "what was searched except in what was left out."
+            ) in result
+        for bound in (
+            {"from_": "2026-09-20"}, {"to": "2026-08-01"}, {"in_conversation": elsewhere.id},
+        ):
+            for exclude in (None, ["reflection"]):
+                result = await find_memories(native_ctx(), text="kiln", exclude=exclude, **bound)
+                assert "the words appear nowhere in what was searched." in result
+        result = await find_memories(native_ctx(), text="reflects", source="human")
+        assert "the words appear nowhere in what was searched." in result
 
 
 # ============================================================
@@ -451,6 +559,8 @@ class TestNeighbors:
             "(exclude on: 2 reflections and 1 inter-session letter left out of the window)."
         ) in first_line(result)
         assert "reached the start and end of the conversation" in first_line(result)
+        # The way on keeps the filter
+        assert result.endswith('from=<date>, exclude=["reflection", "inter_session"]).')
 
     async def test_default_window_is_unchanged(self, db, tools_db):
         rows = await make_day(db, await make_conversation(db))

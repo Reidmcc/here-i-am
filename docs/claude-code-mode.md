@@ -731,7 +731,9 @@ are never read — the extraction takes `text` blocks only.
   unchanged. Visibility rules (released, archived, `source`, `exclude`,
   `in_conversation`) and the no-retrieval-tracking rule are identical
   under both scopes (a blind reader that must not be handed the account it
-  is checking adds `exclude=["reflection", "inter_session"]`, issue #415); `memory_query` has no scope on purpose (a blind
+  is checking adds `exclude=["reflection", "inter_session"]`, issue #415; it
+  leaves out rows, not mentions: link markers on the rows that remain still
+  name reflections, and a reader with the tools can open one by id); `memory_query` has no scope on purpose (a blind
   reader should not run similarity retrieval — it tracks by design). The
   first blind-coding study (2026-09-13) ran without this by reading every
   span exactly once across all coders and never in the parent; that
