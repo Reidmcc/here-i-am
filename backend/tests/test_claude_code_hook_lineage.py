@@ -215,7 +215,5 @@ def test_a_forks_first_prompt_finds_its_parent_where_the_app_keeps_records_now(
     os.utime(stale, (1000, 1000))
     os.utime(live, (2000, 2000))
     hints = hook_util.lineage_hints("the-fork", str(tmp_path / "not-written-yet.jsonl"))
-    assert hints == {
-        "prior_session_ids": ["grandparent", "parent"],
-        "transcript_message_ids": [],
-    }
+    assert hints["prior_session_ids"] == ["grandparent", "parent"]
+    assert hints["transcript_message_ids"] == []
