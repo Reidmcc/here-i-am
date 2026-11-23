@@ -197,7 +197,7 @@ Wrong passwords buy a growing wait: five are free, then each further one
 doubles a delay (2 s, 4 s, … up to 5 minutes) during which no password is
 looked at. No response may be shown inside another page's frame.
 
-**Machines**: the Claude Code hooks, the MCP client, the compaction mod,
+**Programs**: the Claude Code hooks, the MCP client, the compaction mod,
 scripts. Each sends `Authorization: Bearer him_…`. A token has a scope:
 
 | Scope | Reaches | Bound to |
@@ -205,8 +205,13 @@ scripts. Each sends `Authorization: Bearer him_…`. A token has a scope:
 | `entity` | the Claude Code hook endpoints and `/mcp`, nothing else | one entity |
 | `researcher` | everything | nobody |
 
-An entity token is what a Claude Code machine holds. It covers exactly
-what the hooks and the memory tools call. It cannot archive a
+**The scope belongs to the credential, not to the machine or the person
+sitting at it.** One desk can hold both kinds at once, and usually does
+(see "One desk, one account" below).
+
+An entity token is what a Claude Code installation holds, one per machine
+so that a lost machine can be revoked by name. It covers exactly what the
+hooks and the memory tools call. It cannot archive a
 conversation, override a memory's status, delete anything, rebuild the
 vector store, or send a chat message that spends provider credit: those
 are the researcher's, and an entity token is refused them with a 403.
@@ -222,6 +227,36 @@ A researcher token works anywhere, including in a Claude Code machine's
 `HIM_TOKEN`, where it would put the researcher's whole reach in front of
 the entity's own shell. The server notices that at session start and the
 hook says so, loudly, every time.
+
+### One desk, one account
+
+The ordinary setup: the researcher and the entity's Claude Code sessions
+on the same machine, under the same OS user. Both credentials live there
+side by side, and each is used by a different program:
+
+| What you are doing | What carries the request | Credential |
+| --- | --- | --- |
+| Typing to the entity in Claude Code | the hooks, which record your prompt and its reply | the entity token (`HIM_TOKEN`) |
+| The entity using its memory tools | Claude Code's MCP client | the same entity token |
+| Using the web page: chatting natively, the memory browser, archiving, settings | your browser | your login (the password, then the cookie) |
+| A script of your own against the API | the script | a researcher token you mint for it |
+
+So nothing you do from that desk is narrowed by the entity token being
+there. Your words typed into Claude Code go through the hooks under the
+entity token, and that is the right scope for them: recording that
+conversation is what the scope is for. Everything that is yours alone
+(archive, status override, delete, rebuild, the chat routes) is done from
+the web page, with your login. This is the setup the branch was tested
+in: a server, the real hooks with an entity token, and a browser login,
+all on one desktop under one account.
+
+What sharing an account does mean is that the line between the two is
+not a wall. It stops the entity's session from acting as the researcher
+**by accident**: a `curl` from its shell to an archive or delete route,
+with the token it has or with none, is refused. It does not stop a
+program running as you from going and getting what is yours on purpose
+(next section). Only separate OS accounts make that a wall, which is what
+the cloud machine's service user is for.
 
 ### Bound to one entity
 
@@ -335,6 +370,13 @@ Stated plainly, so none of it is assumed:
 - **It does not stop a session that drives the researcher's own browser.**
   A session using Claude in Chrome acts inside a browser that is logged
   in, with the researcher's session. That stays an agreement.
+- **On a shared OS account, the researcher's credentials are within a
+  session's reach if it goes looking.** The browser keeps its login on
+  disk under your account, and a researcher token saved for a script sits
+  in a file you own. A program running as you can, with effort, read
+  either. Scopes make acting as the researcher a deliberate act and never
+  an accident; they are not a boundary between two things running as the
+  same user. That too stays an agreement.
 - **The entity's shell can read its own token.** Accepted: the token
   grants what the hooks already do on the entity's behalf.
 - **A request's body is read before its credential is checked.** That is

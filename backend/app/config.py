@@ -321,8 +321,13 @@ class Settings(BaseSettings):
     # localhost, and a deployment puts a TLS terminator in front of that.
     # HIM_HOST=0.0.0.0 opts back in to listening on every interface.
     him_host: str = Field(default="127.0.0.1", alias="HIM_HOST")
-    # The port it listens on. The hooks' HIM_BACKEND_URL and the MCP
-    # server's URL name it too, so a changed port is changed in three places.
+    # The port this server listens on. 8000 is what it has always been
+    # (run.py had it written in), so unset changes nothing for an existing
+    # install. A second copy run beside it, for testing, sets its own: one
+    # started on a port already in use refuses to start and leaves the first
+    # answering (measured on Windows, WinError 10048). The hooks'
+    # HIM_BACKEND_URL and the MCP server's URL name the port too, so a
+    # changed port is changed in three places.
     him_port: int = Field(default=8000, alias="HIM_PORT")
     # Restart the server when its code changes (development). On by default,
     # as before; HIM_RELOAD=false for a deployment.
