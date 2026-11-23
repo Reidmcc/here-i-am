@@ -26,6 +26,7 @@ two callers:
   conversations are possible and module globals would race.
 """
 
+import json
 import logging
 import math
 import re
@@ -61,9 +62,13 @@ from app.services.local_time import (
 )
 from app.services.memory_context import format_memory_link_lines, format_memory_origin
 from app.services.memory_service import (
+    EXCLUDE_INTER_SESSION,
+    EXCLUDE_REFLECTION,
     MEMORY_ROLES,
+    ROLE_FILTER_HUMAN,
     STATUS_SET_BY_ENTITY,
     STATUS_SET_BY_RESEARCHER,
+    VALID_EXCLUDE_KINDS,
     VALID_ROLE_FILTERS,
     check_link_target,
     load_memory_links,
@@ -133,6 +138,8 @@ READ_PAGE_TOKENS_MIN = 500
 RENDERED_CHARS_PER_TOKEN = HARNESS_CHARS_PER_TOKEN
 READ_PAGE_TOKENS_MAX = 16000
 PAGE_FRAME_TOKENS = 250
+# Held back as well when `exclude` is given: what it adds to the header
+EXCLUDE_FRAME_TOKENS = 60
 READ_PAGE_MAX_BYTES = int(READ_PAGE_TOKENS_MAX * RENDERED_CHARS_PER_TOKEN)
 NEIGHBORS_DEFAULT = 2
 NEIGHBORS_MAX = 10
@@ -1313,6 +1320,11 @@ async def release_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = Fa
 #   in-view set as pointers and its own reads poison the parent's dedup.
 #   Isolation is context bookkeeping only; visibility rules (released,
 #   archived, source, in_conversation) are unchanged.
+# - exclude (issue #415) leaves kinds of row out where source picks what to
+#   keep in: reflections, inter-session letters. With both out a page is the
+#   talk without the accounts of it. The page's first line always says the
+#   filter is on and how many rows it left out, zero included: a page that
+#   dropped rows in silence would be read later as the whole page.
 
 _BARE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -1760,6 +1772,100 @@ def _normalize_source(source: Optional[str]) -> Tuple[Optional[str], str, Option
     return (None if role_filter == SOURCE_ALL else role_filter), suffix, None
 
 
+# (singular, plural) as the exclude note names each kind
+_EXCLUDED_NOUNS = {
+    EXCLUDE_REFLECTION: ("reflection", "reflections"),
+    EXCLUDE_INTER_SESSION: ("inter-session letter", "inter-session letters"),
+}
+
+# Kinds a source value already rules out, so excluding them changes nothing
+# and their count would be a zero that says nothing about the span
+_KINDS_RULED_OUT_BY_SOURCE = {
+    ROLE_FILTER_HUMAN: (EXCLUDE_REFLECTION, EXCLUDE_INTER_SESSION),
+    SOURCE_REFLECTION: (EXCLUDE_INTER_SESSION,),
+}
+
+
+def _normalize_exclude(exclude: Any) -> Tuple[Tuple[str, ...], Optional[str]]:
+    """
+    (kinds to leave out, error) for a reader's exclude argument: omitted or
+    empty is none, a list is taken once each in order, and a list that
+    arrives as a string (JSON or comma-separated) is read as one. An
+    unrecognized kind is an error rather than ignored: the caller would
+    take the page for one it was left out of.
+    """
+    if exclude is None:
+        return (), None
+    values = exclude
+    if isinstance(values, str):
+        text = values.strip()
+        if text.startswith("["):
+            try:
+                values = json.loads(text)
+            except ValueError:
+                values = [text]
+        else:
+            values = text.split(",")
+    if not isinstance(values, (list, tuple, set)):
+        return (), (
+            "Error: exclude must be a list of kinds to leave out. Valid values: "
+            f"{', '.join(VALID_EXCLUDE_KINDS)}."
+        )
+    kinds = [str(value if value is not None else "").strip().lower() for value in values]
+    kinds = list(dict.fromkeys(kind for kind in kinds if kind))
+    for kind in kinds:
+        if kind not in VALID_EXCLUDE_KINDS:
+            return (), (
+                f"Error: Unknown exclude value '{kind}'. Valid values: "
+                f"{', '.join(VALID_EXCLUDE_KINDS)}."
+            )
+    return tuple(kinds), None
+
+
+def _exclude_suffix(
+    exclude: Tuple[str, ...],
+    excluded: Dict[str, int],
+    of: str,
+    role_filter: Optional[str] = None,
+) -> str:
+    """
+    What a page's first line says about `exclude`, beside the other filters
+    and before the count it qualifies: " (exclude on: 3 reflections and 1
+    inter-session letter left out of the span)". Empty without exclude. The
+    zero is said too; a kind `source` already rules out is named as that.
+    """
+    if not exclude:
+        return ""
+    redundant = _KINDS_RULED_OUT_BY_SOURCE.get(role_filter or "", ())
+    counted = []
+    for kind in exclude:
+        if kind not in redundant:
+            count = excluded.get(kind, 0)
+            counted.append(f"{count} {_EXCLUDED_NOUNS[kind][0 if count == 1 else 1]}")
+    parts = []
+    if counted:
+        parts.append(f"{' and '.join(counted)} left out of the {of}")
+    already = [_EXCLUDED_NOUNS[kind][1] for kind in exclude if kind in redundant]
+    if already:
+        parts.append(f"source=\"{role_filter}\" already leaves out {' and '.join(already)}")
+    return f" (exclude on: {'; '.join(parts)})"
+
+
+def _excluded_kind_of(item: Dict[str, Any], exclude: Tuple[str, ...]) -> Optional[str]:
+    """Which excluded kind an archive row is of, if any: the row-side twin of
+    memory_service._excluded_kind_clause."""
+    if EXCLUDE_REFLECTION in exclude and item.get("role") == MessageRole.REFLECTION.value:
+        return EXCLUDE_REFLECTION
+    if EXCLUDE_INTER_SESSION in exclude and item.get("sibling_session"):
+        return EXCLUDE_INTER_SESSION
+    return None
+
+
+def _rows_budget(page_tokens: int, exclude: Tuple[str, ...]) -> int:
+    """The part of a page's budget its rows may use: the rest is its frame."""
+    return page_tokens - PAGE_FRAME_TOKENS - (EXCLUDE_FRAME_TOKENS if exclude else 0)
+
+
 def _backward_end_text(conversation_id: Optional[str], start: Optional[datetime], what: str) -> str:
     """
     The last backward page's closing line, naming what was reached: the
@@ -1788,6 +1894,7 @@ async def read_memories(
     scope: Optional[str] = None,
     direction: Optional[str] = None,
     max_pages: Any = None,
+    exclude: Any = None,
 ) -> str:
     """
     memory_read: the entity's archive between two moments, in order, one
@@ -1842,6 +1949,9 @@ async def read_memories(
     role_filter, source_suffix, error = _normalize_source(source)
     if error:
         return error
+    exclude, error = _normalize_exclude(exclude)
+    if error:
+        return error
 
     page_tokens, error = _parse_page_tokens(page_tokens)
     if error:
@@ -1873,12 +1983,13 @@ async def read_memories(
                 conversation_id=conversation_id,
                 include_released=bool(include_released),
                 cursor=cursor,
-                page_tokens=page_tokens - PAGE_FRAME_TOKENS,
+                page_tokens=_rows_budget(page_tokens, exclude),
                 weigh=_page_weigher(ctx.entity_id, tzinfo, include_model),
                 in_context_ids=in_context_ids,
                 live_conversation_id=live_conversation_id,
                 live_after=live_after,
                 backward=backward,
+                exclude=exclude,
             )
             items = page["items"]
             if items and not isolated:
@@ -1888,21 +1999,22 @@ async def read_memories(
         return f"Error reading memories: {e}"
 
     released_note = "" if include_released else " Released memories are not shown (include_released=true shows them)."
+    filters = (
+        f"{source_suffix}{conversation_suffix}"
+        f"{_exclude_suffix(exclude, page['excluded'], 'span', role_filter)}"
+    )
     if page["total"] == 0:
-        return (
-            f"No messages between {span_text}{source_suffix}{conversation_suffix}."
-            + released_note
-        )
+        return f"No messages between {span_text}{filters}." + released_note
     if not items:
         if backward:
             return _backward_end_text(
                 conversation_id, start,
                 f"no messages before that cursor between {span_text}"
-                f"{source_suffix}{conversation_suffix} ({page['total']} in the span)",
+                f"{filters} ({page['total']} in the span)",
             )
         return (
             f"End of span: no messages after that cursor between {span_text}"
-            f"{source_suffix}{conversation_suffix} ({page['total']} in the span)."
+            f"{filters} ({page['total']} in the span)."
         )
 
     first = page["offset"] + 1
@@ -1916,7 +2028,7 @@ async def read_memories(
     return _render_archive_page(
         ctx, page,
         header=(
-            f"Your archive, {span_text}{source_suffix}{conversation_suffix}: "
+            f"Your archive, {span_text}{filters}: "
             f"{page['total']} messages in the span; {how}."
         ),
         tzinfo=tzinfo, include_model=include_model, isolated=isolated,
@@ -1950,6 +2062,7 @@ async def find_memories(
     scope: Optional[str] = None,
     direction: Optional[str] = None,
     max_pages: Any = None,
+    exclude: Any = None,
 ) -> str:
     """
     memory_find: every message in the entity's archive containing the given
@@ -1999,6 +2112,9 @@ async def find_memories(
     role_filter, source_suffix, error = _normalize_source(source)
     if error:
         return error
+    exclude, error = _normalize_exclude(exclude)
+    if error:
+        return error
     page_tokens, error = _parse_page_tokens(page_tokens)
     if error:
         return error
@@ -2043,12 +2159,13 @@ async def find_memories(
                 conversation_id=conversation_id,
                 include_released=bool(include_released),
                 cursor=cursor,
-                page_tokens=page_tokens - PAGE_FRAME_TOKENS,
+                page_tokens=_rows_budget(page_tokens, exclude),
                 weigh=_page_weigher(ctx.entity_id, tzinfo, include_model),
                 in_context_ids=in_context_ids,
                 live_conversation_id=live_conversation_id,
                 live_after=live_after,
                 backward=backward,
+                exclude=exclude,
             )
             items = page["items"]
             if items and not isolated:
@@ -2058,12 +2175,23 @@ async def find_memories(
         return f"Error finding memories: {e}"
 
     released_note = "" if include_released else " Released memories are not searched (include_released=true searches them)."
-    filters = f"{span_text}{source_suffix}{conversation_suffix}"
+    filters = (
+        f"{span_text}{source_suffix}{conversation_suffix}"
+        f"{_exclude_suffix(exclude, page['excluded'], 'matches', role_filter)}"
+    )
     total = page["total"]
     if total == 0:
+        # The zero is whole only when nothing matched among the excluded
+        # rows either
+        left_out = sum(page["excluded"].values())
+        where = (
+            "the archive you can see."
+            if not left_out
+            else "the archive you can see except in what was left out."
+        )
         return (
             f"No messages contain {what}{filters}: the words appear nowhere in "
-            "the archive you can see." + released_note
+            f"{where}" + released_note
         )
     plural = "es" if total != 1 else ""
     if not items:
@@ -2106,15 +2234,20 @@ async def neighbor_memories(
     include_released: bool = False,
     include_model: bool = False,
     scope: Optional[str] = None,
+    exclude: Any = None,
 ) -> str:
     """
     memory_neighbors: one memory with the messages immediately before and
     after it in its own conversation, in order — the page a retrieved
-    memory is on. Same rules as memory_read.
+    memory is on. Same rules as memory_read; `exclude` never hides the
+    memory asked for.
     """
     if not ctx.entity_id:
         return "Error: No entity context available for reading memories"
     isolated, error = _normalize_scope(scope)
+    if error:
+        return error
+    exclude, error = _normalize_exclude(exclude)
     if error:
         return error
 
@@ -2155,6 +2288,7 @@ async def neighbor_memories(
                 live_conversation_id=live_conversation_id,
                 live_after=live_after,
                 entity_id=ctx.entity_id,
+                exclude=exclude,
             )
             if window.get("archived"):
                 return (
@@ -2162,7 +2296,7 @@ async def neighbor_memories(
                     "conversation, which is withdrawn from every memory surface."
                 )
             header, footer, rendered, in_full = _fit_neighbor_window(
-                ctx, window, include_released, include_model, isolated
+                ctx, window, include_released, include_model, isolated, exclude
             )
             # Only the rows shown in full count as in view from here on: a
             # header-only row is the one the entity is told to open, and
@@ -2194,6 +2328,7 @@ def _fit_neighbor_window(
     include_released: bool,
     include_model: bool,
     isolated: bool,
+    exclude: Tuple[str, ...] = (),
 ) -> Tuple[str, str, List[List[str]], List[bool]]:
     """
     The neighbors page's header, footer, every row rendered
@@ -2212,8 +2347,16 @@ def _fit_neighbor_window(
     header = (
         f"Memory {target['id'][:8]} {_conversation_label(target)} "
         f"({format_memory_origin(target.get('source', 'native'))}), with {shown_before} "
-        f"message{'s' if shown_before != 1 else ''} before and {shown_after} after, in order."
+        f"message{'s' if shown_before != 1 else ''} before and {shown_after} after, in order"
+        f"{_exclude_suffix(exclude, window['excluded'], 'window')}."
     )
+    target_kind = _excluded_kind_of(target, exclude)
+    if target_kind:
+        noun = _EXCLUDED_NOUNS[target_kind][0]
+        header += (
+            f" The memory you asked for is {'an' if noun[0] in 'aeiou' else 'a'} {noun}; "
+            "it is shown whatever exclude leaves out."
+        )
     edges = []
     if window["hit_start"]:
         edges.append("start")
@@ -2324,6 +2467,7 @@ async def _memory_read(**kwargs: Any) -> str:
         scope=kwargs.get("scope"),
         direction=kwargs.get("direction"),
         max_pages=kwargs.get("max_pages"),
+        exclude=kwargs.get("exclude"),
     )
 
 
@@ -2346,6 +2490,7 @@ async def _memory_find(**kwargs: Any) -> str:
         scope=kwargs.get("scope"),
         direction=kwargs.get("direction"),
         max_pages=kwargs.get("max_pages"),
+        exclude=kwargs.get("exclude"),
     )
 
 
@@ -2356,11 +2501,12 @@ async def _memory_neighbors(
     include_released: bool = False,
     include_model: bool = False,
     scope: Optional[str] = None,
+    exclude: Any = None,
 ) -> str:
     return await neighbor_memories(
         _context, memory_id, before=before, after=after,
         include_released=bool(include_released), include_model=bool(include_model),
-        scope=scope,
+        scope=scope, exclude=exclude,
     )
 
 
@@ -2614,10 +2760,26 @@ _SCOPE_PROPERTY = {
         "shares its parent's conversation_id): every message comes back in "
         "full, this conversation's own included, and nothing is recorded as "
         "in view, so the read leaves no trace in the conversation's dedup. "
-        "Visibility rules (released, archived, source, in_conversation) are "
+        "Visibility rules (released, archived, source, exclude, in_conversation) are "
         "the same under both."
     ),
     "default": SCOPE_CONVERSATION,
+}
+
+_EXCLUDE_PROPERTY = {
+    "type": "array",
+    "items": {"type": "string", "enum": list(VALID_EXCLUDE_KINDS)},
+    "description": (
+        "Kinds of message to leave out: 'reflection' (your reflections, ones "
+        "saved at a compaction included, and other entities' in a shared "
+        "conversation) and 'inter_session' (letters between sessions). With both, what is left "
+        "is the talk itself: the human's messages and the replies. Left-out "
+        "messages take no page budget and are in no count, and the first "
+        "line says the filter is on and how many it left out. Markers on "
+        "the messages that remain (cited by, later corrected) still show "
+        "and can name a reflection. A list of quoted strings, even for one: "
+        '["reflection"]. Default: nothing left out.'
+    ),
 }
 
 _DIRECTION_PROPERTY = {
@@ -2678,6 +2840,9 @@ MEMORY_READ_DESCRIPTION = (
     "retrieval: it does not feed significance, though what a page shows "
     "counts as in view for later automatic retrieval and queries. Released memories are skipped "
     "unless include_released is set; archived conversations are never shown. "
+    "'exclude' leaves kinds of message out where 'source' picks one to keep: "
+    "exclude=['reflection', 'inter_session'] reads a span as the talk alone, "
+    "without your later accounts of it. "
     "scope='isolated' is for a reader whose context is not this "
     "conversation's (a subagent shares its parent's conversation_id): "
     "every message comes back in full, nothing is a pointer, and nothing "
@@ -2764,6 +2929,7 @@ MEMORY_READ_SCHEMA = {
             "minimum": READ_PAGE_TOKENS_MIN,
             "maximum": READ_PAGE_TOKENS_MAX,
         },
+        "exclude": _EXCLUDE_PROPERTY,
         "direction": _DIRECTION_PROPERTY,
         "max_pages": _MAX_PAGES_PROPERTY,
         "include_released": _INCLUDE_RELEASED_PROPERTY,
@@ -2782,7 +2948,9 @@ MEMORY_NEIGHBORS_DESCRIPTION = (
     "output): the human's message, your own, an inter-session letter, or a "
     "reflection (whose neighbors are the exchange around the moment you "
     "saved it). The requested memory is marked with '>>'; the result says "
-    "if the window reached the start or end of the conversation. Same rules "
+    "if the window reached the start or end of the conversation. 'exclude' "
+    "leaves reflections or inter-session letters out of the window, and "
+    "before/after then count only what is left. Same rules "
     "as memory_read: nothing excluded, verbatim, messages already in your "
     "context listed as pointers rather than repeated, no retrieval "
     "tracking, what it shows counts as in view afterwards; or, with "
@@ -2811,6 +2979,7 @@ MEMORY_NEIGHBORS_SCHEMA = {
             "minimum": 0,
             "maximum": NEIGHBORS_MAX,
         },
+        "exclude": _EXCLUDE_PROPERTY,
         "include_released": _INCLUDE_RELEASED_PROPERTY,
         "include_model": _INCLUDE_MODEL_PROPERTY,
         "scope": _SCOPE_PROPERTY,
@@ -2836,7 +3005,9 @@ MEMORY_FIND_DESCRIPTION = (
     "takes it as one phrase (default), or as words that must all appear in "
     "any order ('all'), or of which any may ('any'). Optional 'from' / 'to' "
     "bound the search by date (as in memory_read, read in 'tz'); "
-    "'in_conversation' and 'source' narrow it as in memory_read; "
+    "'in_conversation', 'source' and 'exclude' narrow it as in memory_read "
+    "(the count is then of what is left, and a zero says whether any match "
+    "was left out); "
     "direction='backward' pages from the newest match toward the oldest "
     "(when did I last say this), each page still in order; 'max_pages' "
     "caps the walk. Text of "
@@ -2950,6 +3121,7 @@ MEMORY_FIND_SCHEMA = {
             "minimum": READ_PAGE_TOKENS_MIN,
             "maximum": READ_PAGE_TOKENS_MAX,
         },
+        "exclude": _EXCLUDE_PROPERTY,
         "direction": _DIRECTION_PROPERTY,
         "max_pages": _MAX_PAGES_PROPERTY,
         "include_released": _INCLUDE_RELEASED_PROPERTY,

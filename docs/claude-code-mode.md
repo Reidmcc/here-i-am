@@ -728,9 +728,10 @@ are never read — the extraction takes `text` blocks only.
   fix is the readers' `scope="isolated"`: no pointers (every row in full,
   the conversation's own included) and nothing recorded (no links, no
   stamping). It is the subagent's to set; the parent's calls are
-  unchanged. Visibility rules (released, archived, `source`,
+  unchanged. Visibility rules (released, archived, `source`, `exclude`,
   `in_conversation`) and the no-retrieval-tracking rule are identical
-  under both scopes; `memory_query` has no scope on purpose (a blind
+  under both scopes (a blind reader that must not be handed the account it
+  is checking adds `exclude=["reflection", "inter_session"]`, issue #415); `memory_query` has no scope on purpose (a blind
   reader should not run similarity retrieval — it tracks by design). The
   first blind-coding study (2026-09-13) ran without this by reading every
   span exactly once across all coders and never in the parent; that
