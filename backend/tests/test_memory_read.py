@@ -1280,12 +1280,12 @@ class TestBackward:
         wrong = await read_memories(native_ctx(), from_="2026-09-01", cursor=backward_cursor)
         assert wrong.startswith("Error: That cursor came from a memory_read page read direction=\"backward\"")
         assert memory_service.decode_read_cursor("2026-09-01T12:00:00|abc|sideways") is None
-        # A hand-built cursor with no page tag is page 1
+        # A hand-built cursor with no tags is page 1 and left nothing out
         assert memory_service.decode_read_cursor("2026-09-01T12:00:00|abc") == (
-            datetime(2026, 9, 1, 12, 0), "abc", False, 1
+            datetime(2026, 9, 1, 12, 0), "abc", False, 1, ()
         )
         decoded = memory_service.decode_read_cursor("2026-09-01T12:00:00|abc|backward|page=4")
-        assert decoded == (datetime(2026, 9, 1, 12, 0), "abc", True, 4)
+        assert decoded == (datetime(2026, 9, 1, 12, 0), "abc", True, 4, ())
         assert (decoded.backward, decoded.page) == (True, 4)
         assert "Unknown direction 'sideways'" in await read_memories(
             native_ctx(), from_="2026-09-01", direction="sideways"
