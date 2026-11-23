@@ -219,17 +219,221 @@ def test_desktop_index_empty_when_directory_missing(tmp_path):
 
 
 def test_desktop_data_dir_honors_env_then_platform(monkeypatch, tmp_path):
+    # Set, it is the only directory looked in: an override that still read
+    # the defaults could not be used to point away from them
     monkeypatch.setenv("HIM_DESKTOP_DATA_DIR", str(tmp_path))
-    assert hook_util.claude_desktop_data_dir() == str(tmp_path)
+    assert hook_util.claude_desktop_data_dirs() == [str(tmp_path)]
     monkeypatch.delenv("HIM_DESKTOP_DATA_DIR")
-    default = hook_util.claude_desktop_data_dir()
-    assert os.path.basename(default) == "Claude"
+    defaults = hook_util.claude_desktop_data_dirs()
     if sys.platform == "win32":
-        assert default.startswith(os.environ.get("APPDATA") or "")
+        assert os.path.join(os.environ["APPDATA"], "Claude") in defaults
     elif sys.platform == "darwin":
-        assert "Application Support" in default
+        assert "Application Support" in defaults[0]
+        assert os.path.basename(defaults[0]) == "Claude"
     else:
-        assert ".config" in default or os.environ.get("XDG_CONFIG_HOME", "") in default
+        assert ".config" in defaults[0] or os.environ.get("XDG_CONFIG_HOME", "") in defaults[0]
+        assert os.path.basename(defaults[0]) == "Claude"
+
+
+# --- where the desktop app keeps its data (it moved, 2026-10-19)
+
+
+@pytest.fixture
+def windows_appdata(monkeypatch, tmp_path):
+    """A Windows user's two AppData folders, as the hooks' defaults see
+    them. Built through _windows_desktop_data_dirs so the suite covers it
+    on every platform. Returns (local, roaming)."""
+    local, roaming = tmp_path / "AppData" / "Local", tmp_path / "AppData" / "Roaming"
+    local.mkdir(parents=True)
+    roaming.mkdir(parents=True)
+    monkeypatch.delenv("HIM_DESKTOP_DATA_DIR")
+    monkeypatch.setattr(
+        hook_util,
+        "claude_desktop_data_dirs",
+        lambda: hook_util._windows_desktop_data_dirs(str(local), str(roaming)),
+    )
+    return local, roaming
+
+
+# The package family of the direct download, as the folder was named on the
+# measured machine, and the Store build's (named in the app's code)
+DIRECT_FAMILY = "claude_pzs8sxrjxfjjc"
+STORE_FAMILY = "anthropicpbc.claude_fnn82j28hfe8t"
+
+
+def set_written(desktop_dir: Path, record: dict, when: int) -> None:
+    for path in desktop_dir.glob(f"claude-code-sessions/*/*/{record['sessionId']}.json"):
+        os.utime(path, (when, when))
+
+
+def test_windows_defaults_come_from_both_appdata_folders(monkeypatch, tmp_path):
+    local, roaming = tmp_path / "L", tmp_path / "R"
+    monkeypatch.delenv("HIM_DESKTOP_DATA_DIR")
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv("APPDATA", str(roaming))
+    (local / "Claude-Data" / DIRECT_FAMILY).mkdir(parents=True)
+    with monkeypatch.context() as patch:
+        patch.setattr(hook_util.sys, "platform", "win32")
+        found = hook_util.claude_desktop_data_dirs()
+    assert found[0] == str(local / "Claude-Data" / DIRECT_FAMILY)
+    assert str(roaming / "Claude") in found
+
+
+@pytest.mark.parametrize("family", [DIRECT_FAMILY, STORE_FAMILY])
+def test_desktop_index_finds_the_moved_folder(windows_appdata, family):
+    """The layout measured 2026-11-23: the old folder left behind with only
+    the app's marker in it, the records under the package family's name."""
+    local, roaming = windows_appdata
+    (roaming / "Claude").mkdir()
+    (roaming / "Claude" / f".user-data-left.{family}").write_text("", encoding="utf-8")
+    (local / "Claude-Data").mkdir()
+    (local / "Claude-Data" / "README.txt").write_text("This folder...", encoding="utf-8")
+    write_desktop_records(local / "Claude-Data" / family, DESKTOP_RECORD)
+    index = hook_util.desktop_sessions_index()
+    assert index[LIVE_ENTRY["sessionId"]]["desktop_title"] == "Porch chat"
+
+
+@pytest.mark.parametrize(
+    "place",
+    [
+        # A non-MSIX install, or an MSIX one not moved, seen from inside
+        ("Roaming", "Claude"),
+        # The same unmoved MSIX folder, seen from outside the package
+        ("Local", "Packages", "Claude_pzs8sxrjxfjjc", "LocalCache", "Roaming", "Claude"),
+        ("Local", "Packages", "AnthropicPBC.Claude_fnn82j28hfe8t", "LocalCache", "Roaming", "Claude"),
+        # Roaming is a network share
+        ("Local", "Claude-Data"),
+        # Third-party inference
+        ("Local", "Claude-3p"),
+    ],
+    ids=lambda place: "/".join(place),
+)
+def test_desktop_index_still_finds_the_other_folders(windows_appdata, place):
+    local, _ = windows_appdata
+    write_desktop_records(local.parent.joinpath(*place), DESKTOP_RECORD)
+    index = hook_util.desktop_sessions_index()
+    assert index[LIVE_ENTRY["sessionId"]]["desktop_title"] == "Porch chat"
+
+
+@pytest.mark.parametrize("live", ["moved", "old"])
+def test_the_newest_copy_of_a_record_wins_in_either_folder(windows_appdata, live):
+    """The app can move by copying, and can move back, so either folder can
+    be the one holding stale records. A stale copy names an older Claude
+    Code session, and must not be indexed beside the live one."""
+    local, roaming = windows_appdata
+    folders = {"moved": local / "Claude-Data" / DIRECT_FAMILY, "old": roaming / "Claude"}
+    stale = {**DESKTOP_RECORD, "cliSessionId": "an-earlier-fork", "title": "Old title"}
+    for name, folder in folders.items():
+        record = DESKTOP_RECORD if name == live else stale
+        write_desktop_records(folder, record)
+        set_written(folder, record, 2000 if name == live else 1000)
+    index = hook_util.desktop_sessions_index()
+    assert list(index) == [LIVE_ENTRY["sessionId"]]
+    assert index[LIVE_ENTRY["sessionId"]]["desktop_title"] == "Porch chat"
+
+
+def test_records_in_two_folders_are_all_indexed(windows_appdata):
+    local, roaming = windows_appdata
+    write_desktop_records(local / "Claude-Data" / DIRECT_FAMILY, DESKTOP_RECORD)
+    write_desktop_records(
+        roaming / "Claude", {"sessionId": "local_other", "cliSessionId": "cli-other"}
+    )
+    assert set(hook_util.desktop_sessions_index()) == {LIVE_ENTRY["sessionId"], "cli-other"}
+
+
+def test_a_tie_goes_to_the_folder_the_app_prefers(windows_appdata):
+    # A copy that kept its times: the app's own order decides
+    local, roaming = windows_appdata
+    for folder, title in (
+        (local / "Claude-Data" / DIRECT_FAMILY, "moved"),
+        (roaming / "Claude", "left behind"),
+    ):
+        record = {**DESKTOP_RECORD, "title": title}
+        write_desktop_records(folder, record)
+        set_written(folder, record, 1000)
+    assert hook_util.desktop_sessions_index()[LIVE_ENTRY["sessionId"]]["desktop_title"] == "moved"
+
+
+def test_a_copy_still_being_made_is_not_read(windows_appdata):
+    local, _ = windows_appdata
+    write_desktop_records(local / "Claude-Data" / f"~copying.{DIRECT_FAMILY}", DESKTOP_RECORD)
+    assert hook_util.desktop_sessions_index() == {}
+
+
+def test_the_override_reads_nothing_else(monkeypatch, tmp_path):
+    local = tmp_path / "L"
+    write_desktop_records(local / "Claude-Data" / DIRECT_FAMILY, DESKTOP_RECORD)
+    write_desktop_records(tmp_path / "chosen", {"sessionId": "local_x", "cliSessionId": "cli-x"})
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv("HIM_DESKTOP_DATA_DIR", str(tmp_path / "chosen"))
+    with monkeypatch.context() as patch:
+        patch.setattr(hook_util.sys, "platform", "win32")
+        assert set(hook_util.desktop_sessions_index()) == {"cli-x"}
+
+
+# --- records that can't be found are said aloud
+
+
+OWN = LIVE_ENTRY["sessionId"]
+OTHERS_RECORD = {"other-cli": {"desktop_session_id": "local_other"}}
+
+
+@pytest.fixture
+def no_host_in_environment(monkeypatch):
+    for name in ("CLAUDE_CODE_HOST_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def records_lines(tmp_path, source, index, session_id=OWN):
+    write_registry(tmp_path, LIVE_ENTRY)
+    return hook_util.desktop_records_lines(
+        session_id, source, index, hook_util.live_sessions_snapshot(str(tmp_path), desktop_index={})
+    )
+
+
+@pytest.mark.parametrize("source", ["startup", "resume", "compact", "clear"])
+def test_no_records_at_all_is_said_on_every_session_start(
+    tmp_path, no_host_in_environment, isolated_desktop_dir, source
+):
+    [line] = records_lines(tmp_path, source, {})
+    assert line.startswith("[HERE I AM] DESKTOP RECORDS NOT FOUND")
+    assert LIVE_ENTRY["hostSessionId"] in line
+    # Names where it looked and the way out
+    assert str(isolated_desktop_dir) in line
+    assert "HIM_DESKTOP_DATA_DIR" in line
+
+
+def test_a_session_with_no_desktop_host_hears_nothing(
+    tmp_path, no_host_in_environment, monkeypatch
+):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    assert records_lines(tmp_path, "resume", {}, session_id="a-cli-session") == []
+
+
+@pytest.mark.parametrize("source", ["resume", "compact"])
+def test_a_running_session_missing_from_the_records_is_said(
+    tmp_path, no_host_in_environment, source
+):
+    [line] = records_lines(tmp_path, source, OTHERS_RECORD)
+    assert line.startswith("[HERE I AM] DESKTOP RECORD MISSING")
+    assert "found 1 of" in line
+
+
+def test_a_new_session_may_come_before_its_record(tmp_path, no_host_in_environment):
+    assert records_lines(tmp_path, "startup", OTHERS_RECORD) == []
+
+
+def test_a_session_whose_record_is_found_hears_nothing(tmp_path, no_host_in_environment):
+    found = {OWN: {"desktop_session_id": LIVE_ENTRY["hostSessionId"]}}
+    assert records_lines(tmp_path, "resume", found) == []
+    # A fork: the record still names its parent's Claude Code session, and
+    # is matched by the desktop id they share
+    fork = {"the-parent": {"desktop_session_id": LIVE_ENTRY["hostSessionId"]}}
+    assert records_lines(tmp_path, "resume", fork) == []
+    # A record indexed for its fork chain alone carries no desktop id, and
+    # is this session's all the same
+    chain_only = {OWN: {"desktop_session_id": None}}
+    assert records_lines(tmp_path, "resume", chain_only) == []
 
 
 def test_snapshot_skips_unparsable_and_idless_files(tmp_path):
@@ -370,6 +574,26 @@ def test_session_start_prints_notice_after_spill_pointer(tmp_path, monkeypatch):
     )
     assert "too large to inject inline" in out
     assert out.index("too large") < out.index("[HERE I AM] could not be written")
+
+
+def test_session_start_says_when_the_desktop_records_are_not_found(
+    tmp_path, isolated_desktop_dir
+):
+    write_registry(tmp_path, LIVE_ENTRY)
+    body = {"context": "", "bulk_context": ""}
+    # On a plain resume too, which prints nothing else
+    out, _ = run_hook("session_start", SESSION_START_STDIN, tmp_path, body)
+    assert out.startswith("[HERE I AM] DESKTOP RECORDS NOT FOUND")
+    # Records, but another session's
+    write_desktop_records(
+        isolated_desktop_dir, {"sessionId": "local_other", "cliSessionId": "cli-other"}
+    )
+    out, _ = run_hook("session_start", SESSION_START_STDIN, tmp_path, body)
+    assert out.startswith("[HERE I AM] DESKTOP RECORD MISSING")
+    # This session's
+    write_desktop_records(isolated_desktop_dir, DESKTOP_RECORD)
+    out, _ = run_hook("session_start", SESSION_START_STDIN, tmp_path, body)
+    assert out == ""
 
 
 def test_session_start_without_registry_dir_still_posts(tmp_path):

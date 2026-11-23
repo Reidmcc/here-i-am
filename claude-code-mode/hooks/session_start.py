@@ -31,8 +31,8 @@ Environment:
     HIM_ENTITY         entity index name or label (default: backend's default)
     HIM_DISABLE        set to anything to turn the integration off
     HIM_INLINE_BUDGET  see hook_util.py
-    HIM_DESKTOP_DATA_DIR  see hook_util.py (rooms registry: the desktop
-                       app's session records, for messaging addresses)
+    HIM_DESKTOP_DATA_DIR  see hook_util.py (the desktop app's session
+                       records: rooms registry and fork adoption)
     HIM_NOTES_ROOT     see hook_util.py (this machine's path to the notes,
                        when the server runs elsewhere)
 """
@@ -132,15 +132,22 @@ def main() -> None:
 
     # Trailer lines come last, after the context and any spill pointer: a
     # notes directory that isn't the server's copy (issue #397), a server
-    # in another timezone than this machine, the identity statement, then the rooms registry's one-line notice or loud
-    # write failure. The notes lines are kept apart too, for the one branch
-    # that has to move them up (an over-budget identity block, below)
+    # in another timezone than this machine, desktop app records the hooks
+    # can't find, the identity statement, then the rooms registry's one-line
+    # notice or loud write failure. The notes lines are kept apart too, for
+    # the one branch that has to move them up (an over-budget identity
+    # block, below)
     notes_lines = hook_util.notes_check_lines(body)
     trailer_lines = [
         *notes_lines,
         # This machine's zone against the server's, on every firing while
         # they differ (see hook_util, "Two clocks")
         *hook_util.clock_check_lines(body),
+        # This session's desktop record, when it should be there and isn't:
+        # the app moved its data once and nothing said so for five weeks
+        *hook_util.desktop_records_lines(
+            session_id, data.get("source"), desktop_index, sessions
+        ),
         *identity_lines,
         *hook_util.rooms_output_lines(body),
     ]

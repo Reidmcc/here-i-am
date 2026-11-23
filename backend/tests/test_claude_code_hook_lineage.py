@@ -9,6 +9,7 @@ unchanged and are the archive's row ids) and the desktop record's
 `priorCliSessionIds`. Neither read ever fails a hook.
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -170,3 +171,51 @@ def test_prior_ids_keep_desktop_order_oldest_first(tmp_path):
     assert hook_util.desktop_prior_session_ids(
         "current-id", desktop_dir=str(desktop)
     ) == ["oldest", "middle", "parent"]
+
+
+def _record_for(directory, desktop_id, cli_session_id, prior):
+    records = directory / "claude-code-sessions" / "org" / "acct"
+    records.mkdir(parents=True, exist_ok=True)
+    path = records / f"{desktop_id}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "sessionId": desktop_id,
+                "cliSessionId": cli_session_id,
+                "priorCliSessionIds": prior,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_a_forks_first_prompt_finds_its_parent_where_the_app_keeps_records_now(
+    monkeypatch, tmp_path
+):
+    """
+    The hint the move took away (2026-10-19): at a fork's first prompt there
+    is no transcript yet, so the desktop record its host id names is the
+    only evidence. A stale copy left in the old folder names an older
+    parent, and must not be the one that answers.
+    """
+    local, roaming = tmp_path / "Local", tmp_path / "Roaming"
+    monkeypatch.delenv("HIM_DESKTOP_DATA_DIR", raising=False)
+    monkeypatch.setattr(
+        hook_util,
+        "claude_desktop_data_dirs",
+        lambda: hook_util._windows_desktop_data_dirs(str(local), str(roaming)),
+    )
+    monkeypatch.setenv("CLAUDE_CODE_HOST_SESSION_ID", "local_room")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "the-fork")
+    live = _record_for(
+        local / "Claude-Data" / "claude_pzs8sxrjxfjjc", "local_room", "parent", ["grandparent"]
+    )
+    stale = _record_for(roaming / "Claude", "local_room", "grandparent", [])
+    os.utime(stale, (1000, 1000))
+    os.utime(live, (2000, 2000))
+    hints = hook_util.lineage_hints("the-fork", str(tmp_path / "not-written-yet.jsonl"))
+    assert hints == {
+        "prior_session_ids": ["grandparent", "parent"],
+        "transcript_message_ids": [],
+    }

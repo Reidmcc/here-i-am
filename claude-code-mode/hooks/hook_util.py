@@ -40,9 +40,11 @@ Environment:
                        backend sends the same number as inline_budget in
                        its responses, and this variable overrides both)
     HIM_DESKTOP_DATA_DIR  the Claude desktop app's data directory (default:
-                       the platform's; see claude_desktop_data_dir), whose
+                       every place the app is known to keep it on this
+                       platform; see claude_desktop_data_dirs), whose
                        per-session records give the rooms registry each
-                       session's messaging address
+                       session's address and sidebar title, and a fork its
+                       parent. Set, it is the only place looked in
     HIM_NOTES_ROOT     this machine's path to the server's notes tree, when
                        the session runs on a machine other than the
                        server's (issue #397; see notes_root_payload). Unset
@@ -1139,8 +1141,7 @@ def clock_check_lines(body) -> list:
 # sister who looked a room up by its registry id got "not found"). The
 # desktop app keeps a record per session at
 # <desktop data dir>/claude-code-sessions/<org>/<account>/local_<id>.json
-# (Electron userData: %APPDATA%\Claude on Windows, ~/Library/Application
-# Support/Claude on macOS, ~/.config/Claude on Linux; observed with Claude
+# (which directory that is: claude_desktop_data_dirs; observed with Claude
 # Code 2.1.260, undocumented internal state — read best-effort like the
 # registry above). Observed shape:
 #   sessionId ("local_…"), cliSessionId (the Claude Code session id),
@@ -1153,6 +1154,12 @@ def clock_check_lines(body) -> list:
 # entity can supply the id itself on declare_room.
 
 DESKTOP_SESSIONS_SUBDIR = "claude-code-sessions"
+
+# A folder under %LOCALAPPDATA%/Claude-Data holds one installed package's
+# data and is named for its package family, in lower case
+# (claude_pzs8sxrjxfjjc for the direct download). The pattern is the app's
+# own; what it keeps out is "~copying.<family>", a copy still being made.
+DESKTOP_PACKAGE_DIR_RE = re.compile(r"[a-z0-9.-]+_[a-z0-9]+")
 
 
 def claude_config_dir() -> str:
@@ -1180,34 +1187,110 @@ def _ms_to_iso(value):
         return None
 
 
-def claude_desktop_data_dir() -> str:
-    """The Claude desktop app's data directory (Electron userData), where
-    its per-session records live. HIM_DESKTOP_DATA_DIR overrides the
-    platform default."""
+def claude_desktop_data_dirs() -> list:
+    """
+    Every directory the Claude desktop app may be keeping its data in
+    (Electron userData, where its per-session records live), in the app's
+    own order of preference. HIM_DESKTOP_DATA_DIR overrides: set, it is the
+    only one.
+
+    On Windows there are several, because the app has moved its data once
+    and can move it back. Read from the app's code (6.6395.0, app.asar) and
+    measured on one machine, 2026-11-23:
+
+    - %LOCALAPPDATA%/Claude-Data/<package family>: where an MSIX install
+      keeps it now. On that machine the move was at 2026-10-19 22:47, and
+      for five weeks the hooks, looking only in %APPDATA%/Claude, found
+      nothing and said nothing.
+    - %LOCALAPPDATA%/Claude-Data itself: when Roaming is a network share.
+    - %APPDATA%/Claude: a non-MSIX install, or an MSIX one that has not
+      moved or has moved back. A hook runs inside the package's path
+      virtualization (measured), where this name is the folder below.
+    - %LOCALAPPDATA%/Packages/<family>/LocalCache/Roaming/Claude: that same
+      folder by its real name, for a hook outside the package (a CLI
+      session in an ordinary terminal).
+    - Claude-3p: the app's name for a third-party-inference install.
+
+    Which of them is live is not decided here: an old folder can hold stale
+    copies of records (the app may move by copying), so
+    desktop_sessions_index reads them all and keeps the newest copy of each
+    record.
+    """
     configured = os.environ.get("HIM_DESKTOP_DATA_DIR")
     if configured:
-        return configured
+        return [configured]
+    home = os.path.expanduser("~")
     if sys.platform == "win32":
-        base = os.environ.get("APPDATA") or os.path.join(
-            os.path.expanduser("~"), "AppData", "Roaming"
-        )
-    elif sys.platform == "darwin":
-        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+        roaming = os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming")
+        local = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+        return _windows_desktop_data_dirs(local, roaming)
+    if sys.platform == "darwin":
+        base = os.path.join(home, "Library", "Application Support")
     else:
-        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
-            os.path.expanduser("~"), ".config"
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    return [os.path.join(base, "Claude"), os.path.join(base, "Claude-3p")]
+
+
+def _windows_desktop_data_dirs(local, roaming) -> list:
+    """claude_desktop_data_dirs on Windows, for these two AppData folders."""
+    moved = os.path.join(local, "Claude-Data")
+    try:
+        families = sorted(
+            name for name in os.listdir(moved)
+            if DESKTOP_PACKAGE_DIR_RE.fullmatch(name.lower())
         )
-    return os.path.join(base, "Claude")
+    except OSError:
+        families = []
+    packages = os.path.join(
+        glob.escape(local), "Packages", "*Claude_*", "LocalCache", "Roaming", "Claude"
+    )
+    return [
+        *(os.path.join(moved, name) for name in families),
+        moved,
+        os.path.join(roaming, "Claude"),
+        *sorted(glob.glob(packages)),
+        os.path.join(local, "Claude-3p"),
+        os.path.join(roaming, "Claude-3p"),
+    ]
+
+
+def _desktop_record_paths(directories) -> list:
+    """
+    The paths of the desktop app's session records under `directories`, one
+    per desktop session: the same record under two of them (a folder the app
+    copied its data out of and left, or one folder reached by two names) is
+    the one written last, and on a tie the one in the earlier directory.
+    """
+    newest = {}
+    for directory in directories:
+        pattern = os.path.join(
+            glob.escape(directory), DESKTOP_SESSIONS_SUBDIR, "*", "*", "local_*.json"
+        )
+        try:
+            paths = sorted(glob.glob(pattern))
+        except Exception:
+            continue
+        for path in paths:
+            try:
+                written = os.path.getmtime(path)
+            except OSError:
+                continue
+            name = os.path.basename(path)
+            if name not in newest or written > newest[name][0]:
+                newest[name] = (written, path)
+    return [path for _, path in newest.values()]
 
 
 def desktop_sessions_index(desktop_dir=None):
     """
     The desktop app's session records, keyed by Claude Code session id:
     {cli_session_id: {"desktop_session_id", "desktop_title",
-    "prior_session_ids"}}. Empty when the records directory doesn't exist
-    or nothing in it parses — a hook never fails over this. A record
-    without a cliSessionId is skipped (it can't be joined to anything the
-    hooks see).
+    "prior_session_ids"}}. Empty when no records directory exists or
+    nothing in it parses — a hook never fails over this, and
+    desktop_records_lines is what says so aloud. A record without a
+    cliSessionId is skipped (it can't be joined to anything the hooks see).
+    `desktop_dir` names one directory to read in place of the ones the app
+    is known to use (claude_desktop_data_dirs).
 
     `prior_session_ids` is the record's `priorCliSessionIds` (oldest
     first), the fork-adoption fallback hint — carried here so one scan of
@@ -1215,13 +1298,9 @@ def desktop_sessions_index(desktop_dir=None):
     records embed each session's MCP tool schemas and run ~80 KB each, so
     the hooks read the directory once per firing.
     """
-    directory = os.path.join(desktop_dir or claude_desktop_data_dir(), DESKTOP_SESSIONS_SUBDIR)
+    directories = [desktop_dir] if desktop_dir else claude_desktop_data_dirs()
     index = {}
-    try:
-        paths = sorted(glob.glob(os.path.join(directory, "*", "*", "local_*.json")))
-    except Exception:
-        return index
-    for path in paths:
+    for path in _desktop_record_paths(directories):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -1250,6 +1329,56 @@ def desktop_sessions_index(desktop_dir=None):
             ),
         }
     return index
+
+
+def desktop_records_lines(session_id, source, desktop_index, sessions=None) -> list:
+    """
+    The SessionStart trailer line for a session the desktop app is running
+    whose record the hooks can't find, or nothing.
+
+    Everything that reads these records degrades quietly by design: a blank
+    sidebar title, a fork hint that isn't sent. When the app moved its data
+    (2026-10-19) that quiet lasted five weeks; of the rewinds in it, two
+    were adopted a turn late and one not at all before anyone looked.
+    Printed on every SessionStart while it holds, like the two-clocks line.
+    A session with no desktop host (a CLI one) has no record to find.
+
+    Two cases. No records anywhere: the app's folder is one the hooks don't
+    know. Records, but not this session's: the folder found may be an old
+    copy. That one is checked only for a session already running (a resume,
+    a compaction), since a new session's SessionStart can come before its
+    record is written; and a fork's record is matched by its desktop id,
+    its own id not being in it yet.
+    """
+    host = host_session_id_for(session_id, sessions=sessions)
+    if not host:
+        return []
+    looked = (
+        "Looked in: " + "; ".join(claude_desktop_data_dirs()) + ". Set "
+        "HIM_DESKTOP_DATA_DIR to the app's data folder, or tell the user."
+    )
+    cost = (
+        "Until they are found, sidebar titles in rooms.md stay blank, and "
+        "the first turn after a rewind or restart can land in a separate "
+        "conversation from the one it continues."
+    )
+    if not desktop_index:
+        return [
+            "[HERE I AM] DESKTOP RECORDS NOT FOUND: the Claude desktop app is "
+            f"running this session ({host}), but the hooks found none of its "
+            "session records (expected only in the first session the app "
+            f"ever runs on a machine). {cost} {looked}"
+        ]
+    if source == "startup" or session_id in desktop_index:
+        return []
+    if desktop_record_for_host(desktop_index, host)[1]:
+        return []
+    return [
+        "[HERE I AM] DESKTOP RECORD MISSING: the hooks found "
+        f"{len(desktop_index)} of the Claude desktop app's session records "
+        f"but not this session's ({host}), so they may be reading a folder "
+        f"the app no longer uses. {cost} {looked}"
+    ]
 
 
 # How many transcript entry uuids to send as lineage evidence, at most
