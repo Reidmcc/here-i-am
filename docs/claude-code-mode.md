@@ -430,14 +430,17 @@ are never read — the extraction takes `text` blocks only.
   `/log-assistant`), the backend resolves it to the conversation it
   continues from two lineage hints the hooks send, and **adopts** that
   conversation rather than create a new one: `resolve_session` /
-  `find_lineage_conversation`. The two hints, tried strongest first and
-  both entity-scoped (a hint into another entity's conversation is never
+  `find_lineage_conversation`. (A fork that runs *beside* its parent is not
+  a continuation and is never adopted: next bullet.) The two hints, both
+  entity-scoped (a hint into another entity's conversation is never
   adopted — the #356 fence):
   - `transcript_message_ids`: end-of-turn assistant entry uuids from the
     session's own transcript tail. A fork copies these uuids unchanged, and
     the Stop hook stores each as its Message row's primary key, so any that
     is a row of one of this entity's Claude Code conversations names the
-    parent directly — no dependency on the desktop app.
+    parent directly — no dependency on the desktop app. Where they name
+    several, the one the newest entry names is the nearest (which row was
+    touched last says nothing about it).
   - `prior_session_ids`: the desktop record's own `priorCliSessionIds`,
     resolved through the same current-key-or-alias lookup. That list is
     stored **oldest first**, so it is walked in reverse — the immediate
@@ -600,17 +603,18 @@ are never read — the extraction takes `text` blocks only.
   with no `hostSessionId` (a CLI session) gets nothing rather than a guess
   at some other desktop session's record.
 
-  `hostSessionId` itself comes from the environment when it can: the
-  desktop app sets `CLAUDE_CODE_HOST_SESSION_ID` (and
-  `CLAUDE_CODE_SESSION_ID`) on the Claude Code process and children inherit
-  them, so no file needs to have been written yet. It is trusted only when
-  `CLAUDE_CODE_SESSION_ID` matches the session id the hook was handed — the
-  environment describes the *process*, and a firing for another session's
-  id must not borrow this process's desktop host. Observed in tool
-  subprocesses of the CLI rather than in a hook specifically; the registry
-  file is the fallback and is itself early enough (written six seconds
-  before the first prompt on a measured rewind), so a hook that inherited
-  nothing loses no ground.
+  `hostSessionId` comes from the registry's entry for this session (written
+  six seconds before the first prompt on a measured rewind), an entry with
+  none included. Only when the registry has no entry does the environment
+  answer: the desktop app sets `CLAUDE_CODE_HOST_SESSION_ID` on the Claude
+  Code process and children inherit it, and it is trusted only when
+  `CLAUDE_CODE_SESSION_ID` matches the session id the hook was handed, so a
+  firing for another session's id can't borrow this process's host. That
+  guard is not enough by itself, which is why the registry goes first
+  (it was the other way round at first): a `claude -p` run from a room's
+  Bash inherits the room's host id and has its *own* session id, so the two
+  agree and it looks like the room's next fork (measured 2026-11-23 from
+  inside a real hook; its registry entry has `hostSessionId` null).
 
   With that, adoption lands on the fork's **first prompt**, before the
   model's turn, so the whole first turn runs under the room's own
@@ -647,7 +651,74 @@ are never read — the extraction takes `text` blocks only.
   adoption: conversation 18bb8e2b... merged into c44d3765...` at 16:23:32
   with `transcript_message_ids=16, prior_session_ids=6`, then `known` on the
   next prompt), and a `created` line with both hint counts at zero is the
-  signature of the miss this section fixes.
+  signature of the miss this section fixes. The line carries the desktop
+  session id too, and a copy's says so (`created beside its parent`).
+
+- **A fork that runs beside its parent gets its own conversation.** Everything
+  above was designed for a fork that *replaces* its parent. The desktop app
+  also makes copies that run *beside* it: a side session started with the
+  conversation so far (`start_session`, context `fork`), a hand-off, the
+  Fork command, a `/btw` side chat. The transcript hint matches the parent
+  exactly as a restart's does (the app copies the file whole, before the
+  copy starts, so it is full at the copy's very first hook), and adopting
+  there put two live sessions in one conversation: the parent's
+  `external_session_id` went to the copy, the parent's own id became an
+  alias through which its next prompt landed in the same row, the rooms row
+  pointed at the copy, and a compaction in either moved the boundary of
+  both. Found by reading the app's code and reproduced as a test; no such
+  fork had been made on the machine it was found on.
+
+  **What separates them is the desktop session id**, the `hostSessionId` the
+  hooks already read, sent as `host_session_id` with the lineage hints. A
+  restart or rewind keeps it: of 181 local transcripts, 31 pairs share
+  assistant entries, and in all 31 both sides belong to one desktop session.
+  A copy has its own, because every one of them goes through the app's
+  `forkSession` (read in 6.6395.0), which opens a new desktop session. The
+  id comes from the environment or the per-process registry, so this needs
+  no desktop record: those can move (on one machine they did) and the rule
+  does not notice. A conversation remembers the desktop session it was last
+  recorded under (`Conversation.desktop_session_id`, written by hooks
+  carrying the session id it is keyed on now), and a matched conversation is
+  - *this desktop session's*, when its id is the hook's: adopted, ahead of
+    anything less certain. So is whatever `prior_session_ids` names, since
+    that list is this desktop session's own record and `forkSession` starts
+    it empty;
+  - *another's*, when they differ, whether the parent's comes from its row or
+    from the hook's snapshot of live sessions (a parent whose row predates
+    the column, still running). Never adopted. And never, whatever the
+    parent's id, when the copy's own is `local_<its Claude Code id>`:
+    `forkSession` names the copied transcript after the new desktop session,
+    which no restart does (none of 133 local records names its own), so such
+    an id is a desktop session's first and continues nothing;
+  - *another's* too, for a hook with no desktop id (a terminal session)
+    when the conversation's own session is running right now;
+  - *unknown* otherwise: adopted as before. Every room's first restart after
+    this shipped takes this path once.
+
+  The copy's row is an ordinary new one (the id derived from its session id),
+  plus `forked_from_id`: the conversation it began as a copy of. Nothing of
+  the parent's is written. A row marked this way is never re-examined by late
+  adoption, since its transcript holds the parent's rows for good; a row
+  opened before the evidence arrived is marked, not merged, when it does. A
+  copy that is itself restarted finds its own conversation by its desktop id,
+  though its transcript names the parent as well.
+
+  **What the copy is told.** Its context came with the parent's identity
+  block, so it holds the parent's `conversation_id` as its own, and every
+  memory call made with it would act on a conversation it isn't recorded in.
+  The first prompt's `adoption_notice` (and SessionStart, which prints
+  nothing else for a copy: the transcript carries the rest) names its own id,
+  whose the other one is, and that the talk from before the copy is archived
+  under the other. The post-compaction block names that read as well, beside
+  its own.
+
+  **Limits.** Until its first compaction a copy can be handed, as retrieved
+  memories, talk that is already in its copied context: same-conversation
+  exclusion covers one conversation, and the parent's links are not copied.
+  Duplicated, never hidden. A terminal fork (`--fork-session`) of a session
+  that isn't running is adopted as before. A copy of a session whose original is then
+  abandoned keeps its own conversation; nothing on disk says it replaced
+  anything.
 
 - **Registration is lazy.** `session-start` builds the identity context but
   never creates the row — Claude Desktop fires SessionStart for
@@ -1519,7 +1590,9 @@ backward read arrived (issue #351).
   `session-start` adopts the parent first (see "Conversations" → fork
   adoption), so the id the block names is the parent's — the one that holds
   the talk — not a new empty conversation; this is the failure the
-  adoption fix closes (issue #357). Adoption is best-effort, though — an
+  adoption fix closes (issue #357). (A copy running beside its parent
+  compacts under its own conversation, and the block adds the read of the
+  other's for the talk from before the copy.) Adoption is best-effort, though — an
   unreadable transcript, a desktop record not yet written, a fork while the
   backend was down, a CLI session with no desktop record at all — so the
   block **counts before it promises**: rows of this conversation created
@@ -1868,7 +1941,7 @@ conversation on first contact; `/session-start` and `/session-end` never do
 
 - `POST /session-start` `{session_id, entity?, cwd?, source?,
   transcript_path?, sessions?, prior_session_ids?, transcript_message_ids?,
-  compact_talk_mod?}`
+  host_session_id?, compact_talk_mod?}`
   → `{conversation_id, entity_id, entity_label, created, context,
   bulk_context, rooms_notice, rooms_error, git_identity}` — full context when `created`
   (no conversation recorded for this session yet; `conversation_id` is
@@ -1882,7 +1955,10 @@ conversation on first contact; `/session-start` and `/session-end` never do
   — or, when a row was already opened for this session before the hints
   existed, merged into the parent (issue #359) —
   so a fork's post-compaction recovery reads the parent, which has the
-  talk, not an empty new row. `context` is the small always-inline block;
+  talk, not an empty new row. `host_session_id` is the desktop app's id for
+  the session the hook ran in, which keeps a copy running beside its parent
+  from being adopted; for a copy with nothing recorded yet, `context` is the
+  one notice naming its own id. `context` is the small always-inline block;
   `bulk_context`
   (notes indexes + reflections) is what the hook spills to a file when the
   combined output would exceed the inline budget. `sessions` is the hook's
@@ -1921,11 +1997,13 @@ conversation on first contact; `/session-start` and `/session-end` never do
   `unconfigured`, or `failed` (a retrieval exception after the rows were
   committed — reported, not raised; see "Retrieval stamps" above).
   `/retrieve` also takes the fork-adoption lineage hints
-  (`prior_session_ids`, `transcript_message_ids`) — this is the endpoint a
+  (`prior_session_ids`, `transcript_message_ids`, `host_session_id`) — this is the endpoint a
   rewind actually reaches, since no SessionStart fires there — and returns
   `adoption_notice`, the one line telling the entity this session is a
   continuation and which conversation id is recording it (the hook prints
   it ahead of the mailbox and rooms lines; empty when nothing was adopted).
+  For a copy running beside its parent it is the notice naming the copy's
+  own id and the parent's.
   It also carries a notice left by an adoption that landed on a hook
   with no line back to the entity — a late adoption on the Stop hook
   (issue #359) — delivered once.
@@ -1935,7 +2013,8 @@ conversation on first contact; `/session-start` and `/session-end` never do
   verification step after a failed `/retrieve`: SQL only, no side effects,
   creates no conversation.
 - `POST /log-assistant` `{session_id, content, entity?, cwd?,
-  message_uuid?, model?, prior_session_ids?, transcript_message_ids?}` →
+  message_uuid?, model?, prior_session_ids?, transcript_message_ids?,
+  host_session_id?}` →
   `{conversation_id, message_id, deduplicated}` —
   idempotent on `message_uuid` (the transcript entry's UUID becomes the
   Message row's primary key). `model` is the transcript entry's own

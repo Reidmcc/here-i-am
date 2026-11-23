@@ -4315,6 +4315,595 @@ class TestLateForkAdoption:
         ]
 
 
+class TestForkBesideItsParent:
+    """A copy the desktop app starts BESIDE its parent (a side session with
+    the conversation so far, a hand-off, the app's Fork, /btw): the
+    transcript hint matches the parent exactly as a restart's does, but the
+    parent goes on running. It gets its own conversation and the parent's is
+    left alone. The desktop session id is what tells the two apart: a
+    restart or rewind keeps it, a copy has its own."""
+
+    @staticmethod
+    def _host():
+        return "local_" + str(uuid.uuid4())
+
+    async def _parent(self, async_client, host=None, session=None, row=None):
+        """A session with one recorded turn: (session, conversation, row id)."""
+        session = session or str(uuid.uuid4())
+        row = row or str(uuid.uuid4())
+        body = (
+            await async_client.post(
+                "/api/claude-code/log-assistant",
+                json={
+                    "session_id": session,
+                    "content": "A turn of the parent's.",
+                    "message_uuid": row,
+                    "host_session_id": host,
+                },
+            )
+        ).json()
+        return session, body["conversation_id"], row
+
+    async def _retrieve(self, async_client, session, prompt="a prompt", **extra):
+        response = await async_client.post(
+            "/api/claude-code/retrieve",
+            json={"session_id": session, "prompt": prompt, **extra},
+        )
+        assert response.status_code == 200
+        return response.json()
+
+    async def _row(self, db_session, conversation_id):
+        db_session.expire_all()
+        return (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == conversation_id)
+            )
+        ).scalar_one()
+
+    async def _aliases(self, db_session):
+        sessions = (
+            await db_session.execute(select(ConversationSessionAlias))
+        ).scalars().all()
+        ids = (await db_session.execute(select(ConversationIdAlias))).scalars().all()
+        return list(sessions), list(ids)
+
+    async def _count(self, db_session, conversation_id):
+        return (
+            await db_session.execute(
+                select(func.count())
+                .select_from(Message)
+                .where(Message.conversation_id == conversation_id)
+            )
+        ).scalar_one()
+
+    async def test_two_live_sessions_keep_two_conversations(
+        self, async_client, db_session, tmp_path, monkeypatch
+    ):
+        """The reported case, on the wire: the files the app's forkSession
+        leaves (the transcript copied whole under the new desktop session's
+        own uuid, its entries still naming the parent's session), read by
+        the hook's own collector, then both sessions talking for several
+        turns. On the code before this, the copy's first prompt took the
+        parent's conversation and both wrote into it."""
+        import json as _json
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        from app.services import rooms_registry as rr
+
+        hooks_dir = _Path(__file__).resolve().parents[2] / "claude-code-mode" / "hooks"
+        if str(hooks_dir) not in _sys.path:
+            _sys.path.insert(0, str(hooks_dir))
+        import hook_util
+
+        monkeypatch.setattr(settings, "notes_enabled", True)
+        monkeypatch.setattr(settings, "claude_code_rooms_registry_enabled", True)
+        rekeys = []
+        monkeypatch.setattr(
+            rr.rooms_registry, "rekey_session", lambda *a: rekeys.append(a)
+        )
+        monkeypatch.setattr(
+            rr.rooms_registry, "observe", lambda *a, **k: rr.ObservationOutcome()
+        )
+        monkeypatch.delenv("CLAUDE_CODE_HOST_SESSION_ID", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+        parent_host = self._host()
+        parent, parent_conv, row = await self._parent(async_client, parent_host)
+
+        copy = str(uuid.uuid4())
+        transcript = tmp_path / f"{copy}.jsonl"
+        transcript.write_text(
+            "\n".join(
+                _json.dumps(entry)
+                for entry in (
+                    {
+                        "type": "user", "uuid": "u-1", "sessionId": parent,
+                        "message": {"role": "user", "content": "go"},
+                    },
+                    {
+                        "type": "assistant", "uuid": row, "sessionId": parent,
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "A turn."}],
+                        },
+                    },
+                )
+            ),
+            encoding="utf-8",
+        )
+        registry = tmp_path / "config" / "sessions"
+        registry.mkdir(parents=True)
+        for pid, session, host in (
+            (1, parent, parent_host), (2, copy, f"local_{copy}")
+        ):
+            (registry / f"{pid}.json").write_text(
+                _json.dumps({"pid": pid, "sessionId": session, "hostSessionId": host}),
+                encoding="utf-8",
+            )
+
+        def hints(session, path):
+            return hook_util.lineage_hints(
+                session, str(path),
+                # No desktop records at all: the registry alone must do
+                desktop_dir=str(tmp_path / "no-records"),
+                config_dir=str(tmp_path / "config"),
+            )
+
+        copy_hints = hints(copy, transcript)
+        assert copy_hints["transcript_message_ids"] == [row]
+        assert copy_hints["host_session_id"] == f"local_{copy}"
+
+        body = await self._retrieve(
+            async_client, copy,
+            "Task (from the session that started this one):\nfind out", **copy_hints
+        )
+        copy_conv = body["conversation_id"]
+        assert copy_conv == cc_conv_id(copy) != parent_conv
+        assert body["adoption_notice"] == cc.side_fork_notice(copy_conv, parent_conv)
+
+        # Both go on, turn about, every hook carrying what it would carry
+        parent_hints = hints(parent, tmp_path / "parent-unread.jsonl")
+        for turn in range(3):
+            for session, conv, sent in (
+                (parent, parent_conv, {**parent_hints, "transcript_message_ids": [row]}),
+                (copy, copy_conv, copy_hints),
+            ):
+                body = await self._retrieve(
+                    async_client, session, f"turn {turn}", **sent
+                )
+                assert body["conversation_id"] == conv
+                assert body["adoption_notice"] == ""
+                logged = await async_client.post(
+                    "/api/claude-code/log-assistant",
+                    json={
+                        "session_id": session, "content": f"reply {turn}",
+                        "message_uuid": str(uuid.uuid4()), **sent,
+                    },
+                )
+                assert logged.json()["conversation_id"] == conv
+
+        # The parent's is as it was: its key, no alias, its own rows
+        parent_row = await self._row(db_session, parent_conv)
+        assert parent_row.external_session_id == parent
+        assert parent_row.desktop_session_id == parent_host
+        assert parent_row.forked_from_id is None
+        copy_row = await self._row(db_session, copy_conv)
+        assert copy_row.external_session_id == copy
+        assert copy_row.forked_from_id == parent_conv
+        assert await self._aliases(db_session) == ([], [])
+        assert await self._count(db_session, parent_conv) == 7
+        assert await self._count(db_session, copy_conv) == 7
+        assert rekeys == []
+
+    @pytest.mark.parametrize(
+        "source", ["minted id", "recorded on the row", "live in the registry"]
+    )
+    async def test_each_signal_is_enough_alone(self, async_client, db_session, source):
+        """The parent's row may predate the recorded desktop id, its process
+        may be gone, and the app may stop naming a copy's session after its
+        desktop id: any one of the three still separates them."""
+        parent_host = self._host()
+        recorded = source == "recorded on the row"
+        parent, parent_conv, row = await self._parent(
+            async_client, parent_host if recorded else None
+        )
+        copy = str(uuid.uuid4())
+        extra = {"host_session_id": self._host()}
+        if source == "minted id":
+            extra = {"host_session_id": f"local_{copy}"}
+        if source == "live in the registry":
+            extra["sessions"] = [
+                {"session_id": parent, "desktop_session_id": parent_host}
+            ]
+        body = await self._retrieve(
+            async_client, copy, transcript_message_ids=[row], **extra
+        )
+        assert body["conversation_id"] == cc_conv_id(copy)
+        assert parent_conv in body["adoption_notice"]
+        assert (
+            await self._row(db_session, parent_conv)
+        ).external_session_id == parent
+
+    async def test_a_minted_copy_is_not_adopted_by_its_prior_ids_either(
+        self, async_client, db_session
+    ):
+        """The app's fork starts a record with no prior ids today. If one
+        ever came with the parent's, the first id of a desktop session still
+        continues nothing."""
+        parent, parent_conv, _ = await self._parent(async_client)
+        copy = str(uuid.uuid4())
+        body = await self._retrieve(
+            async_client, copy, prior_session_ids=[parent],
+            host_session_id=f"local_{copy}",
+        )
+        assert body["conversation_id"] == cc_conv_id(copy)
+        assert parent_conv in body["adoption_notice"]
+        assert (
+            await self._row(db_session, parent_conv)
+        ).external_session_id == parent
+
+    async def test_a_late_adoption_records_the_desktop_id(
+        self, async_client, db_session
+    ):
+        """The merged-into row is the one a later copy is measured against."""
+        host = self._host()
+        _, parent_conv, row = await self._parent(async_client)
+        fork = str(uuid.uuid4())
+        await self._retrieve(async_client, fork)
+        body = await self._retrieve(
+            async_client, fork, transcript_message_ids=[row], host_session_id=host
+        )
+        assert body["conversation_id"] == parent_conv
+        assert (await self._row(db_session, parent_conv)).desktop_session_id == host
+
+    async def test_the_same_desktop_session_still_adopts(
+        self, async_client, db_session
+    ):
+        """A restart or rewind: a new Claude Code id, the same desktop one."""
+        host = self._host()
+        parent, parent_conv, row = await self._parent(async_client, host)
+        fork = str(uuid.uuid4())
+        body = await self._retrieve(
+            async_client, fork, transcript_message_ids=[row], host_session_id=host,
+            sessions=[{"session_id": fork, "desktop_session_id": host}],
+        )
+        assert body["conversation_id"] == parent_conv
+        assert "continues an earlier one" in body["adoption_notice"]
+        conversation = await self._row(db_session, parent_conv)
+        assert conversation.external_session_id == fork
+        assert conversation.forked_from_id is None
+
+    async def test_a_parent_from_before_the_id_was_recorded_still_adopts(
+        self, async_client, db_session
+    ):
+        """Every room's first restart after this ships: the row has no
+        desktop id yet, and the fork brings one. Adopted as before, and the
+        id is on the row from there."""
+        _, parent_conv, row = await self._parent(async_client)
+        host = self._host()
+        fork = str(uuid.uuid4())
+        body = await self._retrieve(
+            async_client, fork, transcript_message_ids=[row], host_session_id=host
+        )
+        assert body["conversation_id"] == parent_conv
+        assert (await self._row(db_session, parent_conv)).desktop_session_id == host
+
+    @pytest.mark.parametrize("running", [True, False])
+    async def test_a_terminal_fork_is_beside_a_session_that_is_running(
+        self, async_client, db_session, running
+    ):
+        """No desktop id on either side: a conversation whose session the
+        hook can see running has not been replaced; one it can't see is
+        adopted as before."""
+        parent, parent_conv, row = await self._parent(async_client)
+        fork = str(uuid.uuid4())
+        live = [{"session_id": fork}] + ([{"session_id": parent}] if running else [])
+        body = await self._retrieve(
+            async_client, fork, transcript_message_ids=[row], sessions=live
+        )
+        assert body["conversation_id"] == (
+            cc_conv_id(fork) if running else parent_conv
+        )
+
+    async def test_the_parent_can_be_restarted_after_the_copy(
+        self, async_client, db_session
+    ):
+        """The copy's row must not stand in the way of the parent's own
+        adoption, nor be drawn into it."""
+        host = self._host()
+        _, parent_conv, row = await self._parent(async_client, host)
+        copy = str(uuid.uuid4())
+        copy_conv = (
+            await self._retrieve(
+                async_client, copy, transcript_message_ids=[row],
+                host_session_id=f"local_{copy}",
+            )
+        )["conversation_id"]
+        restarted = str(uuid.uuid4())
+        body = await self._retrieve(
+            async_client, restarted, transcript_message_ids=[row], host_session_id=host
+        )
+        assert body["conversation_id"] == parent_conv
+        assert (
+            await self._row(db_session, parent_conv)
+        ).external_session_id == restarted
+        assert (await self._row(db_session, copy_conv)).external_session_id == copy
+
+    @pytest.mark.parametrize("parent_host_known", [True, False])
+    async def test_a_restarted_copy_finds_its_own_conversation(
+        self, async_client, db_session, parent_host_known
+    ):
+        """A copy that restarts holds the parent's entries and its own, under
+        an id that is no longer the one the app minted. Its own conversation
+        is the one it continues, though the parent spoke more recently."""
+        _, parent_conv, row = await self._parent(
+            async_client, self._host() if parent_host_known else None
+        )
+        copy = str(uuid.uuid4())
+        host = f"local_{copy}"
+        own_row = str(uuid.uuid4())
+        await self._retrieve(
+            async_client, copy, transcript_message_ids=[row], host_session_id=host
+        )
+        copy_conv = (
+            await async_client.post(
+                "/api/claude-code/log-assistant",
+                json={
+                    "session_id": copy, "content": "The copy's turn.",
+                    "message_uuid": own_row, "transcript_message_ids": [row],
+                    "host_session_id": host,
+                },
+            )
+        ).json()["conversation_id"]
+        # The parent is the most recently touched row of the two
+        parent_row = await self._row(db_session, parent_conv)
+        parent_row.updated_at = datetime.utcnow() + timedelta(minutes=5)
+        await db_session.commit()
+
+        restarted = str(uuid.uuid4())
+        body = await self._retrieve(
+            async_client, restarted, transcript_message_ids=[row, own_row],
+            host_session_id=host,
+        )
+        assert body["conversation_id"] == copy_conv
+
+        # And a rewind to before its first turn: only the parent's entries
+        # are left, so the desktop record's own chain has to say it
+        rewound = str(uuid.uuid4())
+        body = await self._retrieve(
+            async_client, rewound, transcript_message_ids=[row],
+            host_session_id=host, prior_session_ids=[copy, restarted],
+        )
+        assert body["conversation_id"] == copy_conv
+        row_now = await self._row(db_session, copy_conv)
+        assert row_now.external_session_id == rewound
+        assert row_now.forked_from_id == parent_conv
+
+    async def test_the_newest_entry_names_the_nearest_parent(
+        self, async_client, db_session
+    ):
+        """With no desktop id to go by (a CLI fork), several candidates are
+        ranked by the transcript, not by which row was touched last."""
+        _, older_conv, older_row = await self._parent(async_client)
+        _, nearer_conv, nearer_row = await self._parent(async_client)
+        older = await self._row(db_session, older_conv)
+        older.updated_at = datetime.utcnow() + timedelta(minutes=5)
+        await db_session.commit()
+        body = await self._retrieve(
+            async_client, str(uuid.uuid4()),
+            transcript_message_ids=[older_row, nearer_row],
+        )
+        assert body["conversation_id"] == nearer_conv
+
+    async def test_a_copy_of_a_copy_names_the_one_it_was_copied_from(
+        self, async_client, db_session
+    ):
+        _, _, row = await self._parent(async_client, self._host())
+        _, middle_conv, middle_row = await self._parent(async_client, self._host())
+        copy = str(uuid.uuid4())
+        body = await self._retrieve(
+            async_client, copy, transcript_message_ids=[row, middle_row],
+            host_session_id=f"local_{copy}",
+        )
+        assert body["conversation_id"] == cc_conv_id(copy)
+        assert (
+            await self._row(db_session, cc_conv_id(copy))
+        ).forked_from_id == middle_conv
+
+    async def test_evidence_that_arrives_late_marks_the_copy_and_tells_it_once(
+        self, async_client, db_session
+    ):
+        """Opened with no hints (an unreadable transcript, a compaction mod's
+        save): when they come, the row is marked rather than merged away, and
+        a later hook that can't name its desktop session leaves it alone."""
+        parent_host = self._host()
+        parent, parent_conv, row = await self._parent(async_client, parent_host)
+        copy = str(uuid.uuid4())
+        copy_conv = (await self._retrieve(async_client, copy))["conversation_id"]
+
+        body = await self._retrieve(
+            async_client, copy, transcript_message_ids=[row],
+            host_session_id=f"local_{copy}",
+        )
+        assert body["conversation_id"] == copy_conv
+        assert body["adoption_notice"] == cc.side_fork_notice(copy_conv, parent_conv)
+        assert (
+            await self._row(db_session, copy_conv)
+        ).desktop_session_id == f"local_{copy}"
+
+        for extra in ({}, {"host_session_id": f"local_{copy}"}):
+            body = await self._retrieve(
+                async_client, copy, transcript_message_ids=[row], **extra
+            )
+            assert body["conversation_id"] == copy_conv
+            assert body["adoption_notice"] == ""
+        assert (
+            await self._row(db_session, parent_conv)
+        ).external_session_id == parent
+
+    async def test_a_hook_that_cannot_name_its_host_uses_the_rows(
+        self, async_client, db_session
+    ):
+        """The row opened with the copy's desktop id and no lineage; the
+        hints arrive on a hook with no desktop id of its own."""
+        parent, parent_conv, row = await self._parent(async_client, self._host())
+        copy = str(uuid.uuid4())
+        copy_conv = (
+            await self._retrieve(async_client, copy, host_session_id=self._host())
+        )["conversation_id"]
+        body = await self._retrieve(async_client, copy, transcript_message_ids=[row])
+        assert body["conversation_id"] == copy_conv
+        assert (
+            await self._row(db_session, parent_conv)
+        ).external_session_id == parent
+
+    async def test_a_late_hook_on_a_former_id_does_not_move_the_desktop_id(
+        self, async_client, db_session
+    ):
+        host = self._host()
+        parent, parent_conv, row = await self._parent(async_client, host)
+        fork = str(uuid.uuid4())
+        await self._retrieve(
+            async_client, fork, transcript_message_ids=[row], host_session_id=host
+        )
+        body = await self._retrieve(
+            async_client, parent, host_session_id=self._host()
+        )
+        assert body["conversation_id"] == parent_conv
+        conversation = await self._row(db_session, parent_conv)
+        assert conversation.external_session_id == fork
+        assert conversation.desktop_session_id == host
+
+    async def test_session_start_says_whose_id_is_whose_and_opens_no_row(
+        self, async_client, db_session
+    ):
+        """The copy's transcript already carries the identity block and the
+        notes; only the id in them is wrong. Registration stays lazy."""
+        _, parent_conv, row = await self._parent(async_client, self._host())
+        copy = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/session-start",
+            json={
+                "session_id": copy, "source": "resume",
+                "transcript_message_ids": [row], "host_session_id": f"local_{copy}",
+            },
+        )
+        body = response.json()
+        assert body["conversation_id"] == cc_conv_id(copy)
+        assert body["context"] == cc.side_fork_notice(cc_conv_id(copy), parent_conv)
+        assert body["bulk_context"] == ""
+        assert body["notes_check"] is None
+        assert (
+            await db_session.execute(
+                select(Conversation).where(Conversation.id == cc_conv_id(copy))
+            )
+        ).scalar_one_or_none() is None
+
+    async def test_session_start_reads_the_live_sessions_too(
+        self, async_client, db_session
+    ):
+        parent, parent_conv, row = await self._parent(async_client)
+        copy = str(uuid.uuid4())
+        response = await async_client.post(
+            "/api/claude-code/session-start",
+            json={
+                "session_id": copy, "source": "resume",
+                "transcript_message_ids": [row], "host_session_id": self._host(),
+                "sessions": [
+                    {"session_id": parent, "desktop_session_id": self._host()}
+                ],
+            },
+        )
+        assert response.json()["conversation_id"] == cc_conv_id(copy)
+        assert (
+            await self._row(db_session, parent_conv)
+        ).external_session_id == parent
+
+    async def test_a_stop_hook_that_speaks_first_leaves_the_notice(
+        self, async_client, db_session
+    ):
+        _, parent_conv, row = await self._parent(async_client, self._host())
+        copy = str(uuid.uuid4())
+        sent = {"transcript_message_ids": [row], "host_session_id": f"local_{copy}"}
+        await async_client.post(
+            "/api/claude-code/log-assistant",
+            json={
+                "session_id": copy, "content": "spoke first",
+                "message_uuid": str(uuid.uuid4()), **sent,
+            },
+        )
+        body = await self._retrieve(async_client, copy, **sent)
+        assert body["adoption_notice"] == cc.side_fork_notice(
+            cc_conv_id(copy), parent_conv
+        )
+        body = await self._retrieve(async_client, copy, **sent)
+        assert body["adoption_notice"] == ""
+
+    async def test_a_compaction_in_the_copy_stamps_only_the_copy(
+        self, async_client, db_session
+    ):
+        """The boundary is per conversation, and the talk from before the
+        copy is read from the conversation that holds it."""
+        _, parent_conv, row = await self._parent(async_client, self._host())
+        copy = str(uuid.uuid4())
+        sent = {"transcript_message_ids": [row], "host_session_id": f"local_{copy}"}
+        await self._retrieve(async_client, copy, **sent)
+        body = (
+            await async_client.post(
+                "/api/claude-code/session-start",
+                json={"session_id": copy, "source": "compact", **sent},
+            )
+        ).json()
+        assert body["conversation_id"] == cc_conv_id(copy)
+        assert f'in_conversation="{parent_conv}"' in body["context"]
+        assert f'in_conversation="{cc_conv_id(copy)}"' in body["context"]
+        assert (await self._row(db_session, parent_conv)).last_compacted_at is None
+        assert (
+            await self._row(db_session, cc_conv_id(copy))
+        ).last_compacted_at is not None
+
+    async def test_an_ordinary_compaction_names_no_other_session(
+        self, async_client, db_session
+    ):
+        session, _, _ = await self._parent(async_client, self._host())
+        body = (
+            await async_client.post(
+                "/api/claude-code/session-start",
+                json={"session_id": session, "source": "compact"},
+            )
+        ).json()
+        assert "began as a copy" not in body["context"]
+
+    async def test_another_entitys_session_is_not_named_as_the_parent(
+        self, async_client, db_session
+    ):
+        """The fence is the entity, for what is named as for what is adopted."""
+        other = Conversation(
+            entity_id="other-entity",
+            source=ConversationSource.CLAUDE_CODE.value,
+            external_session_id=str(uuid.uuid4()),
+            desktop_session_id=self._host(),
+        )
+        db_session.add(other)
+        await db_session.commit()
+        row = Message(
+            id=str(uuid.uuid4()), conversation_id=other.id,
+            role=MessageRole.ASSISTANT, content="theirs",
+        )
+        db_session.add(row)
+        await db_session.commit()
+        copy = str(uuid.uuid4())
+        body = await self._retrieve(
+            async_client, copy, transcript_message_ids=[row.id],
+            host_session_id=f"local_{copy}",
+        )
+        assert body["adoption_notice"] == ""
+        assert (
+            await self._row(db_session, cc_conv_id(copy))
+        ).forked_from_id is None
+
+
 class TestCompactTalk:
     """The compaction mod's endpoint and what the post-compact block does
     with it (issue #383; services/compact_talk.py)."""

@@ -313,7 +313,9 @@ LATE_ADOPTION_MAX_MESSAGES = 20
 @dataclass
 class SessionResolution:
     """What resolving a Claude Code session id to its conversation found."""
-    conversation: Conversation
+    # None only from resolve_session(create=False), and then only to say
+    # `forked_from` of a session that has recorded nothing yet
+    conversation: Optional[Conversation]
     # A brand-new row was created by this call
     created: bool = False
     # This call adopted a forked session: the conversation was keyed on
@@ -324,31 +326,109 @@ class SessionResolution:
     # value is that row's conversation id — now retired, aliased, and no
     # longer the id the session records under
     merged_from: Optional[str] = None
+    # This call found that the session is a copy running BESIDE the one it
+    # was copied from, so it has a conversation of its own. The value is the
+    # other's conversation id, which the copied context names as if it were
+    # this session's
+    forked_from: Optional[str] = None
+
+
+# The desktop app's session ids are this plus a uuid
+DESKTOP_SESSION_ID_PREFIX = "local_"
+
+
+def is_app_made_copy(
+    external_session_id: str, desktop_session_id: Optional[str]
+) -> bool:
+    """
+    Whether this Claude Code session id was minted by the desktop app's own
+    fork: a new desktop session `local_<uuid>` whose copied transcript is
+    filed, and resumed, as `<uuid>`.
+
+    Read in the app's code (6.6395.0, `forkSession`), which every fork that
+    runs beside its parent goes through: a side session started with the
+    conversation so far, a hand-off, the Fork command, a /btw side chat. An
+    ordinary session's Claude Code id is unrelated to its desktop id (of 133
+    desktop records on the measured machine, none names its own), and so is
+    the new id a restart or rewind mints. Such an id can only be the desktop
+    session's first, so it never continues anything.
+    """
+    if not external_session_id or not desktop_session_id:
+        return False
+    return desktop_session_id == f"{DESKTOP_SESSION_ID_PREFIX}{external_session_id}"
+
+
+@dataclass
+class LineageMatch:
+    """What the lineage hints say about a session id."""
+    # The conversation this session continues: adopt it
+    adopt: Optional[Conversation] = None
+    # The nearest conversation this session only began as a copy of: that
+    # one's own desktop session goes on, or may, so it is never adopted
+    beside: Optional[Conversation] = None
+
+
+def _same_desktop_session(
+    conversation: Conversation,
+    external_session_id: str,
+    desktop_session_id: Optional[str],
+    live_sessions: Optional[Dict[str, Optional[str]]],
+) -> Optional[bool]:
+    """
+    Whether a conversation the hints matched belongs to the desktop session
+    this hook ran in: True, False, or None when that isn't known.
+
+    This is the line between the two kinds of fork. A restart or a rewind
+    gives the session a new Claude Code id inside the SAME desktop session
+    (31 of 31 transcript pairs sharing entries on the measured machine); a
+    copy started to run beside its parent is a NEW desktop session. The
+    conversation's own desktop session is the one a live session reports
+    for its current id, else the one it was last recorded under.
+
+    A session with no desktop id (a terminal one) has only liveness to go
+    by: a conversation whose session is running right now is not one it has
+    replaced.
+    """
+    live = live_sessions or {}
+    current = conversation.external_session_id or ""
+    if not desktop_session_id:
+        return False if current in live else None
+    if is_app_made_copy(external_session_id, desktop_session_id):
+        return False
+    theirs = live.get(current) or conversation.desktop_session_id
+    if not theirs:
+        return None
+    return theirs == desktop_session_id
 
 
 async def find_lineage_conversation(
     db: AsyncSession,
     entity: EntityConfig,
+    external_session_id: str,
     *,
     prior_session_ids: Optional[List[str]] = None,
     transcript_message_ids: Optional[List[str]] = None,
+    desktop_session_id: Optional[str] = None,
+    live_sessions: Optional[Dict[str, Optional[str]]] = None,
     exclude_conversation_id: Optional[str] = None,
-) -> Optional[Conversation]:
+) -> LineageMatch:
     """
-    The conversation an unregistered session id is a continuation of, from
-    the lineage hints a hook sends (issue #357), or None.
+    What a session id continues, or was copied from, by the lineage hints a
+    hook sends (issue #357).
 
     The desktop app forks a session under a NEW Claude Code session id on
     restart, "continue", and rewind, copying the transcript. Two joins
     recover the parent, neither documented by the harness but both on the
-    page, tried in order of strength:
+    page:
 
     - `transcript_message_ids`: end-of-turn assistant entry uuids from the
       session's own transcript. A fork rewrites every entry's sessionId but
       NOT its uuid, and the Stop hook stores that uuid as the Message row's
       primary key — so any of them that is a row of one of this entity's
       Claude Code conversations names the parent directly, needing nothing
-      from the desktop app.
+      from the desktop app. Where they name several (a copy that was itself
+      restarted holds its parent's entries and its own), the one named by
+      the newest entry is the nearest.
     - `prior_session_ids`: the desktop app's own record of the session's
       former ids (its `priorCliSessionIds`), resolved through the same
       current-key-or-alias lookup as a live session id. The desktop app
@@ -361,6 +441,19 @@ async def find_lineage_conversation(
       with, which is #357 again in another shape. Reversing also makes
       the truncation keep the nearest ancestors rather than the oldest.
 
+    The transcript join matches a copy running BESIDE its parent just as
+    well: the app's forkSession copies the transcript file whole, before the
+    copy starts. Adopting there would put two live sessions in one
+    conversation and take the parent's session key and rooms row from it.
+    `desktop_session_id` (the hook's hostSessionId) is what separates the
+    two (_same_desktop_session): a candidate of another desktop session is
+    returned as `beside`, never `adopt`, and one known to be of this desktop
+    session is preferred over one that could be either. The prior ids count
+    as such knowledge, coming from this desktop session's own record, which
+    the app's fork starts empty. A candidate whose desktop session isn't
+    known (a conversation from before it was recorded, a terminal session
+    whose original isn't running) is adopted as it always was.
+
     Entity-scoped throughout: a hint that resolves to another entity's
     conversation is ignored, never adopted (the #356 no-default-entity
     rule — the fence is the entity).
@@ -368,9 +461,12 @@ async def find_lineage_conversation(
     `exclude_conversation_id` is the caller's own row, for the late
     adoption of issue #359: by then the session has recorded turns of its
     own, so its transcript's newest uuids are ITS rows and would resolve to
-    itself — the most recently updated candidate of all. The row being
-    re-parented is never its own parent.
+    itself — the nearest candidate of all. The row being re-parented is
+    never its own parent.
     """
+    unknown: Optional[Conversation] = None
+    beside: Optional[Conversation] = None
+
     # Newest-last, so the cap keeps the NEWEST ids: those are the likeliest
     # rows of the nearest parent. Slicing off the front would prefer the
     # oldest — the same directional mistake as the prior-ids walk below,
@@ -380,22 +476,30 @@ async def find_lineage_conversation(
     ]
     if message_ids:
         query = (
-            select(Conversation)
-            .join(Message, Message.conversation_id == Conversation.id)
+            select(Message.id, Conversation)
+            .join(Conversation, Message.conversation_id == Conversation.id)
             .where(
                 Message.id.in_(message_ids),
                 Conversation.source == ConversationSource.CLAUDE_CODE.value,
                 Conversation.entity_id == entity.index_name,
             )
-            .order_by(Conversation.updated_at.desc().nullslast())
-            .limit(1)
         )
         if exclude_conversation_id:
             query = query.where(Conversation.id != exclude_conversation_id)
-        result = await db.execute(query)
-        conversation = result.scalars().first()
-        if conversation is not None:
-            return conversation
+        owners = {row[0]: row[1] for row in (await db.execute(query)).all()}
+        for message_id in reversed(message_ids):
+            candidate = owners.get(message_id)
+            if candidate is None:
+                continue
+            same = _same_desktop_session(
+                candidate, external_session_id, desktop_session_id, live_sessions
+            )
+            if same:
+                return LineageMatch(adopt=candidate)
+            if same is None:
+                unknown = unknown or candidate
+            else:
+                beside = beside or candidate
 
     for prior in list(reversed(prior_session_ids or []))[:MAX_LINEAGE_SESSION_IDS]:
         if not prior:
@@ -407,9 +511,37 @@ async def find_lineage_conversation(
             exclude_conversation_id
         ):
             continue
-        return conversation
+        if is_app_made_copy(external_session_id, desktop_session_id):
+            # The desktop session's first id has no former ids; a list that
+            # says otherwise was inherited with the copy
+            beside = beside or conversation
+            break
+        return LineageMatch(adopt=conversation)
 
-    return None
+    if unknown is not None:
+        return LineageMatch(adopt=unknown)
+    return LineageMatch(beside=beside)
+
+
+async def _record_desktop_session(
+    db: AsyncSession,
+    conversation: Conversation,
+    external_session_id: str,
+    desktop_session_id: Optional[str],
+) -> None:
+    """
+    Keep the conversation's desktop session id current, so a later copy of
+    this session can be told from a continuation of it. Only a hook carrying
+    the id the conversation is keyed on now says so: a late or retried hook
+    on a former id describes a process that is gone.
+    """
+    if not desktop_session_id or conversation.desktop_session_id == desktop_session_id:
+        return
+    if conversation.external_session_id != external_session_id:
+        return
+    conversation.desktop_session_id = desktop_session_id
+    await db.commit()
+    await db.refresh(conversation)
 
 
 async def _alias_derived_conversation_id(
@@ -446,6 +578,7 @@ async def _adopt_forked_session(
     db: AsyncSession,
     conversation: Conversation,
     new_session_id: str,
+    desktop_session_id: Optional[str] = None,
 ) -> None:
     """
     Re-key an existing conversation onto a forked session's new id, keeping
@@ -465,6 +598,8 @@ async def _adopt_forked_session(
     """
     old_session_id = conversation.external_session_id
     conversation.external_session_id = new_session_id
+    if desktop_session_id:
+        conversation.desktop_session_id = desktop_session_id
     await _alias_derived_conversation_id(db, conversation, new_session_id)
     if old_session_id and old_session_id != new_session_id:
         existing = await db.get(ConversationSessionAlias, old_session_id)
@@ -549,6 +684,7 @@ async def _merge_into_parent(
     orphan: Conversation,
     parent: Conversation,
     entity: EntityConfig,
+    desktop_session_id: Optional[str] = None,
 ) -> Optional[str]:
     """
     Fold a row opened for a fork that could not be recognized as one into
@@ -615,6 +751,8 @@ async def _merge_into_parent(
     await db.flush()
 
     parent.external_session_id = session_id
+    if desktop_session_id:
+        parent.desktop_session_id = desktop_session_id
     if former_parent_session_id and former_parent_session_id != session_id:
         if await db.get(ConversationSessionAlias, former_parent_session_id) is None:
             db.add(
@@ -658,11 +796,15 @@ async def _try_late_adoption(
     *,
     prior_session_ids: Optional[List[str]] = None,
     transcript_message_ids: Optional[List[str]] = None,
+    desktop_session_id: Optional[str] = None,
+    live_sessions: Optional[Dict[str, Optional[str]]] = None,
 ) -> Optional[SessionResolution]:
     """
     Re-examine a row that was opened for this session id, in case the
     session is a fork whose lineage evidence had not been written yet
-    (issue #359). Returns a resolution when it adopted, None otherwise.
+    (issue #359). Returns a resolution when it found something out — it
+    adopted, or the session turned out to be a copy running beside another
+    one — and None otherwise.
 
     Adoption used to be one-shot on "unknown session id", which assumed the
     hints are available the first time a fork's hooks fire. Measured, they
@@ -678,8 +820,15 @@ async def _try_late_adoption(
     is derived from the session it was born under). And it must hold at
     most LATE_ADOPTION_MAX_MESSAGES rows. Both are read off the record —
     nothing is inferred and nothing is remembered between calls.
+
+    A row already known to be a copy's (forked_from_id) is never looked at
+    again: its transcript holds the other session's rows for good, and a
+    later hook that can't name its desktop session must not read them as a
+    parent.
     """
     if not (prior_session_ids or transcript_message_ids):
+        return None
+    if conversation.forked_from_id:
         return None
     if str(conversation.id) != conversation_id_for_session(external_session_id):
         return None
@@ -691,18 +840,32 @@ async def _try_late_adoption(
     if (message_count or 0) > LATE_ADOPTION_MAX_MESSAGES:
         return None
 
-    parent = await find_lineage_conversation(
+    desktop_session_id = desktop_session_id or conversation.desktop_session_id
+    match = await find_lineage_conversation(
         db,
         entity,
+        external_session_id,
         prior_session_ids=prior_session_ids,
         transcript_message_ids=transcript_message_ids,
+        desktop_session_id=desktop_session_id,
+        live_sessions=live_sessions,
         exclude_conversation_id=str(conversation.id),
     )
+    parent = match.adopt
     if parent is None:
-        return None
+        if match.beside is None:
+            return None
+        conversation.forked_from_id = str(match.beside.id)
+        await db.commit()
+        await db.refresh(conversation)
+        return SessionResolution(
+            conversation=conversation, forked_from=conversation.forked_from_id
+        )
 
     former_parent_session_id = parent.external_session_id
-    merged_from = await _merge_into_parent(db, conversation, parent, entity)
+    merged_from = await _merge_into_parent(
+        db, conversation, parent, entity, desktop_session_id
+    )
     if merged_from is None:
         # The other hook of this session got there first; whatever it left
         # keyed on this id is the answer, adoption already announced by it
@@ -723,6 +886,7 @@ def _log_resolution(
     *,
     prior_session_ids: Optional[List[str]] = None,
     transcript_message_ids: Optional[List[str]] = None,
+    desktop_session_id: Optional[str] = None,
 ) -> None:
     """
     One line per session resolution: what the hook sent, and what was done
@@ -742,7 +906,8 @@ def _log_resolution(
         f"[CC MODE] Session {external_session_id[:8]}... {decision}{target} "
         f"(entity={entity.index_name}, hints: "
         f"transcript_message_ids={len(transcript_message_ids or [])}, "
-        f"prior_session_ids={len(prior_session_ids or [])})"
+        f"prior_session_ids={len(prior_session_ids or [])}, "
+        f"desktop_session_id={desktop_session_id or 'none'})"
     )
 
 
@@ -755,6 +920,8 @@ async def resolve_session(
     create: bool,
     prior_session_ids: Optional[List[str]] = None,
     transcript_message_ids: Optional[List[str]] = None,
+    desktop_session_id: Optional[str] = None,
+    live_sessions: Optional[Dict[str, Optional[str]]] = None,
 ) -> Optional[SessionResolution]:
     """
     Resolve a Claude Code session id to its conversation, adopting a fork's
@@ -766,6 +933,14 @@ async def resolve_session(
     when `create` is True. `create=False` (session-start's lazy path)
     returns None when nothing resolves, so a background/utility session
     that never speaks still creates no row.
+
+    A copy running beside its parent (a side session, a hand-off, the app's
+    Fork) is not a continuation: it gets its own row, the parent's is left
+    alone, and `forked_from` says whose transcript it began with. Which of
+    the two a fork is, is decided by `desktop_session_id` (the desktop app's
+    id for the session this hook ran in) and `live_sessions` (the sessions
+    the hook could see running, by Claude Code session id, with theirs).
+    See find_lineage_conversation.
     """
     def log(decision: str, conversation: Optional[Conversation]) -> None:
         _log_resolution(
@@ -775,6 +950,7 @@ async def resolve_session(
             conversation,
             prior_session_ids=prior_session_ids,
             transcript_message_ids=transcript_message_ids,
+            desktop_session_id=desktop_session_id,
         )
 
     conversation = await get_conversation_for_session(db, external_session_id)
@@ -786,28 +962,45 @@ async def resolve_session(
             entity,
             prior_session_ids=prior_session_ids,
             transcript_message_ids=transcript_message_ids,
+            desktop_session_id=desktop_session_id,
+            live_sessions=live_sessions,
+        )
+        if late is not None and late.forked_from is None:
+            log("late-adopted", late.conversation)
+            return late
+        await _record_desktop_session(
+            db, conversation, external_session_id, desktop_session_id
         )
         if late is not None:
-            log("late-adopted", late.conversation)
+            log("found beside its parent,", conversation)
             return late
         log("known", conversation)
         return SessionResolution(conversation=conversation)
 
-    parent = await find_lineage_conversation(
+    match = await find_lineage_conversation(
         db,
         entity,
+        external_session_id,
         prior_session_ids=prior_session_ids,
         transcript_message_ids=transcript_message_ids,
+        desktop_session_id=desktop_session_id,
+        live_sessions=live_sessions,
     )
+    parent = match.adopt
     if parent is not None:
         old_session_id = parent.external_session_id
-        await _adopt_forked_session(db, parent, external_session_id)
+        await _adopt_forked_session(
+            db, parent, external_session_id, desktop_session_id
+        )
         log("adopted", parent)
         return SessionResolution(conversation=parent, adopted_from=old_session_id)
 
+    forked_from = str(match.beside.id) if match.beside is not None else None
     if not create:
-        log("deferred", None)
-        return None
+        log("deferred beside its parent," if forked_from else "deferred", None)
+        if forked_from is None:
+            return None
+        return SessionResolution(conversation=None, forked_from=forked_from)
 
     title = "Claude Code session"
     if cwd:
@@ -823,6 +1016,8 @@ async def resolve_session(
         entity_id=entity.index_name,
         source=ConversationSource.CLAUDE_CODE.value,
         external_session_id=external_session_id,
+        desktop_session_id=desktop_session_id,
+        forked_from_id=forked_from,
     )
     db.add(conversation)
     try:
@@ -838,8 +1033,10 @@ async def resolve_session(
         return SessionResolution(conversation=conversation)
     await db.refresh(conversation)
     await _link_pending_reflections(db, conversation, entity)
-    log("created", conversation)
-    return SessionResolution(conversation=conversation, created=True)
+    log("created beside its parent," if forked_from else "created", conversation)
+    return SessionResolution(
+        conversation=conversation, created=True, forked_from=forked_from
+    )
 
 
 def adoption_notice(conversation_id: str) -> str:
@@ -885,6 +1082,27 @@ def late_adoption_notice(conversation_id: str, retired_id: str) -> str:
     )
 
 
+def side_fork_notice(conversation_id: str, forked_from: str) -> str:
+    """
+    The line a session is told when it is a copy running beside another.
+
+    Its context came with the other session's identity block, so it holds
+    the other's conversation id as its own: every memory tool call made with
+    it would act on a conversation this session isn't recorded in. Says
+    which id is its own, and where the talk it remembers is archived.
+    Whether the other is running at this moment isn't known here, so it
+    isn't said.
+    """
+    return (
+        "[HERE I AM] This session began as a copy of another session of yours, "
+        "which keeps its own conversation; this one is recorded separately. Your "
+        f'conversation_id here is "{conversation_id}", and it is the one the memory '
+        f'tools need from here. "{forked_from}", the id in the context you were '
+        "copied with, is the other session's, and the talk from before the copy is "
+        f'archived under it (memory_read with in_conversation="{forked_from}").'
+    )
+
+
 # Adoptions that landed on an endpoint with no channel back to the entity:
 # the Stop hook's stdout is not injected into context, so a late adoption
 # there has no way to say so. Keyed by session id, consumed by the next
@@ -913,10 +1131,15 @@ def take_adoption_notice(external_session_id: str) -> str:
 
 
 def resolution_notice(resolution: Optional[SessionResolution]) -> str:
-    """The line an adoption is worth telling the entity, or ''."""
-    if resolution is None or not resolution.adopted_from:
+    """The line an adoption, or a copy's separate start, is worth telling
+    the entity, or ''."""
+    if resolution is None or resolution.conversation is None:
         return ""
     conversation_id = str(resolution.conversation.id)
+    if resolution.forked_from:
+        return side_fork_notice(conversation_id, resolution.forked_from)
+    if not resolution.adopted_from:
+        return ""
     if resolution.merged_from:
         return late_adoption_notice(conversation_id, resolution.merged_from)
     return adoption_notice(conversation_id)
@@ -1378,6 +1601,20 @@ async def build_post_compact_context(
             f"{POST_COMPACT_LOOKBACK_PAGES * POST_COMPACT_PAGE_TOKENS // 1000}k tokens "
             "of talk, plenty of continuity; anything older is still in the archive "
             "for the other memory tools when it matters."
+        )
+
+    if conversation.forked_from_id:
+        # What was compacted includes the copied talk, and that is archived
+        # under the other session's conversation, not this one
+        copied_at = to_local(conversation.created_at).replace(microsecond=0).isoformat()
+        parts.append(
+            "This session began as a copy of another session of yours, which keeps "
+            "its own conversation; the talk from before the copy is archived there, "
+            "not here. Read it back with "
+            f'memory_read(conversation_id="{conversation.id}", direction="backward", '
+            f'to="{copied_at}", in_conversation="{conversation.forked_from_id}", '
+            f"page_tokens={POST_COMPACT_PAGE_TOKENS}, "
+            f"max_pages={POST_COMPACT_LOOKBACK_PAGES})."
         )
 
     # One tail for both branches: the next bulk part added here must not be
