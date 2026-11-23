@@ -325,6 +325,13 @@ def test_boundaries_that_start_a_turn(tmp_path):
     turn, so text before them was recorded by an earlier Stop."""
     starts = [
         prompt("a new prompt", "b1"),
+        # Issue #414: not recorded, but what the entity says in answer is
+        # its own turn (measured: a plain user entry, not meta)
+        prompt(
+            "<system-reminder>\nnote\n</system-reminder>\n\n"
+            "<side-sessions-event>None working.</side-sessions-event>",
+            "b1s",
+        ),
         meta("[WAKEUP] continue", "b2"),
         meta("/loop [WAKEUP] tick", "b3"),
         meta(
@@ -463,6 +470,8 @@ def test_the_stop_hook_hides_exactly_what_the_prompt_hook_does_not_record():
         "[WAKEUP] tick",
         "<task-notification>done</task-notification>",
         "<system-reminder>x</system-reminder>",
+        "<system-reminder>\nnote\n</system-reminder>\n\n"
+        "<side-sessions-event>None working.</side-sessions-event>",
         '<agent-message from="a9db223f5d07b6429">\n[Subagent hand-back] The report follows:\n  done\n</agent-message>',
         '<agent-message from="a70623a1636427102">\n#62 status: nearly done\n</agent-message>',
         '<agent-message from="x">\nreworded report\n</agent-message>',

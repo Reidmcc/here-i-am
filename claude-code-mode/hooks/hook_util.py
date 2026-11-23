@@ -180,6 +180,22 @@ DEFAULT_INLINE_BUDGET = 9600
 # archived as the human's words on 2026-09-16). Plumbing, like the CI
 # monitor's events.
 #
+# When a session this one started (the desktop app's start_session) ends a
+# turn and nothing it started is still working, the app continues this
+# session with a prompt of its own (issue #414): the turn-notes, each a
+# leading <system-reminder> quoting the child's report, then one saying
+# which linked sessions are running, then a bare <side-sessions-event>
+# block telling the entity to carry on. The reminders were always dropped;
+# the event was not known here, so it was archived as the human's words,
+# one row per child turn. Measured 2026-11-23 over every transcript on
+# this machine (unique texts): 40 events in 4 transcripts, the first from
+# 2026-10-15, every one opening a line right after the reminders, with no
+# attributes, and closing at the end of the text. Plumbing, notes and all:
+# the quoted report is the child's own talk, which its own hooks record in
+# its own conversation, so nothing is kept of it here. The turn-notes also ride in
+# front of a prompt the human typed, with NO event after them (2 measured,
+# 2026-11-22); there the human's words are what is left, as before.
+#
 # A plumbing block counts only in the shape the harness delivers it: the
 # open tag at the start of a line, the close tag ending one. Until
 # 2026-10-07 any tag pair anywhere was dropped, and a sister's letter that
@@ -210,7 +226,8 @@ DEFAULT_INLINE_BUDGET = 9600
 # two letter wrappers; the conditional picks each wrapper's close (see
 # above for agent-message's).
 _SPLIT_RE = re.compile(
-    r"(?:^<(?P<plumbing>system-reminder|task-notification|ci-monitor-event|wake)"
+    r"(?:^<(?P<plumbing>system-reminder|task-notification|ci-monitor-event"
+    r"|side-sessions-event|wake)"
     r"(?:\s[^>]*)?>(?:(?!</(?P=plumbing)>)[^\n])*(?:\n.*?)?</(?P=plumbing)>(?=\r?\n|\Z)"
     r"|<(?:(?P<cross>cross-session-message)|agent-message)(?P<attrs>(?:\s[^>]*)?)>"
     r"(?P<body>.*?)"
@@ -259,7 +276,7 @@ def split_prompt_for_recording(prompt: str):
     Separate a prompt into (the human's words, inter-session messages).
 
     Plumbing blocks (system reminders, task notifications, CI monitor
-    events) are discarded —
+    events, side-session events) are discarded —
     including anything nested inside them, which is harness echo, not a
     delivery — and so is anything a subagent sends (an <agent-message>
     carrying the harness's hand-back frame, or one from a subagent task
@@ -333,7 +350,8 @@ def _split(prompt: str):
 # arrived, was archived as the human's words, and someone noticed on
 # reading the record back — a day to three weeks later (<cross-session-
 # message> 8/26, <ci-monitor-event> 9/7, <wake> 9/16, <agent-message>
-# 9/26). So when the human's words, after every known block is split off,
+# 9/26; <side-sessions-event>, 10/15, this check flagged the day it first
+# arrived). So when the human's words, after every known block is split off,
 # still OPEN with a tag the hooks don't know, the prompt is recorded as
 # usual (a false alarm must not cost the human their words) and the hook
 # says so to the entity at once. The known tags are the ones a survey of

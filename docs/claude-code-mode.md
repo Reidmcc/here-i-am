@@ -84,7 +84,16 @@ The integration has two channels:
      subagent would land if the harness ever changed the shape of its ids:
      recorded, but said aloud, rather than silently dropped. A GitHub
      PR-subscription wakeup (`<wake reason="external-event">` holding an
-     `<event source="github">`) is plumbing as well. Each of these channels
+     `<event source="github">`) is plumbing as well. So is the prompt the
+     desktop app sends when a session this one started (`start_session`)
+     ends a turn and none of them is still working (issue #414):
+     `<system-reminder>` turn-notes quoting the child's report, then a bare
+     `<side-sessions-event>` block telling the entity to carry on. The
+     quoted report is the child's own talk, which its own hooks record in
+     its own conversation, so nothing is kept of the note here. All 40 measured
+     (2026-11-23) have that one shape. The turn-notes also ride in front of
+     a prompt the human typed, with no event after them; then the human's
+     words are recorded and the notes are not. Each of these channels
      was found only by someone reading the record back, days or weeks
      after it first reached the archive. So the next one fails loud: if
      the human's words, after every known block is split off, still *open*
