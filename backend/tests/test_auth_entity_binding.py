@@ -446,6 +446,45 @@ class TestTheMemoryTools:
         assert own["isError"] is False
         assert own["content"][0]["text"].count("hello there") == 1
 
+    async def test_what_exclude_says_it_left_out_counts_nothing_of_hers(
+        self, client, maker, ada, bea, conversations
+    ):
+        # `exclude` (issue #415, merged under this branch) reports how many
+        # rows it left out, and memory_find's zero says when the words were
+        # in one of them. Either would tell Bea what is in Ada's reflections
+        # if the count looked outside Bea's experience
+        saved = await self.call(client, maker, ada, "memory_save", {
+            "content": "The marmalade is behind the flour.",
+            "conversation_id": conversations["ada"],
+        })
+        assert saved["isError"] is False
+        everything = {"from": "2020-01-01", "to": "2100-01-01", "scope": "isolated"}
+        kinds = ["reflection", "inter_session"]
+
+        hers = await self.call(client, maker, ada, "memory_read", {
+            **everything, "exclude": kinds, "conversation_id": conversations["ada"],
+        })
+        assert "exclude on: 1 reflection " in hers["content"][0]["text"]
+
+        mine = await self.call(client, maker, bea, "memory_read", {
+            **everything, "exclude": kinds, "conversation_id": conversations["bea"],
+        })
+        text = mine["content"][0]["text"]
+        assert "exclude on: 0 reflections " in text
+        assert "marmalade" not in text
+
+        found = await self.call(client, maker, bea, "memory_find", {
+            "text": "marmalade", "exclude": kinds, "conversation_id": conversations["bea"],
+        })
+        text = found["content"][0]["text"]
+        assert "exclude on: 0 reflections " in text
+        assert "except in what was left out" not in text
+        # Ada, asking the same, is told where the word went
+        found = await self.call(client, maker, ada, "memory_find", {
+            "text": "marmalade", "exclude": kinds, "conversation_id": conversations["ada"],
+        })
+        assert "except in what was left out" in found["content"][0]["text"]
+
     async def test_a_retired_id_of_hers_is_still_hers(self, client, maker, bea, conversations):
         # An alias resolves to her conversation, and is refused the same way
         from app.models import ConversationIdAlias
