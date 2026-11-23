@@ -472,6 +472,7 @@ def test_the_stop_hook_hides_exactly_what_the_prompt_hook_does_not_record():
         "<system-reminder>x</system-reminder>",
         "<system-reminder>\nnote\n</system-reminder>\n\n"
         "<side-sessions-event>None working.</side-sessions-event>",
+        "Background (from the session that started this one):\nb\n\nTask:\nt",
         '<agent-message from="a9db223f5d07b6429">\n[Subagent hand-back] The report follows:\n  done\n</agent-message>',
         '<agent-message from="a70623a1636427102">\n#62 status: nearly done\n</agent-message>',
         '<agent-message from="x">\nreworded report\n</agent-message>',

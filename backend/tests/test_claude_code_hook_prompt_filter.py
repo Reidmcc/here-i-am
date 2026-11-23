@@ -704,6 +704,118 @@ def test_a_side_sessions_event_in_an_unmeasured_shape_is_flagged():
         assert hook_util.unrecognized_wrapper(words) == "side-sessions-event"
 
 
+# The brief a session opens with when another session started it (issue
+# #414). The fresh form is as measured (five transcripts, 2026-10-15 to
+# 11-22; this one is the PR #404 review's, with the harness reminder that
+# preceded it). The offer and fork forms are read from the desktop app's own
+# code (6.6395.0), not yet from a transcript.
+BRIEF = (
+    "Background (from the session that started this one):\n"
+    "PR #404 closes issue #398, part of the cloud-VM prep. Pseudo's rulings on "
+    "the issue are recorded in the PR body.\n\n"
+    "Task:\n"
+    "Code review session for PR #404 (Reidmcc/here-i-am). Read the brief and "
+    "work from it."
+)
+BRIEF_NOTES_LINE = (
+    "Shared notes folder for this group of sessions (outside the repo; read "
+    "siblings' notes there, leave hand-over notes or large findings there "
+    "instead of pasting them into messages): "
+    "C:\\Users\\R\\AppData\\Roaming\\Claude\\side-session-notes\\"
+    "local_705490e2-b163-4b78-94ee-df1e16d8e8ae"
+)
+BRIEF_REMINDER = (
+    "<system-reminder>\nYou are operating in a git worktree.\n</system-reminder>\n\n"
+)
+STARTER = "local_705490e2-b163-4b78-94ee-df1e16d8e8ae"
+
+
+def brief_letter(content=BRIEF, sender_session=STARTER):
+    return {"content": content, "sender": None, "sender_session": sender_session}
+
+
+def test_the_opening_brief_is_a_letter_from_the_session_that_started_this_one():
+    prompt = f"{BRIEF_REMINDER}{BRIEF}\n\n{BRIEF_NOTES_LINE}"
+    assert hook_util.split_prompt_for_recording(prompt) == ("", [brief_letter()])
+    # ... with no reminder ahead of it (measured, the notes directory)
+    assert hook_util.split_prompt_for_recording(
+        f"{BRIEF}\n\n{BRIEF_NOTES_LINE}"
+    ) == ("", [brief_letter()])
+    # ... and with CRLF line ends
+    words, letters = hook_util.split_prompt_for_recording(prompt.replace("\n", "\r\n"))
+    assert words == ""
+    assert letters == [brief_letter(BRIEF.replace("\n", "\r\n"))]
+
+
+def test_the_offer_and_fork_forms_are_letters():
+    offer = f"Task (from the session that started this one):\n{BRIEF}"
+    assert hook_util.split_prompt_for_recording(
+        f"{offer}\n\n{BRIEF_NOTES_LINE}"
+    ) == ("", [brief_letter(offer)])
+    # A fork's brief carries no notes line, so no address
+    fork = "Task (from the session that started this one):\nFinish the docs.\nThen stop."
+    assert hook_util.split_prompt_for_recording(fork) == ("", [brief_letter(fork, None)])
+
+
+def test_a_posix_notes_folder_gives_the_address_too():
+    line = BRIEF_NOTES_LINE.split("): ")[0] + f"): /home/r/side-session-notes/{STARTER}"
+    assert hook_util.split_prompt_for_recording(f"{BRIEF}\n\n{line}") == ("", [brief_letter()])
+
+
+def test_a_brief_keeps_everything_it_quotes():
+    """A letter's body is the letter's words: a brief about these hooks may
+    quote a whole plumbing block, a letter, or the app's notes line."""
+    quoting = (
+        f"{BRIEF}\nIt arrives as:\n<system-reminder>\nnote\n</system-reminder>\n"
+        f"{SIDE_SESSIONS_EVENT}\n"
+        '<cross-session-message from="local_a" name="P">hi</cross-session-message>\n'
+        f"{BRIEF_NOTES_LINE.replace(STARTER, 'local_quoted')}\nand nothing else."
+    )
+    assert hook_util.split_prompt_for_recording(
+        f"{BRIEF_REMINDER}{quoting}\n\n{BRIEF_NOTES_LINE}"
+    ) == ("", [brief_letter(quoting)])
+
+
+def test_words_after_the_notes_line_are_the_humans():
+    # Defensive: every measured brief ended at the line
+    words, letters = hook_util.split_prompt_for_recording(
+        f"{BRIEF}\n\n{BRIEF_NOTES_LINE}\n\n{TURN_NOTE}One more thing from me."
+    )
+    assert words == "One more thing from me."
+    assert letters == [brief_letter()]
+
+
+def test_a_brief_the_human_quotes_is_still_the_humans():
+    for prompt in (
+        f"Here is what it opened with:\n{BRIEF}\n\n{BRIEF_NOTES_LINE}",
+        "Background (from the session that started this one): what is that line?",
+        "Background: the server moved.\n\nTask:\nfix the config",
+        "Task: fix the config",
+    ):
+        assert hook_util.split_prompt_for_recording(prompt) == (prompt, [])
+
+
+def test_name_letter_senders_names_a_brief_by_its_address():
+    def named(sessions, index=None, letter=None):
+        letters = [letter or brief_letter()]
+        hook_util.name_letter_senders(letters, sessions, index)
+        return letters[0]["sender"]
+
+    live = {"host_session_id": STARTER, "desktop_session_id": STARTER,
+            "desktop_title": "Cloud VM setup", "name": "here-i-am-9b"}
+    other = {**live, "host_session_id": "local_x", "desktop_session_id": "local_x",
+             "desktop_title": "Other"}
+    assert named([other, live]) == "Cloud VM setup"
+    assert named([{**live, "desktop_title": None}]) == "here-i-am-9b"
+    record = {"cli-1": {"desktop_session_id": STARTER, "desktop_title": "From the record"}}
+    assert named([other], record) == "From the record"
+    assert named([{**live, "desktop_title": None, "name": None}], record) == "From the record"
+    # Not found, no address, or already named: left as it is
+    assert named([other]) is None
+    assert named([live], letter=brief_letter(sender_session=None)) is None
+    assert named([live], letter={**brief_letter(), "sender": "Porch"}) == "Porch"
+
+
 # Fail loud on the next new channel (issue #376, the porch's suggestion).
 def test_unrecognized_wrapper_names_a_new_opening_tag():
     assert hook_util.unrecognized_wrapper('<novel-event kind="x">hi</novel-event>') == "novel-event"

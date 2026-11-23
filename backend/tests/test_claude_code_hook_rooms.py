@@ -320,6 +320,39 @@ SESSION_START_STDIN = {
 }
 
 
+def test_a_started_sessions_brief_is_sent_as_a_letter_named_by_its_starter(tmp_path):
+    """Issue #414: the brief goes to /retrieve as a peer message, not as the
+    human's prompt, with the starting session's address (from the app's
+    notes line) and its display name (from the live snapshot)."""
+    starter = "local_705490e2-b163-4b78-94ee-df1e16d8e8ae"
+    write_registry(
+        tmp_path, {**LIVE_ENTRY, "hostSessionId": starter, "name": "Cloud VM setup"}
+    )
+    brief = (
+        "Background (from the session that started this one):\nPR #404 closes "
+        "#398.\n\nTask:\nReview it."
+    )
+    _, payload = run_hook(
+        "user_prompt_submit",
+        {
+            "session_id": "the-child",
+            "prompt": "<system-reminder>\nworktree\n</system-reminder>\n\n"
+            f"{brief}\n\nShared notes folder for this group of sessions (outside "
+            f"the repo): C:\\x\\side-session-notes\\{starter}",
+        },
+        tmp_path,
+        {"context": "", "retrieval_status": "ran"},
+    )
+    assert payload["prompt"] == ""
+    assert payload["message_id"] is None
+    assert payload["unrecognized_wrapper"] is None
+    (letter,) = payload["peer_messages"]
+    assert letter["content"] == brief
+    assert letter["sender"] == "Cloud VM setup"
+    assert letter["sender_session"] == starter
+    assert letter["message_id"]
+
+
 def test_session_start_sends_snapshot_and_transcript_path(tmp_path):
     write_registry(tmp_path, LIVE_ENTRY)
     _, payload = run_hook(

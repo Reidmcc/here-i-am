@@ -240,6 +240,44 @@ _HANDBACK_FRAME_RE = re.compile(r"^" + re.escape(SUBAGENT_HANDBACK_FRAME), re.MU
 # above). Exact on purpose: a sender that merely isn't `local_…` stays a
 # letter and is said aloud, rather than dropped unseen
 _SUBAGENT_TASK_ID_RE = re.compile(r"a[0-9a-f]{16}")
+# The prompt a session OPENS with when another session started it (the
+# desktop app's start_session) is that session's brief: the entity's words,
+# written in another room, so it is a letter (issue #414, Pseudo's ruling
+# 2026-11-23), not the human's message. It carries no tag, only the app's
+# labels in plain text, so the shape was read from two places. Five briefs
+# in this machine's transcripts (2026-10-15 to 11-22), all of them the
+# first form below; and the app's own code (desktop 6.6395.0), which builds
+# every brief one of three ways:
+#   fresh:          "Background (from the session that started this one):"
+#                   <background> "Task:" <task>
+#   accepted offer: "Task (from the session that started this one):", then
+#                   the fresh form
+#   fork:           "Task (from the session that started this one):" <task>
+# A fresh start without a background is refused by the app, so the labels
+# are always there. The first two are followed by a "Shared notes folder
+# for this group of sessions (...): <path>" line, whose last folder is the
+# STARTING session's desktop id, the `local_...` a letter's `from=` carries
+# (5 of 5 equaled the child's own record, `spawnedFrom.sessionId`). So the
+# line is the app's, not the entity's: it names the sender and is left out
+# of the letter. The sender's display name isn't in the text;
+# name_letter_senders supplies it.
+#
+# The label must open the prompt, after nothing but plumbing, and then the
+# whole text up to the notes line is the brief, with whatever it quotes (a
+# letter's body is the letter's words). Anything after that line would be
+# the human's; nothing was, in any measured brief. Two things the text
+# can't show: a card the human edited before starting it (what is left
+# under the app's labels counts as the brief), and briefs from before
+# start_session (spawn_task, up to 2026-10-07), which had no labels at all.
+_BRIEF_OPENING_RE = re.compile(
+    r"\s*(?=(?:Background|Task) \(from the session that started this one\):[ \t]*\r?\n)"
+)
+_BRIEF_NOTES_LINE_RE = re.compile(
+    r"^Shared notes folder for this group of sessions \([^\n]*\): (?P<path>[^\r\n]+)",
+    re.MULTILINE,
+)
+_DESKTOP_SESSION_ID_RE = re.compile(r"local_[A-Za-z0-9-]+")
+
 # `from-name="..."` (old wrapper) or `name="..."` (new wrapper). The word
 # boundary keeps `name=` from matching inside another attribute's name.
 _FROM_NAME_RE = re.compile(r'\b(?:from-)?name="([^"]*)"')
@@ -287,6 +325,10 @@ def split_prompt_for_recording(prompt: str):
     2026-08 one — or None; sender_session is its `from=` attribute, the
     sending session's messaging address, or None), in delivery order. What
     remains, stripped, is the human's own words — possibly empty.
+
+    The brief a session opens with when another session started it is a
+    letter too (issue #414), with the starting session as its
+    sender_session; its sender is None here (name_letter_senders).
     """
     words, peer_messages, _ = _split(prompt)
     return words, peer_messages
@@ -310,8 +352,58 @@ def is_subagent_task_id(sender) -> bool:
     return bool(sender) and bool(_SUBAGENT_TASK_ID_RE.fullmatch(sender))
 
 
+def _split_brief(prompt: str):
+    """(the brief a session opens with as a letter, the rest of the prompt)
+    when another session started this one, else (None, prompt) — see the
+    note above _BRIEF_OPENING_RE."""
+    position = 0
+    while True:
+        match = _SPLIT_RE.match(prompt, position)
+        if not match or not match.group("plumbing"):
+            break
+        position = match.end()
+    opening = _BRIEF_OPENING_RE.match(prompt, position)
+    if not opening:
+        return None, prompt
+    text, rest, sender_session = prompt[opening.end():], "", None
+    # The last such line: the app appends it, and a brief may quote one
+    notes_lines = list(_BRIEF_NOTES_LINE_RE.finditer(text))
+    if notes_lines:
+        line = notes_lines[-1]
+        ids = _DESKTOP_SESSION_ID_RE.findall(line.group("path"))
+        sender_session = ids[-1] if ids else None
+        text, rest = text[:line.start()], text[line.end():]
+    return (
+        {"content": text.strip(), "sender": None, "sender_session": sender_session},
+        rest,
+    )
+
+
+def name_letter_senders(peer_messages, sessions, desktop_index=None) -> None:
+    """
+    Give each letter that names no sender (a brief, whose text carries only
+    the starting session's address) that session's display name, in place:
+    its sidebar title, or its roster name, from the live sessions snapshot
+    (live_sessions_snapshot), or its title in the desktop app's records. One
+    that can't be found keeps None, which the backend records as "unknown
+    session".
+    """
+    for letter in peer_messages:
+        address = letter.get("sender_session")
+        if letter.get("sender") or not address:
+            continue
+        for entry in sessions or []:
+            if address in (entry.get("host_session_id"), entry.get("desktop_session_id")):
+                letter["sender"] = entry.get("desktop_title") or entry.get("name")
+                break
+        if not letter.get("sender"):
+            _, record = desktop_record_for_host(desktop_index, address)
+            letter["sender"] = (record or {}).get("desktop_title")
+
+
 def _split(prompt: str):
-    peer_messages = []
+    brief, prompt = _split_brief(prompt)
+    peer_messages = [brief] if brief else []
     unmeasured = []
 
     def _capture(match):
