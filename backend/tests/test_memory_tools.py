@@ -94,22 +94,28 @@ class TestMemoryQueryValidation:
             assert call_kwargs["top_k"] >= 1
 
     @pytest.mark.asyncio
-    async def test_num_results_clamped_maximum(self):
-        """Test that num_results is clamped to maximum of 10."""
+    async def test_num_results_above_ten_needs_isolated_scope(self):
+        """
+        An ordinary semantic query may show at most 10. Above that it is
+        refused, not clamped (issue #421 review): asking for more is a
+        research script's request, and one that forgot scope="isolated"
+        would otherwise get a whole-looking page and record every row.
+        """
         set_memory_tool_context("test-entity", "test-conversation")
-        
+
         with patch("app.services.memory_tools.memory_service") as mock_service:
             mock_service.is_configured.return_value = True
             mock_service.get_archived_conversation_ids = AsyncMock(return_value=set())
             mock_service.search_memories = AsyncMock(return_value=[])
-            
-            await _memory_query("test query", num_results=100)
 
-            # Verify num_results was clamped to 10; the search fetches 2x
-            # candidates to allow for archived/released filtering
-            mock_service.search_memories.assert_called_once()
-            call_kwargs = mock_service.search_memories.call_args[1]
-            assert call_kwargs["top_k"] <= 20
+            result = await _memory_query("test query", num_results=100)
+
+            assert result.startswith('Error: num_results above 10 needs scope="isolated"')
+            mock_service.search_memories.assert_not_called()
+
+            await _memory_query("test query", num_results=10)
+            # the search fetches 2x candidates to allow for archived/released filtering
+            assert mock_service.search_memories.call_args[1]["top_k"] == 20
 
 
 class TestMemoryQuerySearch:

@@ -502,6 +502,11 @@ async def execute_tool(
                 mode=arguments.get("mode"),
                 since=arguments.get("since"),
                 include_model=bool(arguments.get("include_model", False)),
+                scope=arguments.get("scope"),
+                from_=arguments.get("from"),
+                to=arguments.get("to"),
+                tz=arguments.get("tz"),
+                exclude=arguments.get("exclude"),
             )
         if name == "memory_save":
             return await memory_tools.save_memory(

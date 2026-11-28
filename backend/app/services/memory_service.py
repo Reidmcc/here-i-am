@@ -104,6 +104,64 @@ def role_matches_filter(role: Optional[str], role_filter: Optional[str]) -> bool
     return is_human if role_filter == ROLE_FILTER_HUMAN else not is_human
 
 
+# The vector store's role metadata for each kind the readers can leave out
+# (issue #421 brings `exclude` to the semantic search): reflections are
+# stored role="reflection" (only in the saving entity's index), inter-session
+# deliveries role="sibling".
+EXCLUDE_KIND_VECTOR_ROLES = {
+    EXCLUDE_REFLECTION: ROLE_FILTER_REFLECTION,
+    EXCLUDE_INTER_SESSION: "sibling",
+}
+
+# How deep a date-bounded search may fetch from Pinecone. The bound is
+# checked after the search (Pinecone cannot range-filter the ISO-string
+# created_at metadata), so a bound far from the archive's busy stretch can
+# discard most of a fetch; the search deepens until it has enough, runs
+# below the similarity floor, or reaches this many candidates.
+MAX_BOUNDED_FETCH = 1000
+
+
+def _role_condition(
+    role_filter: Optional[str], exclude_roles: Sequence[str]
+) -> Optional[Dict[str, Any]]:
+    """The Pinecone condition on `role` for a role filter plus left-out roles."""
+    if role_filter == ROLE_FILTER_HUMAN:
+        return {"$eq": ROLE_FILTER_HUMAN}
+    if role_filter == ROLE_FILTER_REFLECTION:
+        return {"$eq": ROLE_FILTER_REFLECTION}
+    if role_filter == ROLE_FILTER_AI:
+        # Everything that isn't the human: "assistant", "reflection",
+        # and other entities' speaker labels
+        if exclude_roles:
+            return {"$nin": [ROLE_FILTER_HUMAN, *exclude_roles]}
+        return {"$ne": ROLE_FILTER_HUMAN}
+    if exclude_roles:
+        return {"$nin": list(exclude_roles)}
+    return None
+
+
+def created_within(
+    created_at_value: Any, start: Optional[datetime], end: Optional[datetime]
+) -> Optional[bool]:
+    """
+    Whether a memory's created_at metadata (ISO string, naive UTC) lies in
+    [start, end], both naive UTC and optional. None when the stamp is missing
+    or unreadable: the caller keeps such a candidate and checks the row's own
+    created_at in SQL, which is the record.
+    """
+    try:
+        parsed = datetime.fromisoformat(str(created_at_value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    if start is not None and parsed < start:
+        return False
+    if end is not None and parsed > end:
+        return False
+    return True
+
+
 # SQLite caps bound parameters per statement; a reader's page can name a
 # few hundred rows, so memory-link IN lists are chunked below this
 LINK_QUERY_CHUNK = 400
@@ -596,6 +654,10 @@ class MemoryService:
         similarity_threshold: Optional[float] = None,
         role_filter: Optional[str] = None,
         exclude_conversation_after: Optional[datetime] = None,
+        exclude_roles: Optional[Sequence[str]] = None,
+        created_from: Optional[datetime] = None,
+        created_to: Optional[datetime] = None,
+        report: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Search for relevant memories using semantic similarity.
@@ -636,6 +698,27 @@ class MemoryService:
                 with a cutoff the conversation exclusion moves from the
                 Pinecone filter to the Python post-filter (fetch_k headroom
                 absorbs the discarded candidates).
+            exclude_roles: Vector-store roles to leave out ("reflection",
+                "sibling"; see EXCLUDE_KIND_VECTOR_ROLES), combined with
+                role_filter in the Pinecone filter so the slots fill with
+                what is kept.
+            created_from / created_to: Keep only memories created in this
+                span (naive UTC, both ends inclusive, either optional).
+                Checked after the search, like exclude_conversation_after;
+                the fetch deepens (to MAX_BOUNDED_FETCH) until top_k
+                in-bound memories are found, the candidates run below the
+                similarity floor, or Pinecone has no more. A stamp that
+                can't be read keeps its candidate for the caller's SQL check.
+            report: When given, filled with how a bounded search ended:
+                "depth" (candidates asked of Pinecone on the last fetch),
+                "examined" (candidates it returned) and "complete" (True when
+                every candidate above the similarity floor was examined, so
+                a short result speaks for the whole span above the floor);
+                and, on any search, "error" when the search failed, which
+                otherwise returns the same [] as a search that found nothing.
+
+        Neither exclude_roles nor a created bound is part of the search
+        cache key, so passing either skips the cache, read and write.
 
         Returns:
             List of memory dicts with id, content, score, metadata
@@ -652,6 +735,10 @@ class MemoryService:
         if similarity_threshold is None:
             similarity_threshold = settings.similarity_threshold
         role_filter = normalize_role_filter(role_filter)
+        exclude_roles = tuple(dict.fromkeys(role for role in (exclude_roles or ()) if role))
+        bounded = created_from is not None or created_to is not None
+        if bounded or exclude_roles:
+            use_cache = False
 
         # Normalize exclude_conversation_id to string for consistent comparison
         exclude_conv_id_normalized = str(exclude_conversation_id) if exclude_conversation_id else None
@@ -696,12 +783,6 @@ class MemoryService:
 
             logger.info(f"[MEMORY] Searching memories: threshold={similarity_threshold}, top_k={top_k}, entity={entity_id}")
 
-            # Build search query with optional metadata filter
-            search_query = {
-                "inputs": {"text": query},  # Pinecone will embed this
-                "top_k": fetch_k,
-            }
-
             # Add metadata filters at Pinecone level (multiple keys are ANDed).
             # This is more efficient than filtering in Python after retrieval,
             # and for the role filter it also means fetch_k candidates all match
@@ -715,79 +796,69 @@ class MemoryService:
                 metadata_filter["conversation_id"] = {"$ne": exclude_conv_id_normalized}
                 logger.debug(f"[MEMORY] Excluding conversation_id: {exclude_conv_id_normalized}")
 
-            if role_filter == ROLE_FILTER_HUMAN:
-                metadata_filter["role"] = {"$eq": ROLE_FILTER_HUMAN}
-            elif role_filter == ROLE_FILTER_AI:
-                # Everything that isn't the human: "assistant", "reflection",
-                # and other entities' speaker labels
-                metadata_filter["role"] = {"$ne": ROLE_FILTER_HUMAN}
-            elif role_filter == ROLE_FILTER_REFLECTION:
-                metadata_filter["role"] = {"$eq": ROLE_FILTER_REFLECTION}
-            if role_filter:
-                logger.debug(f"[MEMORY] Restricting to role_filter={role_filter}")
+            role_condition = _role_condition(role_filter, exclude_roles)
+            if role_condition is not None:
+                metadata_filter["role"] = role_condition
+            if role_filter or exclude_roles:
+                logger.debug(
+                    f"[MEMORY] Restricting to role_filter={role_filter}, "
+                    f"exclude_roles={list(exclude_roles)}"
+                )
 
-            if metadata_filter:
-                search_query["filter"] = metadata_filter
+            while True:
+                # Build search query with optional metadata filter
+                search_query = {
+                    "inputs": {"text": query},  # Pinecone will embed this
+                    "top_k": fetch_k,
+                }
+                if metadata_filter:
+                    search_query["filter"] = metadata_filter
 
-            # Use Pinecone's integrated inference - search with raw text
-            results = await run_pinecone(
-                index.search,
-                namespace="",
-                query=search_query,
-            )
+                # Use Pinecone's integrated inference - search with raw text
+                results = await run_pinecone(
+                    index.search,
+                    namespace="",
+                    query=search_query,
+                )
 
-            all_memories = []
-            # Pinecone inference search returns: results.result.hits
-            # Each hit has: _id, _score, fields (metadata dict)
-            hits = results.result.hits if hasattr(results, 'result') and hasattr(results.result, 'hits') else []
-            logger.info(f"[MEMORY] Pinecone returned {len(hits)} candidate memories")
+                # Pinecone inference search returns: results.result.hits
+                # Each hit has: _id, _score, fields (metadata dict)
+                hits = results.result.hits if hasattr(results, 'result') and hasattr(results.result, 'hits') else []
+                logger.info(f"[MEMORY] Pinecone returned {len(hits)} candidate memories")
 
-            for hit in hits:
-                # Get hit properties via to_dict()
-                hit_dict = hit.to_dict() if hasattr(hit, 'to_dict') else hit
-                match_id = hit_dict.get('_id')
-                match_score = hit_dict.get('_score', 0)
-                fields = hit_dict.get('fields', {})
-                conv_id = fields.get("conversation_id")
-                role = fields.get("role")
+                all_memories = self._memories_from_hits(
+                    hits, role_filter, exclude_roles,
+                    exclude_conv_id_normalized, exclude_conversation_after,
+                )
+                if not bounded:
+                    break
 
-                # Skip roles the caller filtered out (fallback for the Pinecone
-                # filter above; also covers records written before the role
-                # metadata field existed)
-                if not role_matches_filter(role, role_filter):
-                    logger.info(
-                        f"[MEMORY] SKIP (role fallback, filter={role_filter}): "
-                        f"{match_id[:8]}... role={role}"
-                    )
-                    continue
-
-                # Skip same conversation (this filter is part of cache key)
-                # Ensure both values are strings for consistent comparison
-                conv_id_str = str(conv_id) if conv_id else None
-                if exclude_conv_id_normalized and conv_id_str == exclude_conv_id_normalized:
-                    if exclude_conversation_after is None:
-                        # This should not happen if Pinecone filter worked - log at INFO level for debugging
-                        logger.info(f"[MEMORY] SKIP (same conversation fallback): {match_id[:8]}... conv_id={conv_id_str}")
-                        continue
-                    # Compaction boundary: only the post-compaction slice of
-                    # the conversation is still verbatim in context, so only
-                    # it stays excluded
-                    if not created_before(fields.get("created_at"), exclude_conversation_after):
-                        logger.info(
-                            f"[MEMORY] SKIP (same conversation, post-compaction): "
-                            f"{match_id[:8]}... conv_id={conv_id_str}"
-                        )
-                        continue
-
-                all_memories.append({
-                    "id": match_id,
-                    "score": match_score,
-                    "conversation_id": conv_id,
-                    "created_at": fields.get("created_at"),
-                    "role": role,
-                    "content_preview": fields.get("content_preview"),
-                    "times_retrieved": fields.get("times_retrieved", 0),
-                })
+                # A date bound is checked here, after the search; deepen the
+                # fetch until enough of the candidates fall inside it
+                in_bound = [
+                    mem for mem in all_memories
+                    if created_within(mem.get("created_at"), created_from, created_to) is not False
+                ]
+                kept = sum(
+                    1 for mem in in_bound
+                    if mem["score"] >= similarity_threshold and mem["id"] not in exclude_ids
+                )
+                # Pinecone ranks by score, so once a fetch reaches below the
+                # floor a deeper one can only add candidates that are dropped.
+                # Read off the raw hits: a fallback-dropped hit still ranks.
+                scores = [
+                    (hit.to_dict() if hasattr(hit, 'to_dict') else hit).get('_score', 0)
+                    for hit in hits
+                ]
+                below_floor = bool(scores) and min(scores) < similarity_threshold
+                ran_out = len(hits) < fetch_k
+                complete = below_floor or ran_out
+                if kept >= top_k or complete or fetch_k >= MAX_BOUNDED_FETCH:
+                    if report is not None:
+                        report.update(depth=fetch_k, examined=len(hits), complete=complete)
+                    all_memories = in_bound
+                    break
+                fetch_k = min(fetch_k * 4, MAX_BOUNDED_FETCH)
 
             # Cache the raw results (before exclude_ids and threshold filtering)
             if use_cache:
@@ -822,7 +893,70 @@ class MemoryService:
             return memories
         except Exception as e:
             logger.error(f"Error searching memories: {e}")
+            # A caller that asked for a report can tell a failed search from
+            # an empty one; to everyone else it stays the empty list it was
+            if report is not None:
+                report["error"] = str(e) or type(e).__name__
             return []
+
+    def _memories_from_hits(
+        self,
+        hits: List[Any],
+        role_filter: Optional[str],
+        exclude_roles: Tuple[str, ...],
+        exclude_conv_id_normalized: Optional[str],
+        exclude_conversation_after: Optional[datetime],
+    ) -> List[Dict[str, Any]]:
+        """search_memories' candidate dicts from Pinecone hits, with the
+        Python fallbacks for the role and conversation filters applied."""
+        all_memories = []
+        for hit in hits:
+            # Get hit properties via to_dict()
+            hit_dict = hit.to_dict() if hasattr(hit, 'to_dict') else hit
+            match_id = hit_dict.get('_id')
+            match_score = hit_dict.get('_score', 0)
+            fields = hit_dict.get('fields', {})
+            conv_id = fields.get("conversation_id")
+            role = fields.get("role")
+
+            # Skip roles the caller filtered out (fallback for the Pinecone
+            # filter above; also covers records written before the role
+            # metadata field existed)
+            if not role_matches_filter(role, role_filter) or role in exclude_roles:
+                logger.info(
+                    f"[MEMORY] SKIP (role fallback, filter={role_filter}, "
+                    f"exclude={list(exclude_roles)}): {match_id[:8]}... role={role}"
+                )
+                continue
+
+            # Skip same conversation (this filter is part of cache key)
+            # Ensure both values are strings for consistent comparison
+            conv_id_str = str(conv_id) if conv_id else None
+            if exclude_conv_id_normalized and conv_id_str == exclude_conv_id_normalized:
+                if exclude_conversation_after is None:
+                    # This should not happen if Pinecone filter worked - log at INFO level for debugging
+                    logger.info(f"[MEMORY] SKIP (same conversation fallback): {match_id[:8]}... conv_id={conv_id_str}")
+                    continue
+                # Compaction boundary: only the post-compaction slice of
+                # the conversation is still verbatim in context, so only
+                # it stays excluded
+                if not created_before(fields.get("created_at"), exclude_conversation_after):
+                    logger.info(
+                        f"[MEMORY] SKIP (same conversation, post-compaction): "
+                        f"{match_id[:8]}... conv_id={conv_id_str}"
+                    )
+                    continue
+
+            all_memories.append({
+                "id": match_id,
+                "score": match_score,
+                "conversation_id": conv_id,
+                "created_at": fields.get("created_at"),
+                "role": role,
+                "content_preview": fields.get("content_preview"),
+                "times_retrieved": fields.get("times_retrieved", 0),
+            })
+        return all_memories
 
     async def get_recent_reflections(
         self,

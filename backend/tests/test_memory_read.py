@@ -24,7 +24,7 @@ SQL, and the point of them is what the SQL selects and in what order.
 """
 import uuid
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -948,6 +948,54 @@ class TestIsolatedScope:
 # ============================================================
 
 class TestReloadAndMcp:
+    async def test_mcp_memory_query_research_options(self, db, async_client):
+        """
+        The research options (issue #421) arrive over /mcp, the path a
+        script uses: `from` (a keyword, read off the arguments by name),
+        `to`, `tz`, `exclude`, `scope`. The vector search is mocked; the
+        rows and links are the test database's.
+        """
+        room = await make_conversation(
+            db, title="Room", source=ConversationSource.CLAUDE_CODE.value,
+            external_session_id="sess-421",
+        )
+        elsewhere = await make_conversation(db, title="Elsewhere")
+        talk = await make_message(db, elsewhere, content="the beach at dusk", created_at=at())
+        search = AsyncMock(return_value=[
+            {"id": talk.id, "score": 0.8, "conversation_id": elsewhere.id},
+        ])
+        update = AsyncMock(return_value=True)
+
+        with patch.object(memory_service, "search_memories", search), \
+             patch.object(memory_service, "update_retrieval_count", update):
+            response = await async_client.post("/mcp", json={
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "memory_query", "arguments": {
+                    "conversation_id": room.id, "query": "the beach",
+                    "scope": "isolated", "from": "2026-09-01", "to": "2026-09-02",
+                    "tz": "UTC", "exclude": ["reflection", "inter_session"],
+                    "num_results": 30,
+                }},
+            })
+
+        result = response.json()["result"]
+        text = result["content"][0]["text"]
+        assert result["isError"] is False
+        kwargs = search.call_args.kwargs
+        assert kwargs["created_from"] == datetime(2026, 9, 1)
+        assert kwargs["created_to"].date() == datetime(2026, 9, 2).date()
+        assert kwargs["exclude_roles"] == ["reflection", "sibling"]
+        assert kwargs["exclude_conversation_id"] is None
+        assert kwargs["top_k"] == 60
+        update.assert_not_awaited()
+        assert "the beach at dusk" in text
+        assert "Isolated scope" in text
+        links = (await db.execute(
+            select(ConversationMemoryLink.message_id)
+            .where(ConversationMemoryLink.conversation_id == room.id)
+        )).scalars().all()
+        assert links == []
+
     def test_reload_regex_reads_both_header_shapes(self):
         text = (
             "--- Memory 0123abcd (You said, 2026-09-01 12:00:00 UTC, via Here I Am, in \"x\") ---\n"
@@ -1054,11 +1102,11 @@ class TestReloadAndMcp:
             "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {},
         })
         tools = {tool["name"]: tool for tool in response.json()["result"]["tools"]}
-        for name in ("memory_read", "memory_neighbors"):
+        # memory_query takes it too since issue #421 (semantic mode)
+        for name in ("memory_read", "memory_neighbors", "memory_query"):
             scope = tools[name]["inputSchema"]["properties"]["scope"]
             assert scope["enum"] == ["conversation", "isolated"]
             assert scope["default"] == "conversation"
-        assert "scope" not in tools["memory_query"]["inputSchema"]["properties"]
 
 
 # ============================================================
