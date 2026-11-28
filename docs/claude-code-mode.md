@@ -1346,10 +1346,9 @@ extended for #339, 2.1.260):
   is the desktop app's `local_…` id.
 - The desktop app keeps its own record per session at
   `<desktop data dir>/claude-code-sessions/<org>/<account>/local_<id>.json`
-  (Electron userData: `%APPDATA%\Claude` on Windows,
-  `~/Library/Application Support/Claude` on macOS, `~/.config/Claude` on
-  Linux; `HIM_DESKTOP_DATA_DIR` overrides; undocumented internal state,
-  read best-effort like the registry above). Its `sessionId` is the
+  (which directory that is: "Where the desktop app keeps its records",
+  below; undocumented internal state, read best-effort like the registry
+  above). Its `sessionId` is the
   `local_…` messaging address, its `cliSessionId` is the Claude Code
   session id — the join the hooks need — and `title` is the sidebar title
   (`list_sessions`'s `title`, and the `name=` on a delivered letter).
@@ -1358,7 +1357,9 @@ extended for #339, 2.1.260):
   one per session ever opened, so the hooks read the directory once per
   firing and join on `cliSessionId`. A session with no readable record
   (CLI-launched, another app version, a relocated data dir) gets no
-  address from the hooks; the entity can supply one itself (below).
+  sidebar title, and no address unless the per-process registry's
+  `hostSessionId` gives one; the entity can supply an address itself
+  (below).
 - The `[ref]` `ListAgents` prints beside a name is **not derivable** from
   anything in that file (tested against the session id, socket path, peer
   token, and bridge id under every common hash). It is stable across a
@@ -1367,6 +1368,61 @@ extended for #339, 2.1.260):
 - Renames are recorded in the transcript as `agent-name` entries, but the
   harness does not restore them on resume, so the transcript is not a
   source of the *current* name and the hooks don't read it for one.
+
+**Where the desktop app keeps its records.** On macOS
+`~/Library/Application Support/Claude`, on Linux `~/.config/Claude`. On
+Windows it depends, and it has changed under a running install. Read from
+the app's own code (6.6395.0, `app.asar`) and measured on one machine,
+2026-11-23:
+
+- An MSIX install keeps its data in
+  `%LOCALAPPDATA%\Claude-Data\<package family name, lower case>`:
+  `claude_pzs8sxrjxfjjc` for the direct download,
+  `anthropicpbc.claude_fnn82j28hfe8t` for the Store build. The measured
+  machine was moved there from `%APPDATA%\Claude` on 2026-10-19 at 22:47
+  Eastern (the birth time of the marker the app leaves behind,
+  `.user-data-left.<family>`; every launch in its logs, which reach back
+  to 10-23, says `already_moved`).
+- `%APPDATA%\Claude` is still right for a non-MSIX install, for one the app
+  declined to move (its labels include `stay_in_use` and
+  `stay_target_unavailable`), and for one it moved *back* (it has a marker
+  for that; none was seen). So the
+  old place can hold live records, and since a move can be a copy, it can
+  also hold stale ones.
+- **Hooks run inside the package's path virtualization** (measured from a
+  hook): for them `%APPDATA%\Claude` is really
+  `%LOCALAPPDATA%\Packages\<family>\LocalCache\Roaming\Claude`. A session
+  in an ordinary terminal is outside it and reaches that folder only by the
+  long name. `Claude-Data` is excluded from virtualization by the package
+  manifest, so it is one folder from either side.
+- `Claude-Data` itself is used when Roaming is a network share, and
+  `Claude-3p` by a third-party-inference install.
+
+So the hooks don't choose: `hook_util.claude_desktop_data_dirs` lists all
+of these and `desktop_sessions_index` reads them together, keeping for each
+desktop session the copy **written last** (a tie goes to the app's own
+order). That is right before a move, after one, and after one undone, with
+no marker to interpret. A stale copy has to lose outright rather than be
+indexed beside the live one, because it names an older `cliSessionId` and a
+fork would be given the wrong parent. `HIM_DESKTOP_DATA_DIR`, when set, is
+the only place looked in. Two shortcuts were measured and left out:
+`CLAUDE_CODE_EXECPATH` lies inside the live folder by construction, but
+Claude Code sets it for the Bash tool and not for hooks; and
+`CLAUDE_USER_DATA_DIR` is ignored by signed builds of the app.
+
+**When the records can't be found, SessionStart says so**
+(`desktop_records_lines`), on every firing while it holds. Everything that
+reads them degrades quietly by design (a blank title, a hint not sent), so
+the move went unnoticed for five weeks: rooms declared in that time have no
+sidebar title, and of the four forks in it one was adopted on time (its
+transcript was already on disk), two a turn late, and one, a rewind
+to the first message, which copies no transcript and so leaves the records
+as the only evidence, opened a second conversation. Two lines: `DESKTOP
+RECORDS NOT FOUND` when there are none anywhere, and `DESKTOP RECORD
+MISSING` when there are records but, for a session already running, not its
+own (a folder the app no longer uses; a new session's SessionStart can come
+before its record is written, so it isn't checked there). Only a session
+the desktop app is running (one with a `hostSessionId`) can hear either.
 
 **Two halves, deliberately split** (`services/rooms_registry.py`):
 
@@ -2579,7 +2635,7 @@ the README, then set:
 | `HIM_ENTITY` | The entity's index name or label. Optional with a token, which is bound to its entity; naming a different one is refused. |
 | `HIM_NOTES_ROOT` | *Coming with #397.* Where this machine mounts the notes. |
 | `HIM_GH_CONFIG_DIR` | This machine's gh config directory for the entity's GitHub account, as an absolute path (`~` and environment variables allowed); see "GitHub identity". It is unneeded only on the server's own machine, whose directory the server's `gh_config_dir` already names. Keep that setting on the server either way: it is what makes a machine that forgot this variable say so. |
-| `HIM_DESKTOP_DATA_DIR` | Only if the Claude desktop app keeps its data somewhere other than the platform default (see "Rooms registry"). |
+| `HIM_DESKTOP_DATA_DIR` | Only if the Claude desktop app keeps its data somewhere the hooks don't look by themselves (see "Where the desktop app keeps its records" under "Rooms registry"). Set, it is the only place they look, so a stale value hides the live records. A session the app is running is told at its start when they aren't found. |
 | `HIM_TIMEZONE` | The human's timezone as an IANA name (`America/New_York`), wherever this machine's own clock isn't in it; a cloud VM's is usually UTC. Unset, the clock line on every prompt uses the machine's zone (see "The clock"). The server has its own, `LOCAL_TIMEZONE`, for native conversations. |
 
 Then, once per machine, sign the entity's GitHub account into that
