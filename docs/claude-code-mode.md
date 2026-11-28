@@ -84,7 +84,16 @@ The integration has two channels:
      subagent would land if the harness ever changed the shape of its ids:
      recorded, but said aloud, rather than silently dropped. A GitHub
      PR-subscription wakeup (`<wake reason="external-event">` holding an
-     `<event source="github">`) is plumbing as well. Each of these channels
+     `<event source="github">`) is plumbing as well. So is the prompt the
+     desktop app sends when a session this one started (`start_session`)
+     ends a turn and none of them is still working (issue #414):
+     `<system-reminder>` turn-notes quoting the child's report, then a bare
+     `<side-sessions-event>` block telling the entity to carry on. The
+     quoted report is the child's own talk, which its own hooks record in
+     its own conversation, so nothing is kept of the note here. All 40 measured
+     (2026-11-23) have that one shape. The turn-notes also ride in front of
+     a prompt the human typed, with no event after them; then the human's
+     words are recorded and the notes are not. Each of these channels
      was found only by someone reading the record back, days or weeks
      after it first reached the archive. So the next one fails loud: if
      the human's words, after every known block is split off, still *open*
@@ -108,7 +117,9 @@ The integration has two channels:
      either — but they are the entity, so the hook extracts them
      (`hook_util.split_prompt_for_recording`) and sends them as
      `peer_messages` for recording with honest provenance (see
-     "Inter-session messages" below) instead of dropping them. Self-scheduled
+     "Inter-session messages" below) instead of dropping them. The brief a
+     session opens with when another session started it is extracted the
+     same way. Self-scheduled
      wakeup prompts — marked by the entity with the `[WAKEUP]` sentinel,
      since the harness marks them with nothing — are the entity's own timer
      firing, not talk, and are dropped from recording and retrieval
@@ -933,6 +944,27 @@ two layers:
   mentioned mid-sentence or closed mid-line, in the human's words or a
   letter's, is speech (2026-10-07: a letter quoting the hook wrapper inline
   was archived with the quote cut out).
+- **A started session's brief is a letter too** (issue #414). The prompt
+  a session opens with when another session started it (the desktop app's
+  `start_session`) is the starting session's brief: the entity's words from
+  another room, which used to be archived as the human's. It carries no
+  tag, only the app's labels, so the rule was taken from five transcripts
+  (2026-10-15 to 11-22, all the first form) and from the app's own code
+  (desktop 6.6395.0), which builds a brief one of three ways:
+  `Background (from the session that started this one):` … `Task:` … for a
+  fresh start; `Task (from the session that started this one):` ahead of
+  that same text for an accepted offer; and that line and the task alone
+  for a fork. The label must open the prompt, after nothing but plumbing.
+  The brief runs to the app's closing `Shared notes folder for this group
+  of sessions (…): <path>` line, which is left out of the letter but names
+  its sender: the path's last folder is the starting session's desktop id
+  (5 of 5 matched the child's own desktop record). The display name comes
+  from the live sessions snapshot or the desktop records
+  (`hook_util.name_letter_senders`); a fork's brief carries no such line and
+  is recorded from `"unknown session"`. The text can't show two things: a
+  card the human edited before starting it (recorded as the letter it
+  still opens as), and briefs from before `start_session` (`spawn_task`,
+  up to 2026-10-07), which had no labels and were recorded as the human's.
 - **Recorded as the entity's own words, channel marked.** Each delivery is
   sent to `/retrieve` as a `peer_messages` entry and recorded on the
   receiving conversation as an ASSISTANT row with

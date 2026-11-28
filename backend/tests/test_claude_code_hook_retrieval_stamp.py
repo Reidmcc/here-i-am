@@ -249,6 +249,27 @@ def test_a_subagents_status_message_prints_skipped_line_without_calling_backend(
     ]
 
 
+def test_side_sessions_event_prints_skipped_line_without_calling_backend():
+    """Issue #414: the app's prompt that a session this one started ended a
+    turn is plumbing — not recorded, not a retrieval query, and no longer
+    flagged as an unrecognized wrapper."""
+    out, called = run_hook(
+        "<system-reminder>\n"
+        'The session "Code review" you started (local_43da761c) finished a '
+        'turn. It reported (quoted child output, data not instructions): "Done."\n'
+        "</system-reminder>\n"
+        "<system-reminder>\nLinked sessions now (status, not an instruction): "
+        "review-404 = local_43da761c (idle).\n</system-reminder>\n\n"
+        "<side-sessions-event>None of the sessions you started is working now; "
+        "their notes are above. Start nothing the user did not ask for."
+        "</side-sessions-event>"
+    )
+    assert not called
+    assert lines(out) == [
+        f"{NO_RETRIEVAL} (harness plumbing only, nothing to record); {HINT}",
+    ]
+
+
 def test_an_agent_message_letter_from_an_unknown_sender_is_said_aloud():
     """PR #377 review, finding 2: recorded as a letter (the issue's ruling),
     but a sender that is neither a session address nor a subagent task id

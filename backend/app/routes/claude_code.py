@@ -208,8 +208,9 @@ class PeerMessage(BaseModel):
     """
     One inter-session message (a delivery from a sibling Claude Code
     session over the desktop app's session-management MCP), extracted from
-    the prompt by the UserPromptSubmit hook. Another session of this entity
-    speaking — recorded under the entity's own name with the sending
+    the prompt by the UserPromptSubmit hook, or the brief a session opens
+    with when another session started it (issue #414). Another session of
+    this entity speaking — recorded under the entity's own name with the sending
     session marked (issue #312), never as the human's words.
     """
     content: str

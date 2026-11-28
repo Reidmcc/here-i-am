@@ -9,10 +9,12 @@ context alongside the prompt.
 
 Not everything on the prompt channel is the human: harness plumbing
 (system reminders, task notifications, the desktop app's CI monitor
-events, a subagent's hand-back or its status reports partway through —
-issues #376 and #379) is stripped and dropped, while
-inter-session messages from sibling Claude Code sessions are extracted and
-sent separately (peer_messages), so the backend can record them under the
+events and its prompts that a session this one started ended a turn, a
+subagent's hand-back or its status reports partway through — issues #414,
+#376 and #379) is stripped and dropped, while
+inter-session messages from sibling Claude Code sessions — the brief a
+session opens with when another session started it included (issue #414) —
+are extracted and sent separately (peer_messages), so the backend can record them under the
 entity's own name with the sending session marked instead of archiving
 them as the human's words (issue #312). Words that, after all that, still
 open with a tag the hooks don't recognize are recorded as the human's as
@@ -107,7 +109,7 @@ def main() -> None:
         return
     session_id = data.get("session_id") or ""
     # Harness blocks (system reminders, task notifications, CI monitor
-    # events, whatever a subagent sends) are not the human speaking — stripped so
+    # events, side-session events, whatever a subagent sends) are not the human speaking — stripped so
     # they are neither archived under the human's name nor used as a
     # retrieval query. Inter-session messages from sibling sessions aren't
     # the human either, but they are the entity: extracted and sent
@@ -152,6 +154,8 @@ def main() -> None:
     sessions = hook_util.live_sessions_snapshot(
         own_session_id=session_id, desktop_index=desktop_index
     )
+    # A brief names the session that wrote it by address only (issue #414)
+    hook_util.name_letter_senders(peer_messages, sessions, desktop_index)
     payload = {
         "session_id": session_id,
         "prompt": prompt,
