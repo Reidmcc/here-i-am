@@ -154,8 +154,49 @@ class TestIsolatedScope:
         await _run(service, query="q", scope="isolated", num_results=500)
         assert service.search_kwargs()["top_k"] == MAX_ISOLATED_QUERY_RESULTS * 2
 
-        await _run(service, query="q", num_results=40)
-        assert service.search_kwargs()["top_k"] == 20
+    @pytest.mark.asyncio
+    async def test_more_than_ten_without_the_scope_is_refused_not_clamped(self):
+        service = _Service([_row("mem-a")])
+
+        result, ctx = await _run(service, query="q", num_results=40)
+
+        assert result.startswith('Error: num_results above 10 needs scope="isolated"')
+        service.mock.search_memories.assert_not_called()
+        service.mock.update_retrieval_count.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_recent_mode_still_clamps(self):
+        service = _Service([])
+        with patch("app.services.memory_tools._recent_reflections", AsyncMock(return_value="ok")) as recent:
+            result, _ = await _run(service, mode="recent", num_results=40)
+        assert result == "ok"
+        assert recent.call_args.args[1] == 10
+
+    @pytest.mark.asyncio
+    async def test_a_failed_search_is_an_error_not_a_zero(self):
+        service = _Service([])
+
+        async def failing(**kwargs):
+            kwargs["report"]["error"] = "Pinecone unavailable"
+            return []
+        service.mock.search_memories = AsyncMock(side_effect=failing)
+
+        result, _ = await _run(service, query="the beach", scope="isolated")
+
+        assert result.startswith("Error: the search failed (Pinecone unavailable)")
+        assert "No memories found" not in result
+
+    @pytest.mark.asyncio
+    async def test_header_only_rows_point_at_an_isolated_read(self):
+        service = _Service([_row(f"mem-{i}") for i in range(3)])
+        service.rows = {
+            mid: {**row, "content": "x" * 5000} for mid, row in service.rows.items()
+        }
+        ctx = _ctx(result_budget_bytes=6000)
+
+        result, _ = await _run(service, ctx, query="q", scope="isolated")
+
+        assert 'with scope="isolated" so the read is not recorded either]' in result
 
     @pytest.mark.asyncio
     async def test_unknown_scope_is_refused(self):
@@ -191,8 +232,22 @@ class TestDateBound:
         result, _ = await _run(service, query="the beach", to="2026-09-17", tz="UTC")
 
         assert result.startswith('No memories found matching: "the beach", created up to')
-        assert "none created in that span scored above the similarity floor" in result
+        # The default scope left out what is in view and this conversation
+        # before searching, so the zero says it is about the rest
+        assert (
+            "none created in that span scored above the similarity floor "
+            f"({settings.query_similarity_threshold:g}) outside your context and this conversation"
+        ) in result
         assert "every candidate above the similarity floor" in result
+
+    @pytest.mark.asyncio
+    async def test_an_isolated_bounded_zero_claims_the_whole_span(self):
+        service = _Service([], report={"complete": True, "examined": 7, "depth": 20})
+
+        result, _ = await _run(service, query="q", to="2026-09-17", tz="UTC", scope="isolated")
+
+        assert "none created in that span scored above the similarity floor" in result
+        assert "outside your context" not in result
 
     @pytest.mark.asyncio
     async def test_a_search_that_stopped_short_says_so(self):
@@ -493,6 +548,40 @@ class TestSearchDateBound:
         assert depths == [4, 16, 40]
         assert results == []
         assert report == {"depth": 40, "examined": 40, "complete": False}
+
+    @pytest.mark.asyncio
+    async def test_the_floor_is_read_off_the_raw_hits(self, pinecone_settings):
+        # The deepest hit falls to the role fallback; it still ranks, and it
+        # is below the floor, so a deeper fetch could add nothing
+        index = MagicMock()
+        index.search = MagicMock(side_effect=_respond(lambda k: [
+            _hit("late", 0.9, created_at="2026-10-05T00:00:00"),
+            _hit("late-2", 0.8, created_at="2026-10-06T00:00:00"),
+            _hit("late-3", 0.7, created_at="2026-10-07T00:00:00"),
+            _hit("faint-letter", 0.2, created_at="2026-10-08T00:00:00", role="sibling"),
+        ]))
+        service, _ = _service(index)
+        report = {}
+
+        await service.search_memories(
+            "q", top_k=2, created_to=datetime(2026, 9, 30),
+            exclude_roles=["sibling"], report=report,
+        )
+
+        assert index.search.call_count == 1
+        assert report["complete"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failure_is_reported_to_a_caller_that_asked(self, pinecone_settings):
+        index = MagicMock()
+        index.search = MagicMock(side_effect=RuntimeError("Pinecone unavailable"))
+        service, _ = _service(index)
+        report = {}
+
+        assert await service.search_memories("q", report=report) == []
+        assert report["error"] == "Pinecone unavailable"
+        # Without a report it stays the empty list it always was
+        assert await service.search_memories("q") == []
 
     @pytest.mark.asyncio
     async def test_an_unbounded_search_fetches_once(self, pinecone_settings):

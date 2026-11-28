@@ -473,9 +473,18 @@ RESULT_SIZE_POINTER = (
     "shows in one tool result; open it with memory_neighbors or memory_read]"
 )
 
+# The same line under memory_query's isolated scope (issue #421), whose
+# reader must not record the reads the pointer sends it to
+ISOLATED_RESULT_SIZE_POINTER = (
+    "[listed by header only: the full result would exceed what this harness "
+    "shows in one tool result; open it with memory_neighbors or memory_read, "
+    "with scope=\"isolated\" so the read is not recorded either]"
+)
+
 
 def _fit_memory_entries(
-    entries: List[Tuple[str, str]], frame: str, budget: Optional[int]
+    entries: List[Tuple[str, str]], frame: str, budget: Optional[int],
+    pointer_line: str = RESULT_SIZE_POINTER,
 ) -> Tuple[List[str], List[bool]]:
     """
     Render (header, content) entries in order, each in full while the whole
@@ -490,7 +499,7 @@ def _fit_memory_entries(
     else:
         full = [utf8_size(header) + utf8_size(content) + 3 for header, content in entries]
         pointer = [
-            utf8_size(header) + utf8_size(RESULT_SIZE_POINTER) + 3 for header, _ in entries
+            utf8_size(header) + utf8_size(pointer_line) + 3 for header, _ in entries
         ]
         in_full = fit_by_priority(
             full, pointer, list(range(len(entries))), budget - utf8_size(frame) - 400
@@ -498,7 +507,7 @@ def _fit_memory_entries(
     lines: List[str] = []
     for (header, content), shown in zip(entries, in_full, strict=True):
         lines.append(header)
-        lines.append(content if shown else RESULT_SIZE_POINTER)
+        lines.append(content if shown else pointer_line)
         lines.append("")
     return lines, in_full
 
@@ -909,6 +918,17 @@ async def query_memories(
                 f"mode '{mode_normalized}' takes 'since'."
             )
 
+    # Asking a semantic search for more than an ordinary call may show is
+    # the plainest sign of a research script, and one that forgot the scope
+    # would get a page that looks whole and move significance on every row
+    # of it, so it is refused rather than clamped
+    if mode_normalized == MODE_SEMANTIC and not isolated and num_results > MAX_QUERY_RESULTS:
+        return (
+            f"Error: num_results above {MAX_QUERY_RESULTS} needs scope=\"isolated\" "
+            f"(up to {MAX_ISOLATED_QUERY_RESULTS}), which records nothing; an "
+            "ordinary query counts every memory it shows as recalled."
+        )
+
     # Clamp num_results to reasonable range
     num_results = max(
         1, min(MAX_ISOLATED_QUERY_RESULTS if isolated else MAX_QUERY_RESULTS, num_results)
@@ -1018,7 +1038,11 @@ async def query_memories(
     if exclude_roles:
         search_options["exclude_roles"] = exclude_roles
     if bounded:
-        search_options.update(created_from=start, created_to=end, report=report)
+        search_options.update(created_from=start, created_to=end)
+    if bounded or isolated:
+        # The report also carries a failed search, which would otherwise be
+        # the same empty list as a search that found nothing
+        search_options["report"] = report
 
     try:
         # Fetch more candidates than requested so archived-conversation and
@@ -1043,6 +1067,12 @@ async def query_memories(
             **search_options,
         )
 
+        if report.get("error"):
+            return (
+                f"Error: the search failed ({report['error']}); this is not a zero, "
+                "nothing was searched."
+            )
+
         if bounded:
             complete = bool(report.get("complete"))
             examined = report.get("examined", 0)
@@ -1065,6 +1095,10 @@ async def query_memories(
                     f"scored above the similarity floor ({floor:g})" if complete
                     else f"is among the {examined} nearest candidates"
                 )
+                if not isolated:
+                    # What is in view and this conversation's own rows were
+                    # left out before the search, so the zero is about the rest
+                    where += " outside your context and this conversation"
                 return (
                     f"No memories found matching: \"{query}\"{filters}: none created "
                     f"in that span {where}.{notes_text}"
@@ -1165,7 +1199,10 @@ async def query_memories(
             intro = f"Found {len(memories)} memories matching: \"{query}\"{filters}"
             if notes:
                 intro += "." + notes_text
-            body, in_full = _fit_memory_entries(entries, intro, ctx.result_budget_bytes)
+            body, in_full = _fit_memory_entries(
+                entries, intro, ctx.result_budget_bytes,
+                ISOLATED_RESULT_SIZE_POINTER if isolated else RESULT_SIZE_POINTER,
+            )
             shown_ids = [
                 mem["id"] for mem, flag in zip(memories, in_full, strict=True) if flag
             ]

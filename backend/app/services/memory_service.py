@@ -713,7 +713,9 @@ class MemoryService:
                 "depth" (candidates asked of Pinecone on the last fetch),
                 "examined" (candidates it returned) and "complete" (True when
                 every candidate above the similarity floor was examined, so
-                a short result speaks for the whole span above the floor).
+                a short result speaks for the whole span above the floor);
+                and, on any search, "error" when the search failed, which
+                otherwise returns the same [] as a search that found nothing.
 
         Neither exclude_roles nor a created bound is part of the search
         cache key, so passing either skips the cache, read and write.
@@ -841,9 +843,13 @@ class MemoryService:
                     1 for mem in in_bound
                     if mem["score"] >= similarity_threshold and mem["id"] not in exclude_ids
                 )
-                scores = [mem["score"] for mem in all_memories]
                 # Pinecone ranks by score, so once a fetch reaches below the
-                # floor a deeper one can only add candidates that are dropped
+                # floor a deeper one can only add candidates that are dropped.
+                # Read off the raw hits: a fallback-dropped hit still ranks.
+                scores = [
+                    (hit.to_dict() if hasattr(hit, 'to_dict') else hit).get('_score', 0)
+                    for hit in hits
+                ]
                 below_floor = bool(scores) and min(scores) < similarity_threshold
                 ran_out = len(hits) < fetch_k
                 complete = below_floor or ran_out
@@ -887,6 +893,10 @@ class MemoryService:
             return memories
         except Exception as e:
             logger.error(f"Error searching memories: {e}")
+            # A caller that asked for a report can tell a failed search from
+            # an empty one; to everyone else it stays the empty list it was
+            if report is not None:
+                report["error"] = str(e) or type(e).__name__
             return []
 
     def _memories_from_hits(
