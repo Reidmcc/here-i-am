@@ -683,12 +683,14 @@ class TestRecordingAndSurfaces:
         assert not ctx.last_query_memory_ids
 
     def test_schemas(self):
-        for schema in (MEMORY_READ_SCHEMA, MEMORY_FIND_SCHEMA, MEMORY_NEIGHBORS_SCHEMA):
+        # memory_query takes it too since issue #421 (semantic mode)
+        for schema in (
+            MEMORY_READ_SCHEMA, MEMORY_FIND_SCHEMA, MEMORY_NEIGHBORS_SCHEMA, MEMORY_QUERY_SCHEMA,
+        ):
             prop = schema["properties"]["exclude"]
             assert prop["type"] == "array"
             assert prop["items"]["enum"] == list(VALID_EXCLUDE_KINDS)
             assert "default" not in prop and "exclude" not in schema["required"]
-        assert "exclude" not in MEMORY_QUERY_SCHEMA["properties"]
 
     async def test_native_executors_pass_it_through(self, db, tools_db):
         rows = await make_day(db, await make_conversation(db))

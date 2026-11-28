@@ -1054,11 +1054,11 @@ class TestReloadAndMcp:
             "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {},
         })
         tools = {tool["name"]: tool for tool in response.json()["result"]["tools"]}
-        for name in ("memory_read", "memory_neighbors"):
+        # memory_query takes it too since issue #421 (semantic mode)
+        for name in ("memory_read", "memory_neighbors", "memory_query"):
             scope = tools[name]["inputSchema"]["properties"]["scope"]
             assert scope["enum"] == ["conversation", "isolated"]
             assert scope["default"] == "conversation"
-        assert "scope" not in tools["memory_query"]["inputSchema"]["properties"]
 
 
 # ============================================================

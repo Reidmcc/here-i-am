@@ -63,6 +63,7 @@ from app.services.local_time import (
 from app.services.memory_context import format_memory_link_lines, format_memory_origin
 from app.services.memory_service import (
     EXCLUDE_INTER_SESSION,
+    EXCLUDE_KIND_VECTOR_ROLES,
     EXCLUDE_REFLECTION,
     MEMORY_ROLES,
     ROLE_FILTER_HUMAN,
@@ -742,6 +743,57 @@ async def _released_memories(
     return text
 
 
+# memory_query's ceiling on num_results. An ordinary call keeps 10: its
+# result lands in the caller's context as recall. An isolated call (issue
+# #421) belongs to a script or a subagent reading a ranked list and leaves
+# nothing behind, so it may ask for more.
+MAX_QUERY_RESULTS = 10
+MAX_ISOLATED_QUERY_RESULTS = 50
+
+
+def _query_span_text(start_local: Optional[datetime], end_local: Optional[datetime]) -> str:
+    """What a semantic query's first line says about its from/to bound."""
+    if start_local is not None and end_local is not None:
+        return f", created between {_format_local(start_local)} and {_format_local(end_local)}"
+    if start_local is not None:
+        return f", created from {_format_local(start_local)} on"
+    if end_local is not None:
+        return f", created up to {_format_local(end_local)}"
+    return ""
+
+
+def _query_exclude_text(exclude: Tuple[str, ...], role_filter: Optional[str]) -> str:
+    """
+    What a semantic query's first line says about `exclude`: the readers'
+    wording (#415) without their counts, since the search leaves the kinds
+    out in the vector store's own filter and never sees how many there were.
+    A kind `source` already rules out is named as that.
+    """
+    if not exclude:
+        return ""
+    redundant = _KINDS_RULED_OUT_BY_SOURCE.get(role_filter or "", ())
+    parts = []
+    left_out = [_EXCLUDED_NOUNS[kind][1] for kind in exclude if kind not in redundant]
+    if left_out:
+        parts.append(
+            f"{' and '.join(left_out)} left out of the search, by the search's "
+            "own filter, so not counted"
+        )
+    already = [_EXCLUDED_NOUNS[kind][1] for kind in exclude if kind in redundant]
+    if already:
+        parts.append(f"source=\"{role_filter}\" already leaves out {' and '.join(already)}")
+    return f" (exclude on: {'; '.join(parts)})"
+
+
+def _created_within(created_at: Any, start: Optional[datetime], end: Optional[datetime]) -> bool:
+    """Whether a row's stored created_at (naive UTC, datetime or ISO string)
+    lies in [start, end] — the SQL-side check on what the search returned."""
+    moment = created_at if isinstance(created_at, datetime) else datetime.fromisoformat(str(created_at))
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(timezone.utc).replace(tzinfo=None)
+    return (start is None or moment >= start) and (end is None or moment <= end)
+
+
 async def query_memories(
     ctx: MemoryToolContext,
     query: str = "",
@@ -750,6 +802,11 @@ async def query_memories(
     mode: Optional[str] = None,
     since: Optional[str] = None,
     include_model: bool = False,
+    scope: Optional[str] = None,
+    from_: Any = None,
+    to: Any = None,
+    tz: Optional[str] = None,
+    exclude: Any = None,
 ) -> str:
     """
     Query the entity's experiential memories.
@@ -769,6 +826,22 @@ async def query_memories(
     agentic form of remembering the entity has, and even deliberate recall
     should not arrive pre-labelled with its substrate. Inline [MEMORY]
     context markers never carry it at all.
+
+    Four opt-in options for semantic mode (issue #421), so a script or a
+    subagent can search by meaning without changing what the entity later
+    recalls; with none of them passed the call is what it always was:
+    - scope="isolated": nothing left out for being in context or in the
+      calling conversation, nothing recorded (no retrieval count, no link,
+      no in-view stamp), the search cache neither read nor written, each
+      header stamped with its creation time instead of an age, and the
+      similarity floor named in the first line. Archived conversations and
+      released memories stay hidden.
+    - num_results up to MAX_ISOLATED_QUERY_RESULTS under isolated scope.
+    - from / to (with tz): the span the memories were created in, read the
+      way the readers read it. Checked after the vector search (see
+      memory_service.search_memories), and the first line says whether every
+      candidate above the floor was checked or only the nearest ones.
+    - exclude: the readers' kinds, left out in the vector store's filter.
     """
     entity_id, conversation_id = ctx.entity_id, ctx.conversation_id
 
@@ -811,8 +884,35 @@ async def query_memories(
     if since_error:
         return since_error
 
+    # The research options (issue #421) are semantic mode's; the other two
+    # modes are SQL listings with their own `since`
+    isolated, error = _normalize_scope(scope)
+    if error:
+        return error
+    exclude_kinds, error = _normalize_exclude(exclude)
+    if error:
+        return error
+    has_from = from_ is not None and bool(str(from_).strip())
+    has_to = to is not None and bool(str(to).strip())
+    has_tz = tz is not None and bool(str(tz).strip())
+    if mode_normalized != MODE_SEMANTIC:
+        semantic_only = [
+            name for name, given in (
+                ("scope 'isolated'", isolated), ("'from'", has_from), ("'to'", has_to),
+                ("'tz'", has_tz), ("'exclude'", bool(exclude_kinds)),
+            ) if given
+        ]
+        if semantic_only:
+            return (
+                f"Error: {', '.join(semantic_only)} "
+                f"appl{'ies' if len(semantic_only) == 1 else 'y'} to semantic mode only; "
+                f"mode '{mode_normalized}' takes 'since'."
+            )
+
     # Clamp num_results to reasonable range
-    num_results = max(1, min(10, num_results))
+    num_results = max(
+        1, min(MAX_ISOLATED_QUERY_RESULTS if isolated else MAX_QUERY_RESULTS, num_results)
+    )
 
     if mode_normalized == MODE_RECENT:
         # Recency is only meaningful for reflections — deliberate,
@@ -862,10 +962,63 @@ async def query_memories(
     if source_suffix:
         source_suffix = " (searching" + source_suffix[1:]
 
+    tzinfo, error = _resolve_tz(tz)
+    if error:
+        return error
+    start = end = start_local = end_local = None
+    if has_from:
+        start, start_local, error = _parse_span_bound(from_, tzinfo, end_of_day=False)
+        if error:
+            return error
+    if has_to:
+        end, end_local, error = _parse_span_bound(to, tzinfo, end_of_day=True)
+        if error:
+            return error
+    if start is not None and end is not None and end < start:
+        return (
+            f"Error: 'to' ({_format_local(end_local)}) is before 'from' "
+            f"({_format_local(start_local)})."
+        )
+    bounded = start is not None or end is not None
+    if role_filter == SOURCE_REFLECTION and EXCLUDE_REFLECTION in exclude_kinds:
+        return (
+            "Error: source 'reflection' searches only your reflections and exclude "
+            "'reflection' leaves them out, so nothing could match. Drop one of them."
+        )
+    redundant_kinds = _KINDS_RULED_OUT_BY_SOURCE.get(role_filter or "", ())
+    exclude_roles = [
+        EXCLUDE_KIND_VECTOR_ROLES[kind] for kind in exclude_kinds if kind not in redundant_kinds
+    ]
+
+    # Everything the first line says about how the search was narrowed, so
+    # a filtered or bounded result never reads as one about the whole archive
+    filters = (
+        source_suffix + _query_span_text(start_local, end_local)
+        + _query_exclude_text(exclude_kinds, role_filter)
+    )
+    floor = settings.query_similarity_threshold
+    notes: List[str] = []
+    if isolated:
+        notes.append(
+            "Isolated scope: nothing was left out for being in your context or in "
+            "this conversation, nothing shown is recorded (no retrieval count, no "
+            f"link, nothing marked in view), and the similarity floor is {floor:g}."
+        )
+
     # Exclude memories already in the conversation context. Surfacing a memory
     # the entity can already see adds no information, so filter it at the search
     # level (search backfills excluded slots with the next-best candidates).
-    in_context_ids = get_in_context_memory_ids(ctx)
+    # An isolated call sees nothing in advance, so nothing is in view for it.
+    in_context_ids = set() if isolated else get_in_context_memory_ids(ctx)
+
+    # The research options go to the search only when used, so an ordinary
+    # call reaches it exactly as before
+    search_options: Dict[str, Any] = {}
+    report: Dict[str, Any] = {}
+    if exclude_roles:
+        search_options["exclude_roles"] = exclude_roles
+    if bounded:
+        search_options.update(created_from=start, created_to=end, report=report)
 
     try:
         # Fetch more candidates than requested so archived-conversation and
@@ -873,21 +1026,52 @@ async def query_memories(
         candidates = await memory_service.search_memories(
             query=query,
             top_k=num_results * 2,
-            exclude_conversation_id=conversation_id,  # Exclude current conversation
+            # Exclude current conversation (not under isolated scope)
+            exclude_conversation_id=None if isolated else conversation_id,
             # In a compacted Claude Code conversation, only the
             # post-compaction slice of it stays excluded
-            exclude_conversation_after=ctx.exclude_conversation_after,
+            exclude_conversation_after=None if isolated else ctx.exclude_conversation_after,
             exclude_ids=in_context_ids,  # Exclude memories already in context
             entity_id=entity_id,
-            use_cache=True,
+            # The cache key holds none of the research options, and an
+            # isolated call leaves nothing behind, a cache entry included
+            use_cache=not (isolated or bounded or exclude_roles),
             # Deliberate queries are short, semantically sparse strings, so they
             # use a lower similarity floor than automatic chat-context retrieval
-            similarity_threshold=settings.query_similarity_threshold,
+            similarity_threshold=floor,
             role_filter=role_filter,
+            **search_options,
         )
 
+        if bounded:
+            complete = bool(report.get("complete"))
+            examined = report.get("examined", 0)
+            if complete:
+                notes.append(
+                    "The date bound is applied after the vector search, and every "
+                    f"candidate above the similarity floor ({floor:g}) was checked against it."
+                )
+            else:
+                notes.append(
+                    "The date bound is applied after the vector search, and only the "
+                    f"{examined} nearest candidates were checked against it; more inside "
+                    "the span may rank below them."
+                )
+        notes_text = (" " + " ".join(notes)) if notes else ""
+
         if not candidates:
-            return f"No memories found matching: \"{query}\"{source_suffix}"
+            if bounded:
+                where = (
+                    f"scored above the similarity floor ({floor:g})" if complete
+                    else f"is among the {examined} nearest candidates"
+                )
+                return (
+                    f"No memories found matching: \"{query}\"{filters}: none created "
+                    f"in that span {where}.{notes_text}"
+                )
+            if notes:
+                return f"No memories found matching: \"{query}\"{filters}.{notes_text}"
+            return f"No memories found matching: \"{query}\"{filters}"
 
         # Get full content and update retrieval stats
         # We need our own DB session since tools don't receive one
@@ -920,6 +1104,14 @@ async def query_memories(
 
                     # Released memories are excluded from retrieval
                     if mem_data.get("memory_status") == "released":
+                        continue
+
+                    # The row is the record: the bound and exclude are
+                    # checked again on it, behind the vector store's
+                    # metadata (a stamp it couldn't read, a role it lacks)
+                    if bounded and not _created_within(mem_data["created_at"], start, end):
+                        continue
+                    if exclude_kinds and _excluded_kind_of(mem_data, exclude_kinds):
                         continue
 
                     # Calculate age for display
@@ -956,7 +1148,11 @@ async def query_memories(
             entries: List[Tuple[str, str]] = []
             for mem in memories:
                 role_label = _role_display(mem["role"], mem.get("sibling_session"))
-                age_str = f"{mem['days_ago']:.1f} days ago" if mem['days_ago'] >= 1 else "today"
+                if isolated:
+                    # A script reads the moment, not an age that moves
+                    age_str = _format_stamp(mem["created_at"], tzinfo)
+                else:
+                    age_str = f"{mem['days_ago']:.1f} days ago" if mem['days_ago'] >= 1 else "today"
                 status_str = f", {mem['memory_status']}" if mem.get("memory_status") else ""
                 origin_str = format_memory_origin(mem["origin"])
                 model_str = _model_display(mem, include_model)
@@ -966,7 +1162,9 @@ async def query_memories(
                     + _link_markers(links.get(mem["id"]), mem["role"], entity_id, labels),
                     mem["content"],
                 ))
-            intro = f"Found {len(memories)} memories matching: \"{query}\"{source_suffix}"
+            intro = f"Found {len(memories)} memories matching: \"{query}\"{filters}"
+            if notes:
+                intro += "." + notes_text
             body, in_full = _fit_memory_entries(entries, intro, ctx.result_budget_bytes)
             shown_ids = [
                 mem["id"] for mem, flag in zip(memories, in_full, strict=True) if flag
@@ -984,8 +1182,9 @@ async def query_memories(
             # context never contained, busting the prompt cache and
             # duplicating content the entity already saw in the tool result.
             # Claude Code conversations are never rebuilt, so there the
-            # link is purely the dedup record.
-            for mem_id in shown_ids:
+            # link is purely the dedup record. An isolated call records
+            # nothing: it is not the entity's attention.
+            for mem_id in [] if isolated else shown_ids:
                 await memory_service.update_retrieval_count(
                     message_id=mem_id,
                     conversation_id=conversation_id or "deliberate-recall",
@@ -996,9 +1195,14 @@ async def query_memories(
 
         if not memories:
             return (
-                f"No memories found matching: \"{query}\"{source_suffix} "
+                f"No memories found matching: \"{query}\"{filters} "
                 "(candidates existed but content unavailable)"
+                + (("." + notes_text) if notes else "")
             )
+
+        if isolated:
+            _, note = fit_report(len(shown_ids), len(memories))
+            return "\n".join([intro + note, "", *body])
 
         # Make the shown results visible to dedup: later memory_query calls
         # and automatic retrieval must not re-surface memories the entity
@@ -1399,8 +1603,8 @@ def _normalize_scope(scope: Optional[str]) -> Tuple[bool, Optional[str]]:
 
 def is_isolated_read(tool_input: Any) -> bool:
     """
-    Whether a memory_read / memory_neighbors / memory_find call's input asked
-    for scope="isolated". The native tool loop stamps nothing for such a call
+    Whether a memory_read / memory_neighbors / memory_find / memory_query
+    call's input asked for scope="isolated". The native tool loop stamps nothing for such a call
     (the executor sets no ids), and the session reload parser uses this to
     skip re-stamping its persisted result; otherwise a reload would put
     ids in view that the live turn deliberately did not.
@@ -2486,10 +2690,17 @@ async def _memory_query(
     mode: Optional[str] = None,
     since: Optional[str] = None,
     include_model: bool = False,
+    scope: Optional[str] = None,
+    to: Any = None,
+    tz: Optional[str] = None,
+    exclude: Any = None,
+    **kwargs: Any,
 ) -> str:
+    # `from` is a keyword, so it arrives in kwargs
     return await query_memories(
         _context, query, num_results=num_results, source=source, mode=mode, since=since,
-        include_model=bool(include_model),
+        include_model=bool(include_model), scope=scope, from_=kwargs.get("from"),
+        to=to, tz=tz, exclude=exclude,
     )
 
 
@@ -2596,7 +2807,12 @@ MEMORY_QUERY_DESCRIPTION = (
     "are things not already in view. Semantic querying updates retrieval "
     "tracking, so deliberate attention influences future automatic "
     "recall; recent and released modes do not. Set include_model only when "
-    "you specifically need to know which model produced each memory."
+    "you specifically need to know which model produced each memory. For "
+    "research by meaning (a script, or a subagent that shares this "
+    "conversation's id), semantic mode also takes scope='isolated' (nothing "
+    "left out for being in view, nothing recorded, up to 50 results), "
+    "'from'/'to' (when the memories were created) and 'exclude' (the "
+    "readers' kinds); the first line says how the search was narrowed."
 )
 
 MEMORY_QUERY_SCHEMA = {
@@ -2612,10 +2828,13 @@ MEMORY_QUERY_SCHEMA = {
         },
         "num_results": {
             "type": "integer",
-            "description": "Number of memories to retrieve (default: 5, max: 10).",
+            "description": (
+                "Number of memories to retrieve (default: 5, max: 10; max 50 "
+                "with scope='isolated')."
+            ),
             "default": 5,
             "minimum": 1,
-            "maximum": 10
+            "maximum": MAX_ISOLATED_QUERY_RESULTS
         },
         "source": {
             "type": "string",
@@ -2668,7 +2887,67 @@ MEMORY_QUERY_SCHEMA = {
                 "that'."
             ),
             "default": False
-        }
+        },
+        "scope": {
+            "type": "string",
+            "enum": list(VALID_READ_SCOPES),
+            "description": (
+                "Semantic mode only. 'conversation' (default): memories "
+                "already in your context and this conversation's own are "
+                "left out, and what is shown counts as recalled (retrieval "
+                "counts, in view). 'isolated': for a reader whose context is "
+                "not this conversation's (a script, or a subagent, which "
+                "shares its parent's conversation_id): nothing is left out "
+                "for being in view or in this conversation, nothing shown is "
+                "recorded, so later recall is exactly what it would have "
+                "been, each header gives its creation time instead of an "
+                "age, the first line names the similarity floor, and "
+                "num_results may go to 50. Released memories and archived "
+                "conversations stay hidden under both."
+            ),
+            "default": SCOPE_CONVERSATION,
+        },
+        "from": {
+            "type": "string",
+            "description": (
+                "Semantic mode only: keep memories created at or after this, "
+                "ISO 8601: a date ('2026-09-01' = the start of that day in "
+                "tz) or a moment ('2026-09-01T14:00', read in tz). The bound "
+                "is checked after the search by meaning, so the first line "
+                "says whether every candidate above the similarity floor was "
+                "checked or only the nearest ones."
+            ),
+        },
+        "to": {
+            "type": "string",
+            "description": (
+                "Semantic mode only: keep memories created at or before this "
+                "(inclusive), ISO 8601. A date means the end of that day in "
+                "tz, so 'everything before the 18th' is to='…-17'."
+            ),
+        },
+        "tz": {
+            "type": "string",
+            "description": (
+                "Semantic mode only: IANA timezone 'from'/'to' are read in "
+                "and, under scope='isolated', each header's time is printed "
+                "in. Default: local time, the zone every other stamp you "
+                "are shown is in."
+            ),
+        },
+        "exclude": {
+            "type": "array",
+            "items": {"type": "string", "enum": list(VALID_EXCLUDE_KINDS)},
+            "description": (
+                "Semantic mode only: kinds of memory to leave out, as the "
+                "archive readers take them: 'reflection' (saved reflections) "
+                "and 'inter_session' (letters between sessions). With both, "
+                "what is searched is the talk itself. Usable with source; "
+                "the first line says the filter is on (the search leaves "
+                "them out in its own filter, so it does not count them). A "
+                'list of quoted strings, even for one: ["reflection"].'
+            ),
+        },
     },
     "required": []
 }
