@@ -30,6 +30,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import SCOPE_ENTITY, Principal, authenticate
+from app.auth.policy import VIA_TOKEN
 from app.config import EntityConfig, settings
 from app.database import get_db
 from app.models import Message, MessageRole
@@ -196,6 +198,10 @@ class SessionStartResponse(BaseModel):
     # times in its own (LOCAL_TIMEZONE), and the hook says loudly when the
     # two are not the same clock. None from a server that predates it.
     server_clock: Optional[ServerClock] = None
+    # Something the session should be told about the credential its hooks
+    # sent (a researcher token where an entity token belongs); the hook
+    # prints it on every firing while it holds
+    credential_notice: Optional[str] = None
 
 
 class PeerMessage(BaseModel):
@@ -351,10 +357,140 @@ def _live_sessions(
     return {s.session_id: s.desktop_session_id for s in sessions}
 
 
+# --- Whose memory a call may touch (issue #396)
+#
+# An entity token is bound to one entity, and that is checked here, before
+# a handler reads or writes anything: the request's `entity` must be the
+# token's, and a session whose conversation belongs to another entity is
+# refused. A researcher's credential is bound to nobody and passes through,
+# as every call did before tokens existed.
+#
+# Both refusals are 403s raised before any row is written, which the hooks
+# rely on to say "NOT recorded" outright (hook_util.refused_before_recording).
+
+def _bound_entity_id(principal: Optional[Principal]) -> Optional[str]:
+    """The entity an entity token is bound to; None for the researcher,
+    who is bound to nobody. An entity-scoped credential that names no
+    entity is refused outright (the dependency already refuses such a
+    token; this is the same rule held a second time, so that "no entity"
+    can never be read here as "any entity")."""
+    if principal is None or principal.scope != SCOPE_ENTITY:
+        return None
+    if not principal.entity_id:
+        raise HTTPException(
+            status_code=403,
+            detail="This machine's token is entity-scoped but names no entity.",
+        )
+    return principal.entity_id
+
+
+def _entity_for(principal: Optional[Principal], identifier: Optional[str]) -> EntityConfig:
+    """The entity a hook call acts as. For an entity token that is the
+    token's own entity: named or not, it can be no other. Otherwise the
+    one the request names, or the default."""
+    bound = _bound_entity_id(principal)
+    if bound is None:
+        return _resolve_entity_or_400(identifier)
+    if identifier and identifier.strip():
+        entity = _resolve_entity_or_400(identifier)
+        if entity.index_name != bound:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"This machine's token is bound to {_entity_name(bound)}, and "
+                    f"the request named '{identifier}' (HIM_ENTITY). A token acts "
+                    "only as its own entity: remove HIM_ENTITY from this machine's "
+                    "settings, or mint a token for that entity on the server "
+                    "(python -m app.auth token create --name <machine> --entity "
+                    f"{identifier})"
+                ),
+            )
+        return entity
+    entity = settings.get_entity_by_index(bound)
+    if entity is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"This machine's token is bound to the entity '{bound}', which "
+                "is no longer configured on the server."
+            ),
+        )
+    return entity
+
+
+RESEARCHER_TOKEN_NOTICE = (
+    "This machine's HIM_TOKEN is a researcher token: it can do everything the "
+    "researcher can (archive, delete, override, spend provider credit), and "
+    "this session's shell can read it. A Claude Code machine should hold an "
+    "entity token. Tell the user: mint one on the server (python -m app.auth "
+    "token create --name <this machine> --entity <entity>), put it in "
+    "HIM_TOKEN in place of this one, and revoke this one (python -m app.auth "
+    "token revoke <its name>)."
+)
+
+
+def _credential_notice(principal: Optional[Principal]) -> Optional[str]:
+    """Something the session should be told about the credential its hooks
+    are using, or None. Only one case today: a researcher token in
+    HIM_TOKEN works on every hook call, silently, and puts the researcher's
+    whole reach where the entity's own shell can read it, which is the one
+    thing the two scopes exist to prevent."""
+    if principal is not None and principal.via == VIA_TOKEN and principal.is_researcher:
+        return RESEARCHER_TOKEN_NOTICE
+    return None
+
+
+def _entity_name(index_name: str) -> str:
+    entity = settings.get_entity_by_index(index_name)
+    return f"'{entity.label}'" if entity else f"'{index_name}'"
+
+
+def _refuse_another_entitys_conversation(
+    principal: Optional[Principal], conversation
+) -> None:
+    """The same refusal, for a conversation a handler has just resolved.
+    `resolve_session` can hand back a row this request did not expect: two
+    sessions racing to register one session id, where the loser is given
+    the winner's row. Checked before the handler writes a message, so a
+    403 still means nothing of this request was recorded."""
+    bound = _bound_entity_id(principal)
+    if bound is None or conversation is None:
+        return
+    if conversation.entity_id != bound:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This session's conversation belongs to another entity than "
+                "the one this machine's token is bound to."
+            ),
+        )
+
+
+async def _refuse_another_entitys_session(
+    db: AsyncSession, principal: Optional[Principal], session_id: str
+) -> None:
+    """403 when an entity token names a session recorded for a different
+    entity. A session with no conversation yet belongs to nobody, and the
+    row it gets is created under the token's entity."""
+    bound = _bound_entity_id(principal)
+    if bound is None:
+        return
+    conversation = await cc.get_conversation_for_session(db, session_id)
+    if conversation is not None and conversation.entity_id != bound:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This session's conversation belongs to another entity than "
+                "the one this machine's token is bound to."
+            ),
+        )
+
+
 @router.post("/session-start", response_model=SessionStartResponse)
 async def session_start(
     data: SessionStartRequest,
     db: AsyncSession = Depends(get_db),
+    principal: Optional[Principal] = Depends(authenticate),
 ):
     """
     Return the entity's context block for a starting Claude Code session.
@@ -384,7 +520,8 @@ async def session_start(
     empty conversation whose post-compaction recovery finds nothing.
     """
     _require_enabled()
-    entity = _resolve_entity_or_400(data.entity)
+    entity = _entity_for(principal, data.entity)
+    await _refuse_another_entitys_session(db, principal, data.session_id)
 
     # Resolve without creating: an existing row, or a fork's parent adopted
     # onto this id. A truly new session stays unregistered (lazy) unless it
@@ -401,6 +538,7 @@ async def session_start(
         live_sessions=_live_sessions(data.sessions),
     )
     conversation = resolution.conversation if resolution else None
+    _refuse_another_entitys_conversation(principal, conversation)
     # An adoption that happened on this call speaks for itself; one that
     # landed on an earlier hook with no channel back (the Stop hook's
     # stdout is not injected) left its line for whoever speaks next
@@ -487,6 +625,7 @@ async def session_start(
         git_identity=cc.git_identity_for(entity),
         notes_check=notes_check,
         server_clock=ServerClock(**clock_report()),
+        credential_notice=_credential_notice(principal),
     )
 
 
@@ -494,6 +633,7 @@ async def session_start(
 async def retrieve(
     data: RetrieveRequest,
     db: AsyncSession = Depends(get_db),
+    principal: Optional[Principal] = Depends(authenticate),
 ):
     """
     Record a user turn and run automatic memory retrieval against it.
@@ -508,7 +648,8 @@ async def retrieve(
     UserPromptSubmit hook to inject.
     """
     _require_enabled()
-    entity = _resolve_entity_or_400(data.entity)
+    entity = _entity_for(principal, data.entity)
+    await _refuse_another_entitys_session(db, principal, data.session_id)
 
     # A fork's first recorded event is almost always this prompt — the
     # harness fires no SessionStart at a rewind boundary — so this is the
@@ -525,6 +666,7 @@ async def retrieve(
         live_sessions=_live_sessions(data.sessions),
     )
     conversation = resolution.conversation
+    _refuse_another_entitys_conversation(principal, conversation)
 
     # Rooms registry: a prompt in any room is a chance to catch a rename
     # anywhere (the snapshot covers every live session the hook could see),
@@ -727,6 +869,7 @@ class RecordedResponse(BaseModel):
 async def recorded(
     data: RecordedRequest,
     db: AsyncSession = Depends(get_db),
+    principal: Optional[Principal] = Depends(authenticate),
 ):
     """
     Which of these message ids were recorded for this session.
@@ -741,6 +884,7 @@ async def recorded(
     elsewhere reads as missing.
     """
     _require_enabled()
+    await _refuse_another_entitys_session(db, principal, data.session_id)
     wanted = [mid for mid in (_valid_uuid(m) for m in data.message_ids) if mid]
     if not wanted:
         return RecordedResponse(recorded=[], missing=list(data.message_ids))
@@ -826,6 +970,7 @@ SAVED_REFLECTION_ID = re.compile(r"Saved reflection as memory ([0-9a-f]{8})")
 async def compact_talk_for_session(
     data: CompactTalkRequest,
     db: AsyncSession = Depends(get_db),
+    principal: Optional[Principal] = Depends(authenticate),
 ):
     """
     The compaction mod's one call (issue #383), made on its way down a
@@ -843,7 +988,8 @@ async def compact_talk_for_session(
     (reflection_error), never dropped.
     """
     _require_enabled()
-    entity = _resolve_entity_or_400(data.entity)
+    entity = _entity_for(principal, data.entity)
+    await _refuse_another_entitys_session(db, principal, data.session_id)
     status = data.pre_compaction
     detail = data.pre_compaction_detail
     saving = status == compact_talk.PRE_COMPACTION_SAVED
@@ -861,6 +1007,7 @@ async def compact_talk_for_session(
     if conversation is None and saving:
         resolution = await cc.resolve_session(db, data.session_id, entity, create=True)
         conversation = resolution.conversation if resolution else None
+        _refuse_another_entitys_conversation(principal, conversation)
     if conversation is None:
         return CompactTalkResponse(
             available=False,
@@ -956,6 +1103,7 @@ async def compact_talk_cancel(data: CompactTalkCancelRequest):
 async def log_assistant(
     data: LogAssistantRequest,
     db: AsyncSession = Depends(get_db),
+    principal: Optional[Principal] = Depends(authenticate),
 ):
     """
     Record what the entity said in a turn (from the Stop hook): every text
@@ -965,7 +1113,8 @@ async def log_assistant(
     the Message row's primary key, so a re-fired hook is a no-op.
     """
     _require_enabled()
-    entity = _resolve_entity_or_400(data.entity)
+    entity = _entity_for(principal, data.entity)
+    await _refuse_another_entitys_session(db, principal, data.session_id)
 
     resolution = await cc.resolve_session(
         db,
@@ -978,6 +1127,7 @@ async def log_assistant(
         desktop_session_id=data.host_session_id,
     )
     conversation = resolution.conversation
+    _refuse_another_entitys_conversation(principal, conversation)
 
     # The Stop hook is often the first call after the harness has written
     # a fork's files, so it is a real adopter (issue #359) — but its own
@@ -1033,6 +1183,7 @@ async def log_assistant(
 async def session_end(
     data: SessionEndRequest,
     db: AsyncSession = Depends(get_db),
+    principal: Optional[Principal] = Depends(authenticate),
 ):
     """
     A Claude Code session ended. Runs a final background notes sync.
@@ -1044,7 +1195,8 @@ async def session_end(
     unseen session (nothing to record for a session that never spoke).
     """
     _require_enabled()
-    entity = _resolve_entity_or_400(data.entity)
+    entity = _entity_for(principal, data.entity)
+    await _refuse_another_entitys_session(db, principal, data.session_id)
 
     conversation = await cc.get_conversation_for_session(db, data.session_id)
     sync_started = _spawn_notes_sync(entity)
@@ -1085,7 +1237,10 @@ async def _sync_notes_for_entity(entity_label: str) -> None:
 
 
 @mcp_router.post("/mcp")
-async def mcp_endpoint(request: Request):
+async def mcp_endpoint(
+    request: Request,
+    principal: Optional[Principal] = Depends(authenticate),
+):
     """
     MCP streamable-HTTP transport (stateless, JSON responses).
 
@@ -1096,6 +1251,9 @@ async def mcp_endpoint(request: Request):
     services/claude_code_mcp.py for the protocol handling.
     """
     _require_enabled()
+    # An entity token's calls may name only that entity's conversations
+    # (issue #396): the tools check it where they resolve conversation_id
+    bound = _bound_entity_id(principal)
 
     try:
         body = json.loads(await request.body())
@@ -1113,14 +1271,16 @@ async def mcp_endpoint(request: Request):
         # JSON-RPC batch (allowed before protocol 2025-06-18)
         responses = []
         for message in body:
-            response = await claude_code_mcp.handle_jsonrpc_message(message)
+            response = await claude_code_mcp.handle_jsonrpc_message(
+                message, bound_entity_id=bound
+            )
             if response is not None:
                 responses.append(response)
         if not responses:
             return Response(status_code=202)
         return JSONResponse(content=responses)
 
-    response = await claude_code_mcp.handle_jsonrpc_message(body)
+    response = await claude_code_mcp.handle_jsonrpc_message(body, bound_entity_id=bound)
     if response is None:
         # Notification: acknowledged, no body
         return Response(status_code=202)

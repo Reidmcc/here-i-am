@@ -148,12 +148,14 @@ def _validate_fetch_url(url: str) -> Optional[str]:
     """
     Check that a URL is a public-internet HTTP(S) target.
 
-    web_fetch is scoped to the open web, but the process runs alongside the
-    application's own unauthenticated API (and, in a cloud deployment, a
-    metadata service). Without this check the tool doubles as a request
-    forgery primitive: an entity could read every conversation in the
-    deployment via http://localhost:8000/api/... and exfiltrate it with a
-    second fetch. Hostnames are resolved here so a name that points at a
+    web_fetch is scoped to the open web, but the process runs alongside
+    whatever else listens on the server's machine and network: in a cloud
+    deployment a metadata service that hands out credentials, the local
+    voice servers, anything on the LAN that trusts its neighbors. Without
+    this check the tool doubles as a request forgery primitive. (Before the
+    application's own API needed a credential, issue #396, that included
+    every conversation in the deployment via http://localhost:8000/api/...;
+    a fetched URL carries no credential, so that door is now closed twice.) Hostnames are resolved here so a name that points at a
     private address is rejected too.
 
     Blocking (does DNS); call it via _validate_fetch_url_async from async
@@ -284,8 +286,8 @@ def _should_block_playwright_request(request) -> bool:
     Checking only navigations is not enough: the page's own JavaScript can
     XHR http://localhost:8000/api/... and write the response into the DOM,
     which the caller then extracts and hands to the entity. The application's
-    API sends Access-Control-Allow-Origin: * and has no authentication, so
-    nothing on the server side would refuse that read. The address check runs
+    own API now refuses that read for want of a credential (issue #396), but
+    the other local services a page could reach this way do not. The address check runs
     last so it only resolves DNS for requests that would otherwise be allowed.
 
     Args:

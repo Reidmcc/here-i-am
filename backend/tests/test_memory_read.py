@@ -707,7 +707,8 @@ class TestNeighbors:
 
         foreign = await make_conversation(db, entity_id=OTHER_ENTITY)
         theirs = await make_message(db, foreign, content="not yours")
-        assert "belongs to another entity" in await neighbor_memories(native_ctx(), theirs.id)
+        # Outside the reader's experience, so simply not there
+        assert "No memory found" in await neighbor_memories(native_ctx(), theirs.id)
 
         tool_row = await make_message(db, conversation, role=MessageRole.TOOL_RESULT, content="[]")
         assert "not a memory" in await neighbor_memories(native_ctx(), tool_row.id)
