@@ -600,12 +600,12 @@ def test_host_session_id_is_read_from_a_snapshot_when_given(
     assert priors[-1] == PARENT_SESSION_ID
 
 
-def test_host_session_id_comes_from_the_environment_first(
+def test_host_session_id_comes_from_the_environment_with_no_registry_entry(
     tmp_path, isolated_desktop_dir, monkeypatch
 ):
     """The desktop app sets CLAUDE_CODE_HOST_SESSION_ID on the Claude Code
-    process and hooks inherit it, so the parent is findable with no file at
-    all — no registry, no write-timing edge."""
+    process and hooks inherit it, so the parent is findable with no registry
+    to read."""
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", FORK_SESSION_ID)
     monkeypatch.setenv(
         "CLAUDE_CODE_HOST_SESSION_ID", "local_7d7e55dd-4952-41b5-b47e-4182d676f06b"
@@ -615,6 +615,46 @@ def test_host_session_id_comes_from_the_environment_first(
         FORK_SESSION_ID, config_dir=str(tmp_path / "no-registry-here")
     )
     assert priors[-1] == PARENT_SESSION_ID
+
+
+def test_a_nested_session_does_not_borrow_the_rooms_host(
+    tmp_path, isolated_desktop_dir, monkeypatch
+):
+    """A `claude -p` run from a room's Bash inherits the room's host id and
+    has its own session id, so the environment alone makes it look like the
+    room's next fork, with the room still running: adopted, it would take
+    the room's conversation. Its registry entry has no host (measured), and
+    outranks the environment however it is read."""
+    host = "local_7d7e55dd-4952-41b5-b47e-4182d676f06b"
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", FORK_SESSION_ID)
+    monkeypatch.setenv("CLAUDE_CODE_HOST_SESSION_ID", host)
+    write_desktop_records(isolated_desktop_dir, RECORD_BEFORE_THE_REWRITE)
+    write_registry(tmp_path, {**FORK_REGISTRY_ENTRY, "hostSessionId": None})
+
+    snapshot = hook_util.live_sessions_snapshot(
+        config_dir=str(tmp_path), own_session_id=FORK_SESSION_ID
+    )
+    for sessions in (None, snapshot):
+        hints = hook_util.lineage_hints(
+            FORK_SESSION_ID, None, config_dir=str(tmp_path), sessions=sessions
+        )
+        assert hints["host_session_id"] is None
+        assert hints["prior_session_ids"] == []
+
+
+def test_a_snapshot_entry_from_a_record_alone_is_not_a_registry_answer(
+    tmp_path, isolated_desktop_dir, monkeypatch
+):
+    """live_sessions_snapshot appends the hook's own session from its desktop
+    record when the registry didn't list it: that says nothing about the
+    host, so the environment still may."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", FORK_SESSION_ID)
+    monkeypatch.setenv("CLAUDE_CODE_HOST_SESSION_ID", "local_env")
+    assert hook_util.host_session_id_for(
+        FORK_SESSION_ID,
+        config_dir=str(tmp_path / "no-registry-here"),
+        sessions=[{"session_id": FORK_SESSION_ID, "desktop_session_id": "local_env"}],
+    ) == "local_env"
 
 
 def test_the_environment_is_ignored_when_it_describes_another_session(

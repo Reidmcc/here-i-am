@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import uuid
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -93,6 +93,11 @@ class SessionStartRequest(BaseModel):
     # entry uuids from the transcript tail (which are Message row ids).
     prior_session_ids: List[str] = []
     transcript_message_ids: List[str] = []
+    # The desktop app's own id for the session this hook ran in (its
+    # hostSessionId). A restart or rewind keeps it, and a copy started to
+    # run beside its parent has a new one, so it is what keeps the copy from
+    # taking the parent's conversation. None: a CLI session, or an older hook
+    host_session_id: Optional[str] = None
     # Whether the hook sees the compaction mod loaded (issue #394 review):
     # the identity block then names the turn it gives at compaction. An
     # older hook sends nothing, which reads as not loaded
@@ -244,6 +249,7 @@ class RetrieveRequest(BaseModel):
     # Fork-adoption lineage hints (issue #357; see SessionStartRequest)
     prior_session_ids: List[str] = []
     transcript_message_ids: List[str] = []
+    host_session_id: Optional[str] = None
 
 
 class RetrieveResponse(BaseModel):
@@ -306,6 +312,7 @@ class LogAssistantRequest(BaseModel):
     # Fork-adoption lineage hints (issue #357; see SessionStartRequest)
     prior_session_ids: List[str] = []
     transcript_message_ids: List[str] = []
+    host_session_id: Optional[str] = None
 
 
 class LogAssistantResponse(BaseModel):
@@ -341,6 +348,14 @@ def _resolve_entity_or_400(identifier: Optional[str]) -> EntityConfig:
             detail=f"Unknown entity '{identifier}' (use a configured index name or label)",
         )
     return entity
+
+
+def _live_sessions(
+    sessions: List[SessionObservationIn],
+) -> Dict[str, Optional[str]]:
+    """The live sessions the hook could see: Claude Code session id to
+    desktop session id, None for one that has none."""
+    return {s.session_id: s.desktop_session_id for s in sessions}
 
 
 # --- Whose memory a call may touch (issue #396)
@@ -520,6 +535,8 @@ async def session_start(
         create=data.source == "compact",
         prior_session_ids=data.prior_session_ids,
         transcript_message_ids=data.transcript_message_ids,
+        desktop_session_id=data.host_session_id,
+        live_sessions=_live_sessions(data.sessions),
     )
     conversation = resolution.conversation if resolution else None
     _refuse_another_entitys_conversation(principal, conversation)
@@ -533,7 +550,16 @@ async def session_start(
     context = ""
     bulk_parts = []
     fresh = conversation is None
-    if fresh:
+    # A copy running beside another session, with nothing recorded yet
+    unrecorded_copy = fresh and resolution is not None
+    if unrecorded_copy:
+        # The copied transcript already carries the injections, as a resume's
+        # does; what is wrong in them here is the conversation id. The first
+        # prompt, which opens the row, says this too: a SessionStart that
+        # found the backend down said nothing
+        conversation_id = cc.conversation_id_for_session(data.session_id)
+        context = cc.side_fork_notice(conversation_id, resolution.forked_from)
+    elif fresh:
         conversation_id = cc.conversation_id_for_session(data.session_id)
         context, bulk_parts = await cc.build_session_start_context(
             db, conversation_id, entity, compact_talk_mod=data.compact_talk_mod,
@@ -583,7 +609,7 @@ async def session_start(
     # Only a firing that names the notes (startup, compact) is checked; a
     # resume's transcript already carries the block, and the check with it
     notes_check = None
-    if fresh or data.source == "compact":
+    if (fresh and not unrecorded_copy) or data.source == "compact":
         check = cc.notes_check_for(entity, data.notes_root, data.path_flavor)
         notes_check = NotesCheck(**check) if check else None
 
@@ -637,6 +663,8 @@ async def retrieve(
         create=True,
         prior_session_ids=data.prior_session_ids,
         transcript_message_ids=data.transcript_message_ids,
+        desktop_session_id=data.host_session_id,
+        live_sessions=_live_sessions(data.sessions),
     )
     conversation = resolution.conversation
     _refuse_another_entitys_conversation(principal, conversation)
@@ -1097,6 +1125,7 @@ async def log_assistant(
         create=True,
         prior_session_ids=data.prior_session_ids,
         transcript_message_ids=data.transcript_message_ids,
+        desktop_session_id=data.host_session_id,
     )
     conversation = resolution.conversation
     _refuse_another_entitys_conversation(principal, conversation)
