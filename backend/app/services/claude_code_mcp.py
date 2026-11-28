@@ -234,8 +234,16 @@ def get_tool_listing() -> List[Dict[str, Any]]:
     ]
 
 
+OTHER_ENTITY_ERROR = (
+    "Error: That conversation belongs to another entity than the one this "
+    "machine's token is bound to, so these tools will not act on it. Use the "
+    "conversation_id from your own session-start context."
+)
+
+
 async def build_tool_context(
     conversation_id: Optional[str],
+    bound_entity_id: Optional[str] = None,
 ) -> Tuple[Optional[MemoryToolContext], Optional[str]]:
     """
     Build a per-request MemoryToolContext for an MCP tool call.
@@ -248,6 +256,11 @@ async def build_tool_context(
     memory the call may touch, so a call without one — or one whose row
     records no entity — is refused rather than run as a guessed entity:
     a default would let one entity's session read another's archive.
+
+    `bound_entity_id` is the entity of the token the call arrived with
+    (issue #396), when it arrived with an entity token: the conversation
+    must then be that entity's. Without it, naming another entity's
+    conversation id was all it took to read and write that entity's memory.
 
     Returns (context, error) — exactly one is None.
     """
@@ -288,6 +301,8 @@ async def build_tool_context(
                 "will not guess. Use the conversation_id from your session-start "
                 "context."
             )
+        if bound_entity_id is not None and entity_id != bound_entity_id:
+            return None, OTHER_ENTITY_ERROR
 
         # After a compaction only post-compaction links still represent
         # in-context content, and only the post-compaction slice of this
@@ -316,6 +331,7 @@ async def build_tool_context(
 
 async def resolve_claude_code_conversation(
     conversation_id: Optional[str],
+    bound_entity_id: Optional[str] = None,
 ) -> Tuple[Optional[Conversation], Optional[str]]:
     """
     The Claude Code conversation a room tool acts on, as (conversation,
@@ -345,6 +361,8 @@ async def resolve_claude_code_conversation(
             "experience; the rooms registry records Claude Code sessions. "
             "Use the conversation_id from your session-start context."
         )
+    if bound_entity_id is not None and conversation.entity_id != bound_entity_id:
+        return None, OTHER_ENTITY_ERROR
     if not conversation.external_session_id:
         return None, "Error: That conversation has no Claude Code session id."
     return conversation, None
@@ -361,7 +379,9 @@ def _entity_label_for(conversation: Conversation) -> Optional[str]:
     return None
 
 
-async def execute_room_tool(name: str, arguments: Dict[str, Any]) -> str:
+async def execute_room_tool(
+    name: str, arguments: Dict[str, Any], bound_entity_id: Optional[str] = None
+) -> str:
     """declare_room / retire_room: the self's half of the rooms registry."""
     from app.services.claude_code_mode import rooms_registry_enabled
 
@@ -371,7 +391,7 @@ async def execute_room_tool(name: str, arguments: Dict[str, Any]) -> str:
             "CLAUDE_CODE_ROOMS_REGISTRY_ENABLED must both be on)."
         )
     conversation, error = await resolve_claude_code_conversation(
-        arguments.get("conversation_id")
+        arguments.get("conversation_id"), bound_entity_id
     )
     if error:
         return error
@@ -449,7 +469,9 @@ async def execute_room_tool(name: str, arguments: Dict[str, Any]) -> str:
         return f"Error: {e}"
 
 
-async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
+async def execute_tool(
+    name: str, arguments: Dict[str, Any], bound_entity_id: Optional[str] = None
+) -> Optional[str]:
     """
     Execute one MCP tool call. Returns the result text, or None for an
     unknown tool name (the caller maps that to a JSON-RPC error).
@@ -459,14 +481,14 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
     arguments = arguments or {}
     if name in ROOM_TOOL_NAMES:
         try:
-            return await execute_room_tool(name, arguments)
+            return await execute_room_tool(name, arguments, bound_entity_id)
         except Exception as e:
             logger.error(f"[CC MCP] Tool '{name}' failed: {e}")
             return f"Error executing {name}: {e}"
     if name not in MEMORY_TOOL_NAMES:
         return None
 
-    ctx, error = await build_tool_context(arguments.get("conversation_id"))
+    ctx, error = await build_tool_context(arguments.get("conversation_id"), bound_entity_id)
     if error:
         return error
 
@@ -508,6 +530,7 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
                 scope=arguments.get("scope"),
                 direction=arguments.get("direction"),
                 max_pages=arguments.get("max_pages"),
+                exclude=arguments.get("exclude"),
             )
         if name == "memory_find":
             return await memory_tools.find_memories(
@@ -527,6 +550,7 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
                 scope=arguments.get("scope"),
                 direction=arguments.get("direction"),
                 max_pages=arguments.get("max_pages"),
+                exclude=arguments.get("exclude"),
             )
         if name == "memory_neighbors":
             return await memory_tools.neighbor_memories(
@@ -537,6 +561,7 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Optional[str]:
                 include_released=bool(arguments.get("include_released", False)),
                 include_model=bool(arguments.get("include_model", False)),
                 scope=arguments.get("scope"),
+                exclude=arguments.get("exclude"),
             )
         return await memory_tools.release_memory(
             ctx, arguments.get("memory_id", ""), undo=bool(arguments.get("undo", False))
@@ -554,10 +579,14 @@ def _error(request_id: Any, code: int, message: str) -> Dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
 
-async def handle_jsonrpc_message(message: Any) -> Optional[Dict[str, Any]]:
+async def handle_jsonrpc_message(
+    message: Any, bound_entity_id: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
     """
     Handle one JSON-RPC message. Returns the response object, or None for
-    notifications (which get no response body).
+    notifications (which get no response body). `bound_entity_id` is the
+    entity of the token the request arrived with, if it was an entity token
+    (see build_tool_context).
     """
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
         return _error(None, INVALID_REQUEST, "Invalid JSON-RPC request")
@@ -593,7 +622,7 @@ async def handle_jsonrpc_message(message: Any) -> Optional[Dict[str, Any]]:
     if method == "tools/call":
         params = message.get("params") or {}
         name = params.get("name")
-        text = await execute_tool(name, params.get("arguments") or {})
+        text = await execute_tool(name, params.get("arguments") or {}, bound_entity_id)
         if text is None:
             return _error(request_id, INVALID_PARAMS, f"Unknown tool: {name}")
         return _result(request_id, {

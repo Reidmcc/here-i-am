@@ -3,9 +3,9 @@
  *
  * Message bodies are model output and are inserted with innerHTML
  * (messages.js renderMarkdown path, chat.js edit/regenerate paths). The
- * app is served same-origin with the API and has no auth, so script
- * execution here is equivalent to full API control - these cases must
- * stay closed.
+ * app is served same-origin with the API and the researcher's login
+ * cookie rides every request the page makes, so script execution here is
+ * equivalent to full API control - these cases must stay closed.
  */
 
 import { describe, it, expect } from 'vitest';

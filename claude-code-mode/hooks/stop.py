@@ -34,7 +34,8 @@ outright. Any other failure is checked against /recorded by the row id
 this hook chose: recorded means nothing was lost and nothing is said;
 missing is NOT recorded; a check that fails too is UNCONFIRMED.
 
-Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE (see session_start.py).
+Environment: HIM_BACKEND_URL, HIM_TOKEN, HIM_ENTITY, HIM_DISABLE (see
+session_start.py).
 """
 import json
 import os
@@ -217,6 +218,17 @@ def recording_failure_notice(error, session_id: str, entry_uuid):
             "[HERE I AM] The Here I Am backend could not be reached at the end "
             f"of this turn ({err}). What you said this turn was NOT recorded to "
             f"your long-term memory. {PRESERVE} the backend could not be reached."
+        )
+    # Refused for its credential (issue #396): checked before anything is
+    # written, so NOT recorded without asking /recorded (refused as well).
+    # The memory tools ride the same token, so the notes files are the way
+    # to keep anything
+    refusal = hook_util.auth_refusal_notice(error)
+    if refusal:
+        return (
+            f"[HERE I AM] {refusal} What you said this turn was NOT recorded "
+            "to your long-term memory. Preserve anything important in your "
+            "notes files."
         )
     row_id = _canonical_id(entry_uuid)
     check_error = None

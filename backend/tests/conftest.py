@@ -28,6 +28,15 @@ def _no_arrive_whole(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_token(monkeypatch):
+    """A Claude Code session's environment carries this machine's real
+    token for the real backend (HIM_TOKEN, issue #396), and the hook tests
+    run the hooks in this process and in subprocesses that inherit it. No
+    test sends it anywhere: tests about the token set one of their own."""
+    monkeypatch.delenv("HIM_TOKEN", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _utc_clock(monkeypatch):
     """Every time the entity is shown is rendered in the human's local zone
     (services/local_time.py), which unset is the machine's own: Eastern on
@@ -37,6 +46,28 @@ def _utc_clock(monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "local_timezone", "UTC")
+
+
+@pytest.fixture(autouse=True)
+def _signed_in_as_researcher(request, monkeypatch):
+    """Authentication is always on (issue #396): every route answers only
+    to a credential. The suite is about what the routes do, so by default
+    each request arrives already identified as the researcher, exactly as
+    if it carried a researcher token. Only the step that reads the
+    credential is replaced; the scope check and everything after it run as
+    in production.
+
+    Tests about authentication itself are marked `real_auth` and get none
+    of this: they log in, or present tokens, or are refused."""
+    if request.node.get_closest_marker("real_auth"):
+        return
+    from app.auth import dependency
+    from app.auth.policy import SCOPE_RESEARCHER, VIA_TOKEN, Principal
+
+    async def researcher(_request, _db):
+        return Principal(scope=SCOPE_RESEARCHER, via=VIA_TOKEN, name="the test suite")
+
+    monkeypatch.setattr(dependency, "resolve_principal", researcher)
 
 
 @pytest.fixture(scope="session")
@@ -80,6 +111,29 @@ async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
     async with async_session() as session:
         yield session
         await session.rollback()
+
+
+@pytest.fixture
+async def auth_app(test_engine):
+    """The real app on a test database, for tests of authentication
+    (marked `real_auth`): yields (app, session maker). Each request gets
+    its own database session, as in production, so a test sees only what
+    was committed."""
+    from app.auth.throttle import login_throttle
+    from app.database import get_db
+    from app.main import app
+
+    maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with maker() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    login_throttle.success()
+    yield app, maker
+    login_throttle.success()
+    app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.fixture

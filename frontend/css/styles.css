@@ -3130,3 +3130,86 @@ body.resizing-input {
     color: var(--text-muted);
     font-style: italic;
 }
+
+
+/* Login (issue #396) */
+.login-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 3000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--bg-primary);
+}
+
+.login-overlay[hidden] {
+    display: none;
+}
+
+.login-card {
+    width: min(360px, calc(100vw - 32px));
+    padding: 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+}
+
+.login-card label {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.login-card input[type="password"] {
+    padding: 10px 12px;
+    font-size: 15px;
+    color: var(--text-primary);
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+}
+
+.login-card input[type="password"]:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.login-message {
+    margin: 0;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.login-error {
+    margin: 0;
+    font-size: 13px;
+    color: var(--danger);
+}
+
+.login-error[hidden] {
+    display: none;
+}
+
+.login-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.secondary-btn {
+    padding: 8px 14px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.secondary-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
