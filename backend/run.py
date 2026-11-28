@@ -6,11 +6,11 @@ import uvicorn
 
 
 def server_options(settings) -> dict:
-    """uvicorn's options from settings: HIM_HOST (default 127.0.0.1) and
-    HIM_RELOAD (default on). See issue #396."""
+    """uvicorn's options from settings: HIM_HOST (default 127.0.0.1),
+    HIM_PORT (default 8000) and HIM_RELOAD (default on). See issue #396."""
     return {
         "host": settings.him_host,
-        "port": 8000,
+        "port": settings.him_port,
         "reload": settings.him_reload,
     }
 

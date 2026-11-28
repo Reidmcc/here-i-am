@@ -30,7 +30,16 @@ Two jobs the individual hook scripts delegate here:
   seconds, and which says whether a failed request could have reached the
   server at all (see "Talking to the backend" below).
 
+- **Say who is calling.** The backend answers only to a credential
+  (issue #396): every request carries this machine's token, and a refusal
+  is said in its own words, apart from "unreachable" (see "The token").
+
 Environment:
+    HIM_TOKEN          this machine's token for the backend, minted on the
+                       server with `python -m app.auth token create` and
+                       bound to one entity. Sent as a bearer header on
+                       every request; without it the backend refuses them
+                       all
     HIM_HOOK_TIMING_LOG  a file path; when set, every backend request
                        appends one JSON line (path, outcome, attempts,
                        connect and total milliseconds), the measurement
@@ -721,10 +730,131 @@ def recorded_message_ids(session_id: str, message_ids: list) -> set:
     return {str(mid) for mid in (check.get("recorded") or [])}
 
 
+# --- The token (issue #396)
+#
+# The backend answers only to a credential. A Claude Code machine's is a
+# token minted on the server (`python -m app.auth token create --name
+# <machine> --entity <entity>`), bound to one entity and good only for the
+# endpoints these hooks and the memory tools call. It reaches the hooks as
+# HIM_TOKEN in the session's environment, beside HIM_BACKEND_URL.
+#
+# The entity's own shell can read it, and that is accepted: it grants what
+# the hooks already do on the entity's behalf and nothing of the
+# researcher's.
+#
+# A refusal is its own kind of failure, said in its own words. The backend
+# checks the credential before any handler runs, and an entity token's
+# further limits (another entity's session) are checked before any row is
+# written, so a 401 or 403 means nothing of the request was recorded: the
+# recording hooks say NOT recorded outright and skip the /recorded check,
+# which would be refused the same way.
+
+TOKEN_ENV = "HIM_TOKEN"
+
+
+def backend_token() -> Optional[str]:
+    return (os.environ.get(TOKEN_ENV) or "").strip() or None
+
+
 def backend_headers() -> dict:
     """The headers of every backend request: the one place a header is
-    added, so every hook sends it."""
-    return {"Content-Type": "application/json"}
+    added, so every hook sends it. The token goes only here, never into a
+    URL or a payload."""
+    headers = {"Content-Type": "application/json"}
+    token = backend_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def credential_lines(body) -> list:
+    """Lines the SessionStart hook prints about this machine's credential
+    setup, on every firing while they hold; none when all is well.
+
+    Two things, both of which work silently and are wrong:
+
+    - The backend's `credential_notice`: HIM_TOKEN is a researcher token.
+      Every hook call succeeds with it, and it puts the researcher's whole
+      reach where this session's shell can read it.
+    - HIM_BACKEND_URL ends in a slash. The hooks strip it, but an MCP entry
+      built as `${HIM_BACKEND_URL}/mcp` (the plugin's, and the one the
+      docs give) then points at `//mcp`, which the server doesn't serve:
+      the hooks work and the memory tools are gone, with nothing in the
+      harness saying why.
+    """
+    lines = []
+    notice = _optional_str(body.get("credential_notice")) if isinstance(body, dict) else None
+    if notice:
+        lines.append(f"[HERE I AM] {notice}")
+    url = os.environ.get("HIM_BACKEND_URL") or ""
+    if url.strip().endswith("/"):
+        lines.append(
+            f"[HERE I AM] HIM_BACKEND_URL ends with a slash ({url.strip()}). The "
+            "hooks ignore it, but the memory tools' server address is built as "
+            "${HIM_BACKEND_URL}/mcp and does not resolve with it: if your memory "
+            "tools are missing this session, that is why. Tell the user to "
+            "remove the trailing slash from HIM_BACKEND_URL in this machine's "
+            "Claude Code settings."
+        )
+    return lines
+
+
+def refused_before_recording(error: Exception) -> bool:
+    """Whether the backend refused a request for its credential (401) or
+    for what the credential may do (403): both before anything was
+    written."""
+    return isinstance(error, urllib.error.HTTPError) and error.code in (401, 403)
+
+
+def _refusal_detail(error: Exception) -> str:
+    """The backend's own sentence for a refusal: the `detail` of its JSON
+    body, which post_backend carries in the error's message after the
+    status reason; the raw text when it isn't that shape."""
+    text = str(getattr(error, "reason", "") or getattr(error, "msg", "") or "")
+    _reason, _, body = text.partition(": ")
+    try:
+        detail = json.loads(body).get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip().rstrip(".")
+    except Exception:
+        pass
+    return (body or text).strip().rstrip(".")
+
+
+MINT_ADVICE = (
+    "mint one on the server (in its backend directory: python -m app.auth "
+    "token create --name <this machine> --entity <entity>), set it as "
+    f"{TOKEN_ENV} in the \"env\" block of this machine's Claude Code settings "
+    "and as the Authorization header of its here-i-am MCP server, and "
+    "restart the session"
+)
+
+
+def auth_refusal_notice(error: Exception) -> Optional[str]:
+    """What to say when the backend refused this machine's credential, or
+    None for any other failure. One sentence naming which of three things
+    happened (no token here, a token the server doesn't accept, a token
+    that isn't allowed this), then what to tell the user. The memory tools
+    ride the same token, so their loss is named too."""
+    if not refused_before_recording(error):
+        return None
+    tools = "The memory tools (MCP) use the same token and are refused the same way."
+    if error.code == 403:
+        return (
+            "The Here I Am backend refused this request as not allowed for "
+            f"this machine's token (403: {_refusal_detail(error)}). Tell the user."
+        )
+    if backend_token() is None:
+        return (
+            "The Here I Am backend requires a token and this machine has "
+            f"none: {TOKEN_ENV} is not set in this session's environment "
+            f"(the backend answered 401). {tools} Tell the user: {MINT_ADVICE}."
+        )
+    return (
+        f"The Here I Am backend refused this machine's token (401: {TOKEN_ENV} "
+        f"is unknown to the server or was revoked). {tools} Tell the user: "
+        f"{MINT_ADVICE}."
+    )
 
 
 def post_backend(path: str, payload: dict, timeout: Union[RequestTimeouts, float]):

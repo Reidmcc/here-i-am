@@ -503,8 +503,9 @@ class TestPlaywrightRequestsStayPublic:
 
     Gating only navigations leaves the page's own JavaScript free to XHR the
     application's API on localhost and render the response into the DOM,
-    where the text extractor picks it up. The API allows every origin and has
-    no authentication, so the request would succeed on the server side.
+    where the text extractor picks it up. The API itself now needs a
+    credential (issue #396), but other local services a page can reach the
+    same way don't, so the block stays.
     """
 
     @staticmethod

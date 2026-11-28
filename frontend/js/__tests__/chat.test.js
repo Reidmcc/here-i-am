@@ -200,6 +200,49 @@ describe('Chat Module', () => {
 
             expect(mockCallbacks.handleInputChange).toHaveBeenCalled();
         });
+
+        it('puts the message back in the box when the login had ended', async () => {
+            // The server refuses before it stores anything (issue #396), so
+            // the words exist only on this page. They must not be lost.
+            mockElements.messageInput.value = 'Something I typed for a while';
+            window.api.sendMessageStream = vi.fn(() => {
+                const refused = new Error('The login session has expired or was signed out.');
+                refused.unauthorized = true;
+                return Promise.reject(refused);
+            });
+
+            await sendMessage();
+
+            expect(mockElements.messageInput.value).toBe('Something I typed for a while');
+            // No bubble is left claiming it was sent, and no error bubble
+            expect(mockElements.messages.textContent).not.toContain('Something I typed');
+            expect(mockElements.messages.textContent).not.toContain('Error:');
+            expect(state.isLoading).toBe(false);
+        });
+
+        it('does not overwrite something typed since', async () => {
+            mockElements.messageInput.value = 'The first message';
+            window.api.sendMessageStream = vi.fn(() => {
+                mockElements.messageInput.value = 'typed while it was sending';
+                const refused = new Error('ended');
+                refused.unauthorized = true;
+                return Promise.reject(refused);
+            });
+
+            await sendMessage();
+
+            expect(mockElements.messageInput.value).toBe('typed while it was sending');
+        });
+
+        it('any other failure still shows as an error and keeps the bubble', async () => {
+            mockElements.messageInput.value = 'Test message';
+            window.api.sendMessageStream = vi.fn(() => Promise.reject(new Error('boom')));
+
+            await sendMessage();
+
+            expect(mockElements.messageInput.value).toBe('');
+            expect(mockElements.messages.textContent).toContain('Error: boom');
+        });
     });
 
     describe('sendMessage in multi-entity mode', () => {

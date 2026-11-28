@@ -152,7 +152,14 @@ cp .env.example .env
 # Edit .env with your API keys
 ```
 
-4. Run the application:
+4. Set the password you will log in with:
+```bash
+./auth.sh init       # Linux/macOS
+auth.bat init        # Windows (PowerShell or Command Prompt)
+```
+The server answers only to a credential: this password in the browser, and a token for each machine that runs Claude Code sessions (the same command mints the first one when Claude Code mode is on; with more than one entity configured, add `--entity <name>`). See [docs/authentication.md](docs/authentication.md).
+
+5. Run the application:
 ```bash
 # Option A: Using launcher script (recommended, auto-activates venv)
 ./start.sh           # Linux/macOS
@@ -163,7 +170,7 @@ source venv/bin/activate
 python run.py
 ```
 
-5. Open http://localhost:8000 in your browser.
+6. Open http://localhost:8000 in your browser and log in.
 
 ## Configuration
 
@@ -251,6 +258,10 @@ XTTS v2, StyleTTS 2, and Whisper run as separate local servers providing GPU-acc
 
 GitHub repository access, the Codebase Navigator (Devstral), and Moltbook are configured per [docs/integrations.md](docs/integrations.md).
 
+### Authentication
+
+Every request needs a credential; there is no switch that turns this off, and localhost is not trusted without one. The researcher logs in at the web page with a password. Machines (the Claude Code hooks, the memory tools, scripts) send bearer tokens, each scoped either to one entity's Claude Code endpoints or to everything. Passwords and tokens are made only by the `auth` command (`auth.bat` / `auth.sh`, i.e. `python -m app.auth`) on the server's own machine. Setup, the cutover for an existing install, and what it does and does not protect are in [docs/authentication.md](docs/authentication.md); running the server on a cloud machine reachable only from your own devices is [docs/deployment.md](docs/deployment.md).
+
 ### Claude Code Mode
 
 An entity can also operate from inside Claude Code sessions — Claude Code runs the model and tools, while Here I Am supplies identity, automatic memory retrieval, and memory formation through lifecycle hooks, sharing the same memory database as the native UI. See [docs/claude-code-mode.md](docs/claude-code-mode.md). The Claude Code plugin also ships two output styles that swap the harness's default software-engineering prompt for a minimal one (a room style for conversation sessions and a workshop style that keeps the coding instructions for build sessions); enabling the plugin registers them, and selecting one is up to you — see [claude-code-mode/README.md](claude-code-mode/README.md#output-styles).
@@ -263,7 +274,7 @@ See [docs/tools.md](docs/tools.md) for the full catalog with descriptions and re
 
 ## API Reference
 
-A full endpoint listing is in [docs/api.md](docs/api.md). FastAPI's interactive pages (Swagger UI at `/docs`, ReDoc at `/redoc`) are off by default; set `API_DOCS_ENABLED=true` to serve them.
+A full endpoint listing is in [docs/api.md](docs/api.md). FastAPI's interactive pages (Swagger UI at `/docs`, ReDoc at `/redoc`) are off by default; set `API_DOCS_ENABLED=true` to serve them (to a logged-in researcher, like everything else).
 
 ## Memory System Architecture
 
