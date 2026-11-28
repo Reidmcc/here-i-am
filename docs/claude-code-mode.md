@@ -430,14 +430,17 @@ are never read — the extraction takes `text` blocks only.
   `/log-assistant`), the backend resolves it to the conversation it
   continues from two lineage hints the hooks send, and **adopts** that
   conversation rather than create a new one: `resolve_session` /
-  `find_lineage_conversation`. The two hints, tried strongest first and
-  both entity-scoped (a hint into another entity's conversation is never
+  `find_lineage_conversation`. (A fork that runs *beside* its parent is not
+  a continuation and is never adopted: next bullet.) The two hints, both
+  entity-scoped (a hint into another entity's conversation is never
   adopted — the #356 fence):
   - `transcript_message_ids`: end-of-turn assistant entry uuids from the
     session's own transcript tail. A fork copies these uuids unchanged, and
     the Stop hook stores each as its Message row's primary key, so any that
     is a row of one of this entity's Claude Code conversations names the
-    parent directly — no dependency on the desktop app.
+    parent directly — no dependency on the desktop app. Where they name
+    several, the one the newest entry names is the nearest (which row was
+    touched last says nothing about it).
   - `prior_session_ids`: the desktop record's own `priorCliSessionIds`,
     resolved through the same current-key-or-alias lookup. That list is
     stored **oldest first**, so it is walked in reverse — the immediate
@@ -600,17 +603,18 @@ are never read — the extraction takes `text` blocks only.
   with no `hostSessionId` (a CLI session) gets nothing rather than a guess
   at some other desktop session's record.
 
-  `hostSessionId` itself comes from the environment when it can: the
-  desktop app sets `CLAUDE_CODE_HOST_SESSION_ID` (and
-  `CLAUDE_CODE_SESSION_ID`) on the Claude Code process and children inherit
-  them, so no file needs to have been written yet. It is trusted only when
-  `CLAUDE_CODE_SESSION_ID` matches the session id the hook was handed — the
-  environment describes the *process*, and a firing for another session's
-  id must not borrow this process's desktop host. Observed in tool
-  subprocesses of the CLI rather than in a hook specifically; the registry
-  file is the fallback and is itself early enough (written six seconds
-  before the first prompt on a measured rewind), so a hook that inherited
-  nothing loses no ground.
+  `hostSessionId` comes from the registry's entry for this session (written
+  six seconds before the first prompt on a measured rewind), an entry with
+  none included. Only when the registry has no entry does the environment
+  answer: the desktop app sets `CLAUDE_CODE_HOST_SESSION_ID` on the Claude
+  Code process and children inherit it, and it is trusted only when
+  `CLAUDE_CODE_SESSION_ID` matches the session id the hook was handed, so a
+  firing for another session's id can't borrow this process's host. That
+  guard is not enough by itself, which is why the registry goes first
+  (it was the other way round at first): a `claude -p` run from a room's
+  Bash inherits the room's host id and has its *own* session id, so the two
+  agree and it looks like the room's next fork (measured 2026-11-23 from
+  inside a real hook; its registry entry has `hostSessionId` null).
 
   With that, adoption lands on the fork's **first prompt**, before the
   model's turn, so the whole first turn runs under the room's own
@@ -647,7 +651,74 @@ are never read — the extraction takes `text` blocks only.
   adoption: conversation 18bb8e2b... merged into c44d3765...` at 16:23:32
   with `transcript_message_ids=16, prior_session_ids=6`, then `known` on the
   next prompt), and a `created` line with both hint counts at zero is the
-  signature of the miss this section fixes.
+  signature of the miss this section fixes. The line carries the desktop
+  session id too, and a copy's says so (`created beside its parent`).
+
+- **A fork that runs beside its parent gets its own conversation.** Everything
+  above was designed for a fork that *replaces* its parent. The desktop app
+  also makes copies that run *beside* it: a side session started with the
+  conversation so far (`start_session`, context `fork`), a hand-off, the
+  Fork command, a `/btw` side chat. The transcript hint matches the parent
+  exactly as a restart's does (the app copies the file whole, before the
+  copy starts, so it is full at the copy's very first hook), and adopting
+  there put two live sessions in one conversation: the parent's
+  `external_session_id` went to the copy, the parent's own id became an
+  alias through which its next prompt landed in the same row, the rooms row
+  pointed at the copy, and a compaction in either moved the boundary of
+  both. Found by reading the app's code and reproduced as a test; no such
+  fork had been made on the machine it was found on.
+
+  **What separates them is the desktop session id**, the `hostSessionId` the
+  hooks already read, sent as `host_session_id` with the lineage hints. A
+  restart or rewind keeps it: of 181 local transcripts, 31 pairs share
+  assistant entries, and in all 31 both sides belong to one desktop session.
+  A copy has its own, because every one of them goes through the app's
+  `forkSession` (read in 6.6395.0), which opens a new desktop session. The
+  id comes from the environment or the per-process registry, so this needs
+  no desktop record: those can move (on one machine they did) and the rule
+  does not notice. A conversation remembers the desktop session it was last
+  recorded under (`Conversation.desktop_session_id`, written by hooks
+  carrying the session id it is keyed on now), and a matched conversation is
+  - *this desktop session's*, when its id is the hook's: adopted, ahead of
+    anything less certain. So is whatever `prior_session_ids` names, since
+    that list is this desktop session's own record and `forkSession` starts
+    it empty;
+  - *another's*, when they differ, whether the parent's comes from its row or
+    from the hook's snapshot of live sessions (a parent whose row predates
+    the column, still running). Never adopted. And never, whatever the
+    parent's id, when the copy's own is `local_<its Claude Code id>`:
+    `forkSession` names the copied transcript after the new desktop session,
+    which no restart does (none of 133 local records names its own), so such
+    an id is a desktop session's first and continues nothing;
+  - *another's* too, for a hook with no desktop id (a terminal session)
+    when the conversation's own session is running right now;
+  - *unknown* otherwise: adopted as before. Every room's first restart after
+    this shipped takes this path once.
+
+  The copy's row is an ordinary new one (the id derived from its session id),
+  plus `forked_from_id`: the conversation it began as a copy of. Nothing of
+  the parent's is written. A row marked this way is never re-examined by late
+  adoption, since its transcript holds the parent's rows for good; a row
+  opened before the evidence arrived is marked, not merged, when it does. A
+  copy that is itself restarted finds its own conversation by its desktop id,
+  though its transcript names the parent as well.
+
+  **What the copy is told.** Its context came with the parent's identity
+  block, so it holds the parent's `conversation_id` as its own, and every
+  memory call made with it would act on a conversation it isn't recorded in.
+  The first prompt's `adoption_notice` (and SessionStart, which prints
+  nothing else for a copy: the transcript carries the rest) names its own id,
+  whose the other one is, and that the talk from before the copy is archived
+  under the other. The post-compaction block names that read as well, beside
+  its own.
+
+  **Limits.** Until its first compaction a copy can be handed, as retrieved
+  memories, talk that is already in its copied context: same-conversation
+  exclusion covers one conversation, and the parent's links are not copied.
+  Duplicated, never hidden. A terminal fork (`--fork-session`) of a session
+  that isn't running is adopted as before. A copy of a session whose original is then
+  abandoned keeps its own conversation; nothing on disk says it replaced
+  anything.
 
 - **Registration is lazy.** `session-start` builds the identity context but
   never creates the row — Claude Desktop fires SessionStart for
@@ -1578,7 +1649,9 @@ backward read arrived (issue #351).
   `session-start` adopts the parent first (see "Conversations" → fork
   adoption), so the id the block names is the parent's — the one that holds
   the talk — not a new empty conversation; this is the failure the
-  adoption fix closes (issue #357). Adoption is best-effort, though — an
+  adoption fix closes (issue #357). (A copy running beside its parent
+  compacts under its own conversation, and the block adds the read of the
+  other's for the talk from before the copy.) Adoption is best-effort, though — an
   unreadable transcript, a desktop record not yet written, a fork while the
   backend was down, a CLI session with no desktop record at all — so the
   block **counts before it promises**: rows of this conversation created
@@ -1901,8 +1974,10 @@ code; issue #397 has the plan and the measurements still to make.
 
 Hook-side environment (set in `.claude/settings.json` `env`, which the
 desktop app reads even when launched from the Dock): `HIM_BACKEND_URL`
-(default `http://localhost:8000`), `HIM_ENTITY` (index name or label;
-default entity if unset), `HIM_DISABLE`, `HIM_INLINE_BUDGET` (max
+(default `http://localhost:8000`), `HIM_TOKEN` (this machine's token for
+the backend, which answers nothing without one — see "Authentication"),
+`HIM_ENTITY` (index name or label; the token's entity if unset),
+`HIM_DISABLE`, `HIM_INLINE_BUDGET` (max
 characters of hook stdout, overriding the backend's `inline_budget`; the
 default is 9,600, under the measured 10,000-character line — see "Context
 channels"), `HIM_ARRIVE_WHOLE` (any value: a hook that spills
@@ -1918,16 +1993,105 @@ Per entity, on its `PINECONE_INDEXES` entry: `git_author_email`,
 `git_author_name`, `gh_config_dir` — the entity's own GitHub identity for
 its sessions (see "GitHub identity"; all optional).
 
+### Authentication
+
+The backend answers only to a credential (issue #396;
+[authentication.md](authentication.md) has the whole design). A Claude
+Code machine's credential is a token minted on the server:
+
+```bash
+python -m app.auth token create --name laptop --entity Kira
+```
+
+It is **entity-scoped**: good for `/api/claude-code/*` and `/mcp`, which
+is exactly what the hooks, the compaction mod and the memory tools call,
+and for nothing else. It is **bound to that entity**: the hook endpoints
+act as the token's entity (so `HIM_ENTITY` is optional, and naming a
+different one is refused), a session whose conversation belongs to another
+entity is refused, and a memory tool call must name one of that entity's
+conversations. The researcher's acts (archive, status override, delete,
+rebuild, the chat routes) are out of its reach. One token per machine, so
+a lost machine is revoked by name without touching the others.
+
+It reaches the session three ways, from one place. `HIM_TOKEN` in the
+`env` block of `.claude/settings.json` is read by the hooks
+(`hook_util.backend_headers`, the one place a request header is added) and
+by the compaction mod (`$.env.get`); the MCP server's configuration names
+it as `"Authorization": "Bearer ${HIM_TOKEN}"`, which Claude Code fills in
+from that same block when the session starts (measured on 2.1.286 for a
+plugin's `.mcp.json`, an `--mcp-config` file and a user-scope entry; an
+unset variable goes out as the literal text and is refused). The plugin's
+`.mcp.json` is written that way, and takes its URL from `HIM_BACKEND_URL`.
+
+The entity's own shell can read the token. That is accepted: it grants
+what the hooks already do on the entity's behalf, and nothing of the
+researcher's.
+
+**A refusal is said as what it is.** A 401 or 403 is the server up and
+saying no, which needs something different done about it than a server
+that is down, and from inside the two would otherwise read alike. Each
+hook names which of three things happened (`hook_util.auth_refusal_notice`):
+no token on this machine, a token the server doesn't accept (unknown or
+revoked), or a token not allowed this (403, with the backend's own
+sentence). The backend checks a credential before any handler runs, and
+the entity binding before any row is written, so the recording hooks say
+NOT recorded outright and skip the `/recorded` check, which would be
+refused the same way (`hook_util.refused_before_recording`; that ordering
+is an invariant of `routes/claude_code.py`, pinned by
+`tests/test_auth_entity_binding.py`, which counts rows after each
+refusal). The Stop hook's notice names the notes files as the way to keep
+anything, since the memory tools ride the same token. The compaction mod
+treats a refusal the same way: no delivery can exist, so it cancels
+nothing and asks nothing afterwards, and says so in the transcript.
+
+A session whose MCP server is refused starts normally, with the server
+shown as failed and the memory tools absent. Nothing in the harness tells
+the entity why, so the hooks' lines for a missing or unaccepted token do:
+they say the memory tools use the same token. (A 403 is a token the
+server accepts, so the tools are not refused with it and the line doesn't
+say they are.)
+
+Two setups work and are wrong, so the SessionStart hook says them on every
+firing (`hook_util.credential_lines`). A **researcher token in
+`HIM_TOKEN`** passes every hook call and puts the researcher's whole reach
+where the entity's shell can read it; the backend sees which kind of token
+arrived and returns `credential_notice`. A **`HIM_BACKEND_URL` ending in
+a slash** is stripped by the hooks and the mod, but an MCP entry built as
+`${HIM_BACKEND_URL}/mcp` then points at `//mcp`, which the server doesn't
+serve: the hooks work and the memory tools are gone.
+
+With no token at all, the compaction mod gives no turn before the
+compaction: every call would be a certain 401, and a reflection written
+first would be thrown away with it.
+
+**What an entity token reaches is a list** (`auth/policy.ENTITY_ROUTES`),
+not the `/api/claude-code/` prefix. A route added to this router is closed
+to every entity token until it is listed, and a test fails until it is
+either listed or moved (`test_the_entity_list_is_exactly_the_claude_code_routes`).
+Before listing one, make it hold its caller to the token's entity, before
+it writes: `_entity_for`, `_refuse_another_entitys_session` first, and
+`_refuse_another_entitys_conversation` on whatever `resolve_session` hands
+back (two sessions racing to register one id are given the same row).
+
+**A memory named by id is looked up inside the entity's experience**
+(`memory_tools._resolve_memory_id`), by the readers' own rule, and
+literally (`%` and `_` are not wildcards). That resolver serves
+`memory_neighbors`, `memory_mark`, `memory_release` and `memory_save`'s
+links; it used to search the whole table and check afterwards, by a looser
+rule, which with one token per entity was a way into another entity's
+rows. `memory_mark` and `memory_release` also refuse another entity's
+words in a shared room: a memory's status is one value on the row.
+
 ### Endpoints
 
 All under `/api/claude-code`, all gated by `CLAUDE_CODE_MODE_ENABLED`
-(404 when off). `/retrieve` and `/log-assistant` create the session's
+(404 when off) and all needing a credential (see "Authentication"). `/retrieve` and `/log-assistant` create the session's
 conversation on first contact; `/session-start` and `/session-end` never do
 (lazy registration — see "Conversations"):
 
 - `POST /session-start` `{session_id, entity?, cwd?, source?,
   transcript_path?, sessions?, prior_session_ids?, transcript_message_ids?,
-  compact_talk_mod?}`
+  host_session_id?, compact_talk_mod?}`
   → `{conversation_id, entity_id, entity_label, created, context,
   bulk_context, rooms_notice, rooms_error, git_identity}` — full context when `created`
   (no conversation recorded for this session yet; `conversation_id` is
@@ -1941,7 +2105,10 @@ conversation on first contact; `/session-start` and `/session-end` never do
   — or, when a row was already opened for this session before the hints
   existed, merged into the parent (issue #359) —
   so a fork's post-compaction recovery reads the parent, which has the
-  talk, not an empty new row. `context` is the small always-inline block;
+  talk, not an empty new row. `host_session_id` is the desktop app's id for
+  the session the hook ran in, which keeps a copy running beside its parent
+  from being adopted; for a copy with nothing recorded yet, `context` is the
+  one notice naming its own id. `context` is the small always-inline block;
   `bulk_context`
   (notes indexes + reflections) is what the hook spills to a file when the
   combined output would exceed the inline budget. `sessions` is the hook's
@@ -1980,11 +2147,13 @@ conversation on first contact; `/session-start` and `/session-end` never do
   `unconfigured`, or `failed` (a retrieval exception after the rows were
   committed — reported, not raised; see "Retrieval stamps" above).
   `/retrieve` also takes the fork-adoption lineage hints
-  (`prior_session_ids`, `transcript_message_ids`) — this is the endpoint a
+  (`prior_session_ids`, `transcript_message_ids`, `host_session_id`) — this is the endpoint a
   rewind actually reaches, since no SessionStart fires there — and returns
   `adoption_notice`, the one line telling the entity this session is a
   continuation and which conversation id is recording it (the hook prints
   it ahead of the mailbox and rooms lines; empty when nothing was adopted).
+  For a copy running beside its parent it is the notice naming the copy's
+  own id and the parent's.
   It also carries a notice left by an adoption that landed on a hook
   with no line back to the entity — a late adoption on the Stop hook
   (issue #359) — delivered once.
@@ -1994,7 +2163,8 @@ conversation on first contact; `/session-start` and `/session-end` never do
   verification step after a failed `/retrieve`: SQL only, no side effects,
   creates no conversation.
 - `POST /log-assistant` `{session_id, content, entity?, cwd?,
-  message_uuid?, model?, prior_session_ids?, transcript_message_ids?}` →
+  message_uuid?, model?, prior_session_ids?, transcript_message_ids?,
+  host_session_id?}` →
   `{conversation_id, message_id, deduplicated}` —
   idempotent on `message_uuid` (the transcript entry's UUID becomes the
   Message row's primary key). `model` is the transcript entry's own
@@ -2431,11 +2601,12 @@ the refusal is Claude Code's own; the schema descriptions of `revises` /
 
 ### Scope and non-goals
 
-- **Local sessions only** for now: the endpoints are as unauthenticated as
-  the rest of the API and the hooks target `localhost`. Cloud sessions
-  (Claude Code on the web / desktop cloud sessions) can't reach the
-  backend; the hooks no-op there. Remote hosting + auth is a future
-  milestone.
+- **Sessions on your own machines only**: the hooks reach the backend at
+  `HIM_BACKEND_URL` with this machine's token (see "Authentication"),
+  which covers a server on this machine or one reached over a private
+  network. Cloud sessions (Claude Code on the web / desktop cloud
+  sessions) run on infrastructure that can't reach it; the hooks no-op
+  there.
 - **Multi-entity does not apply** — one responder per Claude Code session.
 - Disaster recovery: `claude_code` conversations follow single-entity
   vectorization rules (entity_id set, no fan-out), so
@@ -2459,9 +2630,9 @@ the README, then set:
 
 | Variable | Set it to |
 | --- | --- |
-| `HIM_BACKEND_URL` | The server's address as this machine reaches it. The default, `http://localhost:8000`, is right only when the server runs on this machine. |
-| `HIM_ENTITY` | The entity's index name or label (unset: the server's default entity). |
-| `HIM_TOKEN` | *Coming with #396.* This machine's own token for the entity, revocable without touching the other machines. |
+| `HIM_BACKEND_URL` | The server's address as this machine reaches it, with no slash on the end. The default, `http://localhost:8000`, is right only when the server runs on this machine. |
+| `HIM_TOKEN` | This machine's own token for the entity, minted on the server (`auth.bat token create --name <machine> --entity <entity>`, or `./auth.sh …`) and revocable without touching the other machines. Without it every hook call is refused, and says so. The `here-i-am` MCP server needs the same token as its `Authorization` header; [authentication.md](authentication.md), "Setting it up", has the command. |
+| `HIM_ENTITY` | The entity's index name or label. Optional with a token, which is bound to its entity; naming a different one is refused. |
 | `HIM_NOTES_ROOT` | *Coming with #397.* Where this machine mounts the notes. |
 | `HIM_GH_CONFIG_DIR` | This machine's gh config directory for the entity's GitHub account, as an absolute path (`~` and environment variables allowed); see "GitHub identity". It is unneeded only on the server's own machine, whose directory the server's `gh_config_dir` already names. Keep that setting on the server either way: it is what makes a machine that forgot this variable say so. |
 | `HIM_DESKTOP_DATA_DIR` | Only if the Claude desktop app keeps its data somewhere the hooks don't look by themselves (see "Where the desktop app keeps its records" under "Rooms registry"). Set, it is the only place they look, so a stale value hides the live records. A session the app is running is told at its start when they aren't found. |

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { DECLINE, FALLBACK_BUDGET, MISSING_TALK_NOTE, QUESTION_TIMEOUT_MS, TALK_MARKER, TALK_TIMEOUT_MS, localStamp, readReply, talkBudget, utcStamp } from './register.ts'
+import { DECLINE, FALLBACK_BUDGET, MISSING_TALK_NOTE, QUESTION_TIMEOUT_MS, TALK_MARKER, TALK_TIMEOUT_MS, localStamp, readReply, refusal, talkBudget, utcStamp } from './register.ts'
 
 const SUMMARY = { role: 'user' as const, text: 'This session is being continued...', toolUses: [] }
 const OLD = { role: 'assistant' as const, text: 'the talk before', toolUses: [] }
@@ -40,7 +40,9 @@ function engine(on: any, opts: Opts): Seen {
     seen.forks.push(e.prompt)
     return { value: opts.fork ?? { isAnswered: true, text: opts.reply ?? DECLINE, usage: {} } }
   })
-  on('env.get', async (_$: any, e: any) => ({ value: (opts.env ?? {})[e.name] }))
+  // A machine set up for the backend has a token; a test of one that
+  // hasn't says so with HIM_TOKEN: ''
+  on('env.get', async (_$: any, e: any) => ({ value: ({ HIM_TOKEN: 'him_this-machine', ...(opts.env ?? {}) } as Record<string, string>)[e.name] }))
   on('session.id', async () => ({ value: 'session-1' }))
   on('clock.now', async () => ({ value: NOW }))
   on('session.usage', async () => {
@@ -51,7 +53,7 @@ function engine(on: any, opts: Opts): Seen {
     } } }
   })
   on('http.fetch', async (_$: any, e: any) => {
-    seen.posts.push({ url: e.url, ...JSON.parse(e.init.body) })
+    seen.posts.push({ url: e.url, headers: e.init.headers, ...JSON.parse(e.init.body) })
     const last = e.url.split('/').pop()
     if ((opts.hang ?? []).includes(last)) return new Promise(() => {})
     const taken = last === 'taken'
@@ -114,6 +116,60 @@ describe('the talk', () => {
     await $.session.compact({ trigger: 'auto', messages: [OLD] })
     expect(seen.posts[0].url).toBe('http://127.0.0.1:9000/api/claude-code/compact-talk')
     expect(seen.posts[0].entity).toBe('Kira')
+  })
+
+  test("carries this machine's token as a bearer header, and nowhere else", async ($, on) => {
+    // Issue #396: the backend answers only to a credential
+    const seen = engine(on, { env: { HIM_TOKEN: ' him_abc123 \n' } })
+    await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(seen.posts.map((p: any) => p.headers.authorization)).toEqual(['Bearer him_abc123', 'Bearer him_abc123'])
+    for (const post of seen.posts) {
+      const { headers: _headers, ...rest } = post as any
+      expect(JSON.stringify(rest)).not.toContain('him_abc123')
+    }
+  })
+
+  test('with no token it asks the entity for nothing and calls nothing', async ($, on) => {
+    // Every call would be a certain 401, and a reflection written first
+    // would be thrown away with it (PR #411 review)
+    const seen = engine(on, { env: { HIM_TOKEN: '' } })
+    const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(seen.forks.length).toBe(0)
+    expect(seen.posts.length).toBe(0)
+    expect(result.messages.length).toBe(1)
+    expect(seen.logs.join('\n')).toContain('requires a token and this machine has none')
+    expect(seen.logs.join('\n')).toContain('python -m app.auth token create')
+    expect(seen.logs.length).toBe(1)
+  })
+
+  test('a token that is only whitespace is no token', async ($, on) => {
+    const seen = engine(on, { env: { HIM_TOKEN: '   ' } })
+    await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(seen.forks.length).toBe(0)
+    expect(seen.posts.length).toBe(0)
+  })
+
+  test('a refused token is said as a refusal, with nothing to cancel or ask about', async ($, on) => {
+    // The backend checks the credential before it does anything, so no
+    // delivery exists, and a cancel would only be refused as well
+    const seen = engine(on, { status: 401, backend: { detail: 'The bearer token was refused.' }, env: { HIM_TOKEN: 'him_revoked' } })
+    const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(result.messages.length).toBe(1)
+    expect(seen.posts.map((p) => String(p.url).split('/').pop())).toEqual(['compact-talk'])
+    const logs = seen.logs.join('\n')
+    expect(logs).toContain("refused this machine's token (401")
+    expect(logs).toContain('python -m app.auth token create')
+    expect(logs).not.toContain('could not cancel')
+    expect(logs).not.toContain('him_revoked')
+    expect(seen.logs.length).toBe(1)
+  })
+
+  test("a 403 carries the backend's reason", async ($, on) => {
+    const seen = engine(on, { status: 403, backend: { detail: "This session's conversation belongs to another entity." }, env: { HIM_TOKEN: 'him_other' } })
+    const result: any = await $.session.compact({ trigger: 'manual', messages: [OLD] })
+    expect(result.messages.length).toBe(1)
+    expect(seen.logs.join('\n')).toContain('belongs to another entity')
+    expect(seen.posts.length).toBe(1)
   })
 
   test('is not appended when there is none, and that is said', async ($, on) => {
@@ -322,6 +378,14 @@ describe('localStamp', () => {
 
   test('a name it cannot load falls back to the UTC stamp', () => {
     expect(localStamp(at, 'Mars/Phobos')).toBe('2026-11-15 01:30 UTC')
+  })
+})
+
+describe('refusal', () => {
+  test('names which of the three it was', () => {
+    expect(refusal(401, false, '')).toContain('this machine has none')
+    expect(refusal(401, true, '')).toContain("refused this machine's token")
+    expect(refusal(403, true, 'not yours')).toContain('403: not yours')
   })
 })
 

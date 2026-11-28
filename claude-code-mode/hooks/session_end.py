@@ -9,7 +9,8 @@ tools bypass the write-time vectorization the native notes tools do).
 Fail-soft: any problem exits 0 silently. Nothing is printed — the session
 is over, there is no context to add to.
 
-Environment: HIM_BACKEND_URL, HIM_ENTITY, HIM_DISABLE (see session_start.py).
+Environment: HIM_BACKEND_URL, HIM_TOKEN, HIM_ENTITY, HIM_DISABLE (see
+session_start.py).
 """
 import json
 import os

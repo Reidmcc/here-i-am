@@ -140,15 +140,65 @@ def test_desktop_prior_session_ids_missing_dir_is_empty(tmp_path):
     ) == []
 
 
-def test_lineage_hints_bundles_both(tmp_path):
+def _no_host_in_the_environment(monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_HOST_SESSION_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+
+def test_lineage_hints_bundles_them(tmp_path, monkeypatch):
+    _no_host_in_the_environment(monkeypatch)
     desktop = tmp_path / "desktop"
     _write_desktop_record(desktop, "current-id", ["old-1"])
     path = _write_transcript(tmp_path, [_text_entry("a-1")])
-    hints = hook_util.lineage_hints("current-id", path, desktop_dir=str(desktop))
+    hints = hook_util.lineage_hints(
+        "current-id", path, desktop_dir=str(desktop), config_dir=str(tmp_path)
+    )
     assert hints == {
         "prior_session_ids": ["old-1"],
         "transcript_message_ids": ["a-1"],
+        # A CLI session, or an unreadable registry
+        "host_session_id": None,
     }
+
+
+def test_lineage_hints_carry_the_desktop_session_id(tmp_path, monkeypatch):
+    """What tells a copy running beside its parent from a restart: from the
+    registry (here as the Stop hook reads it, with no snapshot in hand), and
+    from the environment when that has no entry for the session."""
+    _no_host_in_the_environment(monkeypatch)
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "1.json").write_text(
+        json.dumps({"sessionId": "current-id", "hostSessionId": "local_registry"}),
+        encoding="utf-8",
+    )
+
+    def host():
+        return hook_util.lineage_hints(
+            "current-id", None,
+            desktop_dir=str(tmp_path / "none"), config_dir=str(tmp_path),
+        )["host_session_id"]
+
+    monkeypatch.setenv("CLAUDE_CODE_HOST_SESSION_ID", "local_env")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "current-id")
+    assert host() == "local_registry"
+    (sessions / "1.json").unlink()
+    assert host() == "local_env"
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "another-id")
+    assert host() is None
+
+
+def test_a_side_forks_own_record_names_no_parent(tmp_path, monkeypatch):
+    """The desktop record the app's fork writes is keyed on the copy's own
+    id and starts with no prior ids, so the prior-ids hint never names the
+    session it was copied from."""
+    _no_host_in_the_environment(monkeypatch)
+    desktop = tmp_path / "desktop"
+    _write_desktop_record(desktop, "parent-id", ["old-1"])
+    _write_desktop_record(desktop, "copy-id", None)
+    assert hook_util.desktop_prior_session_ids(
+        "copy-id", desktop_dir=str(desktop), config_dir=str(tmp_path)
+    ) == []
 
 
 def test_lineage_hints_reuses_a_prebuilt_desktop_index(tmp_path):

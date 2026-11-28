@@ -300,6 +300,20 @@ async def run_migrations(conn):
             ))
             print("  ✓ Added researcher_notices column so native reloads replay the notice")
 
+        if 'desktop_session_id' not in columns:
+            print("Migrating: Adding 'desktop_session_id' column to conversations table...")
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN desktop_session_id VARCHAR(100)"
+            ))
+            print("  ✓ Added desktop_session_id column to tell a copy beside its parent from a continuation")
+
+        if 'forked_from_id' not in columns:
+            print("Migrating: Adding 'forked_from_id' column to conversations table...")
+            await conn.execute(text(
+                "ALTER TABLE conversations ADD COLUMN forked_from_id VARCHAR(36)"
+            ))
+            print("  ✓ Added forked_from_id column for sessions that began as a copy of another")
+
 
 async def init_db():
     async with engine.begin() as conn:

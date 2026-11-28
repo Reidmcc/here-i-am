@@ -110,6 +110,20 @@ class Conversation(Base):
     last_compacted_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True
     )
+    # For source="claude_code": the desktop app's own session id (local_…)
+    # this conversation was last recorded under. The harness re-keys a
+    # session on restart or rewind but the desktop id stays, while a copy
+    # started to run BESIDE this session (a side session, a hand-off, the
+    # app's Fork) has its own, so this is what tells the two kinds of fork
+    # apart. NULL = not observed (a CLI session, or before it was recorded).
+    desktop_session_id: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True
+    )
+    # For source="claude_code": the conversation whose transcript this
+    # session began as a copy of, when it runs beside it. Where the talk
+    # from before the copy is archived. Not a foreign key: it is a pointer
+    # for reading, and the other conversation may be deleted.
+    forked_from_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
 
     messages: Mapped[List["Message"]] = relationship(
         "Message", back_populates="conversation", cascade="all, delete-orphan"

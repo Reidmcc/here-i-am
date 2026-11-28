@@ -18,7 +18,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
-from app.models import Conversation, Message, MessageRole
+from app.models import Conversation, ConversationEntity, Message, MessageRole
 from app.routes.memories import calculate_significance as route_significance
 from app.services.memory_context import format_memory_as_context_message
 from app.services.memory_tools import _memory_query, _resolve_memory_id, set_memory_tool_context
@@ -157,19 +157,72 @@ class TestMemoryIdResolution:
         assert resolved is None
         assert "No memory found" in error
 
-    @pytest.mark.asyncio
-    async def test_resolve_rejects_other_entity(self, db_session):
-        _, message = await _create_conversation_with_message(db_session, entity_id="other-entity")
-        resolved, error = await _resolve_memory_id(message.id, db_session, "test-entity")
-        assert resolved is None
-        assert "another entity" in error
+    # The lookup runs inside the entity's experience (PR #411 review): a
+    # row outside it is simply not there, by full id or by prefix
 
     @pytest.mark.asyncio
-    async def test_resolve_allows_multi_entity_conversation(self, db_session):
-        _, message = await _create_conversation_with_message(db_session, entity_id="multi-entity")
+    async def test_another_entitys_row_is_not_found(self, db_session):
+        _, message = await _create_conversation_with_message(db_session, entity_id="other-entity")
+        for wanted in (message.id, message.id[:8]):
+            resolved, error = await _resolve_memory_id(wanted, db_session, "test-entity")
+            assert resolved is None
+            assert "No memory found" in error
+
+    @pytest.mark.asyncio
+    async def test_a_shared_room_resolves_for_its_participants_only(self, db_session):
+        conversation, message = await _create_conversation_with_message(
+            db_session, entity_id="multi-entity"
+        )
+        db_session.add(ConversationEntity(conversation_id=conversation.id, entity_id="test-entity"))
+        await db_session.commit()
         resolved, error = await _resolve_memory_id(message.id, db_session, "test-entity")
-        assert error is None
+        assert error is None and resolved.id == message.id
+        # An entity that was never in the room
+        resolved, error = await _resolve_memory_id(message.id, db_session, "other-entity")
+        assert resolved is None and "No memory found" in error
+
+    @pytest.mark.asyncio
+    async def test_rows_naming_no_entity_are_the_default_entitys(self, db_session, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(
+            settings, "pinecone_indexes",
+            '[{"index_name": "test-entity", "label": "First"},'
+            ' {"index_name": "other-entity", "label": "Second"}]',
+        )
+        _, message = await _create_conversation_with_message(db_session, entity_id=None)
+        resolved, _ = await _resolve_memory_id(message.id, db_session, "test-entity")
         assert resolved.id == message.id
+        resolved, error = await _resolve_memory_id(message.id, db_session, "other-entity")
+        assert resolved is None and "No memory found" in error
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pattern", ["%%%%%%", "______", "0%%%%%", "______%", "%" * 36])
+    async def test_a_prefix_is_not_a_pattern(self, db_session, pattern):
+        # LIKE wildcards in the prefix used to walk the whole table
+        await _create_conversation_with_message(db_session)
+        await _create_conversation_with_message(db_session, entity_id="other-entity")
+        resolved, error = await _resolve_memory_id(pattern, db_session, "test-entity")
+        assert resolved is None
+        assert "No memory found" in error
+
+    @pytest.mark.asyncio
+    async def test_an_ambiguous_prefix_lists_only_what_the_entity_can_see(self, db_session):
+        mine_a = Message(id="abcdef-mine-1", conversation_id="x", role=MessageRole.ASSISTANT, content="a")
+        mine_b = Message(id="abcdef-mine-2", conversation_id="x", role=MessageRole.ASSISTANT, content="b")
+        theirs = Message(id="abcdef-theirs", conversation_id="y", role=MessageRole.ASSISTANT, content="c")
+        db_session.add_all([
+            Conversation(id="x", title="mine", entity_id="test-entity"),
+            Conversation(id="y", title="theirs", entity_id="other-entity"),
+            mine_a, mine_b, theirs,
+        ])
+        await db_session.commit()
+        resolved, error = await _resolve_memory_id("abcdef", db_session, "test-entity")
+        assert resolved is None and "is ambiguous" in error
+        assert "abcdef-mine-" in error and "theirs" not in error
+        # And for the other entity the same prefix names exactly one row
+        resolved, error = await _resolve_memory_id("abcdef", db_session, "other-entity")
+        assert error is None and resolved.id == "abcdef-theirs"
 
 
 class TestReleasedFiltering:

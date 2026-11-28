@@ -30,7 +30,16 @@ Two jobs the individual hook scripts delegate here:
   seconds, and which says whether a failed request could have reached the
   server at all (see "Talking to the backend" below).
 
+- **Say who is calling.** The backend answers only to a credential
+  (issue #396): every request carries this machine's token, and a refusal
+  is said in its own words, apart from "unreachable" (see "The token").
+
 Environment:
+    HIM_TOKEN          this machine's token for the backend, minted on the
+                       server with `python -m app.auth token create` and
+                       bound to one entity. Sent as a bearer header on
+                       every request; without it the backend refuses them
+                       all
     HIM_HOOK_TIMING_LOG  a file path; when set, every backend request
                        appends one JSON line (path, outcome, attempts,
                        connect and total milliseconds), the measurement
@@ -723,10 +732,131 @@ def recorded_message_ids(session_id: str, message_ids: list) -> set:
     return {str(mid) for mid in (check.get("recorded") or [])}
 
 
+# --- The token (issue #396)
+#
+# The backend answers only to a credential. A Claude Code machine's is a
+# token minted on the server (`python -m app.auth token create --name
+# <machine> --entity <entity>`), bound to one entity and good only for the
+# endpoints these hooks and the memory tools call. It reaches the hooks as
+# HIM_TOKEN in the session's environment, beside HIM_BACKEND_URL.
+#
+# The entity's own shell can read it, and that is accepted: it grants what
+# the hooks already do on the entity's behalf and nothing of the
+# researcher's.
+#
+# A refusal is its own kind of failure, said in its own words. The backend
+# checks the credential before any handler runs, and an entity token's
+# further limits (another entity's session) are checked before any row is
+# written, so a 401 or 403 means nothing of the request was recorded: the
+# recording hooks say NOT recorded outright and skip the /recorded check,
+# which would be refused the same way.
+
+TOKEN_ENV = "HIM_TOKEN"
+
+
+def backend_token() -> Optional[str]:
+    return (os.environ.get(TOKEN_ENV) or "").strip() or None
+
+
 def backend_headers() -> dict:
     """The headers of every backend request: the one place a header is
-    added, so every hook sends it."""
-    return {"Content-Type": "application/json"}
+    added, so every hook sends it. The token goes only here, never into a
+    URL or a payload."""
+    headers = {"Content-Type": "application/json"}
+    token = backend_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def credential_lines(body) -> list:
+    """Lines the SessionStart hook prints about this machine's credential
+    setup, on every firing while they hold; none when all is well.
+
+    Two things, both of which work silently and are wrong:
+
+    - The backend's `credential_notice`: HIM_TOKEN is a researcher token.
+      Every hook call succeeds with it, and it puts the researcher's whole
+      reach where this session's shell can read it.
+    - HIM_BACKEND_URL ends in a slash. The hooks strip it, but an MCP entry
+      built as `${HIM_BACKEND_URL}/mcp` (the plugin's, and the one the
+      docs give) then points at `//mcp`, which the server doesn't serve:
+      the hooks work and the memory tools are gone, with nothing in the
+      harness saying why.
+    """
+    lines = []
+    notice = _optional_str(body.get("credential_notice")) if isinstance(body, dict) else None
+    if notice:
+        lines.append(f"[HERE I AM] {notice}")
+    url = os.environ.get("HIM_BACKEND_URL") or ""
+    if url.strip().endswith("/"):
+        lines.append(
+            f"[HERE I AM] HIM_BACKEND_URL ends with a slash ({url.strip()}). The "
+            "hooks ignore it, but the memory tools' server address is built as "
+            "${HIM_BACKEND_URL}/mcp and does not resolve with it: if your memory "
+            "tools are missing this session, that is why. Tell the user to "
+            "remove the trailing slash from HIM_BACKEND_URL in this machine's "
+            "Claude Code settings."
+        )
+    return lines
+
+
+def refused_before_recording(error: Exception) -> bool:
+    """Whether the backend refused a request for its credential (401) or
+    for what the credential may do (403): both before anything was
+    written."""
+    return isinstance(error, urllib.error.HTTPError) and error.code in (401, 403)
+
+
+def _refusal_detail(error: Exception) -> str:
+    """The backend's own sentence for a refusal: the `detail` of its JSON
+    body, which post_backend carries in the error's message after the
+    status reason; the raw text when it isn't that shape."""
+    text = str(getattr(error, "reason", "") or getattr(error, "msg", "") or "")
+    _reason, _, body = text.partition(": ")
+    try:
+        detail = json.loads(body).get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip().rstrip(".")
+    except Exception:
+        pass
+    return (body or text).strip().rstrip(".")
+
+
+MINT_ADVICE = (
+    "mint one on the server (in its backend directory: python -m app.auth "
+    "token create --name <this machine> --entity <entity>), set it as "
+    f"{TOKEN_ENV} in the \"env\" block of this machine's Claude Code settings "
+    "and as the Authorization header of its here-i-am MCP server, and "
+    "restart the session"
+)
+
+
+def auth_refusal_notice(error: Exception) -> Optional[str]:
+    """What to say when the backend refused this machine's credential, or
+    None for any other failure. One sentence naming which of three things
+    happened (no token here, a token the server doesn't accept, a token
+    that isn't allowed this), then what to tell the user. The memory tools
+    ride the same token, so their loss is named too."""
+    if not refused_before_recording(error):
+        return None
+    tools = "The memory tools (MCP) use the same token and are refused the same way."
+    if error.code == 403:
+        return (
+            "The Here I Am backend refused this request as not allowed for "
+            f"this machine's token (403: {_refusal_detail(error)}). Tell the user."
+        )
+    if backend_token() is None:
+        return (
+            "The Here I Am backend requires a token and this machine has "
+            f"none: {TOKEN_ENV} is not set in this session's environment "
+            f"(the backend answered 401). {tools} Tell the user: {MINT_ADVICE}."
+        )
+    return (
+        f"The Here I Am backend refused this machine's token (401: {TOKEN_ENV} "
+        f"is unknown to the server or was revoked). {tools} Tell the user: "
+        f"{MINT_ADVICE}."
+    )
 
 
 def post_backend(path: str, payload: dict, timeout: Union[RequestTimeouts, float]):
@@ -1417,37 +1547,33 @@ def host_session_id_for(session_id, config_dir=None, sessions=None):
     per-process registry's `hostSessionId` — or None (a CLI session has no
     desktop host, and the registry may be unreadable).
 
-    Three ways in, cheapest and earliest first:
+    The registry's entry for this very session is the authority, an entry
+    with no host included: the caller's `sessions` snapshot of it, else a
+    scan. It is written when the process starts, six seconds before the
+    first prompt on a measured rewind.
 
-    - `CLAUDE_CODE_HOST_SESSION_ID` in the environment. The desktop app
-      sets it on the Claude Code process and hooks inherit it, so it needs
-      no file at all and has no write-timing edge. It is only trusted when
-      `CLAUDE_CODE_SESSION_ID` agrees with the session id the hook was
-      handed: the environment describes the process, and a hook firing for
-      some other session's id (or a stale environment) must not attribute
-      that process's desktop host to it.
-    - the caller's `sessions` snapshot, if it already read the registry.
-    - a scan of the registry itself.
-
-    The registry file is written when the process starts — six seconds
-    before the first prompt on a measured rewind — so the file paths are
-    early enough on their own; the environment just removes the last
-    dependence on a write having happened.
+    `CLAUDE_CODE_HOST_SESSION_ID` in the environment answers only when the
+    registry has no entry for the session. The desktop app sets it on the
+    Claude Code process, and every process below inherits it, which is the
+    catch: a `claude -p` run from a room's Bash has the ROOM's host id here
+    with its own `CLAUDE_CODE_SESSION_ID` (measured 2026-11-23), so the two
+    agreeing with the hook's session id does not make the host this
+    session's. Its registry entry says null, and that is the truth. The
+    session id is still required to agree: a hook firing for some other
+    session's id must not borrow this process's host.
     """
     if not session_id:
         return None
-    env_host = _optional_str(os.environ.get("CLAUDE_CODE_HOST_SESSION_ID"))
-    env_session = _optional_str(os.environ.get("CLAUDE_CODE_SESSION_ID"))
-    if env_host and env_session == session_id:
-        return env_host
     for entry in sessions or []:
-        if entry.get("session_id") == session_id:
-            return entry.get("host_session_id")
+        # An entry built from a desktop record alone carries no host key:
+        # the registry had nothing on that session
+        if entry.get("session_id") == session_id and "host_session_id" in entry:
+            return entry["host_session_id"]
     directory = os.path.join(config_dir or claude_config_dir(), "sessions")
     try:
         paths = sorted(glob.glob(os.path.join(directory, "*.json")))
     except Exception:
-        return None
+        paths = []
     for path in paths:
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -1456,7 +1582,15 @@ def host_session_id_for(session_id, config_dir=None, sessions=None):
             continue
         if isinstance(data, dict) and data.get("sessionId") == session_id:
             return _optional_str(data.get("hostSessionId"))
-    return None
+    return _host_session_id_from_environment(session_id)
+
+
+def _host_session_id_from_environment(session_id):
+    """The inherited host id, when the environment is this session's (see
+    host_session_id_for for how far that can be trusted)."""
+    if _optional_str(os.environ.get("CLAUDE_CODE_SESSION_ID")) != session_id:
+        return None
+    return _optional_str(os.environ.get("CLAUDE_CODE_HOST_SESSION_ID"))
 
 
 def desktop_prior_session_ids(
@@ -1756,8 +1890,18 @@ def lineage_hints(
     sessions=None,
 ):
     """
-    Both fork-adoption hints for a hook payload (issue #357):
-    {"prior_session_ids", "transcript_message_ids"}. Never raises.
+    The fork-adoption hints for a hook payload (issue #357):
+    {"prior_session_ids", "transcript_message_ids", "host_session_id"}.
+    Never raises.
+
+    The first two name what this session may be a fork OF; the third, the
+    desktop app's own session id, says which kind of fork. A restart or a
+    rewind keeps the desktop session and changes only the Claude Code id. A
+    side session started with the conversation so far, a hand-off, the app's
+    Fork and a /btw side chat are new desktop sessions holding a copy of the
+    transcript, and the one they were copied from goes on running. The first
+    two hints match there just as well, so without the third the copy would
+    take the other session's conversation.
 
     At a fork's FIRST prompt the transcript hint is empty — the harness
     copies that file a second or two after the hook fires — so the prior-ids
@@ -1777,6 +1921,9 @@ def lineage_hints(
             sessions=sessions,
         ),
         "transcript_message_ids": transcript_assistant_uuids(transcript_path),
+        "host_session_id": host_session_id_for(
+            session_id, config_dir=config_dir, sessions=sessions
+        ),
     }
 
 

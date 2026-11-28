@@ -1,3 +1,4 @@
+from app.models.auth import ApiToken, AuthCredential, AuthSession
 from app.models.conversation import Conversation, ConversationSource, ConversationType
 from app.models.conversation_entity import ConversationEntity
 from app.models.conversation_id_alias import ConversationIdAlias
@@ -8,6 +9,9 @@ from app.models.memory_link import LINK_CITES, LINK_REVISES, VALID_LINK_KINDS, M
 from app.models.message import Message, MessageRole
 
 __all__ = [
+    "ApiToken",
+    "AuthCredential",
+    "AuthSession",
     "Conversation",
     "ConversationSource",
     "ConversationType",

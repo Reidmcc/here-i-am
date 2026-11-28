@@ -28,7 +28,9 @@ deliberate off switch.
 
 Environment:
     HIM_BACKEND_URL    backend base URL (default http://localhost:8000)
-    HIM_ENTITY         entity index name or label (default: backend's default)
+    HIM_TOKEN          this machine's token for the backend (see hook_util.py)
+    HIM_ENTITY         entity index name or label (default: the token's
+                       entity)
     HIM_DISABLE        set to anything to turn the integration off
     HIM_INLINE_BUDGET  see hook_util.py
     HIM_DESKTOP_DATA_DIR  see hook_util.py (the desktop app's session
@@ -107,14 +109,21 @@ def main() -> None:
             timeout=hook_util.SESSION_START_TIMEOUTS,
         )
     except Exception as e:
-        hook_util.fail_loud(
+        # Refused for its credential (issue #396) is not "unreachable": the
+        # server is up and said no, and what fixes it is a token
+        refusal = hook_util.auth_refusal_notice(e)
+        cause = refusal or (
             "The Here I Am backend was unreachable at session start "
-            f"({hook_util.describe_error(e)}). You are running WITHOUT your "
+            f"({hook_util.describe_error(e)})."
+        )
+        hook_util.fail_loud(
+            f"{cause} You are running WITHOUT your "
             "identity block, notes index, and recent reflections, and this "
             "session may not be recorded to your long-term memory. If you "
             "have your own GitHub identity it was not exported either: "
             "commits, pushes, and gh calls from this session carry the "
-            "machine's (the human's) identity. Tell the user."
+            "machine's (the human's) identity."
+            + ("" if refusal else " Tell the user.")
         )
         return
 
@@ -133,10 +142,10 @@ def main() -> None:
     # Trailer lines come last, after the context and any spill pointer: a
     # notes directory that isn't the server's copy (issue #397), a server
     # in another timezone than this machine, desktop app records the hooks
-    # can't find, the identity statement, then the rooms registry's one-line
-    # notice or loud write failure. The notes lines are kept apart too, for
-    # the one branch that has to move them up (an over-budget identity
-    # block, below)
+    # can't find, a token or address that is wrong, the identity statement,
+    # then the rooms registry's one-line notice or loud write failure. The
+    # notes lines are kept apart too, for the one branch that has to move
+    # them up (an over-budget identity block, below)
     notes_lines = hook_util.notes_check_lines(body)
     trailer_lines = [
         *notes_lines,
@@ -148,6 +157,9 @@ def main() -> None:
         *hook_util.desktop_records_lines(
             session_id, data.get("source"), desktop_index, sessions
         ),
+        # The token and the address it is sent to (issue #396), on every
+        # firing while either is wrong
+        *hook_util.credential_lines(body),
         *identity_lines,
         *hook_util.rooms_output_lines(body),
     ]

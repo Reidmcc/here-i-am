@@ -320,20 +320,43 @@ async def _resolve_memory_id(
     Resolve a full memory ID or a short prefix (>= 6 chars) to a Message.
 
     Returns (message, error). Exactly one of the two is None.
-    Verifies the memory's conversation belongs to this entity (single-entity
-    conversations of another entity are rejected).
+
+    The lookup itself runs inside the entity's experience
+    (memory_service._entity_experience_clause, the readers' rule): its own
+    conversations, the multi-entity ones it takes part in, and for the
+    default entity the legacy rows that name no entity. A row outside it
+    is not found, by its full id or by any prefix, and an ambiguous prefix
+    lists only ids the entity could already see.
+
+    This used to look the row up across the whole table and check its
+    conversation afterwards, by a looser rule than the readers use: any
+    multi-entity conversation, participant or not, and any conversation
+    naming no entity, for every entity. Once each Claude Code machine
+    holds a token for one entity (issue #396), this resolver is what
+    stands between that token and another entity's rows for
+    memory_neighbors, memory_mark, memory_release and memory_save's links,
+    so it holds to the same rule as everything else. The prefix is matched
+    literally: `%` and `_` in it are not wildcards.
     """
-    id_or_prefix = id_or_prefix.strip()
+    id_or_prefix = (id_or_prefix or "").strip()
     if len(id_or_prefix) < MIN_ID_PREFIX_LENGTH:
         return None, f"Memory ID must be at least {MIN_ID_PREFIX_LENGTH} characters (got '{id_or_prefix}')"
 
+    in_experience = select(Message)
+    if entity_id:
+        in_experience = in_experience.join(
+            Conversation, Conversation.id == Message.conversation_id
+        ).where(memory_service._entity_experience_clause(entity_id))
+
     # Try exact match first, then prefix match
-    result = await db.execute(select(Message).where(Message.id == id_or_prefix))
+    result = await db.execute(in_experience.where(Message.id == id_or_prefix))
     message = result.scalar_one_or_none()
 
     if not message:
         result = await db.execute(
-            select(Message).where(Message.id.like(f"{id_or_prefix}%")).limit(5)
+            in_experience.where(
+                Message.id.startswith(id_or_prefix, autoescape=True)
+            ).limit(5)
         )
         matches = result.scalars().all()
         if len(matches) == 0:
@@ -343,19 +366,31 @@ async def _resolve_memory_id(
             return None, f"Memory ID prefix '{id_or_prefix}' is ambiguous ({ids}). Use a longer prefix."
         message = matches[0]
 
-    # Verify the memory belongs to this entity's experience
-    if entity_id:
-        result = await db.execute(
-            select(Conversation.entity_id).where(Conversation.id == message.conversation_id)
-        )
-        row = result.first()
-        conv_entity_id = row[0] if row else None
-        # Allowed: this entity's conversations, multi-entity conversations
-        # (shared experience), and legacy conversations with NULL entity_id
-        if conv_entity_id not in (entity_id, "multi-entity", None):
-            return None, f"Memory '{id_or_prefix}' belongs to another entity"
-
     return message, None
+
+
+def _not_this_entitys_to_curate(message: Message, entity_id: str, verb: str) -> Optional[str]:
+    """
+    Why this entity may not pin or release `message`, or None when it may.
+
+    A memory's status is one value on the row, shared by everyone whose
+    experience holds it. In a room with several entities, releasing
+    something another entity said would take it out of that entity's
+    recall too, and the row would then tell it "released by you". So an
+    entity curates the human's words and its own, as it revises only its
+    own (memory_service.check_link_target), and not what another entity
+    said.
+    """
+    if message.role == MessageRole.HUMAN:
+        return None
+    speaker = message.speaker_entity_id
+    if speaker and speaker != entity_id:
+        return (
+            f"Memory {str(message.id)[:8]} is another entity's words, in a "
+            f"conversation you share. To {verb} it would change their memory "
+            "as well as yours, so it is theirs to decide."
+        )
+    return None
 
 
 def _parse_since(since: Optional[str]) -> Tuple[Optional[datetime], Optional[str]]:
@@ -1219,6 +1254,8 @@ async def mark_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = False
     try:
         async with async_session_maker() as db:
             message, error = await _resolve_memory_id(memory_id, db, entity_id)
+            if not error:
+                error = _not_this_entitys_to_curate(message, entity_id, "pin or unpin")
             if error:
                 return f"Error: {error}"
 
@@ -1258,6 +1295,8 @@ async def release_memory(ctx: MemoryToolContext, memory_id: str, undo: bool = Fa
     try:
         async with async_session_maker() as db:
             message, error = await _resolve_memory_id(memory_id, db, entity_id)
+            if not error:
+                error = _not_this_entitys_to_curate(message, entity_id, "release or restore")
             if error:
                 return f"Error: {error}"
 
